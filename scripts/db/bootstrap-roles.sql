@@ -28,6 +28,7 @@ DO $bootstrap$
 DECLARE
   target_database text := current_database();
   role_password   text;
+  target_role     text;
 BEGIN
   ----------------------------------------------------------------------------
   -- 1. Roles
@@ -47,11 +48,55 @@ BEGIN
     RAISE NOTICE 'created role app_backup';
   END IF;
 
-  -- Re-assert the attributes that matter, so a role that drifted is corrected
-  -- and a re-run on a correct database changes nothing.
-  EXECUTE 'ALTER ROLE app_owner  WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS';
-  EXECUTE 'ALTER ROLE app_user   WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS';
-  EXECUTE 'ALTER ROLE app_backup WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE BYPASSRLS';
+  -- Correct attribute drift, under two constraints that managed platforms
+  -- impose and a local superuser hides:
+  --
+  --  * SUPERUSER and BYPASSRLS are never named here. PostgreSQL treats naming
+  --    either attribute in ALTER ROLE as changing it and refuses unless the
+  --    caller holds it, so on Neon or RDS an ALTER that merely restates
+  --    NOSUPERUSER fails. Both are set once at CREATE and verified below.
+  --  * The ALTER runs only when something actually differs. Since PostgreSQL 16
+  --    a CREATEROLE administrator may alter only the roles it created, so an
+  --    unconditional ALTER would turn a no-op re-run into a permission error
+  --    wherever the roles were established by a different administrator.
+  FOREACH target_role IN ARRAY ARRAY['app_owner', 'app_user', 'app_backup'] LOOP
+    IF EXISTS (
+      SELECT 1 FROM pg_roles
+       WHERE rolname = target_role
+         AND (NOT rolcanlogin OR rolcreatedb OR rolcreaterole)
+    ) THEN
+      EXECUTE format('ALTER ROLE %I WITH LOGIN NOCREATEDB NOCREATEROLE', target_role);
+      RAISE NOTICE 'corrected attributes on %', target_role;
+    END IF;
+  END LOOP;
+
+  ----------------------------------------------------------------------------
+  -- 1b. Verify the attributes that cannot be re-asserted here
+  ----------------------------------------------------------------------------
+  -- These are the security properties the whole role design rests on (R27,
+  -- 17.4). If the platform refused BYPASSRLS at CREATE, or a role was granted
+  -- superuser out of band, fail loudly now rather than discovering it when a
+  -- backup silently comes back empty.
+  IF EXISTS (
+    SELECT 1 FROM pg_roles
+     WHERE rolname IN ('app_owner', 'app_user', 'app_backup') AND rolsuper
+  ) THEN
+    RAISE EXCEPTION
+      'One of the application roles has SUPERUSER. Remove it: no application role may hold it.';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM pg_roles WHERE rolname IN ('app_owner', 'app_user') AND rolbypassrls
+  ) THEN
+    RAISE EXCEPTION
+      'app_owner or app_user can bypass row level security. The runtime role must never be able to (17.4).';
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_backup' AND rolbypassrls) THEN
+    RAISE EXCEPTION
+      'app_backup lacks BYPASSRLS, so a dump would silently omit every tenant row (T12, R27). '
+      'Grant it with an administrator that holds BYPASSRLS, or drop the role and re-run this script.';
+  END IF;
 
   ----------------------------------------------------------------------------
   -- 2. Passwords (only when supplied)
