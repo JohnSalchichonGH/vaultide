@@ -1,0 +1,15 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+  - 'e2e'
+
+minimumReleaseAge: 4320
+
+onlyBuiltDependencies:
+  - esbuild
+
+# The deprecated @esbuild-kit loader that drizzle-kit still pulls in pins an
+# esbuild older than GHSA-67mh-4wv8-2f99. It is a dev-only toolchain package,
+# but there is no reason to keep a known-vulnerable copy in the store.
+overrides:
+  esbuild: '0.28.2'

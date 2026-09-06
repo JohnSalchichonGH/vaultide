@@ -1,0 +1,17 @@
+node_modules/
+.next/
+dist/
+coverage/
+.turbo/
+*.tsbuildinfo
+.env
+.env.local
+.env.*.local
+playwright-report/
+test-results/
+blob-report/
+.pnpm-store/
+tmp/
+.vaultide-pg/
+backups/
+.sentryclirc

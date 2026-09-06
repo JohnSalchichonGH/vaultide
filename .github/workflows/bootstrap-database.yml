@@ -1,0 +1,63 @@
+name: Bootstrap database roles
+
+# One-time, manual, per environment (blueprint 22.2, D45).
+#
+# Creates app_owner, app_user and app_backup, makes app_owner the schema owner
+# and sets the default privileges every later migration inherits. A migration
+# cannot create the role it runs as, which is why this is a separate workflow
+# holding the only admin credential in the project.
+#
+# Re-running is safe: the script is idempotent. Supply passwords only when
+# creating the roles or rotating a credential.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options: [production, staging]
+      rotate_passwords:
+        description: Also set the role passwords from the environment secrets
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: bootstrap-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    name: Bootstrap ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    # The admin credential lives in this protected environment and nowhere else.
+    environment: bootstrap
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run the role bootstrap
+        env:
+          DATABASE_URL_ADMIN: ${{ secrets.DATABASE_URL_ADMIN }}
+          APP_OWNER_PASSWORD: ${{ inputs.rotate_passwords && secrets.APP_OWNER_PASSWORD || '' }}
+          APP_USER_PASSWORD: ${{ inputs.rotate_passwords && secrets.APP_USER_PASSWORD || '' }}
+          APP_BACKUP_PASSWORD: ${{ inputs.rotate_passwords && secrets.APP_BACKUP_PASSWORD || '' }}
+        run: pnpm db:bootstrap
+
+      - name: Summary
+        run: |
+          {
+            echo "### Database roles bootstrapped"
+            echo ""
+            echo "- environment: \`${{ inputs.environment }}\`"
+            echo "- passwords rotated: \`${{ inputs.rotate_passwords }}\`"
+            echo ""
+            echo "Next: run migrations as \`app_owner\` (deploy-production.yml)."
+          } >> "$GITHUB_STEP_SUMMARY"

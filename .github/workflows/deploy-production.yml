@@ -1,0 +1,82 @@
+name: Deploy production
+
+# Blueprint 22.3: CI green → migrations as `app_owner` over the direct endpoint
+# → trigger the Vercel production deploy hook. Vercel's own automatic production
+# deploy is disabled, so the schema is always ahead of the code that needs it.
+
+on:
+  workflow_run:
+    workflows: ['CI']
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Migrate, then deploy
+    runs-on: ubuntu-latest
+    # Only after a green CI run on main.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # The owner credential exists only here — never in the Vercel runtime.
+      - name: Apply migrations as app_owner
+        env:
+          DATABASE_URL_DIRECT_OWNER: ${{ secrets.DATABASE_URL_DIRECT_OWNER }}
+        run: pnpm db:migrate
+
+      - name: Seed reference currencies
+        env:
+          DATABASE_URL_DIRECT_OWNER: ${{ secrets.DATABASE_URL_DIRECT_OWNER }}
+        run: pnpm db:seed-currencies
+
+      - name: Trigger the Vercel production deploy
+        env:
+          VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "${VERCEL_DEPLOY_HOOK_URL}" ]; then
+            echo "No deploy hook configured; skipping (set VERCEL_DEPLOY_HOOK_URL)."
+            exit 0
+          fi
+          status=$(curl -sS -o response.json -w '%{http_code}' -X POST "${VERCEL_DEPLOY_HOOK_URL}")
+          echo "deploy hook responded ${status}"
+          cat response.json
+          [ "${status}" -ge 200 ] && [ "${status}" -lt 300 ]
+
+      - name: Verify the deployment is healthy
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+        run: |
+          if [ -z "${APP_URL}" ]; then
+            echo "No APP_URL configured; skipping the health check."
+            exit 0
+          fi
+          for attempt in $(seq 1 30); do
+            status=$(curl -sS -o health.json -w '%{http_code}' "${APP_URL}/api/health" || true)
+            if [ "${status}" = "200" ]; then
+              cat health.json
+              echo "healthy after ${attempt} attempt(s)"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Deployment did not report healthy in time."
+          cat health.json || true
+          exit 1

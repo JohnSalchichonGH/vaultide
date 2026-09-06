@@ -1,0 +1,30 @@
+{
+  "name": "@vaultide/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./src/schema/index.ts"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "generate": "drizzle-kit generate",
+    "migrate": "tsx src/scripts/migrate.ts",
+    "seed:currencies": "tsx src/scripts/seed-currencies.ts"
+  },
+  "dependencies": {
+    "drizzle-orm": "0.45.2",
+    "pg": "8.23.0",
+    "@vaultide/validation": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1",
+    "@vaultide/config": "workspace:*",
+    "drizzle-kit": "0.31.10",
+    "tsx": "4.23.13"
+  }
+}

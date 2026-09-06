@@ -1,0 +1,97 @@
+name: Nightly backup
+
+# Blueprint 22.5, R27, T12.
+#
+# `pg_dump -Fc` as **app_backup** (SELECT-only, BYPASSRLS so the dump is
+# complete), verified row-by-row against the live database, encrypted with age
+# to a public recipient whose private key stays offline, then uploaded to the EU
+# bucket. An RLS-empty dump can never pass verification silently.
+
+on:
+  schedule:
+    # 02:30 UTC, after the day's writes and before the FX refresh window.
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Dump, verify, encrypt, upload
+    runs-on: ubuntu-latest
+    # Holds the app_backup credential and the age public key, nothing else.
+    environment: backup
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install PostgreSQL 16 client tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16
+          echo "PGBIN=/usr/lib/postgresql/16/bin" >> "$GITHUB_ENV"
+
+      - name: Tell Sentry the job started
+        env:
+          SENTRY_CRON_URL: ${{ secrets.SENTRY_CRON_BACKUP_URL }}
+        run: |
+          [ -n "${SENTRY_CRON_URL}" ] && curl -sS -X POST "${SENTRY_CRON_URL}?status=in_progress" || true
+
+      - name: Dump, verify and encrypt
+        env:
+          DATABASE_URL_BACKUP: ${{ secrets.DATABASE_URL_BACKUP }}
+          BACKUP_AGE_PUBLIC_KEY: ${{ secrets.BACKUP_AGE_PUBLIC_KEY }}
+          BACKUP_OUTPUT_DIR: ${{ runner.temp }}/backups
+          BACKUP_LABEL: production
+        run: pnpm db:backup
+
+      - name: Upload to the EU object store
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_BUCKET_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_BUCKET_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.BACKUP_BUCKET_REGION }}
+          BACKUP_BUCKET_NAME: ${{ vars.BACKUP_BUCKET_NAME }}
+          BACKUP_BUCKET_ENDPOINT: ${{ vars.BACKUP_BUCKET_ENDPOINT }}
+        run: |
+          if [ -z "${BACKUP_BUCKET_NAME}" ]; then
+            echo "No backup bucket configured yet; the encrypted archive stays in the runner."
+            ls -l "${RUNNER_TEMP}/backups"
+            exit 0
+          fi
+          aws s3 cp "${RUNNER_TEMP}/backups" "s3://${BACKUP_BUCKET_NAME}/$(date -u +%Y/%m)/" \
+            --recursive --exclude '*' --include '*.age' --include '*.age.json' \
+            ${BACKUP_BUCKET_ENDPOINT:+--endpoint-url "${BACKUP_BUCKET_ENDPOINT}"}
+
+      - name: Report the result
+        if: always()
+        env:
+          SENTRY_CRON_URL: ${{ secrets.SENTRY_CRON_BACKUP_URL }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          summary_status=ok
+          [ "${JOB_STATUS}" = "success" ] || summary_status=error
+          if [ -n "${SENTRY_CRON_URL}" ]; then
+            curl -sS -X POST "${SENTRY_CRON_URL}?status=${summary_status}" || true
+          fi
+          {
+            echo "### Nightly backup: ${JOB_STATUS}"
+            echo ""
+            for file in "${RUNNER_TEMP}"/backups/*.age.json; do
+              [ -e "$file" ] || continue
+              echo '```json'
+              cat "$file"
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove local artifacts
+        if: always()
+        run: rm -rf "${RUNNER_TEMP}/backups"

@@ -1,0 +1,185 @@
+name: CI
+
+# Blueprint 21.7: lint (ESLint + dependency-cruiser + gitleaks) → typecheck →
+# unit tests → integration tests → build → E2E. Required on every pull request;
+# the production deploy depends on it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+  # Supply-chain: pnpm refuses dependencies younger than three days (17.3).
+  CI: 'true'
+
+jobs:
+  quality:
+    name: Lint, boundaries and types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Audit dependencies
+        run: pnpm audit --audit-level high
+
+      - name: ESLint
+        run: pnpm -r run lint
+
+      - name: Module boundaries (section 19)
+        run: pnpm run lint:boundaries
+
+      - name: Typecheck
+        run: pnpm -r run typecheck
+
+  unit:
+    name: Unit and property tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Unit tests
+        run: pnpm -r run test:unit
+
+      - name: Coverage gate for the finance engines (>= 95%)
+        run: pnpm --filter @vaultide/finance exec vitest run --coverage
+
+  database:
+    name: Fresh database, roles and backup
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: vaultide_admin
+          POSTGRES_PASSWORD: vaultide_admin
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U vaultide_admin"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL_ADMIN: postgres://vaultide_admin:vaultide_admin@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install PostgreSQL 16 client tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16
+          echo "PGBIN=/usr/lib/postgresql/16/bin" >> "$GITHUB_ENV"
+
+      # Provisioning exactly as an operator does it (22.2), from an empty
+      # database: admin bootstrap → migrations as app_owner → seed.
+      - name: Provision a database from zero
+        env:
+          DATABASE_URL_ADMIN: postgres://vaultide_admin:vaultide_admin@127.0.0.1:5432/vaultide_ci
+          APP_OWNER_PASSWORD: ci_owner_password
+          APP_USER_PASSWORD: ci_user_password
+          APP_BACKUP_PASSWORD: ci_backup_password
+        run: |
+          PGPASSWORD=vaultide_admin "$PGBIN/psql" \
+            -h 127.0.0.1 -U vaultide_admin -d postgres \
+            -c 'CREATE DATABASE vaultide_ci'
+          pnpm db:bootstrap
+          DATABASE_URL_DIRECT_OWNER="postgres://app_owner:ci_owner_password@127.0.0.1:5432/vaultide_ci" pnpm db:migrate
+          DATABASE_URL_DIRECT_OWNER="postgres://app_owner:ci_owner_password@127.0.0.1:5432/vaultide_ci" pnpm db:seed-currencies
+          # Idempotent: a second bootstrap changes nothing.
+          pnpm db:bootstrap
+
+      # Role assertions, RLS behaviour, currency seed and the verified encrypted
+      # backup, each against its own freshly provisioned database.
+      - name: Integration, role and backup tests
+        run: pnpm run test:integration
+
+  build-and-e2e:
+    name: Build and end-to-end
+    runs-on: ubuntu-latest
+    needs: [quality, unit]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: vaultide_admin
+          POSTGRES_PASSWORD: vaultide_admin
+          POSTGRES_DB: vaultide_e2e
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U vaultide_admin"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Prepare the E2E database
+        env:
+          DATABASE_URL_ADMIN: postgres://vaultide_admin:vaultide_admin@127.0.0.1:5432/vaultide_e2e
+          APP_OWNER_PASSWORD: e2e_owner_password
+          APP_USER_PASSWORD: e2e_user_password
+          APP_BACKUP_PASSWORD: e2e_backup_password
+        run: |
+          pnpm db:bootstrap
+          DATABASE_URL_DIRECT_OWNER="postgres://app_owner:e2e_owner_password@127.0.0.1:5432/vaultide_e2e" pnpm db:migrate
+          DATABASE_URL_DIRECT_OWNER="postgres://app_owner:e2e_owner_password@127.0.0.1:5432/vaultide_e2e" pnpm db:seed-currencies
+
+      - name: Build
+        env:
+          VAULTIDE_VERSION: ${{ github.sha }}
+        run: pnpm run build
+
+      - name: Install Playwright browsers
+        run: pnpm --filter @vaultide/e2e exec playwright install --with-deps chromium
+
+      - name: End-to-end (desktop and mobile)
+        env:
+          DATABASE_URL: postgres://app_user:e2e_user_password@127.0.0.1:5432/vaultide_e2e
+        run: pnpm run test:e2e
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report
+          path: e2e/playwright-report
+          retention-days: 7
