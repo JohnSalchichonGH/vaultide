@@ -1,0 +1,55 @@
+name: Verify environment
+
+# Asserts that a live deployment still matches the role and privilege model
+# (blueprint 6.1, 17.4, 22.2). CI proves the behaviour on a throwaway database;
+# this proves the state of the real one.
+#
+# Run it after provisioning, after any credential rotation, and whenever a
+# migration changes grants.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, so drift is noticed without waiting for the next deploy.
+    - cron: '15 6 * * 1'
+
+jobs:
+  verify:
+    name: Roles, schema and privileges
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Verify the production database
+        env:
+          DATABASE_URL_DIRECT_OWNER: ${{ secrets.DATABASE_URL_DIRECT_OWNER }}
+        run: node scripts/db/verify-environment.mjs
+
+  verify-backup-role:
+    name: Backup role, live
+    runs-on: ubuntu-latest
+    # The backup credential lives in its own environment, so it is checked in
+    # its own job rather than by widening the production one.
+    environment: backup
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Prove app_backup reads everything and writes nothing
+        env:
+          DATABASE_URL_BACKUP: ${{ secrets.DATABASE_URL_BACKUP }}
+        # app_backup can read the catalogs it needs, so the same script runs;
+        # the refused write at the end is the assertion that matters.
+        run: node scripts/db/verify-environment.mjs
