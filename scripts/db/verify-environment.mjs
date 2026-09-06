@@ -77,27 +77,53 @@ try {
 
   console.log('');
   console.log('Privileges');
-  // Reference data is read-only for the runtime role (6.1).
-  const writes = await owner.query(
-    `SELECT privilege_type FROM information_schema.role_table_grants
-      WHERE grantee = 'app_user' AND table_name = 'currencies'
-        AND privilege_type IN ('INSERT','UPDATE','DELETE')`,
+  // `has_table_privilege` reports the *effective* privilege of any role and can
+  // be asked by any caller, unlike information_schema.role_table_grants, which
+  // only shows grants involving roles the caller belongs to.
+  const tables = await owner.query(
+    `SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename`,
   );
-  check('app_user cannot write reference data', writes.rowCount === 0,
-    writes.rows.map((row) => row.privilege_type).join(', '));
+  check('the schema has tables to check', tables.rows.length > 0, `${tables.rows.length} tables`);
 
-  const reads = await owner.query(
-    `SELECT 1 FROM information_schema.role_table_grants
-      WHERE grantee = 'app_user' AND table_name = 'currencies' AND privilege_type = 'SELECT'`,
-  );
-  check('app_user can read reference data', reads.rowCount === 1);
+  const WRITES = ['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE'];
+  const violations = { userWrite: [], backupWrite: [], backupRead: [] };
 
-  const backupWrites = await owner.query(
-    `SELECT privilege_type FROM information_schema.role_table_grants
-      WHERE grantee = 'app_backup' AND privilege_type <> 'SELECT'`,
-  );
-  check('app_backup holds no privilege beyond SELECT', backupWrites.rowCount === 0,
-    backupWrites.rows.map((row) => row.privilege_type).join(', '));
+  for (const { tablename } of tables.rows) {
+    const qualified = `public.${tablename}`;
+    const privileges = await owner.query(
+      `SELECT
+         has_table_privilege('app_user', $1, 'SELECT')   AS user_select,
+         has_table_privilege('app_backup', $1, 'SELECT') AS backup_select,
+         ${WRITES.map((p) => `has_table_privilege('app_user', $1, '${p}') AS user_${p.toLowerCase()}`).join(', ')},
+         ${WRITES.map((p) => `has_table_privilege('app_backup', $1, '${p}') AS backup_${p.toLowerCase()}`).join(', ')}`,
+      [qualified],
+    );
+    const row = privileges.rows[0];
+
+    // Reference data is read-only for the runtime role (6.1); user tables are
+    // writable by it and arrive with their phases.
+    if (tablename === 'currencies') {
+      check('app_user can read reference data', row.user_select === true);
+      for (const privilege of WRITES) {
+        if (row[`user_${privilege.toLowerCase()}`]) violations.userWrite.push(`${tablename}.${privilege}`);
+      }
+    }
+
+    // A backup must be able to read everything and change nothing (R27, T12).
+    if (!row.backup_select) violations.backupRead.push(tablename);
+    for (const privilege of WRITES) {
+      if (row[`backup_${privilege.toLowerCase()}`]) {
+        violations.backupWrite.push(`${tablename}.${privilege}`);
+      }
+    }
+  }
+
+  check('app_user cannot write reference data', violations.userWrite.length === 0,
+    violations.userWrite.join(', '));
+  check('app_backup can read every table', violations.backupRead.length === 0,
+    violations.backupRead.join(', '));
+  check('app_backup can write no table', violations.backupWrite.length === 0,
+    violations.backupWrite.join(', '));
 
   if (backupUrl) {
     console.log('');
