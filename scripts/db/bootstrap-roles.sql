@@ -124,9 +124,13 @@ BEGIN
   EXECUTE format('GRANT CONNECT ON DATABASE %I TO app_user', target_database);
   EXECUTE format('GRANT CONNECT ON DATABASE %I TO app_backup', target_database);
 
-  -- The admin needs membership in app_owner to change ownership on its behalf.
-  IF NOT pg_has_role(current_user, 'app_owner', 'MEMBER') THEN
-    EXECUTE format('GRANT app_owner TO %I', current_user);
+  -- Changing an object's owner requires being able to SET ROLE to the new
+  -- owner, which is stricter than mere membership. PostgreSQL 16 auto-grants a
+  -- CREATEROLE administrator ADMIN on roles it creates but withholds SET, so
+  -- testing for MEMBER here would pass while ALTER SCHEMA still failed with
+  -- "must be able to SET ROLE".
+  IF NOT pg_has_role(current_user, 'app_owner', 'SET') THEN
+    EXECUTE format('GRANT app_owner TO %I WITH SET TRUE', current_user);
   END IF;
 
   EXECUTE 'ALTER SCHEMA public OWNER TO app_owner';

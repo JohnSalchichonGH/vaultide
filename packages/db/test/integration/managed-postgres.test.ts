@@ -49,17 +49,19 @@ beforeAll(async () => {
   );
   await superuser.query(`CREATE DATABASE "${DATABASE}" OWNER "${MANAGED_ADMIN}"`);
 
-  // On Neon the administrator creates the application roles itself and so holds
-  // ADMIN on them. Here the roles already exist from the other suites, created
-  // by the superuser, so the grant reproduces that same state rather than
-  // testing a situation the real platform never presents.
+  // On Neon the administrator creates the application roles itself, and
+  // PostgreSQL 16 auto-grants it ADMIN on them while withholding SET. Here the
+  // roles already exist from the other suites, so the membership is granted in
+  // exactly that shape — `ADMIN TRUE, SET FALSE` — rather than the friendlier
+  // shape an explicit grant would default to. Getting this wrong is what let
+  // the "must be able to SET ROLE" failure reach the real database.
   await superuser.query(`
     DO $$
     DECLARE r text;
     BEGIN
       FOREACH r IN ARRAY ARRAY['app_owner', 'app_user', 'app_backup'] LOOP
         IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
-          EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', r, '${MANAGED_ADMIN}');
+          EXECUTE format('GRANT %I TO %I WITH ADMIN TRUE, SET FALSE', r, '${MANAGED_ADMIN}');
         END IF;
       END LOOP;
     END $$;
