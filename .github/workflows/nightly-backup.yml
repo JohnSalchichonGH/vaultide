@@ -58,6 +58,10 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_BUCKET_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_BUCKET_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ${{ vars.BACKUP_BUCKET_REGION }}
+          # Cloudflare R2 rejects the CRC checksums recent aws-cli versions add
+          # by default; ask for them only where the protocol requires them.
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
           BACKUP_BUCKET_NAME: ${{ vars.BACKUP_BUCKET_NAME }}
           BACKUP_BUCKET_ENDPOINT: ${{ vars.BACKUP_BUCKET_ENDPOINT }}
         run: |

@@ -15,3 +15,5 @@ tmp/
 .vaultide-pg/
 backups/
 .sentryclirc
+.secrets.local/
+age-backup-key.txt
