@@ -33,11 +33,17 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      - name: Install PostgreSQL 16 client tools
+      - name: Install PostgreSQL 18 client tools
+        # Ubuntu's own repositories stop at 16, so pull the client from PGDG to
+        # match the Postgres version Neon runs in production.
         run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -sSfL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc             https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          . /etc/os-release
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main"             | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
           sudo apt-get update
-          sudo apt-get install -y postgresql-client-16
-          echo "PGBIN=/usr/lib/postgresql/16/bin" >> "$GITHUB_ENV"
+          sudo apt-get install -y postgresql-client-18
+          echo "PGBIN=/usr/lib/postgresql/18/bin" >> "$GITHUB_ENV"
 
       - name: Tell Sentry the job started
         env:
