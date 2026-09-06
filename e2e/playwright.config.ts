@@ -26,6 +26,7 @@ export default defineConfig({
   },
   projects: [
     { name: 'desktop-chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'desktop-webkit', use: { ...devices['Desktop Safari'] } },
     { name: 'mobile-chromium', use: { ...devices['Pixel 7'] } },
   ],
   // When E2E_BASE_URL points at an already-running deployment, Playwright

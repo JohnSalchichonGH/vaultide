@@ -1,8 +1,8 @@
 'use client';
 
 import { useId, useState } from 'react';
-import { isCalendarDate } from '@vaultide/validation';
 import { Input } from '@/components/ui/input';
+import { validateRecordDate } from '@/lib/date-input';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
 
@@ -42,13 +42,6 @@ export function DateInput({
   const [value, setValue] = useState(defaultValue ?? today);
   const [error, setError] = useState<string | null>(null);
 
-  const validate = (candidate: string): string | null => {
-    if (candidate === '') return required ? 'Enter a date.' : null;
-    if (!isCalendarDate(candidate)) return 'Enter a real calendar date.';
-    if (candidate > today) return 'This date is in the future. Records can only be dated up to today.';
-    return null;
-  };
-
   return (
     <div className="space-y-1.5">
       <Label htmlFor={inputId}>{label}</Label>
@@ -65,7 +58,7 @@ export function DateInput({
         onChange={(event) => {
           const next = event.target.value;
           setValue(next);
-          const message = validate(next);
+          const message = validateRecordDate(next, today, { required });
           setError(message);
           onValueChange?.(next, message === null);
         }}

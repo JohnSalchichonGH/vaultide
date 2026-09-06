@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { formatMoney, formatPercent, runFormatterSelfTest, SELF_TEST_AMOUNT } from '@/lib/format';
 import { normalizeMoneyInput } from '@/lib/money-input';
+import { validateRecordDate } from '@/lib/date-input';
 
 const digitsOf = (text: string): string => [...text].filter((c) => c >= '0' && c <= '9').join('');
 
@@ -48,5 +49,30 @@ describe('money input normalization (16.6)', () => {
     expect(normalizeMoneyInput('1.234,56')).toBe('1234.56');
     expect(normalizeMoneyInput('-0.01')).toBe('-0.01');
     expect(normalizeMoneyInput('')).toBe('');
+  });
+});
+
+describe('record dates are never in the future (M5, R17)', () => {
+  const today = '2026-09-06';
+
+  it('accepts today and earlier', () => {
+    expect(validateRecordDate(today, today)).toBeNull();
+    expect(validateRecordDate('2026-08-31', today)).toBeNull();
+  });
+
+  it('rejects a later date with the wording the server uses', () => {
+    expect(validateRecordDate('2026-09-07', today)).toBe(
+      'This date is in the future. Records can only be dated up to today.',
+    );
+    expect(validateRecordDate('2099-12-31', today)).toContain('in the future');
+  });
+
+  it('rejects a date that never existed', () => {
+    expect(validateRecordDate('2026-02-30', today)).toBe('Enter a real calendar date.');
+  });
+
+  it('treats an empty value per the field requirement', () => {
+    expect(validateRecordDate('', today)).toBeNull();
+    expect(validateRecordDate('', today, { required: true })).toBe('Enter a date.');
   });
 });

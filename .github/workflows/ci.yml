@@ -170,7 +170,7 @@ jobs:
         run: pnpm run build
 
       - name: Install Playwright browsers
-        run: pnpm --filter @vaultide/e2e exec playwright install --with-deps chromium
+        run: pnpm --filter @vaultide/e2e exec playwright install --with-deps chromium webkit
 
       - name: End-to-end (desktop and mobile)
         env:

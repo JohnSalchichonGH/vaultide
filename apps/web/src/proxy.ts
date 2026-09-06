@@ -20,7 +20,7 @@ const SECURITY_HEADERS: Record<string, string> = {
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
 };
 
-function contentSecurityPolicy(nonce: string, isDevelopment: boolean): string {
+function contentSecurityPolicy(nonce: string, isDevelopment: boolean, isHttpsDeployment: boolean): string {
   // Recharts injects inline styles, so style-src keeps 'unsafe-inline' (17.3);
   // scripts never do. Development additionally needs eval for fast refresh.
   const scriptSrc = isDevelopment
@@ -38,15 +38,25 @@ function contentSecurityPolicy(nonce: string, isDevelopment: boolean): string {
     `base-uri 'self'`,
     `form-action 'self'`,
     `frame-ancestors 'none'`,
-    `upgrade-insecure-requests`,
+    // Only where the deployment is actually served over HTTPS. WebKit applies
+    // this directive to loopback too, so leaving it on would break every local
+    // and CI run over http without protecting anything.
+    ...(isHttpsDeployment ? ['upgrade-insecure-requests'] : []),
   ].join('; ');
 }
 
 export default function proxy(request: NextRequest): NextResponse {
   const nonce = Buffer.from(crypto.randomUUID()).toString('base64');
   const isDevelopment = process.env.NODE_ENV === 'development';
+  // Taken from the request rather than from NODE_ENV, which Next inlines at
+  // build time: the same artifact runs behind HTTPS in production and over
+  // plain http on loopback in local and CI runs.
+  const forwardedProtocol = request.headers.get('x-forwarded-proto');
+  const isHttpsDeployment =
+    (forwardedProtocol ?? request.nextUrl.protocol.replace(':', '')).split(',')[0]?.trim() ===
+    'https';
 
-  const policy = contentSecurityPolicy(nonce, isDevelopment);
+  const policy = contentSecurityPolicy(nonce, isDevelopment, isHttpsDeployment);
 
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set('x-nonce', nonce);
@@ -61,7 +71,7 @@ export default function proxy(request: NextRequest): NextResponse {
   for (const [header, value] of Object.entries(SECURITY_HEADERS)) {
     response.headers.set(header, value);
   }
-  if (!isDevelopment) {
+  if (isHttpsDeployment) {
     response.headers.set(
       'Strict-Transport-Security',
       'max-age=63072000; includeSubDomains; preload',
