@@ -26,17 +26,50 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
-const adminUrl = process.env.DATABASE_URL_ADMIN;
-if (!adminUrl) {
-  console.error('DATABASE_URL_ADMIN is required (the Neon connection string for the');
-  console.error('project owner role, from the Neon console). It is never printed.');
+/**
+ * Read a value from the environment, or from a gitignored file. The file form
+ * exists so a connection string can be pasted once into an editor instead of
+ * travelling through a shell history or a chat message.
+ */
+function readValue({ env, file, description }) {
+  const fromEnv = process.env[env];
+  if (fromEnv !== undefined && fromEnv.trim() !== '') return fromEnv.trim();
+
+  const filePath = path.join(repoRoot, '.secrets.local', file);
+  if (fs.existsSync(filePath)) {
+    const value = fs
+      .readFileSync(filePath, 'utf8')
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .find((line) => line !== '' && !line.startsWith('#'));
+    if (value !== undefined) return value;
+  }
+
+  console.error(`Missing ${env} — ${description}`);
+  console.error('');
+  console.error('Provide it either way:');
+  console.error(`  • environment:  export ${env}='…'   (PowerShell: $env:${env}='…')`);
+  console.error(`  • or a file:    .secrets.local/${file}   (gitignored)`);
   process.exit(1);
 }
 
-const recipient = process.env.BACKUP_AGE_PUBLIC_KEY;
-if (!recipient) {
-  console.error('BACKUP_AGE_PUBLIC_KEY is required (the age recipient printed by');
-  console.error('scripts/backup/generate-age-key.mjs).');
+const adminUrl = readValue({
+  env: 'DATABASE_URL_ADMIN',
+  file: 'neon-admin-url.txt',
+  description: "the Neon connection string for the project's owner role.",
+});
+
+const recipient = readValue({
+  env: 'BACKUP_AGE_PUBLIC_KEY',
+  file: 'age-recipient.txt',
+  description: 'the age recipient printed by scripts/backup/generate-age-key.mjs.',
+});
+
+// Fail early and clearly if the GitHub CLI cannot act on this repository.
+try {
+  execFileSync('gh', ['auth', 'status'], { cwd: repoRoot, stdio: 'ignore' });
+} catch {
+  console.error('The GitHub CLI is not authenticated in this shell. Run: gh auth login');
   process.exit(1);
 }
 
