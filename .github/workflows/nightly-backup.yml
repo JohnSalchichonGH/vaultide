@@ -48,8 +48,7 @@ jobs:
       - name: Tell Sentry the job started
         env:
           SENTRY_CRON_URL: ${{ secrets.SENTRY_CRON_BACKUP_URL }}
-        run: |
-          [ -n "${SENTRY_CRON_URL}" ] && curl -sS -X POST "${SENTRY_CRON_URL}?status=in_progress" || true
+        run: scripts/ops/cron-checkin.sh in_progress
 
       - name: Dump, verify and encrypt
         env:
@@ -121,9 +120,7 @@ jobs:
         run: |
           summary_status=ok
           [ "${JOB_STATUS}" = "success" ] || summary_status=error
-          if [ -n "${SENTRY_CRON_URL}" ]; then
-            curl -sS -X POST "${SENTRY_CRON_URL}?status=${summary_status}" || true
-          fi
+          scripts/ops/cron-checkin.sh "${summary_status}"
           {
             echo "### Nightly backup: ${JOB_STATUS}"
             echo ""
