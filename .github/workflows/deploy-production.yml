@@ -60,23 +60,43 @@ jobs:
           cat response.json
           [ "${status}" -ge 200 ] && [ "${status}" -lt 300 ]
 
-      - name: Verify the deployment is healthy
+      - name: Verify the new deployment is live and healthy
         env:
           APP_URL: ${{ vars.APP_URL }}
+          RELEASED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           if [ -z "${APP_URL}" ]; then
             echo "No APP_URL configured; skipping the health check."
             exit 0
           fi
-          for attempt in $(seq 1 30); do
+
+          # /api/health reports the commit it was built from, so the gate can
+          # wait for *this* release rather than accepting whatever was already
+          # serving — which the previous version did, and would have passed even
+          # if the new build had failed.
+          expected="${RELEASED_SHA:0:7}"
+          echo "waiting for ${expected} to be live at ${APP_URL}"
+
+          for attempt in $(seq 1 40); do
             status=$(curl -sS -o health.json -w '%{http_code}' "${APP_URL}/api/health" || true)
             if [ "${status}" = "200" ]; then
-              cat health.json
-              echo "healthy after ${attempt} attempt(s)"
-              exit 0
+              live=$(node -e "process.stdout.write(String(require('./health.json').version ?? ''))")
+              if [ "${live}" = "${expected}" ]; then
+                cat health.json
+                echo ""
+                echo "${expected} is live and healthy after ${attempt} attempt(s)"
+                exit 0
+              fi
+              echo "  attempt ${attempt}: healthy, still serving ${live}"
+            else
+              echo "  attempt ${attempt}: HTTP ${status}"
             fi
             sleep 10
           done
-          echo "Deployment did not report healthy in time."
+
+          echo ""
+          echo "Timed out waiting for ${expected} to go live."
+          echo "Either the Vercel build failed, or VAULTIDE_VERSION is set in the"
+          echo "runtime environment and is masking the deployed commit."
           cat health.json || true
           exit 1
