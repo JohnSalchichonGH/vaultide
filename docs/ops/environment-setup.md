@@ -75,6 +75,9 @@ the first backup layer (22.5).
 3. Configure before the first deploy:
    - Framework preset: **Next.js**
    - Root directory: **`apps/web`**
+   - Vercel builds Next with its own adapter, so `next.config.ts` omits
+     `output: 'standalone'` when `VERCEL=1`; leaving it on fails the build with
+     a missing `.next/next-server.js.nft.json`.
    - Install command: `pnpm install --frozen-lockfile`
    - Build command: `pnpm run build` (the repo default is fine)
 4. Environment variables (Production, and Preview if you want previews):
@@ -83,11 +86,13 @@ the first backup layer (22.5).
      cannot bypass RLS and cannot run DDL.
    - `NEXT_PUBLIC_SENTRY_DSN` and `SENTRY_DSN` — after section 3.
    - `VAULTIDE_VERSION` — optional; Vercel's `VERCEL_GIT_COMMIT_SHA` works too.
-5. **Turn off automatic production deploys.** Settings → Git → *Ignored Build
-   Step*, or the committed `apps/web/vercel.json`, which already sets
-   `git.deploymentEnabled.main = false`. Migrations must run before the code
-   that needs them (22.3), and that ordering is what
-   `deploy-production.yml` exists for.
+5. **Turn off automatic production deploys.** The committed
+   `apps/web/vercel.json` sets `git.deploymentEnabled.main = false`. Migrations
+   must run before the code that needs them (22.3), and that ordering is what
+   `deploy-production.yml` exists for. Verified on this project: a deploy hook
+   still fires while that setting is `false` (it responded `201`), so the two
+   are compatible — the deprecated `github.enabled: false` is the setting that
+   blocks hooks, and it is not used.
 6. Create the deploy hook: Settings → Git → **Deploy Hooks** → name `production`,
    branch `main`. Copy the URL and store it where the deploy workflow reads it:
 
