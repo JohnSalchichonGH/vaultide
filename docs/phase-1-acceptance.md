@@ -37,16 +37,16 @@ from zero by the same scripts an operator runs (admin bootstrap → migrations a
 | Suite | Command | Result |
 |---|---|---|
 | Lint + money rule | `pnpm -r run lint` | **pass**, 6 packages |
-| Module boundaries | `pnpm run lint:boundaries` | **pass** — no violations, 185 modules, 414 dependencies |
+| Module boundaries | `pnpm run lint:boundaries` | **pass** — no violations, 186 modules, 416 dependencies |
 | Types | `pnpm -r run typecheck` | **pass**, 6 packages |
-| Unit + property | `pnpm -r run test:unit` | **158 passed** — finance 110, application 19, validation 16, web 10, db 3 |
+| Unit + property | `pnpm -r run test:unit` | **175 passed** — finance 110, application 36, validation 16, web 10, db 3 |
 | Integration (db) | `pnpm --filter @vaultide/db run test:integration` | **61 passed** (6 files) |
-| Integration (application) | `pnpm --filter @vaultide/application run test:integration` | **66 passed** (4 files) |
+| Integration (application) | `pnpm --filter @vaultide/application run test:integration` | **70 passed** (4 files) |
 | Build | `pnpm run build` | **pass** — 16 routes |
 | End to end | `pnpm test:e2e` | **36 passed** — 12 specs × chromium desktop, webkit desktop, chromium mobile |
 | Finance coverage gate | `vitest run --coverage` | **pass** — statements 99.56 %, branches 97.88 %, functions 100 %, lines 99.74 %; §21's gate is ≥ 95 % lines and branches |
 | Secret scan | `gitleaks --config .gitleaks.toml` | **pass** — no leaks |
-| Currency reconciliation | `pnpm db:verify-currencies` | **pass** — 30 = 30, in sync |
+| Currency reconciliation | `pnpm db:verify-currencies` | **pass** — 150 = 150, in sync, against the live v2 chain |
 
 New unit coverage in Phase 1 (`packages/finance/test/unit/fx.test.ts`, 37 cases):
 exact-date lookup; latest-on-or-before across a weekend and a Monday; the
@@ -59,6 +59,21 @@ exact A→B→A round trip; a cross rate being only as fresh as its stalest leg;
 source preference, including an unlisted publisher ranking last; `approximate`
 propagating through a cross rate and a span; and conversion reporting the rate,
 its date, its publisher and whether it was the requested day's.
+
+The v2 adapter has its own suite (`packages/application/test/unit/frankfurter.test.ts`,
+17 cases) over bodies recorded from the live API, so what
+it proves holds on a runner with no network: the base path is `/v2` and the
+adapter identifies itself as `frankfurter-v2`; one request per bank, every one
+carrying `providers=` and none of them asking for a blend; two banks producing
+two rows that differ only in `source`, which is never `"frankfurter"`; twelve
+decimals and a publisher's trailing zero surviving intact; non-positive and
+implausible rates refused with a reason that names the currency and the date but
+never the rate (18.2); EUR never requested and never stored; `FxProviderError`
+on a 503 and on an unreachable host; and the three exclusion rules that give the
+supported universe its size. The integration suite adds four cases against a
+real database for attribution and source preference: both banks' rows stored, a
+conversion choosing the ECB's, a BDI-only currency still convertible, and the
+preference falling through when the preferred bank has no rate for a day.
 
 ---
 
@@ -196,10 +211,32 @@ is deleted out from under it.
 
 ### FX provider behaviour
 
-Primary provider **Frankfurter v2** at `api.frankfurter.dev`, whose current API
-is served under `/v1`. Rates are read from the response **text** with a reviver
-that keeps each number's literal digits: `JSON.parse` would hand back a float64,
-and `fx_rates.rate` is `NUMERIC(24,12)`.
+Primary provider **Frankfurter v2**, at `https://api.frankfurter.dev/v2`. The
+service reports `/v1` as **frozen** and `/v2` as **current**; v1 exposes only
+the ECB's own 30-currency reference set, v2 models 84 central banks and 165
+current currencies. Three endpoints are used, all without an API key:
+
+| Endpoint | Used for |
+|---|---|
+| `GET /v2/currencies` | The catalogue. `iso_numeric` is what separates a currency from a local issue, and it is how CNH, GGP, IMP and JEP are excluded. Needs no clock and no date. |
+| `GET /v2/rates?base=EUR&providers=<BANK>[&quotes=…]` | The latest published row per quote — the reconciliation's "does this bank still publish it?", and `fetchLatest`. |
+| `GET /v2/rates?base=EUR&from=<d>&to=<d>&providers=<BANK>[&quotes=…]` | The time series behind `refreshAll` (14 days) and `ensureHistory` (from 1999-01-04). |
+
+**One request per bank, never a blend.** v2's `/rates` blends every provider
+that publishes a pair, filters outliers by consensus and overrides pegged
+currencies with their peg. A blend has no publisher, and 10.1 requires `source`
+to record which central bank published each rate, so the adapter never issues a
+request without `providers=`. With a single provider key v2 returns that bank's
+own rate, rebased to EUR, unblended and un-pegged. The chain is **ECB** then
+**BDI** (Banca d'Italia): both EUR-pivoted, both daily since 1999-01-04, and
+BDI's 151 currencies are a superset of the ECB's 30. The two requests are
+issued concurrently and concatenated in chain order — which is also the read
+preference, `SOURCE_PREFERENCE = ['ecb', 'bdi']` (10.2, 10.4). A pair both
+banks publish becomes two rows differing only in `source`.
+
+Rates are read from the response **text** with a reviver that keeps each
+number's literal digits: `JSON.parse` would hand back a float64, and
+`fx_rates.rate` is `NUMERIC(24,12)`.
 
 - `refreshAll()` — one time-series call covering the last 14 days for every
   currency in `currencies` with `is_fx_supported`. It delivers the latest fixing
@@ -221,21 +258,41 @@ and `fx_rates.rate` is `NUMERIC(24,12)`.
 
 ### Supported-currency reconciliation
 
-Phase 0 seeded 31 currencies as `is_fx_supported`, from the historical ECB list.
-The provider publishes **30**. The difference is **BGN**: Bulgaria adopted the
-euro on 2026-01-01 and the ECB stopped publishing a EUR/BGN reference rate.
+The seed is **159 rows: 150 FX-supported and 9 retained.** `is_fx_supported`
+means the chain publishes a current rate. Starting from v2's 165 current
+currencies:
 
-BGN stays in the catalogue — historical amounts must still validate and format —
-with `is_fx_supported = false`, so it can no longer be chosen as a base or
-reporting currency. `settings.test.ts` asserts that choosing it is refused, and
-`auth.spec.ts` asserts it is absent from the picker in the browser.
+| Excluded | Codes | Why |
+|---|---|---|
+| Not money | XAU, XAG, XPT, XPD, XDR | Metals and the IMF's unit of account. ISO 4217 lists them and v2 quotes them; nobody banks in gold. The judgement R28 makes about crypto, applied consistently. |
+| Not ISO 4217 | CNH, GGP, IMP, JEP | No ISO numeric code — a market variant of CNY and three local sterling issues. |
+| No current rate | ANG, BYN, IRR, KPW, MRO, RUB | In v2's current list, with history, but neither bank publishes anything recent. |
 
-The assumption is now checked rather than carried:
+165 − 5 − 4 − 6 = **150**, EUR included.
+
+Phase 0 seeded 31 currencies as `is_fx_supported`, from the historical ECB
+list; **BGN** is the one that has to leave. Bulgaria adopted the euro on
+2026-01-01 and the ECB stopped publishing a EUR/BGN reference rate. It stays in
+the catalogue — historical amounts must still validate and format — with
+`is_fx_supported = false`, so it can no longer be chosen as a base or reporting
+currency. `settings.test.ts` asserts that choosing it is refused, and
+`auth.spec.ts` asserts it is absent from the picker in the browser. The other
+eight retained rows are ANG, BYN, CLF, IRR, KPW, MRO, RUB and UYW; CLF and UYW
+are indexation units v2 does not carry at all, and they are why the schema
+allows four minor units. 6.2 says "no delete": nothing seeded in Phase 0 was
+removed.
+
+Minor units are ISO 4217's, with ICU/CLDR used only as a cross-check — the two
+disagree on eleven codes, IQD most visibly (ISO 3, CLDR 0), and the standard
+wins.
+
+The assumption is checked rather than carried. `db:verify-currencies` drives
+the real adapter, so "the universe" means exactly what the runtime means by it:
 
 ```text
 $ pnpm db:verify-currencies
-provider (https://api.frankfurter.dev/v1): 30 currencies
-seed (is_fx_supported):  30 currencies
+provider (Frankfurter v2 chain): 150 currencies
+seed (is_fx_supported):          150 currencies
 In sync.
 ```
 
@@ -268,26 +325,49 @@ database provisioned from zero, and driven with `curl`:
 ```text
 GET /api/test/mailbox?to=…                              404   (test capabilities off)
 GET /api/cron/fx-refresh            (no secret)         404
-GET /api/cron/fx-refresh            (bearer secret)     {"status":"ok","currencies":29,
-                                                         "rowsFetched":319,"rowsInserted":308,
+GET /api/cron/fx-refresh            (wrong secret)      404
+GET /api/cron/fx-refresh            (bearer secret)     {"status":"ok","currencies":149,
+                                                         "rowsFetched":1958,"rowsInserted":1936,
                                                          "from":"2026-08-24","to":"2026-09-07"}
-GET /api/cron/fx-refresh            (again)             rowsInserted: 0
+GET /api/cron/fx-refresh            (again)             rowsFetched: 1958, rowsInserted: 0
 ```
 
-29 currencies is the supported set of 30 minus the EUR pivot, which is 1 by
-definition and never stored. The second run inserting nothing is idempotence
-by constraint. Afterwards the database held **7,395 rows across 29 currencies,
-1999-01-04 to 2026-09-07** — the range covers the whole ECB series because the
-end-to-end run had already triggered a first-use history backfill.
+149 currencies is the supported set of 150 minus the EUR pivot, which is 1 by
+definition and never stored. 1,958 rows fetched for eleven business days is the
+two banks' different coverage — roughly 11 × (29 ECB + 149 BDI) — and the 22
+rows the first run did not insert are the GBP days the end-to-end suite's
+first-use backfill had already stored. The second run inserting **nothing** is
+idempotence by constraint, not by a check.
 
-Two spot checks against the live API: EUR→USD on 2026-09-04 is stored as
-`1.162200000000`, digit for digit what Frankfurter published; and no weekend
-row exists (the series steps 2026-08-28 → 2026-08-31), which is what makes the
-`exact = false` weekend rule true against real data rather than only against a
-fixture.
+Afterwards the database held **16,110 rows across 149 currencies, 1999-01-04 to
+2026-09-07**, attributed to the two banks that published them:
+
+```text
+source   rows    quotes   latest
+bdi      8,715   149      2026-09-07
+ecb      7,395    29      2026-09-07
+```
+
+The ECB's 29 against BDI's 149 is the whole reason for the chain, and the
+27-year range is the first-use history backfill: the end-to-end run chose GBP
+as a reporting currency, which fetched **14,174 rows — 7,087 from each bank**,
+in one call each, back to 1999-01-04.
+
+Spot checks against the live API:
+
+- **Two banks, one pair, one day.** EUR→USD on 2026-09-04 is stored twice, once
+  as `ecb` and once as `bdi`; EUR→AED the same day exists only as `bdi`, which
+  is a currency the ECB does not publish. No row's `source` is "frankfurter".
+- **Digits survive.** Every rate published with five decimals that day is stored
+  digit for digit — BAM `1.95583`, KMF `491.96775`, GBP `0.85898` — as
+  `NUMERIC(24,12)`, and EUR→USD as `1.162200000000`.
+- **Weekends are absent**, not interpolated: the series steps 2026-08-28 →
+  2026-08-31, which is what makes the `exact = false` latest-on-or-before rule
+  true against real data rather than only against a fixture.
+- **EUR is never stored against itself**: zero rows where `quote = 'EUR'`.
 
 In the same connection, with no user context — the context the cron runs in —
-`user_settings`, `categories` and `tags` all counted **0** while the E2E
+`user_settings`, `categories` and `tags` all counted **0** while nine end-to-end
 accounts existed.
 
 ### Not done: the production deployment

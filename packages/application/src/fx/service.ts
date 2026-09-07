@@ -18,7 +18,7 @@ import {
 } from '@vaultide/finance';
 import { supportedFxCurrencyCodes } from '../currencies/service';
 import type { Logger } from '../logging';
-import { ECB_SERIES_START } from './frankfurter';
+import { ECB_SERIES_START, FRANKFURTER_PROVIDER_CHAIN } from './frankfurter';
 import { FxProviderError, type FxProvider, type ProviderRateRow } from './provider';
 
 /**
@@ -50,6 +50,18 @@ export const REFRESH_BACKFILL_DAYS = 14;
 
 /** 10.4: history reaches a month before a user's earliest financial date. */
 export const HISTORY_LEAD_DAYS = 31;
+
+/**
+ * The order readers prefer publishers in (10.2, 10.4).
+ *
+ * Lower-cased provider keys, matching what the adapter writes into
+ * `fx_rates.source`. The ECB comes first because 10.1 names its reference
+ * series; where two banks both published a pair on the same day, both rows are
+ * stored and this decides which one a conversion uses.
+ */
+export const SOURCE_PREFERENCE: readonly string[] = FRANKFURTER_PROVIDER_CHAIN.map((key) =>
+  key.toLowerCase(),
+);
 
 export interface FxServiceDependencies {
   readonly db: Database;
@@ -239,7 +251,7 @@ export function createFxService(deps: FxServiceDependencies): FxService {
         source: row.source,
       }));
 
-      return createFxTable(records, { today, sourcePreference: ['ecb'] });
+      return createFxTable(records, { today, sourcePreference: SOURCE_PREFERENCE });
     },
 
     /**

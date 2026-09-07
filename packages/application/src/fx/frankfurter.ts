@@ -1,41 +1,79 @@
 import { FxProviderError, type FxProvider, type ProviderRateRow } from './provider';
 
 /**
- * The Frankfurter provider (blueprint 10.1, D11).
+ * The Frankfurter **v2** provider (blueprint 10.1, D11).
  *
- * Frankfurter republishes the ECB's daily euro reference rates — the series
- * that has run since 1999 — plus the official rates of a few other central
- * banks, with no API key and a time-series endpoint that returns a whole range
- * in one request. That last property is what makes the first-use history
- * backfill a single call rather than thousands (10.4).
+ * `https://api.frankfurter.dev` serves two versions: `/v1`, which the service
+ * itself reports as `frozen` and keeps only for backward compatibility, and
+ * `/v2`, reported as `current`. The blueprint specifies v2, and the difference
+ * is not cosmetic — v1 exposes only the ECB's own reference set (30 currencies
+ * today), while v2 models 84 central banks and 165 current currencies.
  *
- * The service is addressed as `api.frankfurter.dev`, whose current API is
- * mounted under `/v1`. The host is the version boundary; the path prefix is
- * configurable so a future move does not need a code change.
+ * ## Why this adapter asks for one provider at a time
  *
- * **Rates are read as text, never as numbers.** `JSON.parse` would hand back a
- * float64, and `fx_rates.rate` is `NUMERIC(24,12)`; the reviver below keeps the
- * publisher's own digits so what is stored is what was published (7.1, R31).
+ * v2's `/rates` blends every provider that publishes a pair, filters outliers
+ * by consensus, and overrides pegged currencies with the peg. That blended
+ * number is a good default for a chart and the wrong thing to store here:
+ * 10.1 requires that `source` record **which central bank published each
+ * rate**, and a blend has no publisher. Storing it would leave every row
+ * attributed to "Frankfurter", which is a redistributor, not a source.
+ *
+ * Asking for a single provider (`providers=ECB`) returns *that bank's own
+ * published rate*, rebased to the requested base, with no blending and no peg
+ * override — verified against the live API. So the adapter walks a short,
+ * explicit chain of providers and makes one request per provider. Every stored
+ * row therefore names a real central bank, and a currency two banks both
+ * publish becomes two rows differing only in `source` — exactly the shape 10.4
+ * describes ("an alternative rate is a new row with another `source`; readers
+ * apply a source preference").
+ *
+ * ## The chain
+ *
+ * `ECB` first: the reference series 10.1 names, daily since 1999-01-04, and the
+ * preferred source on read. `BDI` (Banca d'Italia) second: also EUR-pivoted,
+ * also daily since 1999-01-04, and it publishes 151 currencies — a superset of
+ * the ECB's — which is what carries the supported set beyond the euro area's
+ * 30 without reaching for a bank whose own pivot is something else.
+ *
+ * Two requests cover the whole supported set. Both are EUR-pivoted at the
+ * source, so nothing is re-pivoted twice on the way in.
+ *
+ * They are issued **concurrently**, and the results are concatenated in chain
+ * order. One bank per request means the chain would otherwise cost the sum of
+ * its members' latencies, and `ensureHistory` runs inside a user's request:
+ * a first-use backfill asks for a 27-year series, which on a cold upstream
+ * cache is seconds rather than milliseconds. Concurrency bounds that by the
+ * slowest bank instead of the sum. Order is preserved because it is the source
+ * preference (10.2), not a race.
+ *
+ * ## Rates are read as text, never as numbers
+ *
+ * `JSON.parse` would hand back a float64, and `fx_rates.rate` is
+ * `NUMERIC(24,12)`; the reviver below keeps the publisher's own digits so what
+ * is stored is what was published (7.1, R31).
  */
 
-export interface FrankfurterOptions {
-  readonly baseUrl?: string;
-  readonly fetchImpl?: typeof fetch;
-  readonly timeoutMs?: number;
-  /** Recorded in `fx_rates.source`; readers apply a source preference (10.4). */
-  readonly source?: string;
-  /**
-   * Called once per row the provider published but this adapter refused
-   * (10.5). The reason names the currency and date and never carries a rate,
-   * so it is safe to log.
-   */
-  readonly onRejected?: (reason: string) => void;
-}
+/** The v2 base URL. `/v1` is frozen and is not used. */
+export const FRANKFURTER_BASE_URL = 'https://api.frankfurter.dev/v2';
 
-export const FRANKFURTER_BASE_URL = 'https://api.frankfurter.dev/v1';
+/**
+ * Providers to draw from, in preference order. Also the order `fx_rates`
+ * readers apply, lower-cased (10.2, 10.4).
+ */
+export const FRANKFURTER_PROVIDER_CHAIN = ['ECB', 'BDI'] as const;
 
-/** The first day of the ECB reference series (10.4). */
+/** The first day of the ECB reference series, and of Banca d'Italia's (10.4). */
 export const ECB_SERIES_START = '1999-01-04';
+
+/**
+ * ISO 4217 codes that are not money.
+ *
+ * The precious metals and the IMF's Special Drawing Right have ISO codes and
+ * v2 publishes rates for them, but nobody holds a bank account denominated in
+ * gold or in SDR. Excluding them is the same judgement R28 and D35 make about
+ * crypto: an asset class, priced in a currency, not a currency.
+ */
+export const NON_MONETARY_ISO_CODES: readonly string[] = ['XAU', 'XAG', 'XPT', 'XPD', 'XDR'];
 
 /**
  * A rate outside this range is a provider defect, not a currency (10.5:
@@ -44,6 +82,24 @@ export const ECB_SERIES_START = '1999-01-04';
 export const MAX_PLAUSIBLE_RATE = 1_000_000;
 
 const DECIMAL_PATTERN = /^\d+(?:\.\d+)?$/u;
+
+export interface FrankfurterOptions {
+  readonly baseUrl?: string;
+  readonly fetchImpl?: typeof fetch;
+  readonly timeoutMs?: number;
+  /**
+   * Providers to draw from, in preference order. Each is queried separately so
+   * every row keeps its own attribution; a multi-provider request would return
+   * a blend with no publisher.
+   */
+  readonly providers?: readonly string[];
+  /**
+   * Called once per row the provider published but this adapter refused
+   * (10.5). The reason names the currency and date and never carries a rate,
+   * so it is safe to log.
+   */
+  readonly onRejected?: (reason: string) => void;
+}
 
 /**
  * Parse a JSON body keeping every number as its literal source text.
@@ -54,34 +110,43 @@ const DECIMAL_PATTERN = /^\d+(?:\.\d+)?$/u;
  * "exact for the values we have seen" is not the same as exact.
  */
 function parseKeepingLiterals(text: string): unknown {
-  return JSON.parse(text, function reviver(this: unknown, _key: string, value: unknown, context?: { source?: string }) {
-    if (typeof value !== 'number') return value;
-    return context?.source ?? String(value);
-  }) as unknown;
+  return JSON.parse(
+    text,
+    function reviver(this: unknown, _key: string, value: unknown, context?: { source?: string }) {
+      if (typeof value !== 'number') return value;
+      return context?.source ?? String(value);
+    },
+  ) as unknown;
 }
 
-interface RatesResponse {
-  readonly base?: string;
+/** One row of `GET /v2/rates`, with `rate` kept as its literal text. */
+interface RateRow {
   readonly date?: string;
-  readonly rates?: Record<string, unknown>;
+  readonly base?: string;
+  readonly quote?: string;
+  readonly rate?: unknown;
 }
 
-interface TimeSeriesResponse {
-  readonly rates?: Record<string, Record<string, unknown>>;
+/** One entry of `GET /v2/currencies`. */
+interface CurrencyRow {
+  readonly iso_code?: string;
+  /** Empty for a local issue with an unofficial abbreviation (GGP, CNH, …). */
+  readonly iso_numeric?: string | null;
+  readonly name?: string;
 }
 
 export function createFrankfurterProvider(options: FrankfurterOptions = {}): FxProvider {
   const baseUrl = (options.baseUrl ?? FRANKFURTER_BASE_URL).replace(/\/+$/u, '');
   const doFetch = options.fetchImpl ?? fetch;
-  const source = options.source ?? 'ecb';
-  const timeoutMs = options.timeoutMs ?? 15_000;
+  const timeoutMs = options.timeoutMs ?? 20_000;
   const reject = options.onRejected ?? ((): void => undefined);
+  const chain = options.providers ?? FRANKFURTER_PROVIDER_CHAIN;
+  const notMoney = new Set(NON_MONETARY_ISO_CODES);
 
-  async function get(path: string): Promise<unknown> {
-    const url = `${baseUrl}${path}`;
+  async function get(path: string, keepLiterals: boolean): Promise<unknown> {
     let response: Response;
     try {
-      response = await doFetch(url, {
+      response = await doFetch(`${baseUrl}${path}`, {
         headers: { Accept: 'application/json' },
         signal: AbortSignal.timeout(timeoutMs),
       });
@@ -89,70 +154,148 @@ export function createFrankfurterProvider(options: FrankfurterOptions = {}): FxP
       throw new FxProviderError('frankfurter', undefined, 'request failed');
     }
     if (!response.ok) throw new FxProviderError('frankfurter', response.status);
-    return parseKeepingLiterals(await response.text());
+
+    const text = await response.text();
+    return keepLiterals ? parseKeepingLiterals(text) : (JSON.parse(text) as unknown);
+  }
+
+  /** `?quotes=` for a request, or `''` to take everything the provider has. */
+  function quotesParam(quotes: readonly string[]): string {
+    const wanted = [...new Set(quotes.map((code) => code.trim().toUpperCase()))]
+      .filter((code) => code !== 'EUR')
+      .sort();
+    return wanted.length === 0 ? '' : `&quotes=${encodeURIComponent(wanted.join(','))}`;
   }
 
   /**
-   * Turn one `{ CODE: rate }` map into rows, dropping anything that is not a
-   * plausible rate. A rejected row is reported to the caller rather than
-   * silently skipped, so a refresh can log what it refused (10.5).
+   * Turn one provider's rows into storable rows, refusing anything that is not
+   * a plausible rate. A refusal is reported to the caller rather than silently
+   * skipped, so a refresh can log what it would not store (10.5).
    */
-  function toRows(rates: Record<string, unknown> | undefined, rateDate: string): ProviderRateRow[] {
-    if (rates === undefined) return [];
-    const rows: ProviderRateRow[] = [];
+  function toRows(rows: readonly RateRow[], providerKey: string): ProviderRateRow[] {
+    const source = providerKey.toLowerCase();
+    const out: ProviderRateRow[] = [];
 
-    for (const [quote, raw] of Object.entries(rates)) {
-      const text = typeof raw === 'string' ? raw.trim() : '';
-      if (!DECIMAL_PATTERN.test(text)) {
-        reject(`${quote} ${rateDate}: not a decimal`);
+    for (const row of rows) {
+      const quote = row.quote?.toUpperCase();
+      const rateDate = row.date;
+      if (quote === undefined || rateDate === undefined) {
+        reject(`${source}: row without a quote or a date`);
         continue;
       }
-      // Compared as text against bounds rather than parsed: a rate is only
+      // The pivot is 1 by definition and is never stored (10.1).
+      if (quote === 'EUR') continue;
+
+      const text = typeof row.rate === 'string' ? row.rate.trim() : '';
+      if (!DECIMAL_PATTERN.test(text)) {
+        reject(`${quote} ${rateDate} (${source}): not a decimal`);
+        continue;
+      }
+      // Compared as text against the bounds rather than parsed: a rate is only
       // implausible at a magnitude a comparison on digits settles just as well.
-      if (text === '0' || /^0(?:\.0+)?$/u.test(text)) {
-        reject(`${quote} ${rateDate}: not positive`);
+      if (/^0(?:\.0+)?$/u.test(text)) {
+        reject(`${quote} ${rateDate} (${source}): not positive`);
         continue;
       }
       const integerDigits = (text.split('.')[0] ?? '').replace(/^0+/u, '').length;
       if (integerDigits > String(MAX_PLAUSIBLE_RATE).length - 1) {
-        reject(`${quote} ${rateDate}: above ${String(MAX_PLAUSIBLE_RATE)}`);
+        reject(`${quote} ${rateDate} (${source}): above ${String(MAX_PLAUSIBLE_RATE)}`);
         continue;
       }
-      rows.push({ quote: quote.toUpperCase(), rateDate, rate: text, source });
+
+      out.push({ quote, rateDate, rate: text, source });
     }
 
-    return rows;
+    return out;
   }
 
   return {
-    id: 'frankfurter',
+    id: 'frankfurter-v2',
 
+    /**
+     * The currencies this deployment can support: those the provider chain
+     * actually publishes right now, restricted to money.
+     *
+     * "Actually publishes" rather than "lists as covered" is deliberate. A
+     * provider's metadata includes currencies whose series has stopped — RUB,
+     * BYN, IRR, KPW, ANG, MRO among them — and a currency with no current rate
+     * cannot be a base or reporting currency, because there would be nothing to
+     * convert it with (10.5). `/rates` without a date range returns the latest
+     * row per quote, so this is one request per provider and needs no clock.
+     */
     async supportedCurrencies(): Promise<string[]> {
-      const body = (await get('/currencies')) as Record<string, unknown>;
-      return Object.keys(body)
-        .map((code) => code.toUpperCase())
-        .sort();
+      const catalogue = (await get('/currencies', false)) as CurrencyRow[];
+
+      // A non-empty ISO numeric code is what separates a currency from a local
+      // issue with an unofficial three-letter abbreviation: Frankfurter lists
+      // CNH, GGP, IMP and JEP, and none of them has one.
+      const money = new Set(
+        catalogue
+          .filter(
+            (row) =>
+              row.iso_code !== undefined &&
+              row.iso_numeric !== undefined &&
+              row.iso_numeric !== null &&
+              row.iso_numeric !== '' &&
+              !notMoney.has(row.iso_code),
+          )
+          .map((row) => row.iso_code as string),
+      );
+
+      const perProvider = await Promise.all(
+        chain.map(
+          (providerKey) =>
+            get(
+              `/rates?base=EUR&providers=${encodeURIComponent(providerKey)}`,
+              false,
+            ) as Promise<RateRow[]>,
+        ),
+      );
+
+      const published = new Set<string>();
+      for (const rows of perProvider) {
+        for (const row of rows) {
+          const quote = row.quote?.toUpperCase();
+          if (quote !== undefined && money.has(quote)) published.add(quote);
+        }
+      }
+
+      // EUR is the pivot: always supported, never fetched.
+      published.add('EUR');
+      return [...published].sort();
     },
 
     async fetchLatest(base, quotes): Promise<ProviderRateRow[]> {
-      if (quotes.length === 0) return [];
-      const symbols = encodeURIComponent([...quotes].sort().join(','));
-      const body = (await get(`/latest?base=${base}&symbols=${symbols}`)) as RatesResponse;
-      if (body.date === undefined) throw new FxProviderError('frankfurter', undefined, 'no date');
+      const quotesQuery = quotesParam(quotes);
 
-      return toRows(body.rates, body.date);
+      const perProvider = await Promise.all(
+        chain.map(async (providerKey) => {
+          const body = (await get(
+            `/rates?base=${base}&providers=${encodeURIComponent(providerKey)}${quotesQuery}`,
+            true,
+          )) as RateRow[];
+          return toRows(body, providerKey);
+        }),
+      );
+
+      return perProvider.flat();
     },
 
     async fetchTimeSeries(base, quotes, from, to): Promise<ProviderRateRow[]> {
-      if (quotes.length === 0) return [];
-      const symbols = encodeURIComponent([...quotes].sort().join(','));
-      const body = (await get(`/${from}..${to}?base=${base}&symbols=${symbols}`)) as TimeSeriesResponse;
+      const quotesQuery = quotesParam(quotes);
 
-      const rows: ProviderRateRow[] = [];
-      for (const [rateDate, rates] of Object.entries(body.rates ?? {})) {
-        rows.push(...toRows(rates, rateDate));
-      }
-      return rows;
+      const perProvider = await Promise.all(
+        chain.map(async (providerKey) => {
+          const body = (await get(
+            `/rates?base=${base}&from=${from}&to=${to}` +
+              `&providers=${encodeURIComponent(providerKey)}${quotesQuery}`,
+            true,
+          )) as RateRow[];
+          return toRows(body, providerKey);
+        }),
+      );
+
+      return perProvider.flat();
     },
   };
 }

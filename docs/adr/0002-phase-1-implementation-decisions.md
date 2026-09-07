@@ -177,19 +177,83 @@ that a sensitive endpoint returns 401.
 
 ## Corrections to Phase 0
 
-### 15. BGN is no longer FX-supported
+### 15. Frankfurter v2, one request per central bank
 
-Phase 0's seed marked 31 currencies `is_fx_supported`, from the historical ECB
-list. The provider publishes 30: Bulgaria adopted the euro on 2026-01-01 and the
-ECB stopped publishing a EUR/BGN reference rate. BGN stays in the catalogue so
-historical amounts still validate and format, with `is_fx_supported = false`, so
-it can no longer be chosen as a base or reporting currency — there would be no
-rate to convert it with (10.5).
+`api.frankfurter.dev` serves two versions and reports their status itself:
+`/v1` is **frozen**, kept only for backward compatibility, and `/v2` is
+**current**. The blueprint specifies v2 (§17 stack, D11, 10.1) and the
+difference is not cosmetic: v1 exposes only the ECB's own reference set —
+30 currencies today — while v2 models 84 central banks and 165 current
+currencies.
+
+v2's `/v2/rates` **blends** every provider that publishes a pair, filters
+outliers by consensus and overrides pegged currencies with their peg. That is a
+good default for a chart and the wrong thing to store here: 10.1 requires that
+`source` record *which central bank published each rate*, and a blend has no
+publisher — every row would be attributed to Frankfurter, which is a
+redistributor. (For a pegged currency the blend is also visibly synthetic:
+asking with `expand=providers` returns every contributing bank marked
+`excluded: true`, the peg having won.)
+
+Asking for one provider at a time — `providers=ECB` — returns *that bank's own
+published rate*, rebased to the requested base, with no blend and no peg
+override; verified against the live API. So the adapter walks an explicit
+chain and makes one request per bank:
+
+- **ECB** first — the reference series 10.1 names, daily since 1999-01-04, and
+  the preferred `source` on read (`SOURCE_PREFERENCE`, 10.2).
+- **BDI** (Banca d'Italia) second — also EUR-pivoted, also daily since
+  1999-01-04, and it publishes 151 currencies, a superset of the ECB's. It is
+  what carries the supported set beyond the euro area's 30 without reaching for
+  a bank whose own pivot is not the euro.
+
+A currency both banks publish becomes two rows differing only in `source`,
+which is exactly the shape 10.4 describes. The two requests are issued
+concurrently and concatenated in chain order: one bank per request would
+otherwise cost the sum of their latencies, and `ensureHistory` runs inside a
+user's request, where a first-use backfill asks for a 27-year series.
+
+Everything else about the adapter is unchanged from the frozen specification:
+EUR pivot, rates read from the response **text** so the publisher's digits
+survive, immutable `fx_rates`, `ON CONFLICT DO NOTHING` idempotence, dated and
+latest-on-or-before lookup, and refusal rather than a guess when a rate is
+missing or implausible.
+
+### 16. The supported set is 150 currencies, and BGN is not one of them
+
+`is_fx_supported` means the chain **actually publishes a current rate**, which
+is 150 codes including the EUR pivot. Starting from v2's 165 current
+currencies, three groups are excluded:
+
+- **not money** — XAU, XAG, XPT, XPD (metals) and XDR (the IMF's unit of
+  account). ISO 4217 lists all five and v2 quotes them, but nobody holds a bank
+  account denominated in gold; this is the judgement R28 makes about crypto,
+  applied consistently.
+- **not ISO 4217** — CNH, GGP, IMP, JEP. None has an ISO numeric code: they are
+  a market variant of CNY and three local sterling issues.
+- **no current rate** — ANG, BYN, IRR, KPW, MRO, RUB are in v2's current list
+  and have history, but neither bank publishes anything recent for them.
+
+Phase 0 seeded 31 currencies as `is_fx_supported`, from the historical ECB
+list; **BGN** is the one that has to leave. Bulgaria adopted the euro on
+2026-01-01 and the ECB stopped publishing a EUR/BGN reference rate. It stays in
+the catalogue with `is_fx_supported = false` — historical amounts must still
+validate and format — so it can no longer be chosen as a base or reporting
+currency, because there would be no rate to convert it with (10.5). The same
+holds for ANG, MRO and the four above; CLF and UYW are Chilean and Uruguayan
+indexation units that v2 does not carry at all, and they remain the reason the
+schema allows four minor units. 6.2 says "no delete": the seed is 159 rows, 150
+convertible and 9 retained.
+
+Minor units come from the **ISO 4217** table, with ICU/CLDR used only as a
+cross-check; the two disagree on eleven codes, IQD most visibly (ISO 3, CLDR 0),
+and the standard wins.
 
 The assumption is now checked rather than carried: `pnpm db:verify-currencies`
-compares the committed seed with the provider's own list and exits non-zero on
-any divergence in either direction, and `FxService.reconcileSupportedCurrencies`
-does the same at runtime. Both **report**; neither repairs. Adding or removing a
+drives the real adapter — not a re-implementation of it — against the live v2
+chain, compares the result with the committed seed, and exits non-zero on any
+divergence in either direction. `FxService.reconcileSupportedCurrencies` does
+the same at runtime. Both **report**; neither repairs. Adding or removing a
 currency is a migration and a decision, not a background job's side effect.
 
 ---
@@ -205,6 +269,14 @@ currency is a migration and a decision, not a background job's side effect.
   unfinished deletion would have looked complete. It now runs inside
   `withUser` — well defined for a deleted user's id, since the policy compares
   the column with the setting and does not care whether that user still exists.
+- **The first-use backfill made the user wait for both banks in turn.** A
+  currency chosen during onboarding triggers `ensureHistory`, which asks for a
+  27-year daily series; with one request per bank issued sequentially the
+  browser waited for the sum of two cold upstream fetches and the onboarding
+  end-to-end test timed out. The chain is now fetched concurrently — bounded by
+  the slowest bank, not their sum — and the order of the results, which is the
+  source preference, is preserved. Found by the E2E suite, not by a unit test:
+  only the real API is slow.
 - **A stray directory tree.** `packages/db/apps/web/...` was created by a shell
   whose working directory had moved, and dependency-cruiser reported it as a
   real boundary violation (`db` importing `application`). It was a real file,

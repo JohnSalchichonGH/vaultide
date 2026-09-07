@@ -2,7 +2,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { countFxRates, eq, fxRates, latestRateDateByQuote, sql, withUser, withoutUser } from '@vaultide/db';
 import { Decimal, isUnavailable, monthKey, plainDate } from '@vaultide/finance';
 import { createHarness, type Harness } from '../helpers/harness';
-import { createFxService, PIVOT, REFRESH_BACKFILL_DAYS } from '../../src/fx/service';
+import {
+  createFxService,
+  PIVOT,
+  REFRESH_BACKFILL_DAYS,
+  SOURCE_PREFERENCE,
+} from '../../src/fx/service';
 import { FxProviderError } from '../../src/fx/provider';
 import { supportedFxCurrencyCodes } from '../../src/currencies/service';
 import { provisionUser } from '../../src/users/provisioning';
@@ -127,6 +132,90 @@ describe('refreshAll — the daily cron (10.4)', () => {
     // line of defence: the database refuses the row.
     const rows = await datesFor('USD');
     expect(rows).toHaveLength(0);
+  });
+});
+
+describe('provider attribution and source preference (10.1, 10.2, 10.4)', () => {
+  it('stores one row per bank, differing only in source', async () => {
+    await serviceWithClock().refreshAll();
+
+    // The stub chain mirrors the real one: the ECB publishes the euro-area
+    // reference set and Banca d'Italia publishes everything, so USD comes from
+    // both banks on the same day.
+    const rows = await withoutUser(harness.db, async (tx) =>
+      tx
+        .select({ source: fxRates.source, rate: fxRates.rate, base: fxRates.base })
+        .from(fxRates)
+        .where(sql`${fxRates.quote} = 'USD' AND ${fxRates.rateDate} = DATE '2026-09-04'`)
+        .orderBy(fxRates.source),
+    );
+
+    expect(rows.map((row) => row.source)).toEqual(['bdi', 'ecb']);
+    // 10.4: "an alternative rate is a new row with another source".
+    expect(rows[0]?.rate).not.toBe(rows[1]?.rate);
+    // Both are EUR-pivoted; nothing was re-pivoted on the way in (10.1).
+    expect(rows.every((row) => row.base.trim() === 'EUR')).toBe(true);
+    // And never the redistributor's name.
+    expect(rows.every((row) => row.source !== 'frankfurter')).toBe(true);
+  });
+
+  it('converts with the preferred bank’s rate when two published the same day', async () => {
+    const fx = serviceWithClock();
+    await fx.refreshAll();
+
+    const table = await fx.loadTable(['USD'], '2026-08-01', TODAY, plainDate(TODAY));
+    const lookup = table.rateOn('USD', plainDate('2026-09-04'));
+    if (isUnavailable(lookup)) throw new Error('expected a rate');
+
+    // SOURCE_PREFERENCE puts the ECB first (10.1 names its reference series).
+    expect(SOURCE_PREFERENCE[0]).toBe('ecb');
+    expect(lookup.source).toBe('ecb');
+
+    const [ecbRow] = await withoutUser(harness.db, async (tx) =>
+      tx
+        .select({ rate: fxRates.rate })
+        .from(fxRates)
+        .where(
+          sql`${fxRates.quote} = 'USD' AND ${fxRates.rateDate} = DATE '2026-09-04' AND ${fxRates.source} = 'ecb'`,
+        ),
+    );
+    expect(lookup.rate.toFixed()).toBe(new Decimal(ecbRow?.rate as string).toFixed());
+  });
+
+  it('still covers a currency only the second bank publishes', async () => {
+    const fx = serviceWithClock();
+    await fx.refreshAll();
+
+    // AED is in the supported set through Banca d'Italia; the ECB has never
+    // published it. Reaching past the ECB's own 30 is the whole point of v2.
+    const rows = await withoutUser(harness.db, async (tx) =>
+      tx
+        .selectDistinct({ source: fxRates.source })
+        .from(fxRates)
+        .where(eq(fxRates.quote, 'AED')),
+    );
+    expect(rows.map((row) => row.source)).toEqual(['bdi']);
+
+    const table = await fx.loadTable(['AED'], '2026-08-01', TODAY, plainDate(TODAY));
+    const lookup = table.rateOn('AED', plainDate('2026-09-04'));
+    if (isUnavailable(lookup)) throw new Error('expected a rate');
+    expect(lookup.source).toBe('bdi');
+  });
+
+  it('falls back to the next bank when the preferred one has no rate that day', async () => {
+    const fx = serviceWithClock();
+    // The ECB skipped a day that Banca d'Italia published.
+    harness.fxProvider.setChain([
+      { source: 'bdi', currencies: 'all' },
+    ]);
+    await fx.refreshAll();
+
+    const table = await fx.loadTable(['USD'], '2026-08-01', TODAY, plainDate(TODAY));
+    const lookup = table.rateOn('USD', plainDate('2026-09-04'));
+    if (isUnavailable(lookup)) throw new Error('expected a rate');
+    // The preference is an order, not a requirement: an unlisted or absent
+    // publisher ranks last rather than making the rate unavailable.
+    expect(lookup.source).toBe('bdi');
   });
 });
 
