@@ -17,6 +17,9 @@ importers:
       '@types/node':
         specifier: 22.20.1
         version: 22.20.1
+      '@vaultide/application':
+        specifier: workspace:*
+        version: link:packages/application
       '@vaultide/config':
         specifier: workspace:*
         version: link:packages/config
