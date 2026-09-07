@@ -1,22 +1,30 @@
 #!/usr/bin/env node
 /**
- * Reconcile the seeded FX-supported currency set against Frankfurter v2
- * (blueprint 10.1, 10.4, Phase 1: "reconcile the existing `is_fx_supported`
- * assumption against the provider-supported currency set").
+ * Reconcile the seeded FX-supported currency set against Vaultide's **approved
+ * FX source chain** (blueprint 10.1, 10.4, Phase 1: "reconcile the existing
+ * `is_fx_supported` assumption against the provider-supported currency set").
  *
  *   node scripts/db/verify-currencies.mjs
  *
- * It reads the committed seed — not the database — so it answers the question
- * that matters for a release: does what we are about to ship still match what
- * the central banks publish? It exits non-zero on any divergence, so it can run
+ * ## What is being verified, and against what
+ *
+ * The committed seed — not the database — so it answers the question that
+ * matters for a release: does what we are about to ship still match what our
+ * approved sources publish? It exits non-zero on any divergence, so it can run
  * in CI, and it changes nothing: adding or removing a currency is a migration
  * and a decision, not a job's side effect.
  *
+ * The comparison is against the **policy**, which for Phase 1 is the chain
+ * `ECB -> BDI`, and **not** against everything Frankfurter v2 can serve. v2
+ * aggregates 84 central banks and covers codes the approved chain does not
+ * (RUB and BYN among them, via the CBR and the NBRB); those are outside the
+ * policy by choice, and a divergence reported here always means the seed and
+ * the approved chain disagree — never that the API lacks a currency.
+ *
  * The provider side is not reimplemented here. The script drives the same
  * adapter the runtime uses, so "the universe" means exactly what
- * `FxService.reconcileSupportedCurrencies()` means: the currencies the
- * configured provider chain actually publishes a current rate for, restricted
- * to ISO 4217 money.
+ * `FxService.reconcileSupportedCurrencies()` means: the currencies the approved
+ * chain actually publishes a current rate for, restricted to ISO 4217 money.
  *
  * `FX_PROVIDER_URL` overrides the endpoint; the default is Frankfurter v2's.
  */
@@ -75,8 +83,8 @@ const provider = new Set(providerCodes());
 const missingFromProvider = [...seeded].filter((code) => !provider.has(code)).sort();
 const missingFromSeed = [...provider].filter((code) => !seeded.has(code)).sort();
 
-console.log(`provider (Frankfurter v2 chain): ${String(provider.size)} currencies`);
-console.log(`seed (is_fx_supported):          ${String(seeded.size)} currencies`);
+console.log(`approved chain (ECB -> BDI, via Frankfurter v2): ${String(provider.size)} currencies`);
+console.log(`seed (is_fx_supported):                        ${String(seeded.size)} currencies`);
 
 if (missingFromProvider.length === 0 && missingFromSeed.length === 0) {
   console.log('In sync.');

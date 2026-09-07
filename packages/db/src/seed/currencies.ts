@@ -7,17 +7,20 @@
  * for the Gulf dinars and the Iraqi dinar, and 4 for CLF and UYW. Nothing here
  * assumes "fiat means at most two decimals".
  *
- * ## Where the supported set comes from
+ * ## What `isFxSupported` means
  *
- * Frankfurter **v2** (`api.frankfurter.dev/v2`; `/v1` is frozen and unused).
- * v2 models 84 central banks and 165 current currencies, and Vaultide draws
- * from an explicit provider chain — the ECB first, Banca d'Italia second, both
- * EUR-pivoted and both daily since 1999 — so every stored rate names the bank
- * that published it (10.1: "`source` records which central bank published each
- * rate").
+ * **Convertible automatically by Vaultide's approved FX source chain** — not
+ * "exists somewhere in Frankfurter v2". The two are different sets, and the
+ * flag is about the narrower one.
  *
- * `isFxSupported` marks a currency the chain **actually publishes a current
- * rate for**, which is 150 of them. Three groups are deliberately outside it:
+ * Rates come from Frankfurter **v2** (`api.frankfurter.dev/v2`; `/v1` is
+ * frozen and unused), which aggregates 84 central banks and 165 current
+ * currencies. Vaultide's Phase 1 policy draws from an explicit, approved chain
+ * of two of them — **ECB first, Banca d'Italia second**, both EUR-pivoted and
+ * both daily since 1999 — so every stored rate names the bank that published
+ * it (10.1: "`source` records which central bank published each rate").
+ *
+ * 150 codes are convertible under that policy. Three groups are outside it:
  *
  *  - **not money.** XAU, XAG, XPT and XPD are metals and XDR is the IMF's unit
  *    of account. ISO 4217 lists all five and v2 quotes them, but nobody holds a
@@ -26,17 +29,25 @@
  *  - **not ISO 4217.** v2 also quotes CNH, GGP, IMP and JEP; none has an ISO
  *    numeric code. They are a market variant of CNY and three local sterling
  *    issues, not currencies of their own.
- *  - **no current rate.** ANG, BYN, IRR, KPW, MRO and RUB are in v2's current
- *    list and have history, but the chain publishes nothing recent for them.
+ *  - **no current rate from the approved chain.** ANG, BYN, IRR, KPW, MRO and
+ *    RUB. Frankfurter v2 *does* have current rates for several of these from
+ *    other official providers — the CBR for RUB, the NBRB for BYN, among
+ *    others — but those banks are not in Vaultide's approved chain, and the
+ *    ECB's and Banca d'Italia's own series for these codes have ended (RUB and
+ *    BYN in early 2022, ANG, IRR and KPW during 2025, MRO in 2017). So the
+ *    claim is about *our* sources, never about the API's coverage.
  *
- * The remaining rows exist so amounts in those currencies are still validated
- * and formatted correctly, but they can never be a base, reporting or position
- * currency: without rates there is no honest conversion (10.5).
+ * A current ISO 4217 currency can therefore sit in this catalogue with
+ * `isFxSupported: false`. Those rows exist so amounts in them are still
+ * validated and formatted correctly, but they can never be a base, reporting
+ * or position currency: with no rate from a source this product trusts, there
+ * is no honest conversion to offer (10.5).
  *
  * The set is **verified, not assumed**: `pnpm db:verify-currencies` compares
- * this list with what the v2 chain publishes today and fails on any divergence
- * in either direction. It reports; it never repairs. Adding or removing a
- * currency is a migration and a decision.
+ * this list with what the approved chain publishes today — the policy, not
+ * every Frankfurter provider — and fails on any divergence in either
+ * direction. It reports; it never repairs. Adding or removing a currency, or
+ * widening the chain, is a migration and a decision.
  */
 export interface CurrencySeedRow {
   readonly code: string;
@@ -46,8 +57,9 @@ export interface CurrencySeedRow {
 }
 
 /**
- * Currencies the provider chain publishes a current rate for, verified against
- * `GET /v2/rates?base=EUR&providers=ECB` and `…&providers=BDI` on 2026-09-07.
+ * Currencies the **approved chain** publishes a current rate for, verified
+ * against `GET /v2/rates?base=EUR&providers=ECB` and `…&providers=BDI` on
+ * 2026-09-07. Other Frankfurter providers cover more; this is the policy set.
  */
 const FX_SUPPORTED: readonly [string, string, number][] = [
   ['AED', 'United Arab Emirates Dirham', 2],
@@ -203,15 +215,25 @@ const FX_SUPPORTED: readonly [string, string, number][] = [
 ];
 
 /**
- * Retained for validation, formatting and historical data, but not convertible.
+ * Retained for validation, formatting and historical data, but **not
+ * convertible by the approved chain**.
  *
- * BGN is the case that matters: the ECB stopped publishing a EUR/BGN reference
- * rate when Bulgaria adopted the euro on 2026-01-01, so amounts recorded in
- * lev before then must still format while the currency can no longer be chosen.
- * ANG and MRO were likewise replaced (by XCG and MRU); RUB, BYN, IRR and KPW
- * have history but no current publication. CLF and UYW are Chilean and
- * Uruguayan indexation units that v2 does not carry at all — they are also the
- * reason the schema allows four decimals rather than three (6.2, 7.2).
+ * BGN is the case that matters, and it is historical rather than current: v2
+ * lists it only under `?scope=all`, Bulgaria adopted the euro on 2026-01-01,
+ * and the ECB's EUR/BGN reference rate ended with 2025 — so amounts recorded
+ * in lev before then must still format while the currency can no longer be
+ * chosen. ANG and MRO were likewise
+ * replaced, by XCG and MRU.
+ *
+ * RUB, BYN, IRR and KPW are a different case and the wording matters: they are
+ * current ISO 4217 currencies, and Frankfurter v2 has current rates for
+ * several of them from banks outside the approved chain. What ended is the
+ * ECB's and Banca d'Italia's own publication, so Vaultide has no rate it is
+ * willing to convert them with — not "no rate exists".
+ *
+ * CLF and UYW are Chilean and Uruguayan indexation units that v2 does not
+ * carry at all — they are also the reason the schema allows four decimals
+ * rather than three (6.2, 7.2).
  *
  * 6.2 says "no delete": a currency that has ever been seeded stays.
  */

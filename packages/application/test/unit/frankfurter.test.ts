@@ -18,7 +18,11 @@ import { FxProviderError } from '../../src/fx/provider';
  * `pnpm db:verify-currencies`.
  */
 
-/** `GET /v2/currencies`, trimmed. Shows all three exclusion cases. */
+/**
+ * `GET /v2/currencies`, trimmed. Shows all three exclusion cases: not money,
+ * no ISO numeric code, and — for RUB — a current currency that no bank in the
+ * approved chain publishes, even though another v2 provider does.
+ */
 const CURRENCIES = JSON.stringify([
   { iso_code: 'EUR', iso_numeric: '978', name: 'Euro' },
   { iso_code: 'USD', iso_numeric: '840', name: 'United States Dollar' },
@@ -223,7 +227,7 @@ describe('what it refuses (10.5)', () => {
   });
 });
 
-describe('the supported universe', () => {
+describe('the universe the approved chain supports', () => {
   const catalogue: [RegExp, string][] = [
     [/\/currencies/u, CURRENCIES],
     [
@@ -244,7 +248,7 @@ describe('the supported universe', () => {
     ],
   ];
 
-  it('is the union of what the chain publishes, restricted to money', async () => {
+  it('is the union of what the approved chain publishes, restricted to money', async () => {
     const { fetchImpl } = recorded(catalogue);
     const codes = await createFrankfurterProvider({ fetchImpl }).supportedCurrencies();
 
@@ -270,12 +274,16 @@ describe('the supported universe', () => {
     expect(codes).not.toContain('JEP');
   });
 
-  it('excludes a currency with history but no current publication', async () => {
+  it('excludes a currency no approved bank publishes, whoever else does', async () => {
     const { fetchImpl } = recorded(catalogue);
     const codes = await createFrankfurterProvider({ fetchImpl }).supportedCurrencies();
 
-    // RUB is in v2's current catalogue, and the chain publishes nothing for it.
-    // A currency with no rate cannot be a reporting currency (10.5).
+    // RUB is a current ISO 4217 currency, it is in v2's current catalogue, and
+    // v2 does serve a current rate for it — from the CBR, which is not in the
+    // approved chain. Neither approved bank publishes it (both series ended in
+    // early 2022), so Vaultide has no rate it would convert it with, and a
+    // currency in that position cannot be a reporting currency (10.5). The
+    // claim is about our sources, not about the API's coverage.
     expect(codes).not.toContain('RUB');
   });
 

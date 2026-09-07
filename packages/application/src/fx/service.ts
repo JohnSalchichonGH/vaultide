@@ -54,10 +54,10 @@ export const HISTORY_LEAD_DAYS = 31;
 /**
  * The order readers prefer publishers in (10.2, 10.4).
  *
- * Lower-cased provider keys, matching what the adapter writes into
- * `fx_rates.source`. The ECB comes first because 10.1 names its reference
- * series; where two banks both published a pair on the same day, both rows are
- * stored and this decides which one a conversion uses.
+ * Lower-cased keys of Vaultide's approved provider chain, matching what the
+ * adapter writes into `fx_rates.source`. The ECB comes first because 10.1
+ * names its reference series; where two banks both published a pair on the
+ * same day, both rows are stored and this decides which one a conversion uses.
  */
 export const SOURCE_PREFERENCE: readonly string[] = FRANKFURTER_PROVIDER_CHAIN.map((key) =>
   key.toLowerCase(),
@@ -90,9 +90,9 @@ export interface EnsureHistoryResult {
 export interface SupportedCurrencyReconciliation {
   readonly provider: string[];
   readonly seeded: string[];
-  /** Flagged FX-supported here, but the provider does not publish it. */
+  /** Flagged FX-supported here, but the approved chain does not publish it. */
   readonly missingFromProvider: string[];
-  /** Published by the provider, but not flagged FX-supported here. */
+  /** Published by the approved chain, but not flagged FX-supported here. */
   readonly missingFromSeed: string[];
   readonly inSync: boolean;
 }
@@ -255,9 +255,14 @@ export function createFxService(deps: FxServiceDependencies): FxService {
     },
 
     /**
-     * Compare the seeded `is_fx_supported` flags with what the provider
-     * actually publishes (Phase 1: "reconcile the existing `is_fx_supported`
-     * assumption against the provider-supported currency set").
+     * Compare the seeded `is_fx_supported` flags with what the **approved
+     * chain** actually publishes (Phase 1: "reconcile the existing
+     * `is_fx_supported` assumption against the provider-supported currency
+     * set").
+     *
+     * `provider` here is the configured chain, so this measures the seed
+     * against Vaultide's FX policy — not against every currency the upstream
+     * aggregator can serve from banks the product does not draw from.
      *
      * It reports; it does not repair. A currency appearing in or leaving a
      * central bank's reference list is a decision about the product's

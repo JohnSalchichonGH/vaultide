@@ -177,7 +177,7 @@ test.describe('sign-up, verification and settings', () => {
     for (const crypto of ['BTC', 'ETH', 'USDT']) {
       expect(offered.some((option) => option.startsWith(crypto))).toBe(false);
     }
-    // Nor is a currency the rate provider no longer publishes.
+    // Nor is a currency Vaultide's approved rate sources no longer publish.
     expect(offered.some((option) => option.startsWith('BGN'))).toBe(false);
     expect(offered.some((option) => option.startsWith('EUR'))).toBe(true);
 

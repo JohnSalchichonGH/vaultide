@@ -10,6 +10,13 @@ import { currencyCodeColumn } from './columns';
  * (JPY) through 4 (CLF, UYW), because the formatter and the input validators
  * read it — a currency with four decimals must round-trip exactly.
  *
+ * `is_fx_supported` means **convertible by Vaultide's approved FX source
+ * chain** — the ECB then Banca d'Italia in Phase 1 — not "a rate for it exists
+ * somewhere upstream". A current ISO 4217 currency can sit here with the flag
+ * `false`: its amounts still validate and format, but it cannot be chosen as a
+ * base or reporting currency, because this product holds no rate it trusts for
+ * it (10.5). See `packages/db/src/seed/currencies.ts`.
+ *
  * No RLS: the table belongs to no tenant. `app_user` may only SELECT it; the
  * migration revokes the write privileges the default grants would give.
  */

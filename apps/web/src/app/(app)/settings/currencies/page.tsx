@@ -21,9 +21,10 @@ export default async function CurrencySettingsPage() {
     <div className="space-y-4">
       <CurrencySettingsForm settings={session.settings} currencies={currencies} />
       <p className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">
-        Vaultide supports the {currencies.length} official currencies its rate provider publishes
-        daily reference rates for. Crypto is tracked as an investment held in the currency your
-        broker reports, not as a currency of its own.
+        Vaultide supports the {currencies.length} official currencies its approved rate sources —
+        the European Central Bank and Banca d&rsquo;Italia — publish daily reference rates for.
+        Crypto is tracked as an investment held in the currency your broker reports, not as a
+        currency of its own.
       </p>
     </div>
   );

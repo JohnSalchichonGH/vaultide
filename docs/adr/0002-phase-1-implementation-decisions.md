@@ -197,8 +197,8 @@ asking with `expand=providers` returns every contributing bank marked
 
 Asking for one provider at a time — `providers=ECB` — returns *that bank's own
 published rate*, rebased to the requested base, with no blend and no peg
-override; verified against the live API. So the adapter walks an explicit
-chain and makes one request per bank:
+override; verified against the live API. So the adapter walks an explicit,
+**approved** chain and makes one request per bank:
 
 - **ECB** first — the reference series 10.1 names, daily since 1999-01-04, and
   the preferred `source` on read (`SOURCE_PREFERENCE`, 10.2).
@@ -213,16 +213,27 @@ concurrently and concatenated in chain order: one bank per request would
 otherwise cost the sum of their latencies, and `ensureHistory` runs inside a
 user's request, where a first-use backfill asks for a 27-year series.
 
+Two banks is a **policy**, not the extent of what v2 offers, and the
+distinction matters for everything below: v2 carries 84 central banks, so what
+this chain publishes is deliberately narrower than what Frankfurter publishes.
+Both are EUR-pivoted and euro-system, which is what makes the stored pivot
+honest rather than re-derived. Widening the chain is a decision with a
+migration behind it, not an implementation detail — and Phase 1 does not.
+
 Everything else about the adapter is unchanged from the frozen specification:
 EUR pivot, rates read from the response **text** so the publisher's digits
 survive, immutable `fx_rates`, `ON CONFLICT DO NOTHING` idempotence, dated and
 latest-on-or-before lookup, and refusal rather than a guess when a rate is
 missing or implausible.
 
-### 16. The supported set is 150 currencies, and BGN is not one of them
+### 16. `is_fx_supported` is a statement about our sources, not about the API
 
-`is_fx_supported` means the chain **actually publishes a current rate**, which
-is 150 codes including the EUR pivot. Starting from v2's 165 current
+The flag means **supported for automatic conversion by Vaultide's approved FX
+source chain** — for Phase 1, `ECB -> BDI`. It does not mean "exists in
+Frankfurter v2", and the two sets genuinely differ. Every count and exclusion
+below is scoped to the approved chain.
+
+That is 150 codes, including the EUR pivot. Starting from v2's 165 current
 currencies, three groups are excluded:
 
 - **not money** — XAU, XAG, XPT, XPD (metals) and XDR (the IMF's unit of
@@ -231,30 +242,47 @@ currencies, three groups are excluded:
   applied consistently.
 - **not ISO 4217** — CNH, GGP, IMP, JEP. None has an ISO numeric code: they are
   a market variant of CNY and three local sterling issues.
-- **no current rate** — ANG, BYN, IRR, KPW, MRO, RUB are in v2's current list
-  and have history, but neither bank publishes anything recent for them.
+- **no current rate from the approved chain** — ANG, BYN, IRR, KPW, MRO, RUB.
+  These are current ISO 4217 currencies, and Frankfurter v2 *does* serve
+  current rates for several of them from other official providers: the CBR for
+  RUB and the NBRB for BYN, among a dozen more each. Those banks are not in
+  Vaultide's chain. What has ended is the ECB's and Banca d'Italia's own
+  publication — RUB and BYN in early 2022, ANG, IRR and KPW during 2025, MRO in
+  2017 — so the honest statement is that *we* have no current rate for them,
+  never that none exists.
+
+So a current ISO 4217 currency can sit in the catalogue with
+`is_fx_supported = false`. Its amounts still validate and format; it simply
+cannot be chosen as a base or reporting currency, because there is no rate from
+a source this product converts with (10.5).
 
 Phase 0 seeded 31 currencies as `is_fx_supported`, from the historical ECB
-list; **BGN** is the one that has to leave. Bulgaria adopted the euro on
-2026-01-01 and the ECB stopped publishing a EUR/BGN reference rate. It stays in
+list; **BGN** is the one that has to leave, and it is a genuinely historical
+currency rather than a policy exclusion — v2 lists it only under
+`?scope=all`, not among the 165 current currencies. Bulgaria adopted the euro
+on 2026-01-01, and the ECB's EUR/BGN reference rate ended with 2025. It stays in
 the catalogue with `is_fx_supported = false` — historical amounts must still
 validate and format — so it can no longer be chosen as a base or reporting
-currency, because there would be no rate to convert it with (10.5). The same
-holds for ANG, MRO and the four above; CLF and UYW are Chilean and Uruguayan
-indexation units that v2 does not carry at all, and they remain the reason the
-schema allows four minor units. 6.2 says "no delete": the seed is 159 rows, 150
-convertible and 9 retained.
+currency (10.5). ANG and MRO are likewise superseded, by XCG and MRU; RUB, BYN,
+IRR and KPW are the policy cases described above. CLF and UYW are Chilean and
+Uruguayan indexation units that v2 does not carry at all, and they remain the
+reason the schema allows four minor units. 6.2 says "no delete": the seed is
+159 rows, 150 convertible by the approved chain and 9 retained.
 
 Minor units come from the **ISO 4217** table, with ICU/CLDR used only as a
 cross-check; the two disagree on eleven codes, IQD most visibly (ISO 3, CLDR 0),
 and the standard wins.
 
 The assumption is now checked rather than carried: `pnpm db:verify-currencies`
-drives the real adapter — not a re-implementation of it — against the live v2
-chain, compares the result with the committed seed, and exits non-zero on any
-divergence in either direction. `FxService.reconcileSupportedCurrencies` does
-the same at runtime. Both **report**; neither repairs. Adding or removing a
-currency is a migration and a decision, not a background job's side effect.
+drives the real adapter — not a re-implementation of it — against the live
+**approved chain**, compares the result with the committed seed, and exits
+non-zero on any divergence in either direction. What it verifies is therefore
+the committed Vaultide-supported universe against the `ECB -> BDI` policy, not
+against every currency available from every Frankfurter provider; a divergence
+always means the seed and the policy disagree.
+`FxService.reconcileSupportedCurrencies` does the same at runtime. Both
+**report**; neither repairs. Adding or removing a currency, or widening the
+chain, is a migration and a decision, not a background job's side effect.
 
 ---
 

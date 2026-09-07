@@ -17,15 +17,21 @@ export interface Currency {
   readonly code: string;
   readonly name: string;
   readonly minorUnits: number;
-  /** Whether the FX provider publishes reference rates for it (10.4). */
+  /**
+   * Whether Vaultide's **approved** FX source chain publishes a current
+   * reference rate for it (10.4) — for Phase 1, the ECB then Banca d'Italia.
+   * `false` does not mean no rate exists anywhere; it means this product has
+   * no source it is willing to convert the currency with.
+   */
   readonly isFxSupported: boolean;
 }
 
 export interface ListCurrenciesOptions {
   /**
-   * Only currencies the FX provider covers. This is what every picker uses: a
-   * currency with no rates cannot be a base, reporting or position currency,
-   * because there would be no honest way to convert it (10.5).
+   * Only currencies the approved FX chain covers. This is what every picker
+   * uses: a currency we hold no rates for cannot be a base, reporting or
+   * position currency, because there would be no honest way to convert it
+   * (10.5).
    */
   readonly fxSupportedOnly?: boolean;
 }

@@ -46,7 +46,7 @@ from zero by the same scripts an operator runs (admin bootstrap → migrations a
 | End to end | `pnpm test:e2e` | **36 passed** — 12 specs × chromium desktop, webkit desktop, chromium mobile |
 | Finance coverage gate | `vitest run --coverage` | **pass** — statements 99.56 %, branches 97.88 %, functions 100 %, lines 99.74 %; §21's gate is ≥ 95 % lines and branches |
 | Secret scan | `gitleaks --config .gitleaks.toml` | **pass** — no leaks |
-| Currency reconciliation | `pnpm db:verify-currencies` | **pass** — 150 = 150, in sync, against the live v2 chain |
+| Currency reconciliation | `pnpm db:verify-currencies` | **pass** — 150 = 150, in sync, against the live approved chain (`ECB -> BDI`) |
 
 New unit coverage in Phase 1 (`packages/finance/test/unit/fx.test.ts`, 37 cases):
 exact-date lookup; latest-on-or-before across a weekend and a Monday; the
@@ -227,12 +227,20 @@ that publishes a pair, filters outliers by consensus and overrides pegged
 currencies with their peg. A blend has no publisher, and 10.1 requires `source`
 to record which central bank published each rate, so the adapter never issues a
 request without `providers=`. With a single provider key v2 returns that bank's
-own rate, rebased to EUR, unblended and un-pegged. The chain is **ECB** then
-**BDI** (Banca d'Italia): both EUR-pivoted, both daily since 1999-01-04, and
-BDI's 151 currencies are a superset of the ECB's 30. The two requests are
-issued concurrently and concatenated in chain order — which is also the read
+own rate, rebased to EUR, unblended and un-pegged.
+
+Vaultide's **approved chain** for Phase 1 is **ECB** then **BDI** (Banca
+d'Italia): both EUR-pivoted, both daily since 1999-01-04, and BDI's 151
+currencies are a superset of the ECB's 30. The two requests are issued
+concurrently and concatenated in chain order — which is also the read
 preference, `SOURCE_PREFERENCE = ['ecb', 'bdi']` (10.2, 10.4). A pair both
 banks publish becomes two rows differing only in `source`.
+
+Two banks is a **policy**, not a limit of the API: v2 aggregates 84 central
+banks, so what the approved chain publishes is deliberately narrower than what
+Frankfurter publishes. Every statement in this record about which currencies
+are supported is scoped to that chain. Widening it is a decision with a
+migration behind it, and Phase 1 does not.
 
 Rates are read from the response **text** with a reviver that keeps each
 number's literal digits: `JSON.parse` would hand back a float64, and
@@ -258,29 +266,35 @@ number's literal digits: `JSON.parse` would hand back a float64, and
 
 ### Supported-currency reconciliation
 
-The seed is **159 rows: 150 FX-supported and 9 retained.** `is_fx_supported`
-means the chain publishes a current rate. Starting from v2's 165 current
-currencies:
+The seed is **159 rows: 150 FX-supported and 9 retained.**
+
+`is_fx_supported = true` means **supported for automatic conversion by
+Vaultide's approved FX source chain** — `ECB -> BDI` — and *not* "exists
+anywhere in Frankfurter v2". Starting from v2's 165 current currencies:
 
 | Excluded | Codes | Why |
 |---|---|---|
 | Not money | XAU, XAG, XPT, XPD, XDR | Metals and the IMF's unit of account. ISO 4217 lists them and v2 quotes them; nobody banks in gold. The judgement R28 makes about crypto, applied consistently. |
 | Not ISO 4217 | CNH, GGP, IMP, JEP | No ISO numeric code — a market variant of CNY and three local sterling issues. |
-| No current rate | ANG, BYN, IRR, KPW, MRO, RUB | In v2's current list, with history, but neither bank publishes anything recent. |
+| No current rate **from the approved chain** | ANG, BYN, IRR, KPW, MRO, RUB | Current ISO 4217 currencies, and v2 does serve current rates for several of them from providers outside the chain — the CBR for RUB, the NBRB for BYN. What ended is the ECB's and Banca d'Italia's own publication (RUB and BYN in early 2022, ANG, IRR and KPW during 2025, MRO in 2017), so *we* have no current rate for them. |
 
-165 − 5 − 4 − 6 = **150**, EUR included.
+165 − 5 − 4 − 6 = **150**, EUR included. A current ISO 4217 currency can
+therefore be in the catalogue with `is_fx_supported = false`: its amounts still
+validate and format, but no approved source supplies a sufficiently current
+rate, so there is nothing this product would honestly convert it with (10.5).
 
 Phase 0 seeded 31 currencies as `is_fx_supported`, from the historical ECB
-list; **BGN** is the one that has to leave. Bulgaria adopted the euro on
-2026-01-01 and the ECB stopped publishing a EUR/BGN reference rate. It stays in
-the catalogue — historical amounts must still validate and format — with
-`is_fx_supported = false`, so it can no longer be chosen as a base or reporting
-currency. `settings.test.ts` asserts that choosing it is refused, and
-`auth.spec.ts` asserts it is absent from the picker in the browser. The other
-eight retained rows are ANG, BYN, CLF, IRR, KPW, MRO, RUB and UYW; CLF and UYW
-are indexation units v2 does not carry at all, and they are why the schema
-allows four minor units. 6.2 says "no delete": nothing seeded in Phase 0 was
-removed.
+list; **BGN** is the one that has to leave, and it is historical rather than a
+policy exclusion: v2 lists it only under `GET /v2/currencies?scope=all`, not in
+the current set. Bulgaria adopted the euro on 2026-01-01 and the ECB's EUR/BGN
+reference rate ended with 2025. It stays in the catalogue — historical
+amounts must still validate and format — with `is_fx_supported = false`, so it
+can no longer be chosen as a base or reporting currency. `settings.test.ts`
+asserts that choosing it is refused, and `auth.spec.ts` asserts it is absent
+from the picker in the browser. The other eight retained rows are ANG, BYN,
+CLF, IRR, KPW, MRO, RUB and UYW; CLF and UYW are indexation units v2 does not
+carry at all, and they are why the schema allows four minor units. 6.2 says
+"no delete": nothing seeded in Phase 0 was removed.
 
 Minor units are ISO 4217's, with ICU/CLDR used only as a cross-check — the two
 disagree on eleven codes, IQD most visibly (ISO 3, CLDR 0), and the standard
@@ -288,18 +302,21 @@ wins.
 
 The assumption is checked rather than carried. `db:verify-currencies` drives
 the real adapter, so "the universe" means exactly what the runtime means by it:
+the committed Vaultide-supported set against the approved `ECB -> BDI` policy,
+not against every currency available from every Frankfurter provider.
 
 ```text
 $ pnpm db:verify-currencies
-provider (Frankfurter v2 chain): 150 currencies
-seed (is_fx_supported):          150 currencies
+approved chain (ECB -> BDI, via Frankfurter v2): 150 currencies
+seed (is_fx_supported):                        150 currencies
 In sync.
 ```
 
+A divergence therefore always means the seed and the approved policy disagree.
 It runs weekly in `verify-environment.yml`, and
 `FxService.reconcileSupportedCurrencies()` does the same at runtime. Both
-**report**; neither repairs. Adding or removing a currency is a migration and a
-decision, not a background job's side effect.
+**report**; neither repairs. Adding or removing a currency, or widening the
+chain, is a migration and a decision, not a background job's side effect.
 
 ---
 

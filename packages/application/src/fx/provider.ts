@@ -24,7 +24,13 @@ export interface ProviderRateRow {
 
 export interface FxProvider {
   readonly id: string;
-  /** The currencies this provider publishes rates for, as ISO codes. */
+  /**
+   * The currencies this provider publishes rates for, as ISO codes. For an
+   * implementation that draws from a chain of banks — as the Frankfurter v2
+   * adapter does — this is what **that chain** publishes, which is the set
+   * `currencies.is_fx_supported` is reconciled against. It is not a claim
+   * about everything the upstream service could serve.
+   */
   supportedCurrencies(): Promise<string[]>;
   /** Every rate for `quotes` in `[from, to]`, in one call. */
   fetchTimeSeries(

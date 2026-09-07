@@ -20,7 +20,7 @@ import { FxProviderError } from '../../src/fx/provider';
 export interface StubFxProvider extends FxProvider {
   /** Every call the service made, for asserting that a fetch was skipped. */
   readonly calls: { method: string; quotes: string[]; from?: string; to?: string }[];
-  /** Restrict which banks publish, in preference order. */
+  /** Restrict which banks publish, in preference order (the approved chain). */
   setChain(chain: readonly { source: string; currencies: readonly string[] | 'all' }[]): void;
   /** Make the next calls throw, as an outage would. */
   failWith(error: Error | null): void;
@@ -28,7 +28,7 @@ export interface StubFxProvider extends FxProvider {
   skipDates(dates: readonly string[]): void;
   /** Publish an implausible rate for a currency, to prove it is refused. */
   poison(quote: string, rate: string): void;
-  /** Override the currency list `supportedCurrencies()` reports. */
+  /** Override the list `supportedCurrencies()` reports for the chain. */
   setSupportedCurrencies(codes: readonly string[]): void;
   reset(): void;
 }

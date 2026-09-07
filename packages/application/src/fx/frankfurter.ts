@@ -27,7 +27,7 @@ import { FxProviderError, type FxProvider, type ProviderRateRow } from './provid
  * describes ("an alternative rate is a new row with another `source`; readers
  * apply a source preference").
  *
- * ## The chain
+ * ## The approved chain
  *
  * `ECB` first: the reference series 10.1 names, daily since 1999-01-04, and the
  * preferred source on read. `BDI` (Banca d'Italia) second: also EUR-pivoted,
@@ -35,7 +35,14 @@ import { FxProviderError, type FxProvider, type ProviderRateRow } from './provid
  * the ECB's — which is what carries the supported set beyond the euro area's
  * 30 without reaching for a bank whose own pivot is something else.
  *
- * Two requests cover the whole supported set. Both are EUR-pivoted at the
+ * These two are Vaultide's **policy** for Phase 1, not the extent of what v2
+ * makes available. What this chain publishes is consequently narrower than
+ * what Frankfurter publishes, and the difference is a choice about which
+ * official sources this product converts money with — deliberately EUR-pivoted
+ * and euro-system — rather than a gap in the API. Widening the chain is a
+ * decision with a migration behind it, not an implementation detail.
+ *
+ * Two requests cover the whole approved set. Both are EUR-pivoted at the
  * source, so nothing is re-pivoted twice on the way in.
  *
  * They are issued **concurrently**, and the results are concatenated in chain
@@ -57,8 +64,13 @@ import { FxProviderError, type FxProvider, type ProviderRateRow } from './provid
 export const FRANKFURTER_BASE_URL = 'https://api.frankfurter.dev/v2';
 
 /**
- * Providers to draw from, in preference order. Also the order `fx_rates`
- * readers apply, lower-cased (10.2, 10.4).
+ * Vaultide's **approved** provider chain for Phase 1, in preference order.
+ * Also the order `fx_rates` readers apply, lower-cased (10.2, 10.4).
+ *
+ * "Approved" rather than "available": v2 carries 84 central banks, and this is
+ * a deliberate two-bank policy, not the limit of what the API offers. What the
+ * chain publishes is therefore narrower than what Frankfurter publishes, and
+ * the two must not be conflated — see `supportedCurrencies()`.
  */
 export const FRANKFURTER_PROVIDER_CHAIN = ['ECB', 'BDI'] as const;
 
@@ -213,15 +225,23 @@ export function createFrankfurterProvider(options: FrankfurterOptions = {}): FxP
     id: 'frankfurter-v2',
 
     /**
-     * The currencies this deployment can support: those the provider chain
-     * actually publishes right now, restricted to money.
+     * The currencies **this approved chain** can convert automatically: those
+     * the chain publishes right now, restricted to money.
      *
-     * "Actually publishes" rather than "lists as covered" is deliberate. A
-     * provider's metadata includes currencies whose series has stopped — RUB,
-     * BYN, IRR, KPW, ANG, MRO among them — and a currency with no current rate
-     * cannot be a base or reporting currency, because there would be nothing to
-     * convert it with (10.5). `/rates` without a date range returns the latest
-     * row per quote, so this is one request per provider and needs no clock.
+     * This is deliberately *not* "every currency Frankfurter v2 offers". v2
+     * aggregates 84 central banks, and for several codes some other bank does
+     * publish a current rate — CBR for RUB and NBRB for BYN, among others —
+     * while the ECB's and Banca d'Italia's own series for them have ended (RUB
+     * and BYN in early 2022, ANG, IRR and KPW during 2025, MRO in 2017). Those
+     * banks are outside Vaultide's Phase 1 policy, so their rates are not
+     * fetched, not stored, and not offered: a currency this chain has no
+     * current rate for cannot be a base or reporting currency, because there
+     * would be nothing *we* could honestly convert it with (10.5).
+     *
+     * "Publishes right now" rather than "lists as covered" is the other half:
+     * a provider's own metadata still lists series that have stopped.
+     * `/rates` without a date range returns the latest row per quote, so this
+     * is one request per approved provider and needs no clock.
      */
     async supportedCurrencies(): Promise<string[]> {
       const catalogue = (await get('/currencies', false)) as CurrencyRow[];

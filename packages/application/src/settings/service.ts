@@ -125,7 +125,7 @@ export async function updateSettings(
       // The message names the codes because they are the user's own input, not
       // anybody's financial data (18.2).
       throw new ValidationError(
-        `These currencies are not supported: ${rejected.join(', ')}. Vaultide supports the official currencies its rate provider publishes; crypto is tracked as an investment, not as a currency.`,
+        `These currencies are not supported: ${rejected.join(', ')}. Vaultide supports the official currencies its approved rate sources publish daily reference rates for; crypto is tracked as an investment, not as a currency.`,
         { currency: rejected },
       );
     }

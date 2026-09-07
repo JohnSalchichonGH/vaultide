@@ -407,7 +407,10 @@ describe('loadTable — reading stored rates back into the engine (10.1)', () =>
 });
 
 describe('supported-currency reconciliation (Phase 1)', () => {
-  it('reports the seed and the provider as in sync when they agree', async () => {
+  // "Provider" here is the approved chain, so this measures the seed against
+  // Vaultide's FX policy — not against every currency the upstream aggregator
+  // could serve from banks the product does not draw from.
+  it('reports the seed and the approved chain as in sync when they agree', async () => {
     const seeded = await supportedFxCurrencyCodes(harness.db);
     harness.fxProvider.setSupportedCurrencies(seeded);
 
@@ -420,8 +423,9 @@ describe('supported-currency reconciliation (Phase 1)', () => {
 
   it('names both directions of a divergence rather than repairing it silently', async () => {
     const seeded = await supportedFxCurrencyCodes(harness.db);
-    // The publisher drops one currency and adds one the catalogue lacks —
-    // exactly what happened to BGN when Bulgaria adopted the euro.
+    // An approved bank stops publishing one currency and starts publishing one
+    // the catalogue lacks — the first is what happened to BGN when Bulgaria
+    // adopted the euro.
     harness.fxProvider.setSupportedCurrencies([
       ...seeded.filter((code) => code !== 'USD'),
       'XTS',
