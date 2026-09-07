@@ -12,8 +12,11 @@ const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const standalone = path.join(webRoot, '.next', 'standalone', 'apps', 'web');
 
 if (!fs.existsSync(standalone)) {
-  console.error('No standalone output found. Run "next build" first.');
-  process.exit(1);
+  // Vercel builds Next with its own adapter and emits no standalone directory.
+  // That is expected there, so this step steps aside rather than failing the
+  // deployment; the artifact only matters for self-hosting and the E2E suite.
+  console.log('No standalone output — nothing to assemble (expected on Vercel).');
+  process.exit(0);
 }
 
 for (const [from, to] of [
