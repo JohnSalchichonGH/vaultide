@@ -8,6 +8,7 @@ import {
   AuthRequiredError,
   buildRequestContext,
   createLogger,
+  deployedVersion,
   defineAction,
   ImpossibleOperationError,
   InvalidTestClockError,
@@ -288,5 +289,16 @@ describe('Sentry scrubbing (18.2)', () => {
     expect(
       scrubEvent({ exception: { values: [{ type: 'TypeError', value: 'x is not a function' }] } }),
     ).not.toBeNull();
+  });
+});
+
+describe('deployed version (22.6)', () => {
+  it('prefers an explicit version, then the host commit, then a placeholder', () => {
+    expect(deployedVersion({ VAULTIDE_VERSION: 'v1.2.3' })).toBe('v1.2.3');
+    expect(deployedVersion({ VERCEL_GIT_COMMIT_SHA: '8b72653abcdef0123456789' })).toBe('8b72653');
+    expect(deployedVersion({ VAULTIDE_VERSION: '', VERCEL_GIT_COMMIT_SHA: 'abcdef1234567' })).toBe(
+      'abcdef1',
+    );
+    expect(deployedVersion({})).toBe('dev');
   });
 });

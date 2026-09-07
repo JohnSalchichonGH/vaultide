@@ -1,4 +1,9 @@
-import { checkHealth, getDatabase, isDatabaseConfigured } from '@vaultide/application';
+import {
+  checkHealth,
+  deployedVersion,
+  getDatabase,
+  isDatabaseConfigured,
+} from '@vaultide/application';
 
 /**
  * `/api/health` (blueprint 4.2, 22.6).
@@ -19,7 +24,7 @@ export async function GET(): Promise<Response> {
         status: 'degraded',
         database: 'unreachable',
         checkedAt: new Date().toISOString(),
-        version: process.env.VAULTIDE_VERSION ?? 'dev',
+        version: deployedVersion(),
         detail: 'DATABASE_URL is not configured',
       },
       { status: 503, headers: { 'Cache-Control': 'no-store' } },

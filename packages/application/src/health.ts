@@ -12,12 +12,27 @@ export interface HealthReport {
   readonly version: string;
 }
 
+/**
+ * Which build is answering. Explicit when CI sets it, otherwise the commit the
+ * host deployed, so a running deployment can always be tied back to a commit
+ * without anyone remembering to configure a variable.
+ */
+export function deployedVersion(env: NodeJS.ProcessEnv = process.env): string {
+  const explicit = env['VAULTIDE_VERSION'];
+  if (explicit !== undefined && explicit !== '') return explicit;
+
+  const commit = env['VERCEL_GIT_COMMIT_SHA'];
+  if (commit !== undefined && commit !== '') return commit.slice(0, 7);
+
+  return 'dev';
+}
+
 export async function checkHealth(
   db: Database,
   options: { version?: string } = {},
 ): Promise<HealthReport> {
   const checkedAt = new Date().toISOString();
-  const version = options.version ?? process.env.VAULTIDE_VERSION ?? 'dev';
+  const version = options.version ?? deployedVersion();
 
   try {
     const alive = await ping(db);
