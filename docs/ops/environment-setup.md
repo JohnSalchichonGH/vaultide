@@ -128,17 +128,38 @@ the first backup layer (22.5).
    gh secret set SENTRY_AUTH_TOKEN --env production   # Settings → Auth Tokens
    ```
 
-5. Cron monitor for the backup: Sentry → **Crons** → Add Monitor, name
-   `vaultide-nightly-backup`, schedule `30 2 * * *`, timezone UTC, then copy its
-   check-in URL:
+5. Turn off IP storage: Settings → **Security & Privacy** → *Prevent Storing
+   of IP Addresses*. `scrubEvent` removes the `ip_address` we send, but Sentry
+   also derives a location from the connecting address at ingest, which no
+   client-side rule can reach. For a personal-finance app that would mean
+   storing roughly where each user was sitting.
+6. Cron monitor for the backup: Sentry → **Monitors** → New Monitor → **Cron**
+   → **Manually Create a Monitor**. Do not take the "Auto-Instrument with
+   Next.js" path: it derives monitors from *Vercel* cron jobs, and this backup
+   runs in GitHub Actions against the database, not in the web app (it also
+   requires Webpack, and we build with Turbopack).
+
+   - Name `vaultide-nightly-backup` — it becomes the slug in the check-in URL
+   - Crontab `30 2 * * *`, timezone UTC — matching `nightly-backup.yml`
+   - Grace period **30 min**. The default of 1 is far too tight: the runner must
+     boot, install, dump, verify and encrypt before its first check-in.
+   - Max runtime 30 min, failure tolerance 1, recovery tolerance 1. A missed
+     backup should be visible on the first miss.
+
+   Store the bare check-in URL — the workflow appends `?status=…` itself, so a
+   URL that already carries a query string breaks the check-in:
 
    ```bash
    gh secret set SENTRY_CRON_BACKUP_URL --env backup
    ```
 
-The scrubbing rules (`packages/application/src/observability.ts`) already drop
-request bodies, query strings, breadcrumbs and PII before anything is sent, and
-they are unit-tested.
+The scrubbing rules (`packages/application/src/observability.ts`) drop request
+bodies, query strings, breadcrumbs and PII before anything is sent. They are
+unit-tested, and `scripts/ops/verify-sentry.mjs` proves them against the live
+project: it builds an event carrying balances, a token, cookies, an email and an
+IP, runs the real `scrubEvent`, refuses to send if any of it survived, and posts
+what remains to EU ingest. The `verify-sentry` job in `verify-environment.yml`
+runs it weekly.
 
 ---
 
