@@ -201,8 +201,11 @@ runs it weekly.
    ```
 
    The job dumps as `app_backup`, compares every table's row count against the
-   live database, encrypts with age and uploads. A dump an RLS policy filtered
-   cannot pass that comparison, so a green run means the archive is complete.
+   live database, encrypts with age, uploads, then downloads the object back and
+   checks its sha256 against the digest taken at encryption time. A dump an RLS
+   policy filtered cannot pass the row-count comparison, and a truncated upload
+   cannot pass the digest check — so a green run means the archive is complete
+   *and* the bucket holds exactly those bytes.
 
 ---
 
