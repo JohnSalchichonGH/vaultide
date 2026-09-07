@@ -12,6 +12,7 @@
     "typecheck": "pnpm -r run typecheck",
     "test:unit": "pnpm -r run test:unit",
     "test:integration": "pnpm --filter @vaultide/db run test:integration && pnpm --filter @vaultide/application run test:integration",
+    "test:live": "node scripts/test-live.mjs",
     "test:e2e": "pnpm --filter @vaultide/e2e run test",
     "build": "pnpm --filter @vaultide/web run build",
     "dev": "pnpm --filter @vaultide/web run dev",

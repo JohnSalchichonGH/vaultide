@@ -52,6 +52,17 @@ export const REFRESH_BACKFILL_DAYS = 14;
 export const HISTORY_LEAD_DAYS = 31;
 
 /**
+ * What "first use" fetches when nothing dated has been asked for yet (10.4).
+ *
+ * Choosing a base, reporting or favourite currency makes it convertible
+ * *now*; it does not, by itself, ask for any historical figure. So that path
+ * fetches the same recent window the cron maintains and no more. The full
+ * series is fetched the first time a dated conversion actually needs it —
+ * see `ensureHistory`.
+ */
+export const CURRENT_WINDOW_DAYS = REFRESH_BACKFILL_DAYS;
+
+/**
  * The order readers prefer publishers in (10.2, 10.4).
  *
  * Lower-cased keys of Vaultide's approved provider chain, matching what the
@@ -85,6 +96,8 @@ export interface EnsureHistoryResult {
   readonly rowsInserted: number;
   /** `true` when nothing was fetched: covered already, or the provider failed. */
   readonly skipped: boolean;
+  /** The first date the fetch asked for, or `undefined` when none was made. */
+  readonly from?: string;
 }
 
 export interface SupportedCurrencyReconciliation {
@@ -99,7 +112,16 @@ export interface SupportedCurrencyReconciliation {
 
 export interface FxService {
   refreshAll(): Promise<RefreshResult>;
-  ensureHistory(currency: string, from?: string): Promise<EnsureHistoryResult>;
+  /**
+   * Make `currency` convertible for what is actually needed (10.4).
+   *
+   * `earliestNeededDate` is the earliest **financial date** a conversion has
+   * to cover. Given one, the series is fetched from a month before it, which
+   * is the lookback 10.4 requires. Omitted, there is no dated need yet — the
+   * currency has just been chosen as a preference — and only the recent window
+   * is fetched.
+   */
+  ensureHistory(currency: string, earliestNeededDate?: string): Promise<EnsureHistoryResult>;
   loadTable(
     quotes: readonly string[],
     from: string,
@@ -118,9 +140,23 @@ function todayUtc(now: () => Date): PlainDate {
   return plainDate(now().toISOString().slice(0, 10));
 }
 
+/** ISO dates compare correctly as text, so the later one is the larger one. */
+function latestOf(left: string, right: string): string {
+  return left >= right ? left : right;
+}
+
 export function createFxService(deps: FxServiceDependencies): FxService {
   const { db, provider } = deps;
   const now = deps.now ?? ((): Date => new Date());
+
+  /**
+   * Backfills running in this process right now, by currency and range.
+   *
+   * Coalescing, not caching: an entry lives only while its fetch is in flight,
+   * so nothing is ever answered from a stale result and the next call after it
+   * settles reads the database as usual.
+   */
+  const inFlight = new Map<string, Promise<EnsureHistoryResult>>();
 
   /**
    * Provider rows to storable rows.
@@ -183,15 +219,41 @@ export function createFxService(deps: FxServiceDependencies): FxService {
     },
 
     /**
-     * First use of a currency (10.4): fetch its history once, globally.
+     * Make a currency convertible for what is actually needed, once and
+     * globally (10.4).
      *
-     * Provider failure is swallowed by design — this runs inside a user's
-     * request, and a rate publisher being down must not stop somebody changing
-     * their reporting currency. Conversions are simply `Unavailable` until the
-     * next cron fills the gap (10.5). Nothing is fabricated and nothing that is
-     * already stored is touched.
+     * ## How far back
+     *
+     * `earliestNeededDate` is the earliest financial date a conversion has to
+     * cover. With one, the fetch starts a month earlier — 10.4's lookback —
+     * and never before the first day of the reference series. Without one,
+     * nothing dated has been asked for: the currency has merely been chosen as
+     * a base, reporting or favourite currency, which needs it convertible
+     * *now*, so only the recent window is fetched.
+     *
+     * 10.4 words the trigger as "on first use of a currency (a user creates a
+     * position, sets a reporting currency or favorite in that currency)" and
+     * gives `from` as "the user's earliest financial date - 31 days, or
+     * 1999-01-04 when unknown". "Unknown" is the case where dated data exists
+     * and its start cannot be determined — not the case where there is no
+     * dated data at all, which is every currency preference in Phase 1. Read
+     * the other way it would spend a 27-year request per bank on a settings
+     * save with nothing to convert, and make the user wait for it; the first
+     * dated conversion fetches exactly the same rows, at the point they are
+     * first worth anything. See ADR 0002 decision 17.
+     *
+     * ## Failure
+     *
+     * Swallowed by design — this runs inside a user's request, and a rate
+     * publisher being down must not stop somebody changing their reporting
+     * currency. Conversions are simply `Unavailable` until the next cron fills
+     * the gap (10.5). Nothing is fabricated and nothing already stored is
+     * touched.
      */
-    async ensureHistory(currency: string, from?: string): Promise<EnsureHistoryResult> {
+    async ensureHistory(
+      currency: string,
+      earliestNeededDate?: string,
+    ): Promise<EnsureHistoryResult> {
       const quote = currency.trim().toUpperCase();
       if (quote === PIVOT) return { currency: quote, rowsInserted: 0, skipped: true };
 
@@ -200,7 +262,9 @@ export function createFxService(deps: FxServiceDependencies): FxService {
 
       const to = todayUtc(now);
       const wantedFrom =
-        from === undefined ? ECB_SERIES_START : addDays(plainDate(from), -HISTORY_LEAD_DAYS);
+        earliestNeededDate === undefined
+          ? addDays(to, -CURRENT_WINDOW_DAYS)
+          : latestOf(addDays(plainDate(earliestNeededDate), -HISTORY_LEAD_DAYS), ECB_SERIES_START);
 
       // Already covered: the stored series starts at or before what was asked
       // for, and the daily cron keeps the recent end fresh. Nothing to do, and
@@ -210,27 +274,54 @@ export function createFxService(deps: FxServiceDependencies): FxService {
         return { currency: quote, rowsInserted: 0, skipped: true };
       }
 
-      try {
-        const rows = await provider.fetchTimeSeries(PIVOT, [quote], wantedFrom, to);
-        const rowsInserted = await appendFxRates(db, toInserts(rows, supported, now()));
-        deps.logger?.info(
-          { action: 'fx.ensureHistory', currency: quote, rows_inserted: rowsInserted },
-          'fx_history_backfilled',
-        );
-        return { currency: quote, rowsInserted, skipped: false };
-      } catch (error) {
-        const status = error instanceof FxProviderError ? error.status : undefined;
-        deps.logger?.warn(
-          {
-            action: 'fx.ensureHistory',
-            currency: quote,
-            error_code: 'FX_PROVIDER_FAILURE',
-            provider_status: status ?? 'unreachable',
-          },
-          'fx_history_backfill_failed',
-        );
-        return { currency: quote, rowsInserted: 0, skipped: true };
-      }
+      // One fetch per currency and range at a time. Three browsers finishing
+      // onboarding together, or one page issuing two conversions, would
+      // otherwise ask a free public provider the same question at the same
+      // moment — a stampede upstream answers by stalling all of them.
+      const key = `${quote}|${wantedFrom}|${to}`;
+      const running = inFlight.get(key);
+      if (running !== undefined) return running;
+
+      const run = async (): Promise<EnsureHistoryResult> => {
+        try {
+          const rows = await provider.fetchTimeSeries(PIVOT, [quote], wantedFrom, to);
+          const rowsInserted = await appendFxRates(db, toInserts(rows, supported, now()));
+          deps.logger?.info(
+            {
+              action: 'fx.ensureHistory',
+              currency: quote,
+              from: wantedFrom,
+              rows_inserted: rowsInserted,
+            },
+            'fx_history_backfilled',
+          );
+          return { currency: quote, rowsInserted, skipped: false, from: wantedFrom };
+        } catch (error) {
+          const status = error instanceof FxProviderError ? error.status : undefined;
+          deps.logger?.warn(
+            {
+              action: 'fx.ensureHistory',
+              currency: quote,
+              from: wantedFrom,
+              error_code: 'FX_PROVIDER_FAILURE',
+              provider_status: status ?? 'unreachable',
+            },
+            'fx_history_backfill_failed',
+          );
+          return { currency: quote, rowsInserted: 0, skipped: true, from: wantedFrom };
+        }
+      };
+
+      // `.finally` rather than a `finally` block inside: its callback always
+      // runs in a later microtask, so the entry is registered before it can be
+      // removed even when the provider settles without ever suspending — which
+      // a stub does, and which would otherwise leave a finished result in the
+      // map for every later caller to receive.
+      const attempt = run().finally(() => {
+        inFlight.delete(key);
+      });
+      inFlight.set(key, attempt);
+      return attempt;
     },
 
     /** Read the rows one request needs into the pure lookup table (10.1). */

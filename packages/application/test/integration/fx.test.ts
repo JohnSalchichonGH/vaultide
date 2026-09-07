@@ -10,6 +10,7 @@ import {
 } from '../../src/fx/service';
 import { FxProviderError } from '../../src/fx/provider';
 import { supportedFxCurrencyCodes } from '../../src/currencies/service';
+import { readSettings, updateSettings } from '../../src/settings/service';
 import { provisionUser } from '../../src/users/provisioning';
 
 /**
@@ -356,6 +357,168 @@ describe('ensureHistory — first use of a currency (10.4)', () => {
     harness.fxProvider.failWith(null);
     const retry = await fx.ensureHistory('PLN', '2026-06-01');
     expect(retry.rowsInserted).toBeGreaterThan(0);
+  });
+});
+
+describe('history is fetched on demand, not on preference (10.4, 10.5)', () => {
+  /**
+   * The distinction this suite exists to hold:
+   *
+   *  - choosing a base, reporting or favourite currency asks for nothing
+   *    dated. It needs the currency to be valid, currently supported, and
+   *    convertible *now*.
+   *  - a dated conversion is what needs history, and it says how far back.
+   *
+   * Read the other way — every preference save fetching 1999 to today from two
+   * banks — a settings save waits on tens of thousands of rows it has nothing
+   * to convert. See ADR 0002 decision 17.
+   */
+
+  const PREFERENCE_USER = '44444444-4444-4444-8444-444444444444';
+
+  beforeEach(async () => {
+    await withoutUser(harness.db, async (tx) => {
+      await tx.execute(
+        sql`INSERT INTO "user" (id, name, email, email_verified)
+            VALUES (${PREFERENCE_USER}, 'Preference Picker', 'preference-picker@example.test', true)
+            ON CONFLICT (id) DO NOTHING`,
+      );
+    });
+    await provisionUser(harness.db, { userId: PREFERENCE_USER });
+  });
+
+  it('changing a reporting currency asks for days of rates, not decades', async () => {
+    const before = await readSettings(harness.db, PREFERENCE_USER);
+
+    const started = Date.now();
+    const after = await updateSettings(harness.services.settings, PREFERENCE_USER, before.version, {
+      reportingCurrency: 'SEK',
+    });
+
+    expect(after.reportingCurrency).toBe('SEK');
+
+    // One request, and its range is the recent window — not the reference
+    // series' first day.
+    const call = harness.fxProvider.calls.filter((entry) => entry.quotes.includes('SEK')).at(-1);
+    expect(call?.method).toBe('fetchTimeSeries');
+    expect(call?.from).not.toBe('1999-01-04');
+    const days =
+      (Date.parse(`${String(call?.to)}T00:00:00Z`) - Date.parse(`${String(call?.from)}T00:00:00Z`)) /
+      86_400_000;
+    expect(days).toBeLessThanOrEqual(REFRESH_BACKFILL_DAYS);
+
+    // And it was prompt. The bound is loose on purpose: it is here to catch a
+    // decades-long fetch creeping back in, not to measure a database.
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
+  it('a favourite currency is the same story: current rates, no history', async () => {
+    const before = await readSettings(harness.db, PREFERENCE_USER);
+    await updateSettings(harness.services.settings, PREFERENCE_USER, before.version, {
+      favoriteCurrencies: ['GBP', 'JPY'],
+    });
+
+    for (const quote of ['GBP', 'JPY']) {
+      const call = harness.fxProvider.calls.filter((entry) => entry.quotes.includes(quote)).at(-1);
+      expect(call?.from).not.toBe('1999-01-04');
+      expect(await datesFor(quote)).not.toHaveLength(0);
+    }
+  });
+
+  it('a provider outage cannot roll back the settings change (10.5)', async () => {
+    const before = await readSettings(harness.db, PREFERENCE_USER);
+    harness.fxProvider.failWith(new FxProviderError('stub', 503));
+
+    const after = await updateSettings(harness.services.settings, PREFERENCE_USER, before.version, {
+      reportingCurrency: 'CHF',
+    });
+
+    // The user's change stands, and is still there on a fresh read.
+    expect(after.reportingCurrency).toBe('CHF');
+    expect((await readSettings(harness.db, PREFERENCE_USER)).reportingCurrency).toBe(
+      'CHF',
+    );
+    // Nothing was written and nothing was invented; conversions are simply
+    // Unavailable until the next cron.
+    expect(await datesFor('CHF')).toHaveLength(0);
+  });
+
+  it('a dated conversion need is what fetches history, with 10.4 lead time', async () => {
+    const fx = serviceWithClock();
+
+    // The preference path first: the recent window only.
+    await fx.ensureHistory('DKK');
+    const preference = await datesFor('DKK');
+    expect(preference.every((date) => date > '2026-08-01')).toBe(true);
+
+    // Now something dated actually needs converting.
+    const backfill = await fx.ensureHistory('DKK', '2026-06-01');
+    expect(backfill.skipped).toBe(false);
+    expect(backfill.from).toBe('2026-05-01');
+    expect(backfill.rowsInserted).toBeGreaterThan(0);
+  });
+
+  it('and the requested history is then there to convert with', async () => {
+    const fx = serviceWithClock();
+    await fx.ensureHistory('DKK', '2026-06-01');
+
+    const table = await fx.loadTable(['DKK'], '2026-05-01', TODAY, plainDate(TODAY));
+    // 1 June 2026 is a Monday, so the rate for the earliest needed date is the
+    // day's own, not a carried one.
+    const rate = table.rateOn('DKK', plainDate('2026-06-01'));
+    expect(isUnavailable(rate)).toBe(false);
+    if (!isUnavailable(rate)) expect(rate.exact).toBe(true);
+
+    // The lead time is real: a date a fortnight before the earliest needed one
+    // converts too, which is what 10.4 asks the buffer for.
+    expect(isUnavailable(table.rateOn('DKK', plainDate('2026-05-18')))).toBe(false);
+  });
+
+  it('repeating the backfill inserts nothing and asks nothing', async () => {
+    const fx = serviceWithClock();
+    await fx.ensureHistory('DKK', '2026-06-01');
+
+    const callsBefore = harness.fxProvider.calls.length;
+    const again = await fx.ensureHistory('DKK', '2026-06-01');
+
+    expect(again.skipped).toBe(true);
+    expect(again.rowsInserted).toBe(0);
+    expect(harness.fxProvider.calls.length).toBe(callsBefore);
+  });
+
+  it('never asks for a date before the reference series began', async () => {
+    const fx = serviceWithClock();
+    const result = await fx.ensureHistory('DKK', '1980-01-01');
+    expect(result.from).toBe('1999-01-04');
+  });
+
+  it('coalesces concurrent identical backfills into one provider call', async () => {
+    const fx = serviceWithClock();
+    // A publisher that takes a moment, so all three are genuinely in flight
+    // together — the case coalescing exists for. Without it the second and
+    // third would simply find the rows already stored, which proves nothing.
+    harness.fxProvider.setLatency(50);
+    const callsBefore = harness.fxProvider.calls.length;
+
+    // Three requests arriving together — three browsers finishing onboarding,
+    // or one page issuing several conversions. Upstream answers a stampede of
+    // identical long-range requests by stalling all of them, so only one goes.
+    const results = await Promise.all([
+      fx.ensureHistory('HUF', '2026-06-01'),
+      fx.ensureHistory('HUF', '2026-06-01'),
+      fx.ensureHistory('HUF', '2026-06-01'),
+    ]);
+
+    expect(harness.fxProvider.calls.length - callsBefore).toBe(1);
+    // One fetch, one answer: nobody is told a different story about it.
+    expect(results.every((result) => result.rowsInserted === results[0]?.rowsInserted)).toBe(true);
+    expect(results[0]?.rowsInserted).toBeGreaterThan(0);
+    harness.fxProvider.setLatency(0);
+
+    // Coalescing, not caching: once it has settled the next call reads the
+    // database again and finds the range already covered.
+    const later = await fx.ensureHistory('HUF', '2026-06-01');
+    expect(later.skipped).toBe(true);
   });
 });
 

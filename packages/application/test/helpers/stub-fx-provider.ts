@@ -28,6 +28,11 @@ export interface StubFxProvider extends FxProvider {
   skipDates(dates: readonly string[]): void;
   /** Publish an implausible rate for a currency, to prove it is refused. */
   poison(quote: string, rate: string): void;
+  /**
+   * Answer after `ms`, so several callers are in flight at once — the case
+   * request coalescing exists for.
+   */
+  setLatency(ms: number): void;
   /** Override the list `supportedCurrencies()` reports for the chain. */
   setSupportedCurrencies(codes: readonly string[]): void;
   reset(): void;
@@ -100,6 +105,7 @@ export function createStubFxProvider(): StubFxProvider {
   const poisoned = new Map<string, string>();
   let supported = [...DEFAULT_SUPPORTED];
   let chain = [...DEFAULT_CHAIN];
+  let latencyMs = 0;
 
   function rowsFor(quotes: readonly string[], from: string, to: string): ProviderRateRow[] {
     const rows: ProviderRateRow[] = [];
@@ -126,6 +132,14 @@ export function createStubFxProvider(): StubFxProvider {
     if (failure !== null) throw failure;
   }
 
+  /** Resolve now, or after the configured latency. */
+  function answer(rows: ProviderRateRow[]): Promise<ProviderRateRow[]> {
+    if (latencyMs <= 0) return Promise.resolve(rows);
+    return new Promise((resolve) => setTimeout(() => {
+      resolve(rows);
+    }, latencyMs));
+  }
+
   return {
     id: 'stub',
     calls,
@@ -138,6 +152,9 @@ export function createStubFxProvider(): StubFxProvider {
     },
     poison(quote, rate) {
       poisoned.set(quote, rate);
+    },
+    setLatency(ms) {
+      latencyMs = ms;
     },
     setSupportedCurrencies(codes) {
       supported = [...codes];
@@ -152,6 +169,7 @@ export function createStubFxProvider(): StubFxProvider {
       poisoned.clear();
       supported = [...DEFAULT_SUPPORTED];
       chain = [...DEFAULT_CHAIN];
+      latencyMs = 0;
     },
 
     supportedCurrencies(): Promise<string[]> {
@@ -170,7 +188,7 @@ export function createStubFxProvider(): StubFxProvider {
     fetchTimeSeries(_base, quotes, from, to): Promise<ProviderRateRow[]> {
       calls.push({ method: 'fetchTimeSeries', quotes: [...quotes], from, to });
       guard();
-      return Promise.resolve(rowsFor(quotes, from, to));
+      return answer(rowsFor(quotes, from, to));
     },
   };
 }

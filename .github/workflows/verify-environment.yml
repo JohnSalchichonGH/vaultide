@@ -73,6 +73,42 @@ jobs:
       - name: Compare the seed with the rate provider
         run: pnpm db:verify-currencies
 
+  verify-fx-adapter:
+    name: The FX adapter still speaks to Frankfurter v2
+    runs-on: ubuntu-latest
+    # The only suite that talks to the public rate service (blueprint 10.1).
+    # It lives here rather than in CI on purpose: the ordinary browser matrix
+    # runs against a deterministic fixture and the integration suite against a
+    # stub, so a transient upstream slowdown can never make a pull request go
+    # red. What is left is the question only the live service can answer, and
+    # it is asked once a week, serially, not once per browser project.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: vaultide_admin
+          POSTGRES_PASSWORD: vaultide_admin
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U vaultide_admin"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Adapter compatibility against the live v2 API
+        env:
+          TEST_DATABASE_URL_ADMIN: postgres://vaultide_admin:vaultide_admin@127.0.0.1:5432/postgres
+        run: pnpm run test:live
+
   verify-sentry:
     name: Sentry receives scrubbed events
     runs-on: ubuntu-latest

@@ -286,6 +286,102 @@ chain, is a migration and a decision, not a background job's side effect.
 
 ---
 
+## Where the blueprint's wording had to be read carefully
+
+### 17. "First use of a currency" means the first dated conversion, not the first preference
+
+10.4 says:
+
+> **On first use of a currency** (a user creates a position, sets a reporting
+> currency or favorite in that currency): `ensureHistory(currency, from)` runs
+> in that user's request and fetches the full history from `from` (the user's
+> earliest financial date − 31 days, or 1999-01-04 when unknown) to today.
+
+Taken literally — preference selection, and `from` = 1999-01-04 because a Phase
+1 user has no financial dates — every currency a user picks in settings costs a
+27-year daily series **per approved bank**, inside the request that saves the
+setting. Measured against the live service: about 14,200 rows, and under the
+end-to-end suite's three parallel projects, six concurrent long-range requests
+that upstream answers by stalling. Every one of them hit the adapter's 20-second
+timeout, the user's save appeared to hang, and the browser matrix failed for a
+reason that had nothing to do with Vaultide.
+
+**This is the one place two parts of the blueprint pull against each other**, so
+it is recorded rather than quietly resolved:
+
+- 10.4's *trigger* list includes setting a reporting currency or favourite.
+- 10.4's *range*, and 10.5's whole posture, are about having rates for
+  **dated financial data**: `from` is defined relative to "the user's earliest
+  financial date", and a conversion with no rate is `Unavailable` rather than a
+  guess. Phase 1 has no positions, valuations or entries at all — §29.1 gives
+  it settings, categories and FX plumbing, and the first dated financial record
+  arrives in Phase 2.
+
+So "the user's earliest financial date is unknown" is read as *there is dated
+data whose start cannot be determined*, not *there is no dated data*. A
+preference is not a request to convert anything; it is a statement about how
+figures will be shown once there are figures.
+
+**What the code does now.** `ensureHistory(currency, earliestNeededDate?)`:
+
+- **with** an earliest needed date — a dated conversion — fetches from a month
+  before it, 10.4's lookback, and never before 1999-01-04;
+- **without** one — a base, reporting or favourite currency being chosen —
+  fetches only the window the cron maintains (14 days), so the currency is
+  convertible now and nothing historical is downloaded on spec.
+
+Everything else 10.4 asks for is untouched: the fetch still happens on first
+use, still in the user's request, still once and globally, still swallowing
+provider failure, and the rows are still immutable and idempotent. Phase 2's
+first dated conversion fetches exactly the rows the literal reading would have
+fetched, at the point they are first worth something.
+
+Measured against the live chain afterwards:
+
+```text
+preference (no dated need)   ensureHistory(SEK)                316 ms, 22 rows, from 2026-08-24
+dated need                   ensureHistory(SEK, 2026-05-10)     39 ms, 192 rows, from 2026-04-09
+the same dated need, again                                       2 ms, 0 rows, skipped
+three concurrent, one currency                                 637 ms, one fetch, one answer
+```
+
+### 18. Concurrent identical backfills are coalesced
+
+A small map of in-flight fetches keyed by currency and range. Three browsers
+finishing onboarding at once, or one page issuing several conversions, would
+otherwise ask a free public provider the same question simultaneously — the
+stampede that upstream answers by stalling every caller.
+
+It is **coalescing, not caching**: an entry lives only while its fetch is in
+flight, so nothing is ever answered from a stale result, and the next call
+after it settles reads the database as usual. It is a mitigation, not the fix —
+the fix is decision 17, which stopped the enormous requests being made at all.
+
+### 19. The browser matrix runs against an FX fixture; the real service is verified separately
+
+`FX_PROVIDER=fixture` swaps in a deterministic publisher — no network, weekdays
+only, both approved banks, exact 12-decimal strings — behind the same gate as
+the capturing mailer and the test clock (`areTestEndpointsEnabled`), which a
+production deployment refuses outright. A production-like server asked for it
+and was refused, in the log as `fx_fixture_provider_refused`, while
+`/api/test/fx-provider` returned 404.
+
+Nothing was weakened to achieve that: the suite still signs up, verifies,
+completes onboarding, picks base and reporting currencies, checks persistence
+across a sign-out, asserts crypto and BGN are absent from the picker, and
+proves the conversion semantics it proved before. The substitution is at the
+same IO boundary the integration suite already substitutes at (10.1), and the
+suite asserts the substitution is real rather than assuming it.
+
+Adapter compatibility with the live service is not lost, it is **moved**: `pnpm
+test:live` runs one serial suite against Frankfurter v2 —
+`GET /v2/currencies` against the committed seed, ECB and BDI pinned and
+attributed, exact decimals checked against the raw response body, the current
+refresh, idempotence, weekend gaps, and a dated backfill — once, rather than
+once per browser project.
+
+---
+
 ## Defects found while implementing Phase 1
 
 - **Better Auth's origin check was silently off in tests.** See decision 5. The
@@ -298,13 +394,17 @@ chain, is a migration and a decision, not a background job's side effect.
   `withUser` — well defined for a deleted user's id, since the policy compares
   the column with the setting and does not care whether that user still exists.
 - **The first-use backfill made the user wait for both banks in turn.** A
-  currency chosen during onboarding triggers `ensureHistory`, which asks for a
+  currency chosen during onboarding triggers `ensureHistory`, which asked for a
   27-year daily series; with one request per bank issued sequentially the
   browser waited for the sum of two cold upstream fetches and the onboarding
   end-to-end test timed out. The chain is now fetched concurrently — bounded by
   the slowest bank, not their sum — and the order of the results, which is the
   source preference, is preserved. Found by the E2E suite, not by a unit test:
   only the real API is slow.
+
+  Concurrency was not enough, and the rest of the answer is decisions 17 to 19:
+  the request was too large to be made at all on a settings save, and the
+  matrix should never have depended on a public service's latency.
 - **A stray directory tree.** `packages/db/apps/web/...` was created by a shell
   whose working directory had moved, and dependency-cruiser reported it as a
   real boundary violation (`db` importing `application`). It was a real file,

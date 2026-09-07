@@ -3,6 +3,7 @@ import { createAuth, type Auth } from './auth/config';
 import { areTestEndpointsEnabled } from './context';
 import { getDatabase } from './database';
 import { createFxService, type FxService } from './fx/service';
+import { createFixtureFxProvider } from './fx/fixture';
 import { createFrankfurterProvider } from './fx/frankfurter';
 import type { FxProvider } from './fx/provider';
 import { createLogger, type Logger } from './logging';
@@ -60,6 +61,34 @@ function rateLimitFromEnv(env: NodeJS.ProcessEnv): boolean | undefined {
   return areTestEndpointsEnabled(env) ? false : undefined;
 }
 
+/**
+ * The rate publisher (10.1).
+ *
+ * Normally the Frankfurter v2 adapter over the approved `ECB -> BDI` chain.
+ * `FX_PROVIDER=fixture` swaps in the deterministic fixture instead, so the
+ * browser matrix does not depend on a free public service being fast — but
+ * only where the test capabilities are enabled, which is refused outright on a
+ * production deployment (21.5). Asking for it anywhere else is ignored and
+ * logged, rather than silently honoured.
+ */
+function fxProviderFromEnv(env: NodeJS.ProcessEnv, logger: Logger): FxProvider {
+  if (env['FX_PROVIDER'] === 'fixture') {
+    if (areTestEndpointsEnabled(env)) return createFixtureFxProvider();
+    logger.warn(
+      { fx_provider: 'fixture' },
+      'fx_fixture_provider_refused',
+    );
+  }
+
+  return createFrankfurterProvider({
+    ...(env['FX_PROVIDER_URL'] === undefined ? {} : { baseUrl: env['FX_PROVIDER_URL'] }),
+    onRejected: (reason) => {
+      // The reason names a currency and a date, never a rate (18.2).
+      logger.warn({ route: '/api/cron/fx-refresh', reason }, 'fx_row_rejected');
+    },
+  });
+}
+
 function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name];
   if (value === undefined || value === '') {
@@ -90,15 +119,7 @@ export function createServices(overrides: ServiceOverrides = {}): Services {
   const baseURL = requireEnv(env, 'BETTER_AUTH_URL');
   const appUrl = env['APP_URL'] ?? baseURL;
 
-  const fxProvider =
-    overrides.fxProvider ??
-    createFrankfurterProvider({
-      ...(env['FX_PROVIDER_URL'] === undefined ? {} : { baseUrl: env['FX_PROVIDER_URL'] }),
-      onRejected: (reason) => {
-        // The reason names a currency and a date, never a rate (18.2).
-        logger.warn({ route: '/api/cron/fx-refresh', reason }, 'fx_row_rejected');
-      },
-    });
+  const fxProvider = overrides.fxProvider ?? fxProviderFromEnv(env, logger);
 
   const fx = createFxService({ db, provider: fxProvider, logger });
 
@@ -123,11 +144,12 @@ export function createServices(overrides: ServiceOverrides = {}): Services {
     fxProvider,
     settings: {
       db,
-      ensureCurrencyHistory: async (currencies) => {
-        // First use of a currency backfills its history once, globally (10.4).
-        // Sequential rather than parallel: this is a courtesy to a free public
-        // provider, and the user's action does not wait on the result being
-        // complete — `ensureHistory` already swallows provider failure.
+      ensureCurrentRates: async (currencies) => {
+        // Choosing a currency makes it convertible now; it asks for nothing
+        // dated, so no history is fetched here (10.4, ADR 0002 decision 17).
+        // Sequential rather than parallel: a courtesy to a free public
+        // provider, and `ensureHistory` already swallows provider failure, so
+        // the settings write the caller just made cannot be undone by it.
         for (const currency of currencies) await fx.ensureHistory(currency);
       },
     },

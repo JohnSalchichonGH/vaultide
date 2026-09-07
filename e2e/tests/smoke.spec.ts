@@ -133,6 +133,18 @@ test.describe('dates are never in the future', () => {
 });
 
 test.describe('operations', () => {
+  test('runs against the FX fixture, not the public rate service', async ({ request }) => {
+    // The matrix must not depend on a free public API being fast: three
+    // projects in parallel, each picking a currency, is exactly the concurrent
+    // long-range request pattern that makes Frankfurter stall. Asserted rather
+    // than assumed, because a silent fall-back to the real adapter would show
+    // up as intermittent failures somewhere else entirely.
+    const response = await request.get('/api/test/fx-provider');
+    expect(response.status()).toBe(200);
+    const body = (await response.json()) as { provider: string };
+    expect(body.provider).toBe('fixture');
+  });
+
   test('serves the health endpoint', async ({ request }) => {
     const response = await request.get('/api/health');
     const body = (await response.json()) as { status: string; database: string; version: string };

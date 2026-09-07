@@ -37,14 +37,15 @@ from zero by the same scripts an operator runs (admin bootstrap → migrations a
 | Suite | Command | Result |
 |---|---|---|
 | Lint + money rule | `pnpm -r run lint` | **pass**, 6 packages |
-| Module boundaries | `pnpm run lint:boundaries` | **pass** — no violations, 186 modules, 416 dependencies |
+| Module boundaries | `pnpm run lint:boundaries` | **pass** — no violations, 189 modules, 428 dependencies |
 | Types | `pnpm -r run typecheck` | **pass**, 6 packages |
 | Unit + property | `pnpm -r run test:unit` | **175 passed** — finance 110, application 36, validation 16, web 10, db 3 |
 | Integration (db) | `pnpm --filter @vaultide/db run test:integration` | **61 passed** (6 files) |
-| Integration (application) | `pnpm --filter @vaultide/application run test:integration` | **70 passed** (4 files) |
+| Integration (application) | `pnpm --filter @vaultide/application run test:integration` | **78 passed** (4 files) |
 | Build | `pnpm run build` | **pass** — 16 routes |
-| End to end | `pnpm test:e2e` | **36 passed** — 12 specs × chromium desktop, webkit desktop, chromium mobile |
+| End to end | `pnpm test:e2e` | **39 passed** — 13 specs × chromium desktop, webkit desktop, chromium mobile, against the FX fixture and no public network |
 | Finance coverage gate | `vitest run --coverage` | **pass** — statements 99.56 %, branches 97.88 %, functions 100 %, lines 99.74 %; §21's gate is ≥ 95 % lines and branches |
+| Real provider (separate, serial) | `pnpm test:live` | **6 passed** in 4.7 s against the live Frankfurter v2 |
 | Secret scan | `gitleaks --config .gitleaks.toml` | **pass** — no leaks |
 | Currency reconciliation | `pnpm db:verify-currencies` | **pass** — 150 = 150, in sync, against the live approved chain (`ECB -> BDI`) |
 
@@ -250,9 +251,16 @@ number's literal digits: `JSON.parse` would hand back a float64, and
   currency in `currencies` with `is_fx_supported`. It delivers the latest fixing
   and fills any business day a previous run missed, in the same request. Runs
   with no user context.
-- `ensureHistory(currency, from)` — one call, once, globally, on first use of a
-  currency; from `1999-01-04` or 31 days before the caller's earliest date.
-  Skipped when the stored series already reaches back far enough.
+- `ensureHistory(currency, earliestNeededDate?)` — one call, once, globally,
+  on first use of a currency. **What "first use" means is the corrected part**
+  (ADR 0002 decision 17): with an earliest needed date — a dated conversion —
+  it fetches from a month before it, 10.4's lookback, never before 1999-01-04;
+  without one — a base, reporting or favourite currency merely being chosen —
+  it fetches only the 14-day window the cron maintains, because a preference
+  asks for nothing dated and Phase 1 has no dated financial data at all.
+  Skipped when the stored series already reaches back far enough. Concurrent
+  identical fetches are coalesced, so a stampede of the same request cannot
+  reach the provider.
 - `loadTable(quotes, from, to, today)` — reads rows into the pure `FxTable`.
 - Failure: a provider outage during `ensureHistory` is swallowed — it runs
   inside a user's request and must not undo what they did — and logged;
@@ -263,6 +271,28 @@ number's literal digits: `JSON.parse` would hand back a float64, and
   `(base, quote, rate_date, source)`. A second refresh inserts zero rows.
 - Implausible rates (≤ 0, or above 10⁶) are refused by the adapter and, as a
   last line, by the `CHECK` constraint.
+
+### Where each suite gets its rates
+
+| Suite | Publisher | Why |
+|---|---|---|
+| Unit (`frankfurter.test.ts`) | Recorded v2 bodies | Attribution, eligibility, refusals and digit fidelity must hold on a runner with no network. |
+| Integration (`fx.test.ts`) | Stub | Gap filling, failure tolerance, immutability and idempotence are rules about our code, not about the ECB. |
+| End to end | **Deterministic fixture** (`FX_PROVIDER=fixture`) | Three browser projects each picking a currency is several concurrent long-range requests to a free public API, which stalls under exactly that pattern. Measured: six concurrent 27-year requests took nine seconds each or timed out; one alone takes tens of milliseconds. |
+| `pnpm test:live` | **The real Frankfurter v2** | The one question only the live service can answer — does the adapter still speak to v2? Once, serially, on demand. |
+
+Nothing was weakened to remove the live dependency. The matrix still signs up,
+verifies, completes onboarding, picks base and reporting currencies, checks
+they survive a sign-out, asserts crypto and BGN are absent from the picker, and
+proves the same conversion semantics. The fixture is substituted at the same IO
+boundary the integration suite already substitutes at (10.1), behind the same
+gate as the capturing mailer, and `smoke.spec.ts` asserts the substitution is
+real — `/api/test/fx-provider` must answer `fixture` — rather than assuming it.
+A production deployment refuses both the gate and the route.
+
+`pnpm test:live` covers `GET /v2/currencies` against the committed seed, ECB
+and BDI pinned and attributed, exact decimals checked against the raw response
+body, the current refresh, idempotence, weekend gaps and a dated backfill.
 
 ### Supported-currency reconciliation
 
@@ -329,7 +359,8 @@ chain, is a migration and a decision, not a background job's side effect.
 | Sentry cron monitor | The route checks in `in_progress` → `ok`/`error` at `SENTRY_CRON_FX_URL` (22.6). A monitoring failure never fails the refresh, and is logged as a warning rather than swallowed — the mistake the backup job made and fixed. |
 | Production migrations | `deploy-production.yml` already runs `db:migrate` and `db:seed-currencies` as `app_owner` before the deploy hook. Migrations `0002` and `0003` need no workflow change. |
 | Currency reconciliation | New job in `verify-environment.yml`, weekly and on demand. |
-| Env var names | `.env.example` documents `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `EMAIL_API_KEY`, `EMAIL_FROM`, `EMAIL_API_URL`, `EMAIL_PROVIDER_ID`, `CRON_SECRET`, `FX_PROVIDER_URL`, `SENTRY_CRON_FX_URL`. Names only, as always. |
+| Real-provider adapter check | `verify-fx-adapter` in `verify-environment.yml`, weekly and on demand: `pnpm test:live` against Frankfurter v2. Deliberately not in CI — a pull request must not go red because a free public API was slow. |
+| Env var names | `.env.example` documents `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `EMAIL_API_KEY`, `EMAIL_FROM`, `EMAIL_API_URL`, `EMAIL_PROVIDER_ID`, `CRON_SECRET`, `FX_PROVIDER_URL`, `FX_PROVIDER`, `SENTRY_CRON_FX_URL`. Names only, as always. |
 | Runbooks | `docs/ops/environment-setup.md` §5 covers auth secrets, the email decision and the cron, with the verification commands. `docs/ops/secrets.md` covers rotation. |
 | Privileged credentials in Vercel | Still none. The runtime holds `DATABASE_URL` (`app_user`) only. |
 
@@ -341,34 +372,50 @@ database provisioned from zero, and driven with `curl`:
 
 ```text
 GET /api/test/mailbox?to=…                              404   (test capabilities off)
+GET /api/test/fx-provider                               404   (test capabilities off)
 GET /api/cron/fx-refresh            (no secret)         404
-GET /api/cron/fx-refresh            (wrong secret)      404
 GET /api/cron/fx-refresh            (bearer secret)     {"status":"ok","currencies":149,
-                                                         "rowsFetched":1958,"rowsInserted":1936,
+                                                         "rowsFetched":1958,"rowsInserted":1958,
                                                          "from":"2026-08-24","to":"2026-09-07"}
 GET /api/cron/fx-refresh            (again)             rowsFetched: 1958, rowsInserted: 0
 ```
 
-149 currencies is the supported set of 150 minus the EUR pivot, which is 1 by
-definition and never stored. 1,958 rows fetched for eleven business days is the
-two banks' different coverage — roughly 11 × (29 ECB + 149 BDI) — and the 22
-rows the first run did not insert are the GBP days the end-to-end suite's
-first-use backfill had already stored. The second run inserting **nothing** is
-idempotence by constraint, not by a check.
+The server was started with `FX_PROVIDER=fixture` **deliberately**, to prove it
+is refused where the test capabilities are off. It was, in the log as
+`fx_fixture_provider_refused`, and every rate above came from the live chain.
 
-Afterwards the database held **16,110 rows across 149 currencies, 1999-01-04 to
+149 currencies is the supported set of 150 minus the EUR pivot, which is 1 by
+definition and never stored. 1,958 rows for eleven business days is the two
+banks' different coverage — roughly 11 × (29 ECB + 149 BDI). The second run
+inserting **nothing** is idempotence by constraint, not by a check.
+
+Then the two `ensureHistory` paths, against the same live chain:
+
+```text
+preference (no dated need)   ensureHistory(SEK)              316 ms   22 rows   from 2026-08-24
+dated need                   ensureHistory(SEK, 2026-05-10)   39 ms  192 rows   from 2026-04-09
+the same dated need, again                                     2 ms    0 rows   skipped
+three concurrent, one currency (NOK)                         637 ms  one fetch, one answer
+```
+
+The first line is the correction of ADR 0002 decision 17: choosing a reporting
+currency fetches eleven business days from two banks, not 1999 to today. The
+second shows the lookback is real — 2026-05-10 minus 31 days is 2026-04-09 —
+and that a dated need still gets exactly what it asks for. The fourth is the
+coalescing: three simultaneous identical requests, one call to the provider.
+
+Afterwards the database held **2,342 rows across 149 currencies, 2026-04-09 to
 2026-09-07**, attributed to the two banks that published them:
 
 ```text
 source   rows    quotes   latest
-bdi      8,715   149      2026-09-07
-ecb      7,395    29      2026-09-07
+bdi      1,831   149      2026-09-07
+ecb        511    29      2026-09-07
 ```
 
-The ECB's 29 against BDI's 149 is the whole reason for the chain, and the
-27-year range is the first-use history backfill: the end-to-end run chose GBP
-as a reporting currency, which fetched **14,174 rows — 7,087 from each bank**,
-in one call each, back to 1999-01-04.
+The ECB's 29 against BDI's 149 is the whole reason for the chain. The range
+starting in April rather than 1999 is the point of the correction: nothing
+fetched decades of history, because nothing asked for it.
 
 Spot checks against the live API:
 
@@ -383,9 +430,12 @@ Spot checks against the live API:
   true against real data rather than only against a fixture.
 - **EUR is never stored against itself**: zero rows where `quote = 'EUR'`.
 
-In the same connection, with no user context — the context the cron runs in —
-`user_settings`, `categories` and `tags` all counted **0** while nine end-to-end
-accounts existed.
+The refresh ran with no user context at all, and in that same connection
+`user_settings`, `categories` and `tags` all counted **0**. This database had no
+accounts in it, so the assertion that matters — those counts staying at zero
+*while real users exist* — is the integration suite's, against a provisioned
+user: `fx.test.ts` → *completes with no session and cannot see any user row
+while doing so*.
 
 ### Not done: the production deployment
 

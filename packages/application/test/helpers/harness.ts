@@ -14,6 +14,7 @@ import {
 import { createServices, type Services } from '../../src/services';
 import { createCapturingMailer, type CapturingMailer } from '../../src/mail/providers';
 import { createLogger } from '../../src/logging';
+import type { FxProvider } from '../../src/fx/provider';
 import { createStubFxProvider, type StubFxProvider } from './stub-fx-provider';
 
 /**
@@ -34,6 +35,11 @@ export interface Harness {
   readonly services: Services;
   readonly db: Database;
   readonly mailer: CapturingMailer;
+  /**
+   * The stub, for the suites that drive it. When a suite supplies its own
+   * provider it is `services.fxProvider` that is wired up, and this stub is
+   * simply unused.
+   */
   readonly fxProvider: StubFxProvider;
   readonly baseUrl: string;
   readonly provisioned: ProvisionedDatabase;
@@ -64,6 +70,12 @@ export interface HarnessOptions {
   readonly rateLimitEnabled?: boolean;
   /** Fixed clock for the FX service, so a refresh is reproducible. */
   readonly now?: () => Date;
+  /**
+   * The rate publisher. Defaults to the stub, which is what the integration
+   * suite wants: gap filling, failure tolerance and immutability are rules
+   * about our code, not about the ECB. The live suite passes the real adapter.
+   */
+  readonly fxProvider?: FxProvider;
 }
 
 export const TEST_BASE_URL = 'http://127.0.0.1:3000';
@@ -74,7 +86,8 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   const db = createDrizzle(pool);
 
   const mailer = createCapturingMailer();
-  const fxProvider = createStubFxProvider();
+  const stubFxProvider = createStubFxProvider();
+  const fxProvider = options.fxProvider ?? stubFxProvider;
 
   const logLines: string[] = [];
   const logger = createLogger({
@@ -113,7 +126,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     services,
     db,
     mailer,
-    fxProvider,
+    fxProvider: stubFxProvider,
     baseUrl: TEST_BASE_URL,
     provisioned,
     logLines,

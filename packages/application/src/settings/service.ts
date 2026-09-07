@@ -28,7 +28,15 @@ export interface SettingsDependencies {
    * the callback swallows provider errors and conversions stay `Unavailable`
    * until the next cron.
    */
-  readonly ensureCurrencyHistory?: (currencies: readonly string[]) => Promise<void>;
+  /**
+   * Make the chosen currencies convertible now (10.4).
+   *
+   * Deliberately not "fetch their history": choosing a base, reporting or
+   * favourite currency asks for nothing dated, and in Phase 1 there is no
+   * dated financial data to convert. History is fetched when a conversion
+   * first needs it. See `FxService.ensureHistory` and ADR 0002 decision 17.
+   */
+  readonly ensureCurrentRates?: (currencies: readonly string[]) => Promise<void>;
 }
 
 function toDto(row: UserSettingsRecord): UserSettings {
@@ -163,9 +171,10 @@ export async function updateSettings(
 
   const dto = toDto(updated);
 
-  // First use of a currency triggers a one-time global history backfill (10.4).
-  if (requestedCurrencies.length > 0 && deps.ensureCurrencyHistory !== undefined) {
-    await deps.ensureCurrencyHistory([...new Set(requestedCurrencies)]);
+  // The settings row is already committed above: a rate publisher being slow
+  // or down can no longer undo what the user just saved (10.5).
+  if (requestedCurrencies.length > 0 && deps.ensureCurrentRates !== undefined) {
+    await deps.ensureCurrentRates([...new Set(requestedCurrencies)]);
   }
 
   return dto;

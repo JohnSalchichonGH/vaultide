@@ -8,9 +8,10 @@ import { defineConfig, devices } from '@playwright/test';
  * the deployment runs — on desktop and mobile viewports.
  *
  * The server runs with the test capabilities switched on: the `TEST_CLOCK`
- * header for the month-boundary flows of Phase 2, and the capturing mailer
- * behind `/api/test/mailbox`, which is how a test reads the verification link a
- * real user would click (21.5). Both are refused on a production deployment.
+ * header for the month-boundary flows of Phase 2, the capturing mailer behind
+ * `/api/test/mailbox`, which is how a test reads the verification link a real
+ * user would click, and the deterministic FX fixture in place of the public
+ * rate service (21.5). All three are refused on a production deployment.
  */
 const PORT = Number(process.env.E2E_PORT ?? 3100);
 const baseURL = process.env.E2E_BASE_URL ?? `http://127.0.0.1:${String(PORT)}`;
@@ -58,6 +59,15 @@ export default defineConfig({
           // asserted in the integration suite, where a 429 can be provoked on
           // purpose (packages/application/test/integration/security.test.ts).
           VAULTIDE_AUTH_RATE_LIMIT: 'disabled',
+          // The rate publisher is the deterministic fixture, not the public
+          // Frankfurter service. Three projects run in parallel and each picks
+          // a currency, which against a free public API is several concurrent
+          // long-range requests — measured to stall or time out, making the
+          // suite fail for a reason that has nothing to do with Vaultide.
+          // Adapter compatibility with the real v2 API is proven separately
+          // and serially by `pnpm test:live`. Honoured only where the test
+          // capabilities are, which a production deployment refuses (21.5).
+          FX_PROVIDER: 'fixture',
           NODE_ENV: 'test',
           PORT: String(PORT),
           HOSTNAME: '127.0.0.1',
