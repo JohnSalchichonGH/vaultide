@@ -41,7 +41,7 @@ from zero by the same scripts an operator runs (admin bootstrap → migrations a
 | Types | `pnpm -r run typecheck` | **pass**, 6 packages |
 | Unit + property | `pnpm -r run test:unit` | **175 passed** — finance 110, application 36, validation 16, web 10, db 3 |
 | Integration (db) | `pnpm --filter @vaultide/db run test:integration` | **61 passed** (6 files) |
-| Integration (application) | `pnpm --filter @vaultide/application run test:integration` | **78 passed** (4 files) |
+| Integration (application) | `pnpm --filter @vaultide/application run test:integration` | **80 passed** (4 files) |
 | Build | `pnpm run build` | **pass** — 16 routes |
 | End to end | `pnpm test:e2e` | **39 passed** — 13 specs × chromium desktop, webkit desktop, chromium mobile, against the FX fixture and no public network |
 | Finance coverage gate | `vitest run --coverage` | **pass** — statements 99.56 %, branches 97.88 %, functions 100 %, lines 99.74 %; §21's gate is ≥ 95 % lines and branches |
@@ -260,11 +260,18 @@ number's literal digits: `JSON.parse` would hand back a float64, and
   asks for nothing dated and Phase 1 has no dated financial data at all.
   Skipped when the stored series already reaches back far enough. Concurrent
   identical fetches are coalesced, so a stampede of the same request cannot
-  reach the provider.
+  reach the provider. The preference path also carries its own short deadline,
+  `CURRENT_WINDOW_TIMEOUT_MS = 3 s` (ADR 0002 decision 20): a stalled publisher
+  must not leave a settings save looking hung for the 20 seconds a 27-year
+  series is allowed. A dated conversion keeps the provider's own timeout.
 - `loadTable(quotes, from, to, today)` — reads rows into the pure `FxTable`.
-- Failure: a provider outage during `ensureHistory` is swallowed — it runs
-  inside a user's request and must not undo what they did — and logged;
-  conversions stay `Unavailable` until the next cron. An outage during the cron
+- Failure: a provider outage **or stall** during `ensureHistory` is swallowed —
+  it runs inside a user's request and must not undo what they did — and logged;
+  conversions stay `Unavailable` until the next cron. Proven against a
+  publisher that stops answering altogether: the reporting-currency change
+  persists, the request returns in **3.1 s** rather than 20, `fx_rates` gains
+  nothing, the warning carries `FX_PROVIDER_FAILURE` and the currency but no
+  rate, and the next refresh makes the currency usable with no intervention. An outage during the cron
   returns 503, logs, and checks in with the Sentry monitor as `error`. Nothing
   is fabricated and nothing already stored is touched.
 - Idempotence is a constraint, not a check: `ON CONFLICT DO NOTHING` on
@@ -440,9 +447,13 @@ while doing so*.
 ### Not done: the production deployment
 
 **This is the external boundary, and it is a hard stop.** A Phase 1 deployment
-needs three secrets this session cannot create, and deploying without them would
-take the site down rather than degrade it: `createServices` refuses to start
-without `BETTER_AUTH_SECRET`, and `createMailerFromEnv` refuses to start without
+needs **three secret values** this session cannot create — `BETTER_AUTH_SECRET`,
+`CRON_SECRET` and `EMAIL_API_KEY` — **and the non-secret configuration that goes
+with them**: `BETTER_AUTH_URL`, `APP_URL`, `EMAIL_FROM` (from a domain verified
+at the provider), and `EMAIL_API_URL` where the provider is not Resend. None of
+it is optional and none of it is a code change; deploying without it would take
+the site down rather than degrade it, because `createServices` refuses to start
+without `BETTER_AUTH_SECRET` and `createMailerFromEnv` refuses to start without
 a mail provider — deliberately, because an installation that silently swallows
 verification mail looks healthy while nobody can sign in.
 
@@ -478,7 +489,9 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<domain>/api/test/mailbox
 # 404 — the capturing mailbox must not exist in production
 
 curl -s -H "Authorization: Bearer $CRON_SECRET" https://<domain>/api/cron/fx-refresh
-# {"status":"ok","currencies":29,...}   then run it again: rowsInserted is 0
+# {"status":"ok","currencies":149,...}  then run it again: rowsInserted is 0
+# 149 is the 150 FX-supported currencies minus the EUR pivot, which is 1 by
+# definition and is never requested or stored against itself (10.1).
 
 curl -s -o /dev/null -w '%{http_code}\n' https://<domain>/api/cron/fx-refresh
 # 404 — no secret, no answer
@@ -549,7 +562,10 @@ semantics or the roadmap.
 ## Open items (none blocks the Phase 1 checkpoint)
 
 1. **The production deployment is not done.** See above — it is blocked on
-   three secrets and one provider decision that are yours to make.
+   three secret values (`BETTER_AUTH_SECRET`, `CRON_SECRET`, `EMAIL_API_KEY`),
+   the non-secret URL, sender and provider configuration that goes with them
+   (`BETTER_AUTH_URL`, `APP_URL`, `EMAIL_FROM`, and `EMAIL_API_URL` off Resend),
+   and one provider decision — all of them yours to make.
 2. **Neon plan.** Free gives 6 hours of instant-restore history; 22.5 wants 7
    days before real balances exist. Phase 1 stores accounts and settings but no
    financial records, so this is due before Phase 2 ships, not before this

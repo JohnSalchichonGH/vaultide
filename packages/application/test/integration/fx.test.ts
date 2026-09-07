@@ -4,6 +4,7 @@ import { Decimal, isUnavailable, monthKey, plainDate } from '@vaultide/finance';
 import { createHarness, type Harness } from '../helpers/harness';
 import {
   createFxService,
+  CURRENT_WINDOW_TIMEOUT_MS,
   PIVOT,
   REFRESH_BACKFILL_DAYS,
   SOURCE_PREFERENCE,
@@ -484,6 +485,59 @@ describe('history is fetched on demand, not on preference (10.4, 10.5)', () => {
     expect(again.skipped).toBe(true);
     expect(again.rowsInserted).toBe(0);
     expect(harness.fxProvider.calls.length).toBe(callsBefore);
+  });
+
+  it('bounds a preference save when the publisher stalls, and heals afterwards', async () => {
+    const before = await readSettings(harness.db, PREFERENCE_USER);
+
+    // A publisher that has stopped answering — the failure that matters here.
+    // Not an error returned promptly: a stall is what a free public service
+    // does under load, and it is what made a settings save look hung.
+    harness.fxProvider.setLatency(60_000);
+
+    const started = Date.now();
+    const after = await updateSettings(harness.services.settings, PREFERENCE_USER, before.version, {
+      reportingCurrency: 'THB',
+    });
+    const elapsed = Date.now() - started;
+    harness.fxProvider.setLatency(0);
+
+    // 1. The preference stands, on a fresh read as well as in the response.
+    expect(after.reportingCurrency).toBe('THB');
+    expect((await readSettings(harness.db, PREFERENCE_USER)).reportingCurrency).toBe('THB');
+
+    // 2. It waited for the short deadline and not for the provider's own,
+    //    which is nearly seven times longer.
+    expect(elapsed).toBeGreaterThanOrEqual(CURRENT_WINDOW_TIMEOUT_MS - 500);
+    expect(elapsed).toBeLessThan(CURRENT_WINDOW_TIMEOUT_MS + 5_000);
+    const call = harness.fxProvider.calls.filter((entry) => entry.quotes.includes('THB')).at(-1);
+    expect(call?.timeoutMs).toBe(CURRENT_WINDOW_TIMEOUT_MS);
+
+    // 3. Nothing was written and nothing was invented.
+    expect(await datesFor('THB')).toHaveLength(0);
+
+    // 4. Surfaced through the logging 18.2 already defines: a warning naming
+    //    the currency and the error code, with no rate and no secret in it.
+    const warning = harness.logLines.filter((line) => line.includes('fx_history_backfill_failed')).at(-1);
+    expect(warning).toBeDefined();
+    expect(warning).toContain('FX_PROVIDER_FAILURE');
+    expect(warning).toContain('THB');
+    expect(warning).toContain('unreachable');
+
+    // 5. And the next successful refresh makes the currency usable, with no
+    //    intervention: the gap heals itself.
+    await serviceWithClock().refreshAll();
+    expect((await datesFor('THB')).length).toBeGreaterThan(0);
+  });
+
+  it('leaves a dated conversion the provider’s own patience', async () => {
+    const fx = serviceWithClock();
+    await fx.ensureHistory('MXN', '2026-06-01');
+
+    // History a user has actually asked to convert is worth waiting for, so no
+    // short deadline is imposed on it.
+    const call = harness.fxProvider.calls.filter((entry) => entry.quotes.includes('MXN')).at(-1);
+    expect(call?.timeoutMs).toBeUndefined();
   });
 
   it('never asks for a date before the reference series began', async () => {

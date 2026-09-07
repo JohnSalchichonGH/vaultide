@@ -278,7 +278,9 @@ Verify after the first deployment:
 
 ```bash
 curl -s -H "Authorization: Bearer $CRON_SECRET" https://<your-domain>/api/cron/fx-refresh
-# {"status":"ok","currencies":29,"rowsFetched":...,"rowsInserted":...}
+# {"status":"ok","currencies":149,"rowsFetched":...,"rowsInserted":...}
+# 149 quote currencies: the 150 the approved ECB -> BDI chain supports, minus
+# the EUR pivot, which is 1 by definition and never stored against itself.
 
 curl -s -o /dev/null -w '%{http_code}
 ' https://<your-domain>/api/cron/fx-refresh

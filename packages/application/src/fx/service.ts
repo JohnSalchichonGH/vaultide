@@ -63,6 +63,25 @@ export const HISTORY_LEAD_DAYS = 31;
 export const CURRENT_WINDOW_DAYS = REFRESH_BACKFILL_DAYS;
 
 /**
+ * How long warming that window may take before the request gives up (10.5).
+ *
+ * This path runs inside a settings save. The user has picked a reporting
+ * currency; they have not asked to convert anything, and they must not wait on
+ * a free public service that has stalled — which it does, and which is why the
+ * provider's own default is far longer. Measured against the live chain, the
+ * whole fetch is around 300 ms cold, so three seconds is roughly ten times the
+ * real cost and still bounded from a person's point of view.
+ *
+ * Giving up costs nothing that is not repaired: no row is written, no rate is
+ * invented, conversions stay `Unavailable`, and the daily cron — or the next
+ * request that needs the currency — fills the window in.
+ *
+ * The historical path keeps the provider's default: rates a user has actually
+ * asked to convert are worth waiting for.
+ */
+export const CURRENT_WINDOW_TIMEOUT_MS = 3_000;
+
+/**
  * The order readers prefer publishers in (10.2, 10.4).
  *
  * Lower-cased keys of Vaultide's approved provider chain, matching what the
@@ -284,7 +303,15 @@ export function createFxService(deps: FxServiceDependencies): FxService {
 
       const run = async (): Promise<EnsureHistoryResult> => {
         try {
-          const rows = await provider.fetchTimeSeries(PIVOT, [quote], wantedFrom, to);
+          const rows = await provider.fetchTimeSeries(
+            PIVOT,
+            [quote],
+            wantedFrom,
+            to,
+            // Only the preference path is bounded; a dated need keeps the
+            // provider's own timeout.
+            earliestNeededDate === undefined ? { timeoutMs: CURRENT_WINDOW_TIMEOUT_MS } : {},
+          );
           const rowsInserted = await appendFxRates(db, toInserts(rows, supported, now()));
           deps.logger?.info(
             {

@@ -19,7 +19,14 @@ import { FxProviderError } from '../../src/fx/provider';
 
 export interface StubFxProvider extends FxProvider {
   /** Every call the service made, for asserting that a fetch was skipped. */
-  readonly calls: { method: string; quotes: string[]; from?: string; to?: string }[];
+  readonly calls: {
+    method: string;
+    quotes: string[];
+    from?: string;
+    to?: string;
+    /** The deadline the caller imposed, when it imposed one. */
+    timeoutMs?: number;
+  }[];
   /** Restrict which banks publish, in preference order (the approved chain). */
   setChain(chain: readonly { source: string; currencies: readonly string[] | 'all' }[]): void;
   /** Make the next calls throw, as an outage would. */
@@ -30,7 +37,8 @@ export interface StubFxProvider extends FxProvider {
   poison(quote: string, rate: string): void;
   /**
    * Answer after `ms`, so several callers are in flight at once — the case
-   * request coalescing exists for.
+   * request coalescing exists for. Set it beyond a call's deadline and the
+   * stub behaves as the real adapter does when its abort signal fires.
    */
   setLatency(ms: number): void;
   /** Override the list `supportedCurrencies()` reports for the chain. */
@@ -99,7 +107,7 @@ const DEFAULT_CHAIN: { source: string; currencies: readonly string[] | 'all' }[]
 ];
 
 export function createStubFxProvider(): StubFxProvider {
-  const calls: { method: string; quotes: string[]; from?: string; to?: string }[] = [];
+  const calls: StubFxProvider['calls'] = [];
   let failure: Error | null = null;
   let skipped = new Set<string>();
   const poisoned = new Map<string, string>();
@@ -132,12 +140,35 @@ export function createStubFxProvider(): StubFxProvider {
     if (failure !== null) throw failure;
   }
 
-  /** Resolve now, or after the configured latency. */
-  function answer(rows: ProviderRateRow[]): Promise<ProviderRateRow[]> {
+  /**
+   * Resolve now, or after the configured latency — and give up at the caller's
+   * deadline exactly as the real adapter does.
+   *
+   * `AbortSignal.timeout` in the Frankfurter adapter turns a stalled request
+   * into an `FxProviderError` with no status, so a stub that merely resolved
+   * late would not be modelling the case that matters: a public service that
+   * has stopped answering.
+   */
+  function answer(
+    rows: ProviderRateRow[],
+    deadlineMs: number | undefined,
+  ): Promise<ProviderRateRow[]> {
     if (latencyMs <= 0) return Promise.resolve(rows);
-    return new Promise((resolve) => setTimeout(() => {
-      resolve(rows);
-    }, latencyMs));
+
+    return new Promise((resolve, reject) => {
+      const answered = setTimeout(() => {
+        clearTimeout(abandoned);
+        resolve(rows);
+      }, latencyMs);
+
+      const abandoned =
+        deadlineMs === undefined
+          ? undefined
+          : setTimeout(() => {
+              clearTimeout(answered);
+              reject(new FxProviderError('stub', undefined, 'request failed'));
+            }, deadlineMs);
+    });
   }
 
   return {
@@ -185,10 +216,16 @@ export function createStubFxProvider(): StubFxProvider {
       return Promise.resolve(rowsFor(quotes, today, today));
     },
 
-    fetchTimeSeries(_base, quotes, from, to): Promise<ProviderRateRow[]> {
-      calls.push({ method: 'fetchTimeSeries', quotes: [...quotes], from, to });
+    fetchTimeSeries(_base, quotes, from, to, options): Promise<ProviderRateRow[]> {
+      calls.push({
+        method: 'fetchTimeSeries',
+        quotes: [...quotes],
+        from,
+        to,
+        ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      });
       guard();
-      return answer(rowsFor(quotes, from, to));
+      return answer(rowsFor(quotes, from, to), options?.timeoutMs);
     },
   };
 }

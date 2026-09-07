@@ -155,12 +155,14 @@ export function createFrankfurterProvider(options: FrankfurterOptions = {}): FxP
   const chain = options.providers ?? FRANKFURTER_PROVIDER_CHAIN;
   const notMoney = new Set(NON_MONETARY_ISO_CODES);
 
-  async function get(path: string, keepLiterals: boolean): Promise<unknown> {
+  async function get(path: string, keepLiterals: boolean, deadlineMs?: number): Promise<unknown> {
     let response: Response;
     try {
       response = await doFetch(`${baseUrl}${path}`, {
         headers: { Accept: 'application/json' },
-        signal: AbortSignal.timeout(timeoutMs),
+        // A real abort, not an abandoned promise: the socket is released and
+        // the provider stops being asked for something nobody is waiting for.
+        signal: AbortSignal.timeout(deadlineMs ?? timeoutMs),
       });
     } catch {
       throw new FxProviderError('frankfurter', undefined, 'request failed');
@@ -301,7 +303,7 @@ export function createFrankfurterProvider(options: FrankfurterOptions = {}): FxP
       return perProvider.flat();
     },
 
-    async fetchTimeSeries(base, quotes, from, to): Promise<ProviderRateRow[]> {
+    async fetchTimeSeries(base, quotes, from, to, fetchOptions): Promise<ProviderRateRow[]> {
       const quotesQuery = quotesParam(quotes);
 
       const perProvider = await Promise.all(
@@ -310,6 +312,7 @@ export function createFrankfurterProvider(options: FrankfurterOptions = {}): FxP
             `/rates?base=${base}&from=${from}&to=${to}` +
               `&providers=${encodeURIComponent(providerKey)}${quotesQuery}`,
             true,
+            fetchOptions?.timeoutMs,
           )) as RateRow[];
           return toRows(body, providerKey);
         }),

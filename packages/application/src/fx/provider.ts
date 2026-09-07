@@ -22,6 +22,22 @@ export interface ProviderRateRow {
   readonly source: string;
 }
 
+export interface FetchOptions {
+  /**
+   * How long this particular call may take, overriding the provider's own
+   * default.
+   *
+   * It exists because the two callers want different things from the same
+   * publisher. Warming the current window happens inside a settings save, and
+   * a user who has just picked a reporting currency should not wait on a
+   * public service that has stalled — seconds, then give up (10.5: the rate is
+   * `Unavailable`, and the cron heals it). Fetching history the user has
+   * actually asked to convert is worth waiting for, and keeps the provider's
+   * default.
+   */
+  readonly timeoutMs?: number;
+}
+
 export interface FxProvider {
   readonly id: string;
   /**
@@ -38,6 +54,7 @@ export interface FxProvider {
     quotes: readonly string[],
     from: string,
     to: string,
+    options?: FetchOptions,
   ): Promise<ProviderRateRow[]>;
   /** The most recent published rates for `quotes`. */
   fetchLatest(base: 'EUR', quotes: readonly string[]): Promise<ProviderRateRow[]>;

@@ -380,6 +380,42 @@ attributed, exact decimals checked against the raw response body, the current
 refresh, idempotence, weekend gaps, and a dated backfill — once, rather than
 once per browser project.
 
+### 20. Warming the current window has its own, short deadline
+
+Decision 17 stopped a preference save fetching decades, but it still fetches —
+fourteen days from two banks, inside the request that saves the setting. The
+adapter's timeout is 20 seconds, chosen for a 27-year series, so a stalled
+public service could still leave a simple reporting-currency save looking hung
+for that long. A shorter fetch deserves a shorter patience.
+
+`FetchOptions.timeoutMs` on the provider interface carries a per-call deadline,
+and `CURRENT_WINDOW_TIMEOUT_MS = 3_000` in `fx/service.ts` is what the
+preference path passes. Three seconds is about ten times the measured cold cost
+of that fetch against the live chain (≈ 316 ms) and still bounded from a
+person's point of view. It is one exported constant next to
+`CURRENT_WINDOW_DAYS` and `REFRESH_BACKFILL_DAYS`, not a number sprinkled
+through call sites.
+
+**The dated path keeps the provider's own timeout.** Rates a user has actually
+asked to convert are worth waiting for; rates nobody has asked to convert yet
+are not.
+
+It is a real abort, not an abandoned promise: the deadline reaches
+`AbortSignal.timeout` in the adapter, so the socket is released and the
+provider stops being asked for something nobody is waiting for. Everything
+10.5 requires is unchanged — the settings row was already committed before the
+fetch, no rate is written or invented, conversions stay `Unavailable`, the
+failure is logged as `FX_PROVIDER_FAILURE` naming the currency and never a
+rate, and the daily cron or the next request that needs the currency fills the
+window in. In-flight coalescing is untouched. No queue, no worker, no
+asynchronous subsystem: one number, passed at one call site.
+
+Asserted against a publisher that **stalls** rather than one that fails fast,
+because a stall is what a loaded public service actually does: the save
+persists, the request returns in ≈ 3.1 s rather than 20, no row is written, the
+warning is there, and a later refresh makes the currency usable with no
+intervention.
+
 ---
 
 ## Defects found while implementing Phase 1
