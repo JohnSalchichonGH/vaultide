@@ -243,11 +243,23 @@ describe('logging schema (18.2)', () => {
 
   it('redacts money-shaped keys that slip through', () => {
     const { logger, lines } = captureLogger();
-    logger.info({ amount: '12345.67', nested: { balance: '99' }, request_id: 'r1' }, 'probe');
+    logger.info({ amount: '12345.67', nested: { balance: '8055.00' }, request_id: 'r1' }, 'probe');
+
+    // Assert on the record rather than on substrings of the serialized line.
+    // This previously logged a balance of '99' and asserted the line did not
+    // contain '99' — which also matches the milliseconds in the timestamp, so
+    // the test failed on roughly one run in fifty with the redaction working
+    // perfectly. Both probe values now carry a decimal point, which a pino
+    // timestamp cannot produce.
+    expect(lines[0]).toMatchObject({
+      amount: '[redacted]',
+      nested: { balance: '[redacted]' },
+      request_id: 'r1',
+    });
+
     const line = JSON.stringify(lines[0]);
     expect(line).not.toContain('12345.67');
-    expect(line).not.toContain('99');
-    expect(line).toContain('[redacted]');
+    expect(line).not.toContain('8055.00');
   });
 });
 
