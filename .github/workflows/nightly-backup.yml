@@ -71,14 +71,47 @@ jobs:
           BACKUP_BUCKET_NAME: ${{ vars.BACKUP_BUCKET_NAME }}
           BACKUP_BUCKET_ENDPOINT: ${{ vars.BACKUP_BUCKET_ENDPOINT }}
         run: |
+          set -o pipefail
+
           if [ -z "${BACKUP_BUCKET_NAME}" ]; then
             echo "No backup bucket configured yet; the encrypted archive stays in the runner."
             ls -l "${RUNNER_TEMP}/backups"
             exit 0
           fi
-          aws s3 cp "${RUNNER_TEMP}/backups" "s3://${BACKUP_BUCKET_NAME}/$(date -u +%Y/%m)/" \
+
+          # One prefix for the whole step: computing it twice could straddle a
+          # month boundary and verify an object that was never written.
+          prefix=$(date -u +%Y/%m)
+
+          aws s3 cp "${RUNNER_TEMP}/backups" "s3://${BACKUP_BUCKET_NAME}/${prefix}/" \
             --recursive --exclude '*' --include '*.age' --include '*.age.json' \
             ${BACKUP_BUCKET_ENDPOINT:+--endpoint-url "${BACKUP_BUCKET_ENDPOINT}"}
+
+          # A zero exit says the upload was accepted, not that the bucket holds
+          # what we encrypted. Read each archive back and compare it against the
+          # digest taken at encryption time, so a truncated or corrupted object
+          # fails the backup instead of sitting there looking like one.
+          for manifest in "${RUNNER_TEMP}"/backups/*.age.json; do
+            [ -e "${manifest}" ] || continue
+            name=$(node -e "process.stdout.write(require('${manifest}').encryptedFile)")
+            want=$(node -e "process.stdout.write(require('${manifest}').sha256)")
+            key="${prefix}/${name}"
+
+            got=$(aws s3 cp "s3://${BACKUP_BUCKET_NAME}/${key}" - \
+              ${BACKUP_BUCKET_ENDPOINT:+--endpoint-url "${BACKUP_BUCKET_ENDPOINT}"} \
+              | sha256sum | cut -d' ' -f1)
+
+            if [ "${got}" != "${want}" ]; then
+              echo "::error::s3://${BACKUP_BUCKET_NAME}/${key} is not what we encrypted"
+              echo "  expected sha256 ${want}"
+              echo "  bucket   sha256 ${got}"
+              exit 1
+            fi
+
+            echo "verified s3://${BACKUP_BUCKET_NAME}/${key} (sha256 ${want})"
+            echo "Uploaded and read back: \`s3://${BACKUP_BUCKET_NAME}/${key}\`" \
+              >> "$GITHUB_STEP_SUMMARY"
+          done
 
       - name: Report the result
         if: always()
