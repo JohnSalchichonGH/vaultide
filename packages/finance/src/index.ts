@@ -7,5 +7,6 @@ export * from './decimal';
 export * from './unavailable';
 export * from './money/index';
 export * from './dates/index';
+export * from './fx/index';
 export * from './numeric/index';
 export * from './positions/sign';

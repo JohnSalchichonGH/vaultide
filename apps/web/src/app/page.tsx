@@ -1,4 +1,8 @@
+import Link from 'next/link';
+import { redirect } from 'next/navigation';
 import { anonymousContext } from '@vaultide/application';
+import { AppShell } from '@/components/shell/app-shell';
+import { currentSession } from '@/server/context';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { MoneyText } from '@/components/finance/money-text';
@@ -6,11 +10,15 @@ import { FoundationsDemo } from '@/components/foundations-demo';
 import { runFormatterSelfTest, SELF_TEST_AMOUNT } from '@/lib/format';
 
 /**
- * Phase 0 landing page (blueprint Phase 0: "sign-in-less landing page").
+ * The public landing page.
  *
- * It renders the shell and the two things Phase 0 must be able to prove in the
- * product itself: money is formatted exactly from decimal strings in every
- * locale, and a four-minor-unit currency round-trips without loss.
+ * Phase 0 made this the "sign-in-less landing page" and used it to prove, in
+ * the running product, the two things Phase 0 had to establish: money formats
+ * exactly from decimal strings in every locale, and a four-minor-unit currency
+ * round-trips without loss. That evidence stays — it is what the Phase 0
+ * acceptance record points at — and Phase 1 adds the way in.
+ *
+ * A signed-in visitor has no reason to be here and is sent on to the app.
  */
 
 /**
@@ -27,7 +35,12 @@ const LOCALES = [
   { locale: 'es-CL', currency: 'CLF', minorUnits: 4 },
 ] as const;
 
-export default function LandingPage() {
+export default async function LandingPage() {
+  const session = await currentSession();
+  if (session !== undefined) {
+    redirect(session.settings.onboardingCompleted ? '/settings/profile' : '/onboarding/1');
+  }
+
   const selfTest = runFormatterSelfTest(LOCALES);
   const allExact = selfTest.every((row) => row.exact);
   // The server computes today once per request, in the stated timezone; Phase 1
@@ -39,7 +52,8 @@ export default function LandingPage() {
   });
 
   return (
-    <div className="space-y-8">
+    <AppShell>
+      <div className="space-y-8">
       <section>
         <h1 className="text-[length:var(--text-headline)] font-semibold tracking-tight">
           Vaultide
@@ -49,8 +63,19 @@ export default function LandingPage() {
           know; Vaultide infers the rest by cash reconciliation, keeps every record in its native
           currency, and never presents a number it cannot justify.
         </p>
+        <div className="mt-6 flex flex-wrap items-center gap-3">
+          <Link
+            href="/sign-up"
+            className="rounded-[var(--radius-control)] bg-[var(--color-accent)] px-4 py-2 font-medium text-[var(--color-accent-foreground)]"
+          >
+            Create an account
+          </Link>
+          <Link href="/sign-in" className="rounded-[var(--radius-control)] border px-4 py-2 font-medium">
+            Sign in
+          </Link>
+        </div>
         <div className="mt-4 flex flex-wrap items-center gap-2">
-          <Badge tone="info">Phase 0 — Foundations</Badge>
+          <Badge tone="info">Phase 1 — Auth, settings and FX</Badge>
           <Badge tone={allExact ? 'positive' : 'negative'}>
             {allExact ? 'Exact formatting verified' : 'Formatter self-test failed'}
           </Badge>
@@ -117,10 +142,10 @@ export default function LandingPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>What Phase 0 established</CardTitle>
+          <CardTitle>What is built so far</CardTitle>
           <CardDescription>
-            Foundations only. No authentication, no financial data, no FX — those arrive with their
-            phases.
+            Foundations, identity and exchange rates. Balances, spending and net worth arrive with
+            their phases.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -134,6 +159,9 @@ export default function LandingPage() {
               'Decimal and float numeric backends that agree',
               'Three database roles with RLS that fails closed',
               'Verified, encrypted nightly backups',
+              'Verified email, optional two-factor sign-in, DB-backed sessions',
+              'Settings: base and reporting currency, time zone, locale, favourites',
+              'ECB reference rates for every supported currency, refreshed daily',
             ].map((item) => (
               <li key={item} className="flex gap-2">
                 <span aria-hidden="true" className="text-[var(--color-positive)]">
@@ -145,6 +173,7 @@ export default function LandingPage() {
           </ul>
         </CardContent>
       </Card>
-    </div>
+      </div>
+    </AppShell>
   );
 }

@@ -10,16 +10,22 @@
   "scripts": {
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test:unit": "vitest run"
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration"
   },
   "dependencies": {
     "@vaultide/db": "workspace:*",
     "@vaultide/finance": "workspace:*",
     "@vaultide/validation": "workspace:*",
+    "better-auth": "1.7.2",
     "pino": "10.3.1",
     "zod": "4.5.4"
   },
   "devDependencies": {
-    "@vaultide/config": "workspace:*"
+    "@types/pg": "8.23.1",
+    "@vaultide/config": "workspace:*",
+    "@vaultide/db": "workspace:*",
+    "otplib": "13.5.0",
+    "pg": "8.23.0"
   }
 }

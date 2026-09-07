@@ -1,0 +1,45 @@
+# gitleaks configuration (blueprint 17.3 "Leaked secrets").
+#
+# The default rules, plus one narrow allowlist. Nothing here disables a rule:
+# the allowlist matches a single literal in a single kind of file, so a real
+# credential in a test file is still a failure.
+
+[extend]
+useDefault = true
+
+[[rules]]
+# Placeholder so `[[rules.allowlists]]` below has an owner. Never matches.
+id = "vaultide-noop"
+description = "Unused placeholder rule."
+regex = '''$a^'''
+
+[allowlist]
+description = "Test fixtures and generated output."
+
+paths = [
+  # Build output and local state. Both are gitignored; this keeps a working-tree
+  # scan (`--no-git`) as quiet as the history scan CI runs.
+  '''(^|/)\.next/''',
+  '''(^|/)\.vaultide-pg/''',
+  '''(^|/)\.secrets\.local/''',
+  '''(^|/)node_modules/''',
+  '''(^|/)test-results/''',
+  '''(^|/)playwright-report/''',
+  '''(^|/)coverage/''',
+  '''^gl-report\.json$''',
+]
+
+regexTargets = ["match"]
+regexes = [
+  # The password every auth test signs up with.
+  #
+  # It is a passphrase in the clear, in the repository, on purpose: the tests
+  # assert the twelve-character minimum and the Have I Been Pwned check, so the
+  # fixture has to be long and has to be absent from the breach corpus. It
+  # authenticates nothing — every account that uses it is created and deleted
+  # inside a throwaway database in the same test run.
+  #
+  # Written as a pattern rather than the literal so this file does not simply
+  # restate the string it is excusing.
+  '''correct-horse-battery-staple-\d{4}''',
+]

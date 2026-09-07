@@ -13,11 +13,20 @@ shared between roles, and no secret is ever committed — `gitleaks` runs in CI.
 | `DATABASE_URL_ADMIN` (platform admin) | GitHub environment `bootstrap` | everywhere else |
 | `BACKUP_AGE_PUBLIC_KEY` | GitHub environment `backup` | — (public by nature) |
 | age **private** key | Offline, sealed | CI, Vercel, this repository |
-| `BETTER_AUTH_SECRET` (Phase 1) | Vercel | CI |
-| `CRON_SECRET` (Phase 1) | Vercel | CI |
+| `BETTER_AUTH_SECRET` | Vercel runtime | CI, laptops |
+| `CRON_SECRET` | Vercel runtime (and the cron caller) | CI |
+| `EMAIL_API_KEY` | Vercel runtime | CI, laptops |
 | `SENTRY_AUTH_TOKEN` | GitHub build environment | runtime |
 
-`BETTER_AUTH_SECRET` must be at least 32 random bytes.
+`BETTER_AUTH_SECRET` must be at least 32 random bytes; the application refuses
+to start with a shorter one. Rotating it invalidates every session and every
+unissued verification and reset token — which is the point, and also why it is
+the first thing to rotate if a session is believed to be compromised.
+
+`CRON_SECRET` is the bearer token Vercel Cron sends to `/api/cron/fx-refresh`.
+Any other caller gets a 404, and the comparison is constant-time. Rotating it
+means updating the Vercel environment variable; the schedule picks it up on the
+next deployment.
 
 ## Rotating a database role password
 
@@ -31,6 +40,16 @@ shared between roles, and no secret is ever committed — `gitleaks` runs in CI.
 
 Rotating `app_user` is zero-downtime in the other direction as well: the
 password change takes effect on new connections, and the pool reconnects.
+
+## Rotating `BETTER_AUTH_SECRET`
+
+1. Generate one: `openssl rand -hex 32`.
+2. Set it in the Vercel production environment.
+3. Redeploy.
+
+Everyone is signed out, and any verification or reset link already in an inbox
+stops working. Tell people first unless this is a response to an incident, in
+which case do it immediately and tell them afterwards.
 
 ## Rotating the backup key
 

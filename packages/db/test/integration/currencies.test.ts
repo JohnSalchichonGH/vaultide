@@ -8,7 +8,7 @@ import {
   provisionDatabase,
   runCurrencySeed,
   type ProvisionedDatabase,
-} from '../helpers/provision';
+} from '../../src/testing/provision';
 import { currencySeed } from '../../src/seed/currencies';
 
 /**

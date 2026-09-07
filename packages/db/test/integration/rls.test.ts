@@ -8,17 +8,17 @@ import {
   errorCodeOf,
   provisionDatabase,
   type ProvisionedDatabase,
-} from '../helpers/provision';
+} from '../../src/testing/provision';
 import {
   createDatabase as createDrizzle,
   createPool,
   InvalidUserIdError,
   ping,
-  RLS_USER_PREDICATE,
   withoutUser,
   withUser,
   type Database,
 } from '../../src/client';
+import { RLS_USER_PREDICATE } from '../../src/schema/rls';
 
 /**
  * Row Level Security primitives (blueprint 17.4, D44) and the `withUser`

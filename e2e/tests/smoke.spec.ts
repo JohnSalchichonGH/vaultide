@@ -17,7 +17,7 @@ test.describe('Vaultide shell', () => {
 
     await expect(page).toHaveTitle('Vaultide');
     await expect(page.getByRole('heading', { level: 1, name: 'Vaultide' })).toBeVisible();
-    await expect(page.getByText('Phase 0 — Foundations')).toBeVisible();
+    await expect(page.getByText('Phase 1 — Auth, settings and FX', { exact: true })).toBeVisible();
     await expect(page.getByText('Blueprint v2.1.2').first()).toBeVisible();
     await expect(page.getByRole('contentinfo')).toContainText('Vaultide');
 
@@ -39,9 +39,13 @@ test.describe('Vaultide shell', () => {
     expect(firstFocusable).toEqual({ tag: 'A', text: 'Skip to content' });
   });
 
-  test('shows the reporting currency and the theme control', async ({ page }) => {
+  test('offers a way in, and the theme control', async ({ page }) => {
     await page.goto('/');
-    await expect(page.getByTitle('Reporting currency (selectable from Phase 1)')).toHaveText('EUR');
+    // The reporting-currency selector became real in Phase 1 and belongs to a
+    // signed-in visitor; an anonymous one is offered the way in instead.
+    await expect(page.getByRole('link', { name: 'Sign in' }).first()).toBeVisible();
+    await expect(page.getByRole('link', { name: /Create an account|Create account/u }).first()).toBeVisible();
+    await expect(page.getByTestId('reporting-currency')).toHaveCount(0);
 
     const themeToggle = page.getByRole('button', { name: /Switch to (dark|light) theme/u });
     await expect(themeToggle).toBeVisible();

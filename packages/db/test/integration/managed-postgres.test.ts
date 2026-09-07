@@ -8,7 +8,7 @@ import {
   runMigrations,
   urlFor,
   type RolePasswords,
-} from '../helpers/provision';
+} from '../../src/testing/provision';
 
 /**
  * The bootstrap under a **managed** PostgreSQL (blueprint 22.2).

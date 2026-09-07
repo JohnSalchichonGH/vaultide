@@ -5,4 +5,5 @@
 export * from './client';
 export * from './env';
 export * from './schema/index';
+export * from './repositories/index';
 export { currencySeed, type CurrencySeedRow } from './seed/currencies';

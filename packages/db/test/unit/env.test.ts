@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { databaseUrlEnvVar, requireDatabaseUrl } from '../../src/env';
-import { RLS_USER_PREDICATE } from '../../src/client';
+import { RLS_USER_PREDICATE } from '../../src/schema/rls';
 
 describe('database URLs by role (22.2)', () => {
   it('maps each role to its own environment variable', () => {

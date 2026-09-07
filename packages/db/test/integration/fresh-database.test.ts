@@ -8,7 +8,7 @@ import {
   provisionDatabase,
   runBootstrap,
   type ProvisionedDatabase,
-} from '../helpers/provision';
+} from '../../src/testing/provision';
 
 /**
  * Phase 0 acceptance, operational half (blueprint Phase 0, 21.3, 22.2):

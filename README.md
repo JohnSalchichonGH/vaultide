@@ -5,27 +5,32 @@ flows you know; Vaultide infers spending by cash reconciliation, keeps records i
 their native currency with historical FX, separates capital flows from investment
 performance, explains what changed your net worth, and projects it forward.
 
-**Current state: Phase 0 — Foundations.** No authentication, no financial data
-models, no FX. What exists is the ground the rest is built on: exact decimal
-money, injected time, database roles with row-level security that fails closed,
-CI, and a verified encrypted backup.
+**Current state: Phase 1 — auth, users, settings, currencies, FX.** You can
+create an account, confirm your address, sign in (optionally with a
+second factor), set what you think in and what totals are shown in, and delete
+everything. Exchange rates for every supported currency are refreshed daily. No
+balances, no spending, no net worth yet — those arrive with Phases 2 and 3.
 
 The authoritative specification is
 [`docs/implementation-blueprint.md`](docs/implementation-blueprint.md) (frozen,
-v2.1.2). Implementation-level choices are recorded in
-[`docs/adr/`](docs/adr/0001-phase-0-implementation-decisions.md).
+v2.1.2). Implementation-level choices are recorded in [`docs/adr/`](docs/adr/):
+[Phase 0](docs/adr/0001-phase-0-implementation-decisions.md),
+[Phase 1](docs/adr/0002-phase-1-implementation-decisions.md). Each phase's
+evidence is in `docs/phase-N-acceptance.md`.
 
 ## Layout
 
 ```text
-apps/web            Next.js App Router: shell, /api/health, exact formatting, inputs
-packages/finance    pure engines — money, dates, Unavailable/Partial, sign, backends
-packages/validation Zod primitives shared by client, server and database
-packages/db         Drizzle schema, migrations, RLS primitives, currency seed
-packages/application use cases: request context, actions, errors, logging, health
+apps/web            Next.js App Router: auth pages, settings, onboarding, shell,
+                    /api/auth, /api/cron/fx-refresh, /api/health
+packages/finance    pure engines — money, dates, FX lookup and conversion,
+                    Unavailable/Partial, sign, numeric backends
+packages/validation Zod primitives and inputs shared by client, server, database
+packages/db         Drizzle schema, migrations, RLS policies, repositories, seed
+packages/application use cases: Better Auth, sessions, mailer, settings, FX service
 packages/config     tsconfig, ESLint (incl. the money-coercion rule), boundaries
-e2e                 Playwright smoke suite (desktop + mobile)
-scripts/db          role bootstrap, local PostgreSQL helper
+e2e                 Playwright: smoke plus the full auth and settings flow
+scripts/db          role bootstrap, local PostgreSQL, currency reconciliation
 scripts/backup      dump → verify → encrypt
 ```
 
@@ -44,6 +49,18 @@ pnpm install
 
 ```bash
 pnpm dev            # http://localhost:3000
+```
+
+Authentication needs a database and a secret. Without a mail provider the
+verification and reset messages are captured rather than sent, and readable at
+`/api/test/mailbox`:
+
+```bash
+export BETTER_AUTH_SECRET="$(openssl rand -hex 32)"
+export BETTER_AUTH_URL=http://localhost:3000/api/auth
+export APP_URL=http://localhost:3000
+export DATABASE_URL=postgres://app_user:...@127.0.0.1:5432/vaultide
+pnpm dev
 ```
 
 ### A local database
@@ -75,7 +92,16 @@ pnpm test:e2e            # Playwright, desktop + mobile
 ```
 
 `pnpm test:integration` needs a PostgreSQL admin URL: either
-`TEST_DATABASE_URL_ADMIN`, or the local cluster above.
+`TEST_DATABASE_URL_ADMIN`, or the local cluster above. It provisions a fresh
+database per suite through the same scripts an operator runs, so what it proves
+about roles, RLS and privileges is what production has.
+
+`pnpm test:e2e` needs `DATABASE_URL` for a migrated database; the suite starts
+the production build itself.
+
+```bash
+pnpm db:verify-currencies   # does the seed still match what the ECB publishes?
+```
 
 ### Backups
 
@@ -102,3 +128,10 @@ policy filtered can never pass verification. Restoring is documented in
 - **The database fails closed.** Row-level security denies when no user context
   is set, the runtime role cannot bypass it or run DDL, and only the backup role
   — used by one workflow — can read across tenants.
+- **Jobs cannot see tenants.** The daily exchange-rate refresh runs with no user
+  context at all, so every user-owned table returns nothing to it. It maintains
+  the whole supported currency set from a global table rather than discovering
+  currencies from anybody's data.
+- **Crypto is not a currency.** The catalogue holds fiat and official currencies
+  the rate provider publishes, and nothing else. A crypto holding will be an
+  investment priced in the currency its broker reports.

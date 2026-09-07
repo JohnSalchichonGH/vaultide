@@ -54,6 +54,25 @@ jobs:
         # the refused write at the end is the assertion that matters.
         run: node scripts/db/verify-environment.mjs
 
+  verify-currency-set:
+    name: Supported currencies still match the provider
+    runs-on: ubuntu-latest
+    # No secret and no database: this compares the committed seed with what the
+    # central banks actually publish today (blueprint 10.4, Phase 1). A
+    # divergence means a currency became unconvertible, or a new one became
+    # available — both a migration and a decision, never an automatic change.
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Compare the seed with the rate provider
+        run: pnpm db:verify-currencies
+
   verify-sentry:
     name: Sentry receives scrubbed events
     runs-on: ubuntu-latest

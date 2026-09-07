@@ -2,6 +2,7 @@ import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { sql } from 'drizzle-orm';
 import pg from 'pg';
 import * as schema from './schema/index';
+import { CURRENT_USER_SETTING } from './schema/rls';
 
 /**
  * Database connections and the RLS primitive (blueprint 17.4, 22.4).
@@ -15,19 +16,6 @@ import * as schema from './schema/index';
 
 export type Database = NodePgDatabase<typeof schema>;
 export type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
-
-/**
- * The RLS predicate used by every user-owned table (17.4, D44).
- *
- * `current_setting(…, true)` yields NULL when the GUC was never set and `''`
- * when it was set empty or reset by a pooler; `NULLIF` maps both to NULL, the
- * cast of NULL is NULL, the comparison is NULL, and the policy denies — without
- * a cast error and without ever matching a row.
- */
-export const RLS_USER_PREDICATE =
-  "user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid";
-
-export const CURRENT_USER_SETTING = 'app.current_user_id';
 
 /** Canonical UUID, the only shape `withUser` will ever put into the GUC. */
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -114,3 +102,13 @@ export async function ping(db: Database): Promise<boolean> {
 }
 
 export { schema };
+
+/**
+ * The few Drizzle helpers callers outside this package legitimately need.
+ *
+ * Re-exported rather than imported directly by `@vaultide/application` and its
+ * tests, so exactly one copy of Drizzle is ever loaded. Two copies type-check
+ * against each other as unrelated classes and fail at the first `sql` template
+ * that crosses the boundary — a confusing failure with a boring cause.
+ */
+export { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';

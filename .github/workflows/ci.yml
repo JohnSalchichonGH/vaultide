@@ -37,7 +37,7 @@ jobs:
         run: |
           url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           curl -sSfL "$url" | tar -xz -C /tmp gitleaks
-          /tmp/gitleaks git . --redact --exit-code 1 --report-format sarif --report-path gitleaks.sarif
+          /tmp/gitleaks git . --config .gitleaks.toml --redact --exit-code 1 --report-format sarif --report-path gitleaks.sarif
 
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7

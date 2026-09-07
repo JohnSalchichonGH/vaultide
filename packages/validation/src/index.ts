@@ -6,3 +6,5 @@ export * from './enums';
 export * from './primitives/currency';
 export * from './primitives/date';
 export * from './primitives/money';
+export * as authInput from './inputs/auth';
+export * as settingsInput from './inputs/settings';

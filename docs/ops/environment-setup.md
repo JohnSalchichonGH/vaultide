@@ -209,6 +209,103 @@ runs it weekly.
 
 ---
 
+## 5. Authentication, email and the FX cron (Phase 1)
+
+Three things a Phase 1 deployment needs that Phase 0 did not. All three are
+Vercel **runtime** environment variables, set on the production environment.
+
+### 5.1 `BETTER_AUTH_SECRET` and `BETTER_AUTH_URL`
+
+```bash
+openssl rand -hex 32          # 32 bytes, per blueprint 17.3
+```
+
+Set in Vercel:
+
+- `BETTER_AUTH_SECRET` — the value above. The app refuses to start without at
+  least 32 characters.
+- `BETTER_AUTH_URL` — `https://<your-domain>/api/auth`
+- `APP_URL` — `https://<your-domain>` — the only origin allowed to drive the
+  auth endpoints (17.1 `trustedOrigins`). Sign-in from anywhere else is refused.
+
+Rotating the secret signs everybody out. See [`secrets.md`](./secrets.md).
+
+### 5.2 Transactional email
+
+**Decide this before launching to anybody but yourself.** Blueprint 18.3 asks
+for a provider with an EU region and 29.1 proposes Postmark or Resend. Checked
+on 2026-09-07: **neither offers EU data residency.** Postmark (ActiveCampaign)
+is US-only and has said it has no plans for an EU region; Resend's `eu-west-1`
+is a *sending* region — account data, message metadata and logs stay in the US.
+
+Vaultide therefore ships a provider-agnostic adapter. What it sends is narrow —
+a verification link, a reset link, an "someone tried to sign up with your
+address" notice and a deletion confirmation — so what a provider sees is an
+email address and the fact that an account exists. That is a real disclosure,
+and choosing where it goes is yours.
+
+Whichever you pick, set:
+
+- `EMAIL_API_KEY` — the provider's API key
+- `EMAIL_FROM` — `Vaultide <no-reply@your-domain>`; the domain must be verified
+  with the provider
+- `EMAIL_API_URL` — the provider's send endpoint. Defaults to
+  `https://api.resend.com/emails`. For a provider with a different JSON shape,
+  `createHttpMailer` takes a `body` builder — one function, in
+  `packages/application/src/mail/providers.ts`.
+- `EMAIL_PROVIDER_ID` — optional; names the provider in operational logs only.
+
+**Without a key the deployment refuses to start**, rather than silently
+capturing verification mail and looking healthy while nobody can sign in.
+
+Send yourself a real verification email from the deployed site before
+announcing it. Nothing in CI can prove a provider is configured correctly.
+
+### 5.3 The FX cron
+
+```bash
+openssl rand -hex 32
+```
+
+- `CRON_SECRET` — the value above, in Vercel. `apps/web/vercel.json` schedules
+  `/api/cron/fx-refresh` at `0 16 * * *` UTC, after the ECB fixing (10.4).
+  Vercel sends the secret as a bearer token; any other caller gets a 404.
+- `SENTRY_CRON_FX_URL` — optional; a Sentry cron monitor check-in URL. The route
+  reports `in_progress`, then `ok` or `error` (22.6). A monitoring failure never
+  fails the refresh, but it is logged as a warning rather than swallowed.
+
+Verify after the first deployment:
+
+```bash
+curl -s -H "Authorization: Bearer $CRON_SECRET" https://<your-domain>/api/cron/fx-refresh
+# {"status":"ok","currencies":29,"rowsFetched":...,"rowsInserted":...}
+
+curl -s -o /dev/null -w '%{http_code}
+' https://<your-domain>/api/cron/fx-refresh
+# 404 — no secret, no answer, and no hint that the route exists
+```
+
+The refresh is idempotent: a second call inserts nothing. It also runs with no
+user context at all, which is what makes it structurally unable to read across
+tenants (R26, T11) — asserted in
+`packages/application/test/integration/fx.test.ts`.
+
+### 5.4 The supported-currency set
+
+The catalogue must match what the rate provider actually publishes; a currency
+flagged supported without rates would be offered as a reporting currency and
+then be unconvertible.
+
+```bash
+pnpm db:verify-currencies
+```
+
+It compares the committed seed with the provider's own list and exits non-zero
+on any divergence. It runs weekly in `verify-environment.yml`. It reports only:
+adding or removing a currency is a migration and a decision.
+
+---
+
 ## What lives where, afterwards
 
 | Credential | Only in |
@@ -216,6 +313,9 @@ runs it weekly.
 | Neon admin (`neondb_owner`) | GitHub environment `bootstrap` |
 | `app_owner` URL | GitHub environment `production` |
 | `app_user` URL | Vercel project env |
+| `BETTER_AUTH_SECRET` | Vercel project env |
+| `EMAIL_API_KEY` | Vercel project env |
+| `CRON_SECRET` | Vercel project env |
 | `app_backup` URL | GitHub environment `backup` |
 | age private key | Offline / password manager |
 | age recipient | GitHub environment `backup` |

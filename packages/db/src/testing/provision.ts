@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 
 /**
- * Provisions a PostgreSQL database from zero the way an environment is
- * provisioned in production (blueprint 22.2, 21.3, Phase 0 acceptance):
+ * `@vaultide/db/testing` — provisions a PostgreSQL database from zero the way
+ * an environment is provisioned in production (blueprint 22.2, 21.3, Phase 0 acceptance):
  *
  *   1. an admin credential creates the database;
  *   2. `scripts/db/bootstrap-roles.sql` runs as the platform admin;
@@ -18,10 +18,7 @@ import pg from 'pg';
  * what CI and production actually run.
  */
 
-export const repoRoot = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '../../../..',
-);
+export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const dbPackageRoot = path.join(repoRoot, 'packages', 'db');
 
 export interface RolePasswords {

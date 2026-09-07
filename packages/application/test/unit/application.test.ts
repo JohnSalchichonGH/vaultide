@@ -21,7 +21,7 @@ import {
   TEST_CLOCK_HEADER,
   ValidationError,
   type RequestContext,
-} from '../src/index';
+} from '../../src/index';
 
 function headers(map: Record<string, string>) {
   return { get: (name: string) => map[name.toLowerCase()] ?? null };
@@ -83,6 +83,27 @@ describe('TEST_CLOCK is a test-only capability', () => {
     expect(isTestClockEnabled({ NODE_ENV: 'development' })).toBe(false);
     expect(isTestClockEnabled({ NODE_ENV: 'production' })).toBe(false);
     expect(isTestClockEnabled({})).toBe(false);
+
+    // A Next standalone server sets `NODE_ENV=production` on itself, so the
+    // end-to-end suite — which 21.5 runs against the build — opens the same
+    // capabilities with an explicit flag instead.
+    expect(
+      isTestClockEnabled({ NODE_ENV: 'production', VAULTIDE_TEST_ENDPOINTS: 'enabled' }),
+    ).toBe(true);
+    expect(isTestClockEnabled({ NODE_ENV: 'production', VAULTIDE_TEST_ENDPOINTS: 'yes' })).toBe(
+      false,
+    );
+
+    // And a production deployment cannot open them, flag or no flag. This is
+    // the property that makes the second door safe: the mailbox hands out
+    // single-use verification tokens.
+    expect(
+      isTestClockEnabled({
+        NODE_ENV: 'test',
+        VAULTIDE_TEST_ENDPOINTS: 'enabled',
+        VERCEL_ENV: 'production',
+      }),
+    ).toBe(false);
   });
 
   it('honors the header in test builds', () => {

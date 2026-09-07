@@ -1,5 +1,4 @@
 import type { Metadata, Viewport } from 'next';
-import { AppShell } from '@/components/shell/app-shell';
 import './globals.css';
 
 /** Product metadata (blueprint 19: app metadata title "Vaultide"). */
@@ -20,12 +19,15 @@ export const viewport: Viewport = {
   colorScheme: 'light dark',
 };
 
+/**
+ * The root layout holds the document only. The visual shell moved into the
+ * route groups in Phase 1, because a signed-in page and a sign-in page need
+ * different chrome — and the sign-in page must not render a user menu.
+ */
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body>
-        <AppShell>{children}</AppShell>
-      </body>
+      <body>{children}</body>
     </html>
   );
 }

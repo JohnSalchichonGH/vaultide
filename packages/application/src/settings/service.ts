@@ -1,0 +1,182 @@
+import {
+  findUserSettings,
+  mergeUserPreferences,
+  updateUserSettings,
+  type Database,
+  type UserSettingsPatch,
+  type UserSettingsRecord,
+} from '@vaultide/db';
+import { usableCurrencyCodes } from '../currencies/service';
+import { NotFoundError, ValidationError, VersionConflictError } from '../errors';
+import type { UserSettings } from './types';
+
+/**
+ * User settings (blueprint 6.2, 15.2 Settings, 20.3).
+ *
+ * Every read and every write goes through `withUser`, so the database enforces
+ * ownership as well as this code: a query that somehow carried another user's
+ * id would return nothing and an insert would fail the policy's `WITH CHECK`.
+ * No function here accepts a caller-supplied `userId` — it comes from the
+ * authenticated context (17.2).
+ */
+
+export interface SettingsDependencies {
+  readonly db: Database;
+  /**
+   * Called with any currency the user has just started using, so its history
+   * can be fetched once, globally (10.4). Failure is not the user's problem:
+   * the callback swallows provider errors and conversions stay `Unavailable`
+   * until the next cron.
+   */
+  readonly ensureCurrencyHistory?: (currencies: readonly string[]) => Promise<void>;
+}
+
+function toDto(row: UserSettingsRecord): UserSettings {
+  return {
+    userId: row.userId,
+    baseCurrency: row.baseCurrency.trim(),
+    reportingCurrency: row.reportingCurrency.trim(),
+    timezone: row.timezone,
+    locale: row.locale,
+    favoriteCurrencies: row.favoriteCurrencies.map((code) => code.trim()),
+    staleInvestmentMonths: row.staleInvestmentMonths,
+    stalePropertyMonths: row.stalePropertyMonths,
+    countAdditionalSpending: row.countAdditionalSpending,
+    onboardingCompleted:
+      (row.preferences as { onboardingCompleted?: unknown } | null)?.onboardingCompleted === true,
+    version: row.version,
+  };
+}
+
+/** The onboarding key inside `preferences` (6.1: UI state only). */
+export const ONBOARDING_COMPLETED_KEY = 'onboardingCompleted';
+
+/**
+ * Mark onboarding as done. Not versioned: finishing a wizard is UI state, and
+ * making it bump `version` would invalidate any settings form left open.
+ */
+export async function markOnboardingCompleted(
+  db: Database,
+  userId: string,
+): Promise<UserSettings> {
+  await mergeUserPreferences(db, userId, { [ONBOARDING_COMPLETED_KEY]: true });
+  return readSettings(db, userId);
+}
+
+export async function readSettings(db: Database, userId: string): Promise<UserSettings> {
+  const row = await findUserSettings(db, userId);
+  // Absent settings mean an un-provisioned account, which `ensureProvisioned`
+  // repairs before this is ever called on a real request.
+  if (row === undefined) throw new NotFoundError('Settings have not been created yet.');
+  return toDto(row);
+}
+
+export async function findSettings(
+  db: Database,
+  userId: string,
+): Promise<UserSettings | undefined> {
+  const row = await findUserSettings(db, userId);
+  return row === undefined ? undefined : toDto(row);
+}
+
+/**
+ * The fields an update may carry. Each is optional and explicitly allows
+ * `undefined`, so a caller can spread a partially-filled form straight in
+ * under `exactOptionalPropertyTypes`; only defined fields are written.
+ */
+export interface UpdateSettingsFields {
+  readonly baseCurrency?: string | undefined;
+  readonly reportingCurrency?: string | undefined;
+  readonly timezone?: string | undefined;
+  readonly locale?: string | undefined;
+  readonly favoriteCurrencies?: readonly string[] | undefined;
+  readonly staleInvestmentMonths?: number | undefined;
+  readonly stalePropertyMonths?: number | undefined;
+  readonly countAdditionalSpending?: boolean | undefined;
+}
+
+/**
+ * Update settings under an optimistic version check (20.3).
+ *
+ * Currency codes are checked against the catalogue, not merely against a
+ * pattern: a code must exist, be active and be FX-supported. That single check
+ * is what keeps crypto out (it is not in `currencies` at all, R28) and what
+ * stops a user pinning their reporting currency to something no rate can ever
+ * value (10.5).
+ */
+export async function updateSettings(
+  deps: SettingsDependencies,
+  userId: string,
+  expectedVersion: number,
+  fields: UpdateSettingsFields,
+): Promise<UserSettings> {
+  const { db } = deps;
+
+  const requestedCurrencies = [
+    ...(fields.baseCurrency === undefined ? [] : [fields.baseCurrency]),
+    ...(fields.reportingCurrency === undefined ? [] : [fields.reportingCurrency]),
+    ...(fields.favoriteCurrencies ?? []),
+  ].map((code) => code.trim().toUpperCase());
+
+  if (requestedCurrencies.length > 0) {
+    const usable = await usableCurrencyCodes(db, requestedCurrencies);
+    const rejected = [...new Set(requestedCurrencies)].filter((code) => !usable.has(code));
+    if (rejected.length > 0) {
+      // The message names the codes because they are the user's own input, not
+      // anybody's financial data (18.2).
+      throw new ValidationError(
+        `These currencies are not supported: ${rejected.join(', ')}. Vaultide supports the official currencies its rate provider publishes; crypto is tracked as an investment, not as a currency.`,
+        { currency: rejected },
+      );
+    }
+  }
+
+  const patch: UserSettingsPatch = {};
+  if (fields.baseCurrency !== undefined) patch.baseCurrency = fields.baseCurrency.toUpperCase();
+  if (fields.reportingCurrency !== undefined) {
+    patch.reportingCurrency = fields.reportingCurrency.toUpperCase();
+  }
+  if (fields.timezone !== undefined) patch.timezone = fields.timezone;
+  if (fields.locale !== undefined) patch.locale = fields.locale;
+  if (fields.favoriteCurrencies !== undefined) {
+    patch.favoriteCurrencies = fields.favoriteCurrencies.map((code) => code.toUpperCase());
+  }
+  if (fields.staleInvestmentMonths !== undefined) {
+    patch.staleInvestmentMonths = fields.staleInvestmentMonths;
+  }
+  if (fields.stalePropertyMonths !== undefined) {
+    patch.stalePropertyMonths = fields.stalePropertyMonths;
+  }
+  if (fields.countAdditionalSpending !== undefined) {
+    patch.countAdditionalSpending = fields.countAdditionalSpending;
+  }
+
+  const updated = await updateUserSettings(db, userId, expectedVersion, patch);
+
+  if (updated === undefined) {
+    // Either the row moved on under us, or it does not exist. Both are told
+    // apart by a second read, so a stale form gets the right message.
+    const current = await findSettings(db, userId);
+    if (current === undefined) throw new NotFoundError('Settings have not been created yet.');
+    throw new VersionConflictError();
+  }
+
+  const dto = toDto(updated);
+
+  // First use of a currency triggers a one-time global history backfill (10.4).
+  if (requestedCurrencies.length > 0 && deps.ensureCurrencyHistory !== undefined) {
+    await deps.ensureCurrencyHistory([...new Set(requestedCurrencies)]);
+  }
+
+  return dto;
+}
+
+/** The shell's reporting-currency selector (15.1) — one field, same rules. */
+export async function setReportingCurrency(
+  deps: SettingsDependencies,
+  userId: string,
+  expectedVersion: number,
+  reportingCurrency: string,
+): Promise<UserSettings> {
+  return updateSettings(deps, userId, expectedVersion, { reportingCurrency });
+}

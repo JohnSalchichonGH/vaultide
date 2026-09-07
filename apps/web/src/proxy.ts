@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import { getSessionCookie } from 'better-auth/cookies';
 
 /**
  * Edge proxy (blueprint 17.2, 17.3).
@@ -7,10 +8,25 @@ import { NextResponse, type NextRequest } from 'next/server';
  *
  *  1. security headers, including a strict CSP with a per-request nonce — no
  *     third-party scripts, no framing, no inline script without the nonce;
- *  2. from Phase 1, a convenience redirect for unauthenticated requests to
- *     `/(app)/*`. The authority is always `requireSession()` in the server
- *     component or action, never this file.
+ *  2. a convenience redirect for unauthenticated requests to the signed-in
+ *     pages. The authority is always `requireSession()` in the server component
+ *     or action, never this file.
+ *
+ * Point 2 deserves the emphasis 17.2 gives it. This runs on the edge and only
+ * looks at whether a session **cookie** is present — it does not validate a
+ * token, does not read the database, and is therefore not a security control.
+ * Its whole job is to send somebody to the sign-in form instead of rendering a
+ * page that would refuse them. Every page under `(app)` re-checks properly.
  */
+
+/** Prefixes that require a session. Everything else is public. */
+const PROTECTED_PREFIXES = ['/settings', '/onboarding', '/dashboard', '/monthly', '/accounts'];
+
+function requiresSession(pathname: string): boolean {
+  return PROTECTED_PREFIXES.some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+  );
+}
 
 const SECURITY_HEADERS: Record<string, string> = {
   'X-Content-Type-Options': 'nosniff',
@@ -65,7 +81,12 @@ export default function proxy(request: NextRequest): NextResponse {
   // `strict-dynamic` blocks them, and the page never hydrates.
   requestHeaders.set('Content-Security-Policy', policy);
 
-  const response = NextResponse.next({ request: { headers: requestHeaders } });
+  // The convenience gate (17.2, step 1). A cookie's mere presence is enough to
+  // let the request through to the page, which then checks it for real.
+  const response =
+    requiresSession(request.nextUrl.pathname) && getSessionCookie(request) === null
+      ? NextResponse.redirect(signInUrl(request))
+      : NextResponse.next({ request: { headers: requestHeaders } });
 
   response.headers.set('Content-Security-Policy', policy);
   for (const [header, value] of Object.entries(SECURITY_HEADERS)) {
@@ -79,6 +100,13 @@ export default function proxy(request: NextRequest): NextResponse {
   }
 
   return response;
+}
+
+/** Sign-in, remembering where the visitor was going. */
+function signInUrl(request: NextRequest): URL {
+  const url = new URL('/sign-in', request.nextUrl);
+  url.searchParams.set('next', request.nextUrl.pathname + request.nextUrl.search);
+  return url;
 }
 
 export const config = {

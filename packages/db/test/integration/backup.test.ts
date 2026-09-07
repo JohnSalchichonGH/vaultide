@@ -12,8 +12,8 @@ import {
   provisionDatabase,
   repoRoot,
   type ProvisionedDatabase,
-} from '../helpers/provision';
-import { RLS_USER_PREDICATE } from '../../src/client';
+} from '../../src/testing/provision';
+import { RLS_USER_PREDICATE } from '../../src/schema/rls';
  
 import { runPgTool } from '../../../../scripts/lib/pg-tools.mjs';
 

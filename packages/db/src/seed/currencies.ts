@@ -7,9 +7,16 @@
  * for CLF and UYW. Nothing here assumes "fiat means at most three decimals".
  *
  * `isFxSupported` marks the currencies the FX provider publishes reference
- * rates for (the ECB set exposed by Frankfurter). The remaining rows exist so
- * amounts in those currencies are still validated and formatted correctly;
- * Phase 1 reconciles the flag with the provider's own list at refresh time.
+ * rates for. The remaining rows exist so amounts in those currencies are still
+ * validated and formatted correctly, but they can never be a base, reporting or
+ * position currency: without rates there is no honest conversion (10.5).
+ *
+ * The flag is **reconciled against the provider** rather than assumed. Phase 0
+ * seeded the historical ECB list, which still contained BGN; Bulgaria adopted
+ * the euro on 2026-01-01 and the ECB stopped publishing a EUR/BGN reference
+ * rate, so Frankfurter no longer lists it. `pnpm db:verify-currencies` (and the
+ * integration test that runs the same comparison against a recorded provider
+ * response) fails if this list and the provider's ever diverge again.
  */
 export interface CurrencySeedRow {
   readonly code: string;
@@ -18,11 +25,13 @@ export interface CurrencySeedRow {
   readonly isFxSupported: boolean;
 }
 
-/** Currencies with daily ECB reference rates through the FX provider. */
+/**
+ * Currencies the FX provider publishes daily reference rates for, verified
+ * against `GET https://api.frankfurter.dev/v1/currencies` on 2026-09-07.
+ */
 const FX_SUPPORTED: readonly [string, string, number][] = [
   ['EUR', 'Euro', 2],
   ['AUD', 'Australian Dollar', 2],
-  ['BGN', 'Bulgarian Lev', 2],
   ['BRL', 'Brazilian Real', 2],
   ['CAD', 'Canadian Dollar', 2],
   ['CHF', 'Swiss Franc', 2],
@@ -61,6 +70,10 @@ const FX_SUPPORTED: readonly [string, string, number][] = [
 const OTHER_OFFICIAL: readonly [string, string, number][] = [
   ['AED', 'UAE Dirham', 2],
   ['ARS', 'Argentine Peso', 2],
+  // Withdrawn from the ECB reference set when Bulgaria adopted the euro on
+  // 2026-01-01. Kept as a currency so historical amounts still format, but no
+  // longer FX-supported: there are no rates to convert it with.
+  ['BGN', 'Bulgarian Lev', 2],
   ['BHD', 'Bahraini Dinar', 3],
   ['BIF', 'Burundi Franc', 0],
   ['CLF', 'Chilean Unidad de Fomento', 4],

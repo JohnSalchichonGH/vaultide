@@ -32,17 +32,38 @@ export type AnonymousContext = Omit<RequestContext, 'userId' | 'sessionId'>;
 export const TEST_CLOCK_HEADER = 'x-vaultide-test-clock';
 
 /**
- * The `TEST_CLOCK` override (blueprint 21).
+ * Test-only capabilities: the `TEST_CLOCK` override (blueprint 21) and the
+ * captured mailbox the end-to-end suite reads (21.5).
  *
- * It exists so month boundaries can be exercised deterministically, and it is
- * honored **only** when `NODE_ENV === 'test'`. In development and production the
- * header is ignored entirely — reading it cannot move the clock, so a header a
- * user sends can never change which records the server accepts as "not in the
- * future".
+ * Section 21 gates the clock override on `NODE_ENV === 'test'`, and that is
+ * still the primary signal — it is what Vitest sets, and it is what makes the
+ * override impossible under `next dev`. But 21.5 runs the suite against the
+ * **production build**, and a Next.js standalone server assigns
+ * `process.env.NODE_ENV = 'production'` in its own entry point, before any
+ * application code runs. Gating on `NODE_ENV` alone would therefore make both
+ * capabilities permanently unreachable in the one artifact the blueprint says
+ * to test against.
+ *
+ * So there is a second door, deliberately narrow:
+ *
+ *  - it needs an explicit `VAULTIDE_TEST_ENDPOINTS=enabled`, which no
+ *    deployment sets by accident, and
+ *  - it is refused outright whenever the host says this is a production
+ *    deployment (`VERCEL_ENV=production`), so setting the variable there
+ *    cannot open it.
+ *
+ * The intent of section 21 is unchanged: a header a user sends can never move
+ * the server's clock, and the mailbox — which would hand out single-use
+ * verification tokens — cannot be reached in production.
  */
-export function isTestClockEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.NODE_ENV === 'test';
+export function areTestEndpointsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env['VERCEL_ENV'] === 'production') return false;
+  if (env.NODE_ENV === 'test') return true;
+  return env['VAULTIDE_TEST_ENDPOINTS'] === 'enabled';
 }
+
+/** The name section 21 uses for the same gate. */
+export const isTestClockEnabled = areTestEndpointsEnabled;
 
 export class InvalidTestClockError extends Error {
   readonly code = 'INVALID_TEST_CLOCK';
@@ -60,7 +81,7 @@ export function resolveClock(
   headers: { get(name: string): string | null } | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): Clock {
-  if (!isTestClockEnabled(env)) return systemClock;
+  if (!areTestEndpointsEnabled(env)) return systemClock;
 
   const header = headers?.get(TEST_CLOCK_HEADER) ?? env.TEST_CLOCK ?? null;
   if (header === null || header === '') return systemClock;

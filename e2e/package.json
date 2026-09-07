@@ -12,6 +12,7 @@
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",
-    "@vaultide/config": "workspace:*"
+    "@vaultide/config": "workspace:*",
+    "otplib": "13.5.0"
   }
 }
