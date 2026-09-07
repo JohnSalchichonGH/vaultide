@@ -193,7 +193,11 @@ test.describe('sign-up, verification and settings', () => {
     await expect(page).toHaveURL(/\/sign-in/u);
 
     await signIn(page, email);
-    await expect(page).toHaveURL(/\/(settings|onboarding)/u);
+    // Specifically **not** the wizard. This user finished onboarding, so
+    // signing in must land them in the application. The previous
+    // `/(settings|onboarding)/` pattern accepted either answer, which is why a
+    // sign-in that always went to `/onboarding/1` reached production unnoticed.
+    await expect(page).toHaveURL(/\/settings\/profile/u);
 
     // Everything chosen before the sign-out is still there.
     await page.goto('/settings/currencies');

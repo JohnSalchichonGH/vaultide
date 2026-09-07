@@ -272,10 +272,17 @@ export function SignInForm() {
   function land(): void {
     // Only a same-site path is honoured: `?next=https://elsewhere` would be an
     // open redirect, and a leading `//` is a protocol-relative URL (17.3).
+    //
+    // Without a `next`, land on `/` rather than guessing a destination. The
+    // root already decides where a signed-in user belongs — settings when
+    // onboarding is done, the wizard when it is not — and it decides from the
+    // database. Naming `/onboarding/1` here duplicated that decision in a
+    // place that cannot see the flag, so a user who had finished onboarding
+    // was sent back through it on every sign-in.
     const safe =
       next !== null && next.startsWith('/') && !next.startsWith('//')
         ? (next as Route)
-        : ('/onboarding/1' as Route);
+        : ('/' as Route);
     router.push(safe);
     router.refresh();
   }
