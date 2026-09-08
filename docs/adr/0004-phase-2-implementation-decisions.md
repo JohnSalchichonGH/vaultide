@@ -16,7 +16,7 @@ architecture, the accounting model or the schema semantics.
 ## 1. Aggregates sum in a canonical order, because decimal addition is not associative
 
 **Decision.** `netWorthAt` orders its position contributions by position id
-before summing, and exposes them in that same order.
+before summing, and returns them in that order.
 
 **Why.** A converted amount is a division. `USD 3,000 ÷ 1.1596` does not
 terminate, so it is held to 40 significant digits (7.1), and adding several such
@@ -35,6 +35,22 @@ the order a query happened to return rows in.
 deterministically, and the property tests assert it for random balance sheets.
 Phase 7's decompositions and Phase 10's projections should do the same: any new
 aggregation over converted values needs a fixed accumulation order.
+
+**Canonical position-id ordering is an arithmetic rule, not a presentation
+contract.** It exists so that the same balance sheet produces the same string,
+and nothing more. It does not require positions, components or accounts to be
+shown to anyone in that order, and a future phase must not read it as an
+instruction to sort a user interface by UUID.
+
+The boundary already works this way, which is why the rule can be stated so
+narrowly: `loadFinancialWindow` returns position rows ordered by `sort_order`
+then `name` — a user-meaningful order — and `buildPositionDtos` looks the
+engine's contributions up by id from a map while iterating those rows. The
+canonical order is therefore consumed entirely inside the accumulation and never
+reaches a DTO, a page or a chart. A presentation layer may apply any stable sort
+it likes; doing so cannot change the order used internally to accumulate, and
+changing the internal order to match a display preference is the thing that is
+forbidden.
 
 The related identity `financial = total − excluded` is therefore asserted
 **exactly** where no division is involved, and to 10⁻²⁵ of a unit where a rate

@@ -9,8 +9,17 @@ migrations applied, the environment and role checks re-run, a verified
 encrypted backup of the expanded schema, and — since 2026-09-08 — **the
 authenticated journey walked end to end on the production deployment itself**,
 on a disposable account with synthetic values, which was then deleted through
-the product and the cascade measured. Nothing in this record is now claimed
-from local evidence alone. See
+the product and the cascade measured.
+
+What that does and does not settle is worth stating plainly. The production walk
+proves the **deployed** system: that this schema, these roles, this artifact and
+these figures behave as recorded on the real deployment, over representative
+end-to-end behaviour. It does not, and could not, independently discriminate
+every edge case — some invariants can only be separated from their plausible
+wrong implementations by constructing a state that is awkward or unsafe to
+produce in production. **Those remain proven by focused automated regressions,
+and this record says so at each point where it matters** — most explicitly for
+the `confirmUnchanged` gap case in §1 below. See
 "[The authenticated production journey](#the-authenticated-production-journey)".
 
 Phase 2 delivers the first real financial state in Vaultide: the unified
@@ -600,10 +609,68 @@ Manifest delta against run `34223190343`, taken before the journey:
 | `currencies` | 159 | 159 | reference data, untouched |
 
 ADR 0003 §5 records that immutable backup objects may retain a deleted account
-for up to the 30-day retention window. **Here they retain nothing**: backups ran
-at 10:28, 11:54 and 16:13, and the disposable account was created after 11:54
-and deleted before 16:13, so no dump was ever taken while it held anything. The
-caveat stands as a general statement; it has nothing to cover in this case.
+for up to the 30-day retention window. **For this account they retain nothing**:
+backups ran at 10:28, 11:54 and 16:13, and the account walked through the journey
+was created after 11:54 and deleted before 16:13, so no dump was ever taken while
+it held anything. That is a statement about this account only — the keeper
+outlived the 16:13 backup, and the final-cleanup section below records what that
+archive does contain.
+
+### Final cleanup: removing the keeper, and the state left behind
+
+The keeper account above was created for one purpose — to make "another account
+is unaffected" a measurement rather than an assumption — and it was left in place
+only long enough to serve as that evidence. It has since been deleted through the
+same production account-deletion flow, as have the two older disposable accounts
+that predated the journey. The re-authentication guard was exercised and recorded
+on the first deletion; the later ones went through the same flow without needing
+it demonstrated again.
+
+**No Phase 2 financial data of any kind remains.** `verify-environment.yml` run
+`34252956103` on `a20a58d`, all six jobs green, the read-only invariants job
+reporting:
+
+```
+all ten invariants hold
+Checked 0 balance(s) across 0 position(s), 0 owner(s), 0 audit row(s).
+Manifest for positions named like Synthetic%:  distinct owners: 0
+```
+
+**No synthetic disposable accounts remain either** — nor any account at all.
+`nightly-backup.yml` run `34253377859`, taken after the last deletion, verified
+every table against the live database:
+
+| Table | Rows |
+|---|---|
+| `user`, `account`, `session`, `two_factor`, `verification` | 0 |
+| `user_settings`, `categories`, `tags` | 0 |
+| `positions`, `position_valuations`, `cash_accounts`, `other_assets` | 0 |
+| `audit_entries` | 0 |
+| `currencies` | 159 |
+| `fx_rates` | 2,236 |
+| `rate_limit` | 2 |
+
+Reference data only. That run: dump 126,732 bytes as `app_backup`, **every table
+row count matched the live database**, `age` encryption to 126,948 bytes,
+uploaded to
+`s3://vaultide-backups-prod/2026/09/vaultide-production-2026-09-08T16-49-41-831Z.dump.age`
+despite the 30-day object lock, **read back out of the bucket**, digest
+`32bd877bab60cd51136008d9ba21f978918b8ac9e20d5be4465002bcfb861f99` matching the
+one taken at encryption time, and the Sentry cron monitor checking in
+`in_progress` then `ok`.
+
+**The retention caveat, stated accurately.** The earlier section records that no
+retained backup object ever contained the *first* disposable account's financial
+rows, because no dump was taken while it held anything. That is not true of the
+keeper: run `34249700070` was taken while the keeper existed, so **that archive
+does contain one synthetic position, one `999,99 €` balance and two audit rows**.
+It expires under the 30-day retention and bucket lock recorded in ADR 0003 §5 —
+the documented consequence of immutable backups, not a failed deletion. The live
+database is clean now; that object ages out on its own schedule.
+
+Production and `main` were equal throughout this cleanup, which changed no code:
+`/api/health` reported `a20a58d` before and after, matching the head of `main`
+with a clean working tree.
 
 ---
 
