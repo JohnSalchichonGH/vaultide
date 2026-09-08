@@ -5,15 +5,16 @@ flows you know; Vaultide infers spending by cash reconciliation, keeps records i
 their native currency with historical FX, separates capital flows from investment
 performance, explains what changed your net worth, and projects it forward.
 
-**Current state: Phase 2 — accounts, balances and net worth.** You can create
-an account, confirm your address, sign in (optionally with a second factor), and
-set what you think in and what totals are shown in. Then: cash accounts and
-other assets in any supported currency, balances dated to the day and never into
-the future, statement month-end balances once a month has ended, quick update,
-and both net-worth metrics — total (everything you track) and financial (the
-headline). A value nobody has recorded is shown as unknown, never as zero, and a
-total that could not include something says so and says what. No spending,
-income or transfers yet — those arrive with Phase 3.
+**Implemented through Phase 2 — accounts, balances and net worth. Phase 2 is
+frozen and production-verified; Phase 3 has not started.** You can create an
+account, verify your email address, sign in (optionally with a second factor),
+and choose your base and reporting currencies, timezone and locale. Then: cash
+accounts and other assets in any supported currency, balances dated to the day
+and never into the future, statement month-end balances once a month has ended,
+quick update, and both net-worth metrics — total (everything you track) and
+financial (the headline). A value nobody has recorded is shown as unknown, never
+as zero, and a total that could not include something says so and says what. No
+spending, income or transfers yet — those arrive with Phase 3.
 
 The authoritative specification is
 [`docs/implementation-blueprint.md`](docs/implementation-blueprint.md) (frozen,
@@ -40,7 +41,8 @@ packages/application use cases: Better Auth, sessions, mailer, settings, FX serv
 packages/config     tsconfig, ESLint (incl. the money-coercion rule), boundaries
 e2e                 Playwright: smoke, the auth and settings flow, and the
                     accounts, balances and net-worth journey
-scripts/db          role bootstrap, local PostgreSQL, currency reconciliation
+scripts/db          role bootstrap, local PostgreSQL, currency reconciliation,
+                    live environment and financial-invariant checks
 scripts/backup      dump → verify → encrypt
 ```
 
@@ -110,7 +112,7 @@ about roles, RLS and privileges is what production has.
 the production build itself.
 
 ```bash
-pnpm db:verify-currencies   # does the seed still match what the ECB publishes?
+pnpm db:verify-currencies   # does the seed still match the approved ECB -> BDI chain?
 ```
 
 ### Backups
@@ -128,13 +130,21 @@ policy filtered can never pass verification. Restoring is documented in
 
 - **Money is exact.** `NUMERIC(24,8)` in PostgreSQL, `Decimal` at 40 digits in
   the domain, decimal strings across the wire, and display formatted from those
-  strings. Money never passes through a JavaScript `number` — a lint rule fails
-  the build if it tries.
+  strings. Authoritative financial arithmetic and displayed money never pass
+  through a JavaScript `number`, and a lint rule fails the build if they try.
+  Numeric coercion is permitted in one place only — chart geometry, where the
+  rule is switched off for `components/charts/` because a pixel is not a
+  figure; every number a person reads there still comes from the exact string.
 - **Time is injected.** No engine reads the clock. "Today" is computed once per
   request in the user's timezone, so month boundaries are testable and no record
   can be dated in the future.
 - **Unknown is a value.** A figure that cannot be computed is `Unavailable` with
   a reason, never `0`; an aggregate missing a part says so.
+- **Financial writes re-check the session.** Every state-changing financial
+  action revalidates the session against the authoritative store before it
+  writes. The signed cookie cache is enough to render a page; it is not enough
+  to authorize a mutation, so a session revoked moments ago cannot spend its
+  remaining cache window changing money.
 - **The database fails closed.** Row-level security denies when no user context
   is set, the runtime role cannot bypass it or run DDL, and only the backup role
   — used by one workflow — can read across tenants.
