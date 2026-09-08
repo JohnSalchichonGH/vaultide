@@ -246,13 +246,32 @@ export const archiveTemplateInput = z.object({
 /**
  * "From this month on" (§30.9 item 4): a term effective at the **occurrence's**
  * scheduled date, never at the financial date the money happened to move on.
+ *
+ * `expected` is what the client believed about that effective date when it
+ * rendered the form, and it is required rather than inferred. A term amount is
+ * a source financial value, so the server must not decide "create or update"
+ * from a read it takes itself: two people editing the same term from the same
+ * starting version would then both succeed, and the later write would silently
+ * erase the earlier one (20.3's optimistic concurrency, applied to the row the
+ * user actually looked at).
+ *
+ *  - `{ state: 'absent' }` — "there was no amount starting this date". Insert;
+ *    if one now exists, `CONFLICT_DUPLICATE`.
+ *  - `{ state: 'version', version }` — "there was this exact row". Update it;
+ *    a different version or a vanished row is a conflict, never an insert.
  */
+export const termExpectation = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('absent') }),
+  z.object({ state: z.literal('version'), version: z.number().int().positive() }),
+]);
+
 export const setTemplateTermInput = z.object({
   templateId: z.uuid(),
   effectiveFrom: plainDate,
   amount: moneyString({ nonNegative: true }),
   grossAmount: moneyString({ nonNegative: true }).optional(),
   note: z.string().trim().max(500).optional(),
+  expected: termExpectation,
 });
 
 /* ------------------------------------------------------------------------- */

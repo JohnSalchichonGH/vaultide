@@ -1,10 +1,11 @@
 import {
   findTemplate,
+  findTermAt,
   insertTemplate,
   insertTerm,
+  isUniqueViolation,
   latestReferencedOccurrence,
   listTemplates,
-  listTerms,
   templateHasHistory,
   updateTemplate,
   updateTerm,
@@ -14,6 +15,7 @@ import {
 import type { IncomeKind, RecurrenceFrequency, TemplateKind } from '@vaultide/validation';
 import type { RequestContext } from '../context';
 import {
+  DuplicateConflictError,
   ImpossibleOperationError,
   NotFoundError,
   ValidationError,
@@ -303,10 +305,26 @@ export async function unarchiveTemplate(
  * date (§30.9 item 4).
  *
  * Keying it to the occurrence rather than to today is what makes an early
- * payment behave: a raise effective 1 October applies to the October
- * occurrence even when the money arrived on 30 September. Already materialized
- * flows are untouched — a term is what a *suggestion* is worth, not a
- * correction to what was recorded.
+ * payment behave: a raise effective 1 October applies to the October occurrence
+ * even when the money arrived on 30 September. Already materialized flows are
+ * untouched — a term is what a *suggestion* is worth, not a correction to what
+ * was recorded.
+ *
+ * ## The caller says what it expected to find
+ *
+ * A term amount is a source financial value, so "create or update" is decided
+ * by the client's stated expectation, never by a read the server takes for
+ * itself. Reading the current row and updating with the version just read
+ * prevents a blind SQL write and permits the lost update that matters: two
+ * people open the same term at version 3, one saves 2,200, the other saves
+ * 2,150 against a stale form, and the second silently overwrites the first
+ * because the server refreshed the version on its behalf.
+ *
+ * So `expected` is required. `absent` inserts and lets the
+ * `UNIQUE (template_id, effective_from)` constraint answer — not a prior read,
+ * which another transaction can invalidate between the check and the write.
+ * `version` updates that exact row under 20.3's optimistic check, and a
+ * vanished row is a conflict rather than a quiet insert.
  */
 export async function setTemplateTerm(
   deps: FlowDependencies,
@@ -317,6 +335,7 @@ export async function setTemplateTerm(
     amount: string;
     grossAmount?: string | undefined;
     note?: string | undefined;
+    expected: { state: 'absent' } | { state: 'version'; version: number };
   },
 ): Promise<RecurringTemplateTermRow> {
   const template = await findTemplate(deps.db, ctx.userId, args.templateId);
@@ -329,29 +348,44 @@ export async function setTemplateTerm(
   }
 
   const audit = auditContextOf(ctx);
-  const existing = (await listTerms(deps.db, ctx.userId, args.templateId)).find(
-    (row) => row.effectiveFrom === args.effectiveFrom,
-  );
 
-  if (existing !== undefined) {
-    const updated = await updateTerm(deps.db, audit, existing.id, existing.version, {
-      amount: args.amount,
-      grossAmount: args.grossAmount ?? null,
-      note: args.note ?? null,
-    });
-    if (updated === undefined) {
-      throw new VersionConflictError('This amount changed while you were editing it.');
+  if (args.expected.state === 'absent') {
+    try {
+      return await insertTerm(deps.db, audit, {
+        templateId: args.templateId,
+        effectiveFrom: args.effectiveFrom,
+        amount: args.amount,
+        grossAmount: args.grossAmount ?? null,
+        note: args.note ?? null,
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new DuplicateConflictError(
+          `There is already an amount starting ${args.effectiveFrom}. Reload to see it before changing it.`,
+        );
+      }
+      throw error;
     }
-    return updated;
   }
 
-  return insertTerm(deps.db, audit, {
-    templateId: args.templateId,
-    effectiveFrom: args.effectiveFrom,
+  const existing = await findTermAt(deps.db, ctx.userId, args.templateId, args.effectiveFrom);
+  if (existing === undefined) {
+    // The row the client was editing is gone. Inserting instead would recreate
+    // an amount somebody deliberately removed.
+    throw new VersionConflictError(
+      `The amount starting ${args.effectiveFrom} is no longer there. Reload before changing it.`,
+    );
+  }
+
+  const updated = await updateTerm(deps.db, audit, existing.id, args.expected.version, {
     amount: args.amount,
     grossAmount: args.grossAmount ?? null,
     note: args.note ?? null,
   });
+  if (updated === undefined) {
+    throw new VersionConflictError('This amount changed while you were editing it.');
+  }
+  return updated;
 }
 
 export async function listUserTemplates(

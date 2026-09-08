@@ -22,6 +22,8 @@ import {
   updateCashTransfer,
 } from '../../src/flows/transfers';
 import { archiveTemplate, createTemplate, setTemplateTerm, unarchiveTemplate, updateTemplateDetails } from '../../src/recurring/templates';
+import { findIncomeEntry, listTerms } from '@vaultide/db';
+import { systemCategoryKinds } from '@vaultide/validation';
 import {
   acceptSuggestion,
   listSuggestions,
@@ -622,6 +624,64 @@ describe('explicit cash attribution is validated on every path', () => {
         },
       }),
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+});
+
+describe('which protected category kinds a Phase 3 expense may use', () => {
+  // 7.4 carries the rule in its own row labels: a kind written "(linked to X)"
+  // needs X, and Phase 3 has neither a property/other-asset nor a transfer to
+  // offer through this path. Every other system kind is an ordinary tracked
+  // expense that happens to land in a non-consumption bucket, and is allowed —
+  // the enum containing a value is never the reason to expose or refuse it.
+
+  const ALLOWED = [
+    'property_operating',
+    'investment_fee',
+    'acquisition_cost',
+    'disposal_cost',
+    'external_outflow',
+  ] as const;
+
+  it.each(ALLOWED)('records a tracked expense under %s', async (kind) => {
+    const categories = await listCategories(harness.db, USER_A);
+    const categoryId = categories.find((row) => row.kind === kind)?.id as string;
+    expect(categoryId, kind).toBeDefined();
+
+    const created = await createExpenseEntry(deps(), SEPT_15, {
+      categoryId,
+      incurredOn: '2026-09-12',
+      amount: '25.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId: bbva,
+    });
+    expect(created.categoryId).toBe(categoryId);
+  });
+
+  it('refuses the two kinds whose 7.4 row requires a link Phase 3 has not got', async () => {
+    const categories = await listCategories(harness.db, USER_A);
+    for (const kind of ['capital_improvement', 'transfer_fee'] as const) {
+      const categoryId = categories.find((row) => row.kind === kind)?.id as string;
+      await expect(
+        createExpenseEntry(deps(), SEPT_15, {
+          categoryId,
+          incurredOn: '2026-09-12',
+          amount: '25.00',
+          currency: 'EUR',
+          settlement: 'tracked_cash',
+          cashPositionId: bbva,
+        }),
+        kind,
+      ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    }
+  });
+
+  it('covers every system kind the catalogue actually has', () => {
+    // Derived from the enum rather than from a remembered list, so a kind added
+    // later fails here instead of quietly defaulting to allowed.
+    expect([...systemCategoryKinds].sort()).toEqual(
+      [...ALLOWED, 'capital_improvement', 'transfer_fee'].sort(),
+    );
   });
 });
 
@@ -1361,6 +1421,7 @@ describe('accepting and skipping occurrences', () => {
       templateId: template.id,
       effectiveFrom: '2026-10-25',
       amount: '2250.00',
+      expected: { state: 'absent' },
     });
 
     const sept30 = on('2026-09-30');
@@ -1399,5 +1460,296 @@ describe('accepting and skipping occurrences', () => {
     expect(byDate.get('2026-09-25')?.state).toBe('due');
     expect(byDate.get('2026-10-25')?.state).toBe('upcoming');
     expect(byDate.get('2026-09-25')?.amount).toBe('2100');
+  });
+});
+
+describe('a term write says what it expected to find', () => {
+  async function salaryTemplate() {
+    const { template, term } = await createTemplate(deps(), SEPT_15, {
+      kind: 'income',
+      name: 'Salary',
+      incomeKind: 'employment',
+      currency: 'EUR',
+      frequency: 'monthly',
+      dayOfMonth: 25,
+      startDate: '2026-01-01',
+      cashPositionId: bbva,
+      amount: '2100.00',
+    });
+    return { template, term };
+  }
+
+  it('creates a term when the client expected none', async () => {
+    const { template } = await salaryTemplate();
+    const term = await setTemplateTerm(deps(), SEPT_15, {
+      templateId: template.id,
+      effectiveFrom: '2026-10-25',
+      amount: '2250.00',
+      expected: { state: 'absent' },
+    });
+    expect(term.amount).toBe('2250.00000000');
+    expect(term.effectiveFrom).toBe('2026-10-25');
+  });
+
+  it('refuses a create when somebody already made that term', async () => {
+    const { template } = await salaryTemplate();
+    await setTemplateTerm(deps(), SEPT_15, {
+      templateId: template.id,
+      effectiveFrom: '2026-10-25',
+      amount: '2250.00',
+      expected: { state: 'absent' },
+    });
+
+    await expect(
+      setTemplateTerm(deps(), SEPT_15, {
+        templateId: template.id,
+        effectiveFrom: '2026-10-25',
+        amount: '2300.00',
+        expected: { state: 'absent' },
+      }),
+    ).rejects.toMatchObject({ code: 'CONFLICT_DUPLICATE' });
+  });
+
+  it('updates the exact term the client was holding', async () => {
+    const { template, term } = await salaryTemplate();
+    const updated = await setTemplateTerm(deps(), SEPT_15, {
+      templateId: template.id,
+      effectiveFrom: term.effectiveFrom,
+      amount: '2200.00',
+      expected: { state: 'version', version: term.version },
+    });
+    expect(updated.amount).toBe('2200.00000000');
+    expect(updated.id).toBe(term.id);
+    expect(updated.version).toBe(term.version + 1);
+  });
+
+  it('refuses a stale update and keeps the first writer’s amount', async () => {
+    // Two clients load version 1. B saves 2,200. A, still on version 1, tries
+    // 2,150 — and must not silently overwrite B.
+    const { template, term } = await salaryTemplate();
+
+    await setTemplateTerm(deps(), SEPT_15, {
+      templateId: template.id,
+      effectiveFrom: term.effectiveFrom,
+      amount: '2200.00',
+      expected: { state: 'version', version: term.version },
+    });
+
+    await expect(
+      setTemplateTerm(deps(), SEPT_15, {
+        templateId: template.id,
+        effectiveFrom: term.effectiveFrom,
+        amount: '2150.00',
+        expected: { state: 'version', version: term.version },
+      }),
+    ).rejects.toMatchObject({ code: 'CONFLICT_VERSION' });
+
+    const current = await listTerms(harness.db, USER_A, template.id);
+    expect(current.find((row) => row.id === term.id)?.amount).toBe('2200.00000000');
+  });
+
+  it('refuses an update whose row has been deleted, rather than re-creating it', async () => {
+    const { template, term } = await salaryTemplate();
+    await harness.asOwner('DELETE FROM recurring_template_terms WHERE id = $1', [term.id]);
+
+    await expect(
+      setTemplateTerm(deps(), SEPT_15, {
+        templateId: template.id,
+        effectiveFrom: term.effectiveFrom,
+        amount: '2150.00',
+        expected: { state: 'version', version: term.version },
+      }),
+    ).rejects.toMatchObject({ code: 'CONFLICT_VERSION' });
+
+    const current = await listTerms(harness.db, USER_A, template.id);
+    expect(current).toHaveLength(0);
+  });
+
+  it('keeps one row per effective date however often it is edited', async () => {
+    const { template, term } = await salaryTemplate();
+    let version = term.version;
+    for (const amount of ['2200.00', '2250.00', '2300.00']) {
+      const updated = await setTemplateTerm(deps(), SEPT_15, {
+        templateId: template.id,
+        effectiveFrom: term.effectiveFrom,
+        amount,
+        expected: { state: 'version', version },
+      });
+      version = updated.version;
+    }
+    const current = await listTerms(harness.db, USER_A, template.id);
+    expect(current).toHaveLength(1);
+    expect(current[0]?.amount).toBe('2300.00000000');
+  });
+
+  it('never rewrites an already materialized flow', async () => {
+    // A term is what a *suggestion* is worth. What was recorded stays recorded.
+    const { template, term } = await salaryTemplate();
+    const accepted = await acceptSuggestion(deps(), SEPT_15, {
+      templateId: template.id,
+      occurrenceDate: '2026-08-25',
+    });
+    if (accepted.kind !== 'income') throw new Error('expected an income entry');
+    expect(accepted.entry.netAmount).toBe('2100.00000000');
+
+    await setTemplateTerm(deps(), SEPT_15, {
+      templateId: template.id,
+      effectiveFrom: term.effectiveFrom,
+      amount: '9999.00',
+      expected: { state: 'version', version: term.version },
+    });
+
+    const reread = await findIncomeEntry(harness.db, USER_A, accepted.entry.id);
+    expect(reread?.netAmount).toBe('2100.00000000');
+  });
+});
+
+describe('which occurrences may be accepted', () => {
+  async function boundedTemplate(over: { startDate?: string; endDate?: string } = {}) {
+    const { template } = await createTemplate(deps(), SEPT_15, {
+      kind: 'income',
+      name: 'Salary',
+      incomeKind: 'employment',
+      currency: 'EUR',
+      frequency: 'monthly',
+      dayOfMonth: 25,
+      startDate: over.startDate ?? '2026-01-01',
+      ...(over.endDate === undefined ? {} : { endDate: over.endDate }),
+      cashPositionId: bbva,
+      amount: '2100.00',
+    });
+    return template;
+  }
+
+  it('accepts an ordinary due occurrence', async () => {
+    const template = await boundedTemplate();
+    const accepted = await acceptSuggestion(deps(), SEPT_15, {
+      templateId: template.id,
+      occurrenceDate: '2026-08-25',
+    });
+    if (accepted.kind !== 'income') throw new Error('expected an income entry');
+    expect(accepted.entry.receivedOn).toBe('2026-08-25');
+  });
+
+  it('refuses an occurrence before start_date', async () => {
+    const template = await boundedTemplate({ startDate: '2026-06-01' });
+    await expect(
+      acceptSuggestion(deps(), SEPT_15, {
+        templateId: template.id,
+        occurrenceDate: '2026-05-25',
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+
+  it('refuses an occurrence after end_date', async () => {
+    const template = await boundedTemplate({ endDate: '2026-07-31' });
+    await expect(
+      acceptSuggestion(deps(), SEPT_15, {
+        templateId: template.id,
+        occurrenceDate: '2026-08-25',
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+
+  it('refuses a date the schedule does not generate', async () => {
+    const template = await boundedTemplate();
+    await expect(
+      acceptSuggestion(deps(), SEPT_15, {
+        templateId: template.id,
+        occurrenceDate: '2026-08-24',
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+
+  it('refuses any new acceptance on an archived template', async () => {
+    const template = await boundedTemplate();
+    await archiveTemplate(deps(), SEPT_15, {
+      templateId: template.id,
+      expectedVersion: template.version,
+    });
+
+    await expect(
+      acceptSuggestion(deps(), SEPT_15, {
+        templateId: template.id,
+        occurrenceDate: '2026-08-25',
+      }),
+    ).rejects.toMatchObject({ code: 'IMPOSSIBLE_OPERATION' });
+  });
+
+  it('keeps the scheduled identity when an upcoming occurrence is received today', async () => {
+    const template = await boundedTemplate();
+    const accepted = await acceptSuggestion(deps(), SEPT_15, {
+      templateId: template.id,
+      occurrenceDate: '2026-09-25',
+      financialDate: '2026-09-15',
+    });
+    if (accepted.kind !== 'income') throw new Error('expected an income entry');
+    expect(accepted.entry.occurrenceDate).toBe('2026-09-25');
+    expect(accepted.entry.receivedOn).toBe('2026-09-15');
+  });
+});
+
+describe('a transfer with a corrupted number of fees fails closed', () => {
+  async function transferWithTwoFees() {
+    const { transfer, fee } = await createCashTransfer(deps(), SEPT_15, {
+      occurredOn: '2026-09-05',
+      fromPositionId: bbva,
+      toPositionId: savings,
+      fromAmount: '200.00',
+      toAmount: '200.00',
+      fee: {
+        amount: '1.50',
+        categoryId: transferFeeCategory,
+        cashPositionId: bbva,
+        currency: 'EUR',
+      },
+    });
+
+    // Only an out-of-band write can produce this: `createExpenseEntry` has no
+    // `transfer_id`, and only the transfer service ever sets one.
+    await harness.asOwner(
+      `INSERT INTO expense_entries
+         (user_id, category_id, incurred_on, amount, currency, settlement, transfer_id,
+          cash_position_id, cash_position_kind)
+       VALUES ($1, $2, DATE '2026-09-05', 2.50, 'EUR', 'tracked_cash', $3, $4, 'cash')`,
+      [USER_A, transferFeeCategory, transfer.id, bbva],
+    );
+
+    return { transfer, fee };
+  }
+
+  it('refuses to edit the aggregate rather than picking one fee', async () => {
+    const { transfer } = await transferWithTwoFees();
+
+    await expect(
+      updateCashTransfer(deps(), SEPT_15, {
+        transferId: transfer.id,
+        expectedVersion: transfer.version,
+        fromAmount: '210.00',
+        toAmount: '210.00',
+      }),
+    ).rejects.toMatchObject({ code: 'IMPOSSIBLE_OPERATION' });
+
+    // Nothing moved: both fees and the transfer are exactly as they were.
+    expect(await countRows(USER_A, 'expense_entries')).toBe(2);
+    const stored = await withUser(harness.db, { userId: USER_A }, async (tx) => {
+      const result = await tx.execute<{ from_amount: string }>(
+        sql`SELECT from_amount FROM transfers WHERE id = ${transfer.id}`,
+      );
+      return result.rows[0]?.from_amount;
+    });
+    expect(stored).toBe('200.00000000');
+  });
+
+  it('still deletes every linked fee, each with its own before-image', async () => {
+    // Deletion is not blocked: it removes all of them and records each, so it
+    // leaves nothing dangling and nothing unaudited.
+    const { transfer, fee } = await transferWithTwoFees();
+    const removed = await deleteCashTransfer(deps(), SEPT_15, { transferId: transfer.id });
+
+    expect(removed.fees).toHaveLength(2);
+    expect(await countRows(USER_A, 'expense_entries')).toBe(0);
+    const audit = await auditFor(USER_A, fee?.id as string);
+    expect(audit.map((row) => row.action)).toEqual(['insert', 'delete']);
   });
 });

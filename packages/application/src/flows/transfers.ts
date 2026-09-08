@@ -86,6 +86,38 @@ export interface TransferWithFee {
   readonly fee: ExpenseEntryRow | null;
 }
 
+/**
+ * A transfer has zero or one fee, and the aggregate refuses to guess (M14).
+ *
+ * The database can hold more than one: 6.2 gives `expense_entries.transfer_id`
+ * a plain index, and M14 assigns cardinality to "schema (no duplicate columns)
+ * + service design" rather than to a constraint. No application path can create
+ * a second fee — `createExpenseEntry` has no `transfer_id` at all, and only
+ * `createCashTransfer` ever sets one — so two rows mean the data was changed
+ * from outside the product.
+ *
+ * When that happens the aggregate is not editable. Picking `fees[0]` would
+ * update one fee and leave the other, and report the transfer as though it had
+ * one; that turns a visible inconsistency into a wrong number. Failing here is
+ * deterministic, names the transfer, and leaves both rows intact for whoever
+ * has to look.
+ *
+ * Deletion is deliberately **not** guarded the same way: it removes *every*
+ * linked fee, each with its own audit before-image, so it leaves nothing
+ * dangling and nothing unrecorded.
+ */
+function assertAtMostOneFee(
+  transferId: string,
+  fees: readonly ExpenseEntryRow[],
+): ExpenseEntryRow | null {
+  if (fees.length > 1) {
+    throw new ImpossibleOperationError(
+      `Transfer ${transferId} has ${String(fees.length)} linked fees, and a transfer may have at most one. It cannot be edited until that is corrected.`,
+    );
+  }
+  return fees[0] ?? null;
+}
+
 /** M13: within one currency a transfer moves one amount, not two. */
 function assertAmountsAgree(
   fromCurrency: string,
@@ -255,6 +287,7 @@ export async function updateCashTransfer(
   const audit = auditContextOf(ctx, args.reason);
   return withUser(deps.db, { userId: ctx.userId }, async (tx) => {
     const fees = await findTransferFeesIn(tx, args.transferId);
+    const linkedFee = assertAtMostOneFee(args.transferId, fees);
 
     // The fee's date follows the transfer's only when the caller says so. A
     // date change that would leave the fee on the old day is refused, because
@@ -279,10 +312,10 @@ export async function updateCashTransfer(
       throw new VersionConflictError('This transfer changed while you were editing it.');
     }
 
-    let fee: ExpenseEntryRow | null = fees[0] ?? null;
+    let fee: ExpenseEntryRow | null = linkedFee;
     if (args.fee !== undefined) {
-      const target = fees[0];
-      if (target === undefined) {
+      const target = linkedFee;
+      if (target === null) {
         throw new ValidationError('This transfer has no fee to update.', {
           fee: ['There is no fee on this transfer.'],
         });

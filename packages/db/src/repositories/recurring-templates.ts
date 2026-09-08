@@ -328,6 +328,48 @@ export async function loadTermsForRange(
   });
 }
 
+/**
+ * PostgreSQL's `unique_violation`.
+ *
+ * `UNIQUE (template_id, effective_from)` is what actually decides whether a
+ * term already exists at an effective date, so a caller that means "create,
+ * and only if none exists" has to learn its answer from the constraint rather
+ * than from a read it took a moment earlier.
+ */
+const UNIQUE_VIOLATION = '23505';
+
+export function isUniqueViolation(error: unknown): boolean {
+  // Drizzle wraps the driver error, so the SQLSTATE sits on `cause` rather than
+  // on what was thrown. Walk the chain rather than assuming a depth.
+  for (let current: unknown = error, depth = 0; current != null && depth < 5; depth += 1) {
+    if ((current as { code?: unknown }).code === UNIQUE_VIOLATION) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/** Find a template's term at an exact effective date, if it has one. */
+export async function findTermAt(
+  db: Database,
+  userId: string,
+  templateId: string,
+  effectiveFrom: string,
+): Promise<RecurringTemplateTermRow | undefined> {
+  const [row] = await withUser(db, { userId }, async (tx) =>
+    tx
+      .select()
+      .from(recurringTemplateTerms)
+      .where(
+        and(
+          eq(recurringTemplateTerms.templateId, templateId),
+          eq(recurringTemplateTerms.effectiveFrom, effectiveFrom),
+        ),
+      )
+      .limit(1),
+  );
+  return row;
+}
+
 export async function insertTerm(
   db: Database,
   ctx: AuditContext,
