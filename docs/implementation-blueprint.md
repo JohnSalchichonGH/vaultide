@@ -1,6 +1,6 @@
-# Vaultide — Personal Finance Platform Implementation Blueprint (frozen, v2.1.3)
+# Vaultide — Personal Finance Platform Implementation Blueprint (frozen, v2.1.4)
 
-**Status:** Planning deliverable (no code written). Produced 2026-09-06 against the supplied product specification; revised after an adversarial model review, a product-owner review (v2), a targeted consistency pass (v2.1), a defect-fix freeze pass (v2.1.1), four final corrections (v2.1.2) and one narrow post-Phase-2 consistency correction (v2.1.3, the onboarding step allocation — no product behaviour, schema, accounting or security semantics changed). This version supersedes every earlier version in full; v2.1.2 was the frozen input to Phase 0, and Phases 0–2 were built and frozen against it.
+**Status:** Planning deliverable (no code written). Produced 2026-09-06 against the supplied product specification; revised after an adversarial model review, a product-owner review (v2), a targeted consistency pass (v2.1), a defect-fix freeze pass (v2.1.1), four final corrections (v2.1.2) and two narrow post-Phase-2 consistency corrections (v2.1.3, the onboarding step allocation; v2.1.4, one arithmetic slip in the Phase 3 savings golden — neither changed product behaviour, schema, accounting or security semantics). This version supersedes every earlier version in full; v2.1.2 was the frozen input to Phase 0, and Phases 0–2 were built and frozen against it.
 **Audience:** The Claude Code session(s) that will implement the application phase by phase, and the product owner.
 **Product name:** **Vaultide**. The repository root is `vaultide/`, workspace packages are published under the `@vaultide/*` namespace, and "Vaultide" is the product-facing name in app metadata, authentication and email branding, and hosting/monitoring project names. Historical local prototype paths quoted in Section 1.3 keep their real on-disk names.
 
@@ -1063,7 +1063,7 @@ Extends 8.10 with the €31 interest recorded, an EUR investment (S&P 500: 31 Au
 
 Drivers: Income 2,100 + Investment income 31 − Spending (300 + 429) − Interest 111 + Investment returns 430 (= 43,300 − 41,870 − 1,000) + Property revaluation 0 (carried) − Debt adjustments 0 + FX 0 = **1,721** ✓. Signed check on the mortgage: liability flow "principal −235" × (−1) = +235 on the position, cancelled by cash −235 → 0 ✓.
 Allocation: `CashSavings = 2,131 − 411 − 429 = 1,291 = ΔCash 56 + Contributions 1,000 + Principal 235` ✓.
-Savings (golden `savings/september-basic`): `ExternalIncome = 2,131` (salary 2,100 + interest 31), `Consumption = 729`, `InterestAndFees = 111`, `TrackedSavingsFromIncome = 2,131 − 729 − 111 = 1,291`; `AdditionalSpending = 50` (the untracked coffee of 8.10), so with the default setting `PersonalSavings = 1,241` and `SavingsRate = 58.24 %` (tracked-only: 1,291 and 60.58 % when the setting is off); `TotalSpending = 809 + 50 = 859`; the partner-paid €80 appears nowhere; interest is subtracted exactly once, and the €235 principal and €1,000 contribution appear only in "where it went", which now also carries "Spent from outside tracked accounts −50" ✓.
+Savings (golden `savings/september-basic`): `ExternalIncome = 2,131` (salary 2,100 + interest 31), `Consumption = 729`, `InterestAndFees = 111`, `TrackedSavingsFromIncome = 2,131 − 729 − 111 = 1,291`; `AdditionalSpending = 50` (the untracked coffee of 8.10), so with the default setting `PersonalSavings = 1,241` and `SavingsRate = 58.24 %` (tracked-only: 1,291 and 60.58 % when the setting is off); `TotalSpending = 840 + 50 = 890`; the partner-paid €80 appears nowhere; interest is subtracted exactly once, and the €235 principal and €1,000 contribution appear only in "where it went", which now also carries "Spent from outside tracked accounts −50" ✓.
 Variant with a €20,000 excluded car bought on 15 Sep from BBVA (BBVA 30 Sep then 7,880 − 20,000 = −12,120, an overdraft, purely to keep the other numbers): total ΔNW unchanged at 1,721 (cash −20,000 and car +20,000 through the purchase flow; Newly tracked 0 by the 12.3 rule, since the car's first valuation equals its same-day purchase flow); financial ΔNW = 1,721 − 20,000 = −18,279 with "Purchases of non-financial assets −20,000" ✓.
 
 ---
@@ -1578,7 +1578,7 @@ Effort is weighted toward financial correctness: `finance` targets ≥ 95 % line
 | mortgage | 11.3 golden rows 1–2, exactly 300 rows, final-row clearing, totals; zero rate; interest-only + balloon; extra payment under both policies; rate change under both policies; negative amortization capitalizes identically in schedule and engine; payoff; derived balance and adjustment on confirmation |
 | property | equity, LTV, yields, value change over spans, appreciation net of improvements, cost basis with improvements, cash flow, unrealized gain; occupancy from explicit facts only (a month with no rent entry is `unknown`, never vacant; a skip with reason `vacant` is vacant) |
 | net worth | total vs financial with excluded other assets; liabilities never excludable; closed positions; partial conversions; liability preference order; sign convention through random positions |
-| decomposition | 12.7 golden and the excluded-car variant; each bucket in isolation incl. capital improvements, value-add estimate, newly tracked, removed, purchases/sales of non-financial assets; FX residual with USD position; drivers = ΔNW for random inputs (both metrics); **savings golden** (12.7): interest counted once, principal and contribution only in "where it went", `SavingsRate = 58.24 %` with the €50 additional spending counted (default) and `60.58 %` tracked-only when the setting is off, `TotalSpending = 859`, allocation identity holds |
+| decomposition | 12.7 golden and the excluded-car variant; each bucket in isolation incl. capital improvements, value-add estimate, newly tracked, removed, purchases/sales of non-financial assets; FX residual with USD position; drivers = ΔNW for random inputs (both metrics); **savings golden** (12.7): interest counted once, principal and contribution only in "where it went", `SavingsRate = 58.24 %` with the €50 additional spending counted (default) and `60.58 %` tracked-only when the setting is off, `TotalSpending = 890`, allocation identity holds |
 | projection | each step of 13.3; every event type; discretionary pipeline; **currency funding**: obligation in USD with EUR-only cash → `currency_deficit` and infeasibility; auto-funding on → conversion recorded with spread cost, no deficit; **reserve**: a €10k base-currency reserve counts USD cash only when `includeForeignCash`, the measurement never creates a conversion, and a EUR reserve valuation never funds a USD obligation; no `reserveShare` anywhere; each `onShortfall`; inflation index; FX trend; goal evaluation; Decimal vs Float agreement |
 | Monte Carlo | PRNG determinism; lognormal moments; PSD validation rejects a non-PSD class matrix and a loading outside [0, 1]; **the shipped default class matrix passes the same validator as custom matrices** (golden `monte-carlo/default-correlation-psd`: smallest eigenvalue ≈ +0.0265; the 0.80 equity–pension variant is rejected with ≈ −0.0106); under the documented default two equity funds have sample return correlation ≈ 0.85 (positive and strictly < 1), an equity/bond pair ≈ 0.08, an investment with itself exactly 1; `independent` yields ≈ 0 cross-correlation; identical seed ⇒ identical percentiles |
 
@@ -1817,7 +1817,7 @@ Each phase is a usable vertical slice, sized so a Claude Code session can comple
 - **Backend:** flow services with domain rules, suggestion generation (pure), accept/skip services, bulk save transaction, reconciliation and span query services.
 - **Frontend:** monthly editor (15.3 sections 1–4, 8) with autosave and client-side preview; Spending page; Income pages; bulk grid with paste.
 - **Testing:** 8.10 goldens; every status and issue; property tests 6, 7, 14, 17; integration: suggestions idempotent, accept twice → conflict; E2E monthly close, current-month MTD, skipped month → span, historical correction.
-- **Acceptance:** the `simple-user` fixture reproduces its goldens; skipping September yields September and October `unavailable` and a "combined Sep–Oct" span that is absent from monthly averages; a quick update of all accounts on the 6th yields a provisional MTD figure through the 6th; updating only one account on the 8th keeps MTD through the 6th with the newer-balances note; accounts that never share a snapshot date give the no-common-date message; skipping a suggestion writes a `recurring_template_skips` row and suppresses it; no month-end balance can be entered until 1 Oct; forgetting the salary yields `unresolved` with "unexplained inflow" and the accept action creates a visible adjustment record; a self-paid untracked expense appears as additional spending and a partner-paid dinner under paid-by-others, neither changing tracked spending; the golden month's savings rate is 58.24 % counting the €50 additional spending (60.58 % tracked-only when the setting is off), with interest counted once and total spending €859; a cross-currency transfer with a fee leaves both buckets reconciled with the fee counted once; "confirm unchanged" is per month and never automatic for a non-zero account; a normal completed month for the fixture user takes < 3 minutes.
+- **Acceptance:** the `simple-user` fixture reproduces its goldens; skipping September yields September and October `unavailable` and a "combined Sep–Oct" span that is absent from monthly averages; a quick update of all accounts on the 6th yields a provisional MTD figure through the 6th; updating only one account on the 8th keeps MTD through the 6th with the newer-balances note; accounts that never share a snapshot date give the no-common-date message; skipping a suggestion writes a `recurring_template_skips` row and suppresses it; no month-end balance can be entered until 1 Oct; forgetting the salary yields `unresolved` with "unexplained inflow" and the accept action creates a visible adjustment record; a self-paid untracked expense appears as additional spending and a partner-paid dinner under paid-by-others, neither changing tracked spending; the golden month's savings rate is 58.24 % counting the €50 additional spending (60.58 % tracked-only when the setting is off), with interest counted once and total spending €890; a cross-currency transfer with a fee leaves both buckets reconciled with the fee counted once; "confirm unchanged" is per month and never automatic for a non-zero account; a normal completed month for the fixture user takes < 3 minutes.
 - **Dependencies:** Phase 2.
 
 ### Phase 4 — Investments
@@ -2071,7 +2071,7 @@ CSV/spreadsheet importer (mapping in 1.3, sets opening net invested bases), gros
 - **Total net worth (7.8, 12.3):** with explicit signs, loan proceeds (`+X` cash, `−1·+X` liability) and principal repayments (`−X` cash, `−1·−X` liability) cancel; internal transfers and asset purchases cancel through the 12.2 rule and the purchase valuation; capital improvements reduce total net worth by their amount until a valuation or an explicit value-add estimate recognizes value; the September golden still sums to `ΔNW = 1,721`.
 - **Financial net worth (12.4):** equals total net worth minus excluded other assets; purchases/sales of excluded assets are explicit lines (car example: total `1,721`, financial `−18,279`); properties and liabilities are always inside, in actuals and in scenarios.
 - **Investment performance (9.2–9.4):** contributions are not returns, withdrawals are not negative returns; paid-out distributions, reinvested distributions and fees each count once; the opening net invested basis changes only the cumulative labels (`CurrentNetInvested = 34,359`, `Gain = 8,941`, `GainSinceTracking = 430`) and never the since-tracking XIRR; `NativePerf_R + FX_R = ValueChangeNet·r1 + FX'_R + Σ d·r_d` still regroups the same `Δ_R`.
-- **Savings and allocation (12.5, 12.7):** `TrackedSavingsFromIncome = 2,131 − 729 − 111 = 1,291 = ΔCash 56 + Contributions 1,000 + Principal 235`; `PersonalSavings = 1,291 − 50 = 1,241` and `SavingsRate = 58.24 %` with the default setting (60.58 % tracked-only); `TotalSpending = 859`; interest is subtracted once because `TrackedTotalSpending` is decomposed into its buckets before any subtraction; the tracked identity of 8.2 is untouched by additional spending.
+- **Savings and allocation (12.5, 12.7):** `TrackedSavingsFromIncome = 2,131 − 729 − 111 = 1,291 = ΔCash 56 + Contributions 1,000 + Principal 235`; `PersonalSavings = 1,291 − 50 = 1,241` and `SavingsRate = 58.24 %` with the default setting (60.58 % tracked-only); `TotalSpending = TrackedTotalSpending 840 + AdditionalSpending 50 = 890` (the post-interest tracked total, not 8.10's pre-interest 809); interest is subtracted once because `TrackedTotalSpending` is decomposed into its buckets before any subtraction; the tracked identity of 8.2 is untouched by additional spending.
 - **Scenarios (13.3–13.4):** native balances per currency change only by recorded flows and explicit conversion records (M18); the reserve is measured (valuation at `rate_m`) and never converts; a EUR reserve valuation cannot fund a USD obligation; properties created by `property_purchase` are in both net-worth metrics.
 - **Monte Carlo (13.9):** `z_i = √ρ_c·F_c + √(1 − ρ_c)·ε_i` gives `Corr(z_i, z_i) = 1`, same-class `ρ_c`, cross-class `√(ρ_c ρ_d)·M_cd`; the implied covariance is PSD by construction for PSD `M` and `ρ ∈ [0, 1]`. The shipped default class matrix (equity–pension 0.75) has smallest eigenvalue ≈ +0.0265 and passes the validator; the earlier 0.80 draft had ≈ −0.0106 and would have been rejected.
 - **Scenario conversions (13.4):** `convertWithSpread` with zero spread and fee reproduces `convert`; any positive spread or fee is weakly worse for the user in both quote orientations; every conversion in a month state is a helper output.
@@ -2130,21 +2130,58 @@ Spec §90 itself is not part of this repository — 15.2's "steps 1–10 of spec
 is the authority relied on here, and the underlying specification was not
 consulted directly.
 
+### 30.7 v2.1.4 correction
+
+Found while reading the Phase 3 goldens before Phase 3 began. Every identity and
+formula was already right; one number was copied from the wrong state.
+
+| # | Correction | Where |
+|---|---|---|
+| 1 | The post-interest savings golden computed `TotalSpending` from 8.10's **pre-interest** tracked spending of 809. With the €31 interest recorded, tracked spending is 840, so `TotalSpending = 840 + 50 = 890`, not 859 | 12.7, 21.1, 25 (Phase 3), 30.2 |
+
+**What happened.** 8.10 builds the September example twice. Before the €31
+interest is recorded: `TrackedTotalSpending = 2,100 + 200 − 1,435 − 56 = 809`,
+`Unclassified = 398`, and with the €50 of additional spending `TotalSpending =
+859`. 8.10 then records the interest and correctly recomputes `ΣI = 2,131`,
+`Total = 840`, `Unclassified = 429`. Both states are right, and both are used:
+the reconciliation golden is the pre-interest one, the savings golden the
+post-interest one.
+
+The savings golden carried 809 into the post-interest state. Its own components
+already disagreed with it: `Consumption 729 + InterestAndFees 111 = 840`, which
+is `TrackedTotalSpending` by the decomposition in 12.5, so the same sentence
+that wrote `809 + 50` contained 840 implicitly.
+
+**Nothing else in the golden moves**: `ExternalIncome 2,131`, `Consumption 729`,
+`InterestAndFees 111`, `TrackedSavingsFromIncome 1,291`, `AdditionalSpending 50`,
+`PersonalSavings 1,241`, `SavingsRate 58.24 %`, tracked-only `60.58 %`, and the
+allocation identity `1,291 = ΔCash 56 + Contributions 1,000 + Principal 235`.
+`TotalSpending` is not an input to any of them — it is the Spending-page
+headline, and only it was wrong.
+
+8.10's own "Total spending: 859" stays: it belongs to the pre-interest state and
+is correct there. So does 30.2's `809 = 411 + 398`, which checks the
+pre-interest reconciliation identity.
+
+No accounting definition, identity, schema rule, algorithm or implemented
+Phase 0–2 behaviour changes. Phase 3 has not started, so nothing built depends
+on the figure.
+
 ---
 
 ## Ready for Phase 0
 
-No genuine blockers remain. The blueprint was frozen as v2.1.2 and Phase 0 began from it; it is frozen as v2.1.3 after the correction in 30.6, which changed no phase already delivered.
+No genuine blockers remain. The blueprint was frozen as v2.1.2 and Phase 0 began from it; it is frozen as v2.1.4 after the corrections in 30.6 and 30.7, neither of which changed a phase already delivered.
 
 ---
 
 ## Freeze check
 
-- The seven v2.1.1 defects (30.4), the four v2.1.2 corrections (30.5) and the v2.1.3 onboarding-range correction (30.6) were corrected and propagated to the schema, algorithms, tests, phases and acceptance criteria; no accounting identity changed except in wording or representation (30.2), and the personal savings rate is an additional derived figure layered on the unchanged tracked identity.
+- The seven v2.1.1 defects (30.4), the four v2.1.2 corrections (30.5), the v2.1.3 onboarding-range correction (30.6) and the v2.1.4 savings-golden correction (30.7) were corrected and propagated to the schema, algorithms, tests, phases and acceptance criteria; no accounting identity changed except in wording or representation (30.2), and the personal savings rate is an additional derived figure layered on the unchanged tracked identity.
 - The default Monte Carlo configuration validates: the explicit class matrix in 13.9 is symmetric with unit diagonal, its smallest eigenvalue is ≈ +0.0265 and its Cholesky factorization succeeds, so it passes the same PSD validator as custom matrices; a dedicated golden test asserts this.
 - No contradictory month-to-date rules remain: every section now states the latest-common-date rule, with unavailability only when no common snapshot date exists.
 - Required schema nullability is explicit: every column in 6.2 is `NOT NULL` unless written `NULL`, liability-payment parts are exact non-null non-negative `NUMERIC(24,8)`, every closed set is a PostgreSQL enum, and NULL/enum rejection tests are generated per table.
 - Recurring skips are represented durably in `recurring_template_skips`, audited and RLS-protected like every other user table; JSON holds UI dismissal keys only.
 - Scenario revision pointers cannot cross scenarios or tenants (composite foreign keys, M19), and month-to-date opening balances are defined by the same rules as completed months (8.1, 8.6).
-- No remaining blocker was found. The blueprint is frozen as v2.1.3.
+- No remaining blocker was found. The blueprint is frozen as v2.1.4.
 
