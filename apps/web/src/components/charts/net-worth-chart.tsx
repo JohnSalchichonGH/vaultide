@@ -101,42 +101,73 @@ export function NetWorthChart({
 
   return (
     <figure className="space-y-3">
-      <svg
-        viewBox={`0 0 ${String(WIDTH)} ${String(HEIGHT)}`}
-        className="h-44 w-full"
-        role="img"
-        aria-label={summary}
-        preserveAspectRatio="none"
-      >
-        <line
-          x1={PADDING.left}
-          x2={WIDTH - PADDING.right}
-          y1={PADDING.top + innerHeight}
-          y2={PADDING.top + innerHeight}
-          stroke="var(--color-border)"
-        />
-        <path d={path} fill="none" stroke="var(--color-accent)" strokeWidth={2} />
+      {/*
+       * The line is drawn stretched — `preserveAspectRatio="none"` — so twelve
+       * months fill whatever width the card has at any breakpoint. That scales
+       * x and y by different factors, which is fine for a path and wrong for
+       * anything that has a shape of its own: a circle comes out an oval and a
+       * stroke comes out thicker one way than the other. So the stroke opts out
+       * of scaling, and the points are drawn over the top in the page's own
+       * coordinates, where a dot is round because a dot is round.
+       */}
+      <div className="relative h-44 w-full">
+        <svg
+          viewBox={`0 0 ${String(WIDTH)} ${String(HEIGHT)}`}
+          className="h-full w-full"
+          role="img"
+          aria-label={summary}
+          preserveAspectRatio="none"
+        >
+          <line
+            x1={PADDING.left}
+            x2={WIDTH - PADDING.right}
+            y1={PADDING.top + innerHeight}
+            y2={PADDING.top + innerHeight}
+            stroke="var(--color-border)"
+            vectorEffect="non-scaling-stroke"
+          />
+          <path
+            d={path}
+            fill="none"
+            stroke="var(--color-accent)"
+            strokeWidth={2}
+            vectorEffect="non-scaling-stroke"
+          />
+        </svg>
         {plotted.map((item) =>
           item.y === null ? null : (
-            <circle
+            <span
               key={item.point.asOf}
-              cx={item.x}
-              cy={item.y}
-              r={3}
-              // Hollow for provisional and for partial: both mean "this is not
-              // a settled month-end figure" (15.4, 16.2).
-              fill={
-                item.point.provisional ||
-                aggregateOf(item.point).availability !== 'available'
-                  ? 'var(--color-background)'
-                  : 'var(--color-accent)'
-              }
-              stroke="var(--color-accent)"
-              strokeWidth={2}
+              aria-hidden="true"
+              data-testid="chart-point"
+              className="absolute block size-2 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-[var(--color-accent)]"
+              style={{
+                left: `${String((item.x / WIDTH) * 100)}%`,
+                top: `${String((item.y / HEIGHT) * 100)}%`,
+                // Hollow for provisional and for partial: both mean "this is
+                // not a settled month-end figure" (15.4, 16.2).
+                backgroundColor:
+                  item.point.provisional ||
+                  aggregateOf(item.point).availability !== 'available'
+                    ? 'var(--color-background)'
+                    : 'var(--color-accent)',
+              }}
             />
           ),
         )}
-      </svg>
+      </div>
+
+      {/*
+       * Which of the two net-worth metrics this is. Obvious while they are
+       * equal, and the one thing a reader needs the moment they diverge — which
+       * is exactly when the headline above shows two different numbers (15.4).
+       */}
+      <p
+        data-testid="chart-metric"
+        className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]"
+      >
+        {label}
+      </p>
 
       <figcaption className="sr-only">{summary}</figcaption>
 

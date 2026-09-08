@@ -119,6 +119,27 @@ export default async function DashboardPage() {
                 minorUnitsByCurrency={netWorth.minorUnitsByCurrency}
                 size="headline"
               />
+              {/*
+               * The total moves for its own reasons, so it carries its own
+               * change. Showing it only under the financial figure left the
+               * reader with no way to see what total net worth did — precisely
+               * when the two diverge and the question becomes worth asking.
+               */}
+              <p
+                data-testid="total-change"
+                className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]"
+              >
+                Since {netWorth.changeSinceLastMonthEnd?.from ?? '—'}:{' '}
+                <MoneyText
+                  amount={netWorth.changeSinceLastMonthEnd?.total?.amount ?? null}
+                  currency={netWorth.reportingCurrency}
+                  locale={locale}
+                  minorUnits={netWorth.minorUnits}
+                  signed
+                  colored
+                  unavailableReason="Not comparable while a figure is incomplete."
+                />
+              </p>
               <p className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">
                 {netWorth.metricsDiffer ? (
                   <span data-testid="metrics-differ">

@@ -14,9 +14,12 @@ import { cn } from '@/lib/utils';
 /**
  * Quick update (blueprint 15.3, M5, 20.3).
  *
- * Every active cash account is pre-selected; dormant ones are excluded, because
- * a dormant account is one the user has told us carries at zero. Other
- * positions can be ticked in.
+ * Every active position is listed, with the balance it currently carries beside
+ * an empty field. There is nothing to select: a field left blank keeps that
+ * position's last snapshot, and only what you type is written. Dormant accounts
+ * are left out entirely, because a dormant account is one the user has already
+ * said carries at zero — asking again every month is the thing dormancy exists
+ * to stop.
  *
  * Everything it writes is dated **today**, with `exact` precision. There is no
  * date field, and that is the design: no actual record may be dated in the
@@ -141,7 +144,12 @@ export function QuickUpdate({ positions, today, locale, monthEndsOn }: QuickUpda
       <dialog
         ref={dialogRef}
         aria-labelledby={headingId}
-        className="w-[min(40rem,92vw)] rounded-[var(--radius-surface)] border bg-[var(--color-surface)] p-0 text-[var(--color-foreground)] backdrop:bg-black/40"
+        // `m-auto` is not decoration. A modal dialog is laid out with `inset:
+        // 0` and fit-content sizing, and centres itself through the user
+        // agent's `margin: auto` — which Tailwind's preflight resets to 0 along
+        // with every other element's, dropping the dialog into the top-left
+        // corner. Putting the margin back is what centres it.
+        className="m-auto w-[min(40rem,92vw)] rounded-[var(--radius-surface)] border bg-[var(--color-surface)] p-0 text-[var(--color-foreground)] backdrop:bg-black/40"
         onCancel={(event) => {
           if (pending) event.preventDefault();
         }}

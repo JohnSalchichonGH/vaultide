@@ -226,6 +226,17 @@ test.describe('accounts, balances and the two net-worth metrics', () => {
     await expect(page.getByTestId('component-other-excluded')).toContainText('20,000.00');
     await expect(page.getByTestId('component-other-included')).toContainText('0.00');
 
+    // Each metric carries its own change, because each moves for its own
+    // reasons; showing only the financial one left total net worth's movement
+    // unreadable exactly when the two diverge (found in production, Phase 2).
+    const financialChange = await page.getByTestId('financial-change').innerText();
+    const totalChange = await page.getByTestId('total-change').innerText();
+    expect(totalChange).not.toBe(financialChange);
+
+    // And the chart says which of the two it is drawing — obvious while they
+    // are equal, essential the moment they are not (16.2).
+    await expect(page.getByTestId('chart-metric')).toHaveText(/^Financial net worth \(/u);
+
     // --- turn the flag on: the headline moves, the total does not ----------
     await page.goto('/accounts?tab=other');
     await page.getByRole('link', { name: 'Car' }).click();
@@ -246,11 +257,38 @@ test.describe('accounts, balances and the two net-worth metrics', () => {
     expect(headlineOf(totalAfter)).toBe(headlineOf(totalBefore));
     // …and the headline now equals it.
     expect(headlineOf(financialAfter)).toBe(headlineOf(totalAfter));
-    // (The financial card also carries a change-since line, which is why the
-    //  comparison is on the headline figure rather than on every number.)
+    // (Each card also carries a change-since line, which is why the comparison
+    //  is on the headline figure rather than on every number.)
+
+    // Nothing is excluded any more, so the two metrics are the same figure and
+    // must have moved by the same amount. Two different deltas under two equal
+    // headlines would mean one of them was computed against the wrong baseline.
+    expect(await page.getByTestId('total-change').innerText()).toBe(
+      await page.getByTestId('financial-change').innerText(),
+    );
+
+    // A plotted point is round. The line is drawn stretched to fill the card,
+    // which scales x and y differently and turns an SVG circle into an oval —
+    // so the points are drawn outside that coordinate system (found in
+    // production, Phase 2).
+    const point = await page.getByTestId('chart-point').first().boundingBox();
+    expect(point).not.toBeNull();
+    expect(point?.width).toBeCloseTo(point?.height ?? 0, 1);
 
     // --- quick update -------------------------------------------------------
     await page.getByTestId('quick-update-open').click();
+
+    // The modal centres itself. A `<dialog>` opened with showModal() relies on
+    // the user agent's `margin: auto` to do that, and Tailwind's preflight
+    // resets every element's margin to zero — which put this in the top-left
+    // corner of the viewport (found in production, Phase 2).
+    const dialogBox = await page.locator('dialog[open]').boundingBox();
+    const viewport = page.viewportSize();
+    expect(dialogBox).not.toBeNull();
+    if (dialogBox !== null && viewport !== null) {
+      expect(dialogBox.x + dialogBox.width / 2).toBeCloseTo(viewport.width / 2, -1);
+    }
+
     const bbvaField = page.locator('[data-testid^="quick-balance-"]').first();
     await bbvaField.fill('8200.00');
     await page.getByTestId('quick-update-save').click();
