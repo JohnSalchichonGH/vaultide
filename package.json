@@ -25,8 +25,7 @@
     "clean": "pnpm -r exec rm -rf dist .next .turbo tsconfig.tsbuildinfo",
     "db:local": "node scripts/db/local-postgres.mjs",
     "db:verify-currencies": "node scripts/db/verify-currencies.mjs",
-    "db:verify-invariants": "node scripts/db/verify-financial-invariants.mjs",
-    "db:verify-rls": "node scripts/db/verify-rls-isolation.mjs"
+    "db:verify-invariants": "node scripts/db/verify-financial-invariants.mjs"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

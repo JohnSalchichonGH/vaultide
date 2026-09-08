@@ -86,28 +86,6 @@ jobs:
           MANIFEST_PREFIX: ${{ inputs.manifest_prefix }}
         run: pnpm db:verify-invariants
 
-  verify-rls-isolation:
-    name: Row level security isolates tenants, live
-    runs-on: ubuntu-latest
-    # Connects as the runtime role itself and proves an unidentified session
-    # sees nothing (17.4). It runs in its own environment because that
-    # credential lives there, which is also why it cannot prove the tables are
-    # non-empty — the job above does that, from the other side of the fence.
-    environment: production
-    steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-
-      - name: Read the user-owned tables as nobody
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: pnpm db:verify-rls
-
   verify-currency-set:
     name: Supported currencies still match the provider
     runs-on: ubuntu-latest

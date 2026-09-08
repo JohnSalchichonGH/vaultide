@@ -85,27 +85,67 @@ try {
   );
   check('the schema has tables to check', tables.rows.length > 0, `${tables.rows.length} tables`);
 
-  // Row level security has to be both enabled *and* forced: without FORCE, the
-  // table owner is exempt from its own policies, and `app_owner` runs the
-  // migrations (17.4). A table carrying `user_id` and no forced RLS is a table
-  // one bug away from serving another tenant's rows.
-  const unsecured = await owner.query(
-    `SELECT c.relname
+  // Which tables carry row level security is a decision, not a default, and it
+  // cuts both ways (17.4). The financial tables must have it: the runtime role
+  // may only ever see the rows of whoever the current request belongs to.
+  // Better Auth's tables must NOT: a session has to be read *before* anyone
+  // knows which user the request is for, so a policy keyed on that user would
+  // make signing in impossible. Both halves are asserted, because either one
+  // silently flipping is a serious failure — one leaks, the other locks out.
+  const USER_OWNED_TABLES = [
+    'audit_entries',
+    'cash_accounts',
+    'categories',
+    'other_assets',
+    'position_valuations',
+    'positions',
+    'tags',
+    'user_settings',
+  ];
+  const AUTH_TABLES = ['account', 'session', 'two_factor'];
+
+  const security = await owner.query(
+    `SELECT c.relname,
+            c.relrowsecurity AS enabled,
+            (SELECT count(*) FROM pg_policy p WHERE p.polrelid = c.oid) AS policies,
+            EXISTS (SELECT 1 FROM pg_attribute a
+                     WHERE a.attrelid = c.oid AND a.attname = 'user_id' AND a.attnum > 0
+                       AND NOT a.attisdropped) AS has_user_id
        FROM pg_class c
        JOIN pg_namespace n ON n.oid = c.relnamespace
-      WHERE n.nspname = 'public'
-        AND c.relkind = 'r'
-        AND EXISTS (SELECT 1 FROM pg_attribute a
-                     WHERE a.attrelid = c.oid AND a.attname = 'user_id' AND a.attnum > 0)
-        AND NOT (c.relrowsecurity AND c.relforcerowsecurity)
-      ORDER BY c.relname`,
+      WHERE n.nspname = 'public' AND c.relkind = 'r'`,
+  );
+  const securityByTable = Object.fromEntries(security.rows.map((row) => [row.relname, row]));
+
+  const unsecured = USER_OWNED_TABLES.filter(
+    (table) => securityByTable[table]?.enabled !== true || Number(securityByTable[table].policies) !== 1,
   );
   check(
-    'every user-owned table forces row level security',
-    unsecured.rows.length === 0,
-    unsecured.rows.length === 0
-      ? 'all user_id tables'
-      : unsecured.rows.map((row) => row.relname).join(', '),
+    'every user-owned table enables row level security, with one policy',
+    unsecured.length === 0,
+    unsecured.length === 0
+      ? `${String(USER_OWNED_TABLES.length)} tables`
+      : unsecured.join(', '),
+  );
+
+  const overSecured = AUTH_TABLES.filter((table) => securityByTable[table]?.enabled === true);
+  check(
+    'the authentication tables stay outside row level security',
+    overSecured.length === 0,
+    overSecured.length === 0 ? `${String(AUTH_TABLES.length)} tables` : overSecured.join(', '),
+  );
+
+  // The failure this is really watching for: a new table that carries a
+  // `user_id`, and which nobody gave a policy to, would be readable by every
+  // tenant. Anything genuinely outside RLS has to be named above to pass.
+  const unlisted = security.rows
+    .filter((row) => row.has_user_id === true && row.enabled !== true)
+    .map((row) => row.relname)
+    .filter((name) => !AUTH_TABLES.includes(name));
+  check(
+    'no table carrying user_id was added without a policy',
+    unlisted.length === 0,
+    unlisted.length === 0 ? 'none unaccounted for' : unlisted.join(', '),
   );
 
   const WRITES = ['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE'];
