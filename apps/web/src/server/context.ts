@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation';
 import {
   getServices,
   getSessionContext,
+  requireAuthoritativeSession as requireAuthoritativeSessionContext,
   requireSession as requireSessionContext,
   type SessionContext,
 } from '@vaultide/application';
@@ -35,6 +36,15 @@ export async function currentSession(): Promise<SessionContext | undefined> {
 /** The context, or an `AUTH_REQUIRED` error. Used by server actions. */
 export async function requireSession(): Promise<SessionContext> {
   return requireSessionContext(deps(), await headers());
+}
+
+/**
+ * The context, validated against the session store rather than the cookie
+ * cache. **Every financial mutation from Phase 2 onward must use this** — see
+ * `requireAuthoritativeSession` in `@vaultide/application` and ADR 0003.
+ */
+export async function requireAuthoritativeSession(): Promise<SessionContext> {
+  return requireAuthoritativeSessionContext(deps(), await headers());
 }
 
 /**

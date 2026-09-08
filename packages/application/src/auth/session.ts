@@ -25,6 +25,24 @@ export interface SessionDependencies {
   readonly env?: NodeJS.ProcessEnv;
 }
 
+export interface SessionReadOptions {
+  /**
+   * Bypass the signed cookie cache and read the session store itself.
+   *
+   * 17.1 enables `cookieCache: { maxAge: 300 }`, so an ordinary read can be
+   * answered from the cookie for up to five minutes after the session row was
+   * deleted. That is a deliberate trade for ordinary reads and is documented in
+   * ADR 0002 decision 14 — but it means an ordinary read is **not** an
+   * authority on whether the session still exists.
+   *
+   * With this set, Better Auth queries the store, so a revoked session resolves
+   * to `null` immediately. Better Auth's own contract says the same: the flag
+   * exists so "a revoked-but-cached session cannot authorize a sensitive
+   * action".
+   */
+  readonly authoritative?: boolean;
+}
+
 /** What Better Auth hands back for an authenticated request. */
 interface RawSession {
   readonly session: { readonly id: string; readonly createdAt: Date | string };
@@ -52,8 +70,12 @@ function isFresh(createdAt: Date | string): boolean {
 export async function getSessionContext(
   deps: SessionDependencies,
   headers: Headers,
+  options: SessionReadOptions = {},
 ): Promise<SessionContext | undefined> {
-  const raw = (await deps.auth.api.getSession({ headers })) as RawSession | null;
+  const raw = (await deps.auth.api.getSession({
+    headers,
+    ...(options.authoritative === true ? { query: { disableCookieCache: true } } : {}),
+  })) as RawSession | null;
   if (raw === null) return undefined;
 
   await ensureProvisioned(deps.db, raw.user.id);
@@ -110,10 +132,43 @@ function buildSessionContext(
 export async function requireSession(
   deps: SessionDependencies,
   headers: Headers,
+  options: SessionReadOptions = {},
 ): Promise<SessionContext> {
-  const context = await getSessionContext(deps, headers);
+  const context = await getSessionContext(deps, headers, options);
   if (context === undefined) throw new AuthRequiredError();
   return context;
+}
+
+/**
+ * The session, validated against the **store** rather than the cookie cache.
+ *
+ * ## The invariant this exists to hold
+ *
+ * **No state-changing financial action may be authorized from the five-minute
+ * cookie cache.** A revoked session must stop being able to move money-shaped
+ * data the moment the row is gone, not up to five minutes later.
+ *
+ * Phase 1 has nothing financial to write, and its ordinary mutations
+ * (preferences, categories, tags) legitimately use `requireSession`: they are
+ * cheap, reversible, and visible to the account holder. Production verification
+ * of Phase 1 observed exactly that boundary — a revoked session completed one
+ * ordinary settings write inside the window, then was refused on the next.
+ *
+ * From Phase 2 onward, valuations, flows, balances and every other financial
+ * mutation go through this instead. It costs one session lookup per write,
+ * which is the right price for a write that changes what somebody's net worth
+ * says.
+ *
+ * This is deliberately **not** `requireFreshSession`: that asks "did they
+ * authenticate recently?" (`session.createdAt` within `freshAge`) and would
+ * happily accept a revoked session created two minutes ago. The two answer
+ * different questions and a financial write needs this one.
+ */
+export async function requireAuthoritativeSession(
+  deps: SessionDependencies,
+  headers: Headers,
+): Promise<SessionContext> {
+  return requireSession(deps, headers, { authoritative: true });
 }
 
 /**

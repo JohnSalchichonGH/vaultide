@@ -1,7 +1,7 @@
 import 'server-only';
 import { getServices, defineAction, type ActionResult, type RequestContext } from '@vaultide/application';
 import type { z } from 'zod';
-import { requireSession } from '../context';
+import { requireAuthoritativeSession, requireSession } from '../context';
 
 /**
  * The one wrapper every mutation goes through (blueprint 4.2, 19, 20.2).
@@ -23,6 +23,31 @@ export function action<Schema extends z.ZodType, Output>(definition: {
 }): (raw: unknown) => Promise<ActionResult<Output>> {
   return defineAction(
     { getContext: requireSession, logger: getServices().logger },
+    definition,
+  );
+}
+
+/**
+ * The wrapper every **financial** mutation must go through, from Phase 2 on.
+ *
+ * Identical to `action` except that the session is validated against the
+ * session store rather than the signed cookie cache, so a revoked session
+ * cannot write a valuation, a flow or a balance during the five-minute window
+ * ADR 0002 decision 14 describes. The rule and its reasoning are in ADR 0003.
+ *
+ * It is a separate factory rather than a flag on `action` on purpose: a boolean
+ * someone forgets to pass is invisible in review, whereas a financial mutation
+ * declared with the wrong factory is a question anyone reading the file can
+ * ask. Phase 1 has no financial mutations, so nothing uses this yet — it exists
+ * so that the first one cannot be written the wrong way.
+ */
+export function financialAction<Schema extends z.ZodType, Output>(definition: {
+  name: string;
+  input: Schema;
+  handler: (args: { input: z.output<Schema>; ctx: RequestContext }) => Promise<Output>;
+}): (raw: unknown) => Promise<ActionResult<Output>> {
+  return defineAction(
+    { getContext: requireAuthoritativeSession, logger: getServices().logger },
     definition,
   );
 }

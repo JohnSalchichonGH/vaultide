@@ -3,6 +3,8 @@ import { sql, withoutUser } from '@vaultide/db';
 import { createAuthClient, tokenFromUrl } from '../helpers/auth-client';
 import { createHarness, TEST_BASE_URL, type Harness } from '../helpers/harness';
 import { AUTH_RATE_LIMITS, AUTH_RATE_LIMIT_DEFAULT } from '../../src/auth/config';
+import { requireAuthoritativeSession, requireSession } from '../../src/auth/session';
+import { AuthRequiredError } from '../../src/errors';
 import { scrubEvent } from '../../src/observability';
 
 /**
@@ -181,5 +183,103 @@ describe('the runtime role cannot escalate (17.3, 17.4)', () => {
     ]) {
       await expect(harness.asUser(statement), statement).rejects.toBeInstanceOf(Error);
     }
+  });
+});
+
+describe('financial writes are authorized against the session store, not the cookie (ADR 0003)', () => {
+  /**
+   * The invariant Phase 2 depends on.
+   *
+   * 17.1 asks for both `revokeSessionsOnPasswordReset` and a five-minute signed
+   * cookie cache. Both are implemented, and the consequence — documented in ADR
+   * 0002 decision 14 and observed in production — is that an *ordinary* read
+   * can still answer from the cookie for a few minutes after the session row is
+   * gone.
+   *
+   * That is tolerable for a preference. It is not tolerable for a valuation or
+   * a balance. `requireAuthoritativeSession` bypasses the cache, and this is
+   * the proof that the two really do differ at the moment it matters.
+   */
+
+  async function signedInHeaders(email: string): Promise<Headers> {
+    const client = createAuthClient(harness.services.auth, TEST_BASE_URL);
+    harness.mailer.clear();
+
+    await client.post('/sign-up/email', { name: 'Session Proof', email, password: PASSWORD });
+
+    const verification = harness.mailer.latestFor(email, 'verification');
+    if (verification === undefined) throw new Error('no verification email');
+    // Verification is a GET with the token in the query — the shape a link in
+    // an email actually has.
+    await client.get(`/verify-email?token=${encodeURIComponent(tokenFromUrl(verification.text))}`);
+
+    const signIn = await client.post('/sign-in/email', { email, password: PASSWORD });
+    if (signIn.status !== 200) throw new Error(`sign-in failed: ${String(signIn.status)}`);
+
+    return new Headers({ Cookie: client.cookieHeader() });
+  }
+
+  it('refuses a revoked session immediately, while an ordinary read may still answer', async () => {
+    const email = unique('authoritative');
+    const headers = await signedInHeaders(email);
+    const deps = { auth: harness.services.auth, db: harness.db };
+
+    // 1. The session is established: both paths agree, and agree on the user.
+    const ordinary = await requireSession(deps, headers);
+    const authoritative = await requireAuthoritativeSession(deps, headers);
+    expect(authoritative.userId).toBe(ordinary.userId);
+
+    const userId = ordinary.userId;
+    const rows = async (): Promise<number> => {
+      const result = await withoutUser(harness.db, async (tx) =>
+        tx.execute<{ n: string }>(
+          sql`SELECT count(*)::text AS n FROM session WHERE user_id = ${userId}`,
+        ),
+      );
+      return Number(result.rows[0]?.n ?? '0');
+    };
+    expect(await rows()).toBeGreaterThan(0);
+
+    // 2. The session is revoked out from under that cookie, in another context
+    //    — exactly what a password reset on another device does.
+    await harness.asOwner('DELETE FROM session WHERE user_id = $1', [userId]);
+    expect(await rows()).toBe(0);
+
+    // 3. The authoritative path refuses at once. This is the assertion Phase 2
+    //    rests on: no financial write can be authorized by a dead session.
+    await expect(requireAuthoritativeSession(deps, headers)).rejects.toBeInstanceOf(
+      AuthRequiredError,
+    );
+
+    // 4. And the authoritative read is genuinely reading the store: Better Auth
+    //    itself returns null for this cookie once the cache is bypassed.
+    expect(
+      await harness.services.auth.api.getSession({
+        headers,
+        query: { disableCookieCache: true },
+      }),
+    ).toBeNull();
+  });
+
+  it('is not the same thing as session freshness', async () => {
+    // `requireFreshSession` asks whether the user authenticated recently. A
+    // session revoked one second after it was created is still "fresh" by that
+    // measure, which is why a financial write must not be gated on it.
+    const email = unique('freshness');
+    const headers = await signedInHeaders(email);
+    const deps = { auth: harness.services.auth, db: harness.db };
+
+    const context = await requireSession(deps, headers);
+    expect(context.sessionFresh).toBe(true);
+
+    await harness.asOwner('DELETE FROM session WHERE user_id = $1', [context.userId]);
+
+    // Freshness still says yes on the context we already hold...
+    expect(context.sessionFresh).toBe(true);
+    // ...while the authoritative read says no. The two answer different
+    // questions, and only one of them is an authorization.
+    await expect(requireAuthoritativeSession(deps, headers)).rejects.toBeInstanceOf(
+      AuthRequiredError,
+    );
   });
 });
