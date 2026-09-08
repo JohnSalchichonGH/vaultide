@@ -92,14 +92,27 @@ try {
   // knows which user the request is for, so a policy keyed on that user would
   // make signing in impossible. Both halves are asserted, because either one
   // silently flipping is a serious failure — one leaks, the other locks out.
+  //
+  // Kept in step with `USER_OWNED_TABLES` in packages/db/src/repositories/
+  // users.ts by the `every user-owned table is listed here` check further
+  // down: this script had its own copy through Phase 2, and a copy that drifts
+  // is worse than no copy, because it reports a pass for tables it never
+  // looked at.
   const USER_OWNED_TABLES = [
     'audit_entries',
     'cash_accounts',
     'categories',
+    'expense_entries',
+    'income_entries',
+    'month_reviews',
     'other_assets',
     'position_valuations',
     'positions',
+    'recurring_template_skips',
+    'recurring_template_terms',
+    'recurring_templates',
     'tags',
+    'transfers',
     'user_settings',
   ];
   const AUTH_TABLES = ['account', 'session', 'two_factor'];
@@ -142,6 +155,128 @@ try {
     .filter((row) => row.has_user_id === true && row.enabled !== true)
     .map((row) => row.relname)
     .filter((name) => !AUTH_TABLES.includes(name));
+
+  // Every table that carries a `user_id` must be in the list above, or the RLS
+  // assertion silently skips it. This is the check that would have caught this
+  // script falling a phase behind the schema.
+  const owned = security.rows
+    .filter((row) => row.has_user_id === true)
+    .map((row) => row.relname)
+    .filter((name) => !AUTH_TABLES.includes(name));
+  const unlistedOwned = owned.filter((name) => !USER_OWNED_TABLES.includes(name));
+  check(
+    'every user-owned table is listed here',
+    unlistedOwned.length === 0,
+    unlistedOwned.length === 0 ? `${String(owned.length)} tables` : unlistedOwned.join(', '),
+  );
+
+  console.log('');
+  console.log('Schema invariants no constraint can express');
+
+  // 6.1: `updated_at` is trigger-maintained, so no application path can forget
+  // it and no client can set it.
+  const triggers = await owner.query(
+    `SELECT c.relname
+       FROM pg_trigger t
+       JOIN pg_class c ON c.oid = t.tgrelid
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND NOT t.tgisinternal
+        AND t.tgname = c.relname || '_set_updated_at'`,
+  );
+  const withTrigger = new Set(triggers.rows.map((row) => row.relname));
+  const hasUpdatedAt = await owner.query(
+    `SELECT c.relname FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       JOIN pg_attribute a ON a.attrelid = c.oid
+      WHERE n.nspname = 'public' AND c.relkind = 'r'
+        AND a.attname = 'updated_at' AND a.attnum > 0 AND NOT a.attisdropped`,
+  );
+  // Scoped to the tables this project's migrations create. Better Auth owns
+  // `user`, `session`, `account` and `verification` and maintains their
+  // timestamps itself (17.1); installing a trigger on them would be this
+  // project reaching into somebody else's schema.
+  const missingTrigger = hasUpdatedAt.rows
+    .map((row) => row.relname)
+    .filter((name) => USER_OWNED_TABLES.includes(name))
+    .filter((name) => !withTrigger.has(name));
+  check(
+    'every table with updated_at maintains it by trigger',
+    missingTrigger.length === 0,
+    missingTrigger.length === 0 ? `${String(withTrigger.size)} triggers` : missingTrigger.join(', '),
+  );
+
+  // 6.1: a CHECK that reads the moving present would change its verdict on a
+  // row that never changed, and would make a restored backup unrestorable.
+  const moving = await owner.query(
+    `SELECT c.conname, t.relname
+       FROM pg_constraint c
+       JOIN pg_class t ON t.oid = c.conrelid
+       JOIN pg_namespace n ON n.oid = t.relnamespace
+      WHERE n.nspname = 'public' AND c.contype = 'c'
+        AND pg_get_constraintdef(c.oid) ~* 'now\\(\\)|current_date|current_timestamp|localtimestamp|statement_timestamp|clock_timestamp'`,
+  );
+  check(
+    'no CHECK constraint reads the clock',
+    moving.rows.length === 0,
+    moving.rows.map((row) => `${row.relname}.${row.conname}`).join(', '),
+  );
+
+  // v2.1.6 30.9: one accepted flow per scheduled occurrence, enforced by a
+  // partial unique index on each of the three materialized-flow tables.
+  const occurrenceIndexes = await owner.query(
+    `SELECT tablename, indexname FROM pg_indexes
+      WHERE schemaname = 'public' AND indexname LIKE '%_occurrence_uidx'
+      ORDER BY tablename`,
+  );
+  const OCCURRENCE_TABLES = ['expense_entries', 'income_entries', 'transfers'];
+  const indexed = occurrenceIndexes.rows.map((row) => row.tablename).sort();
+  check(
+    'every materialized-flow table has its occurrence unique index',
+    OCCURRENCE_TABLES.every((table) => indexed.includes(table)),
+    indexed.join(', '),
+  );
+
+  // 30.9 item 4: accepted history keeps its template identity, so these are
+  // NO ACTION — `a` in pg_constraint's confdeltype. A `n` here would be
+  // SET NULL, which cannot even be expressed against the non-null tenant
+  // column without erasing the link.
+  const templateFks = await owner.query(
+    `SELECT c.conname, t.relname, c.confdeltype
+       FROM pg_constraint c
+       JOIN pg_class t ON t.oid = c.conrelid
+       JOIN pg_class f ON f.oid = c.confrelid
+       JOIN pg_namespace n ON n.oid = t.relnamespace
+      WHERE n.nspname = 'public' AND c.contype = 'f'
+        AND f.relname = 'recurring_templates'
+        AND t.relname IN ('income_entries','expense_entries','transfers')`,
+  );
+  const wrongAction = templateFks.rows.filter((row) => row.confdeltype !== 'a');
+  check(
+    'materialized flows keep their template on delete (NO ACTION)',
+    templateFks.rows.length === 3 && wrongAction.length === 0,
+    `${String(templateFks.rows.length)} keys` +
+      (wrongAction.length === 0 ? '' : `; wrong: ${wrongAction.map((r) => r.conname).join(', ')}`),
+  );
+
+  // The composite ownership pattern of 6.1: a child references
+  // `(parent_id, user_id)`, never the parent id alone.
+  const composite = await owner.query(
+    `SELECT c.conname, t.relname, array_length(c.conkey, 1) AS columns
+       FROM pg_constraint c
+       JOIN pg_class t ON t.oid = c.conrelid
+       JOIN pg_namespace n ON n.oid = t.relnamespace
+      WHERE n.nspname = 'public' AND c.contype = 'f'
+        AND c.conname IN ('income_entries_template_fk','expense_entries_template_fk',
+                          'transfers_template_fk','expense_entries_transfer_fk',
+                          'expense_entries_category_fk','recurring_template_terms_template_fk',
+                          'recurring_template_skips_template_fk')`,
+  );
+  const notComposite = composite.rows.filter((row) => Number(row.columns) < 2);
+  check(
+    'Phase 3 foreign keys carry the tenant column',
+    composite.rows.length === 7 && notComposite.length === 0,
+    `${String(composite.rows.length)} keys`,
+  );
   check(
     'no table carrying user_id was added without a policy',
     unlisted.length === 0,

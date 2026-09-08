@@ -119,6 +119,23 @@ describe('nightly backup as app_backup', () => {
     expect(probe).toEqual({ table: 'rls_probe', live: 2, dump: 2, ok: true });
     expect(manifest.tables.every((row) => row.ok)).toBe(true);
 
+    // The manifest is built from pg_tables, so a table added by a migration is
+    // covered without anybody remembering to list it. This asserts that for the
+    // Phase 3 flow tables, because a backup that silently skipped one would
+    // still report every row it did capture as matching.
+    const covered = new Set(manifest.tables.map((row) => row.table));
+    for (const table of [
+      'recurring_templates',
+      'recurring_template_terms',
+      'recurring_template_skips',
+      'income_entries',
+      'expense_entries',
+      'transfers',
+      'month_reviews',
+    ]) {
+      expect(covered, table).toContain(table);
+    }
+
     const currencies = manifest.tables.find((row) => row.table === 'currencies');
     expect(currencies?.live).toBeGreaterThan(50);
     expect(currencies?.dump).toBe(currencies?.live);
