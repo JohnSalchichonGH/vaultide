@@ -12,16 +12,22 @@ import { formatMoney } from '@/lib/format';
 export interface MoneyTextProps {
   /** Exact decimal string, e.g. `"12345678901234567.89"`. */
   readonly amount: string | null;
-  readonly currency?: string;
-  readonly locale?: string;
-  readonly minorUnits?: number;
+  /**
+   * Each optional prop explicitly admits `undefined` so a caller can spread a
+   * value straight from a DTO under `exactOptionalPropertyTypes` — a converted
+   * amount that could not be produced is genuinely absent, and pretending
+   * otherwise at the type level would push the check into every call site.
+   */
+  readonly currency?: string | undefined;
+  readonly locale?: string | undefined;
+  readonly minorUnits?: number | undefined;
   /** Render `+` for positive values, as change figures do. */
   readonly signed?: boolean;
   /** Tint by direction, in addition to the always-rendered sign. */
   readonly colored?: boolean;
   /** Shown in place of the amount when the value cannot be computed. */
-  readonly unavailableReason?: string;
-  readonly className?: string;
+  readonly unavailableReason?: string | undefined;
+  readonly className?: string | undefined;
 }
 
 export function MoneyText({

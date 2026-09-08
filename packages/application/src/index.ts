@@ -14,5 +14,6 @@ export * from './auth/index';
 export * from './currencies/index';
 export * from './fx/index';
 export * from './mail/index';
+export * from './positions/index';
 export * from './settings/index';
 export * from './users/index';

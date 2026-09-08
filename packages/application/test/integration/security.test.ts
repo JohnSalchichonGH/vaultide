@@ -1,11 +1,15 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { sql, withoutUser } from '@vaultide/db';
+import { z } from 'zod';
+import { sql, withUser, withoutUser } from '@vaultide/db';
 import { createAuthClient, tokenFromUrl } from '../helpers/auth-client';
 import { createHarness, TEST_BASE_URL, type Harness } from '../helpers/harness';
 import { AUTH_RATE_LIMITS, AUTH_RATE_LIMIT_DEFAULT } from '../../src/auth/config';
 import { requireAuthoritativeSession, requireSession } from '../../src/auth/session';
+import { defineAction } from '../../src/actions';
+import type { RequestContext } from '../../src/context';
 import { AuthRequiredError } from '../../src/errors';
 import { scrubEvent } from '../../src/observability';
+import { createCashAccount } from '../../src/positions/service';
 
 /**
  * The Phase 1 security suite (blueprint 17.3, 18.2, 21.4).
@@ -281,5 +285,95 @@ describe('financial writes are authorized against the session store, not the coo
     await expect(requireAuthoritativeSession(deps, headers)).rejects.toBeInstanceOf(
       AuthRequiredError,
     );
+  });
+});
+
+describe('a revoked session cannot write a balance (ADR 0003, Phase 2)', () => {
+  /**
+   * The same proof one level up: not "the primitive refuses", but "the wrapper
+   * every Phase 2 mutation is declared with refuses, and nothing is written".
+   *
+   * The two actions below are wired exactly as `apps/web/src/server/actions/
+   * define.ts` wires `action` and `financialAction` — same helper, same
+   * handler, differing only in which session function supplies the context.
+   * That is the whole difference the rule rests on, and this is where it is
+   * measured.
+   */
+
+  async function signedIn(email: string): Promise<{ headers: Headers; userId: string }> {
+    const client = createAuthClient(harness.services.auth, TEST_BASE_URL);
+    harness.mailer.clear();
+    await client.post('/sign-up/email', { name: 'Balance Writer', email, password: PASSWORD });
+
+    const verification = harness.mailer.latestFor(email, 'verification');
+    if (verification === undefined) throw new Error('no verification email');
+    await client.get(`/verify-email?token=${encodeURIComponent(tokenFromUrl(verification.text))}`);
+    await client.post('/sign-in/email', { email, password: PASSWORD });
+
+    const headers = new Headers({ Cookie: client.cookieHeader() });
+    const context = await requireSession(
+      { auth: harness.services.auth, db: harness.db },
+      headers,
+    );
+    return { headers, userId: context.userId };
+  }
+
+  it('refuses the financial wrapper the moment the session row is gone, while the ordinary one still answers', async () => {
+    const email = unique('financial-write');
+    const { headers, userId } = await signedIn(email);
+    const deps = { auth: harness.services.auth, db: harness.db };
+
+    const definition = {
+      name: 'valuations.record',
+      input: z.object({ amount: z.string() }),
+      handler: async ({ input, ctx }: { input: { amount: string }; ctx: RequestContext }) => {
+        const account = await createCashAccount(harness.services.positions, ctx, {
+          name: `Account ${input.amount}`,
+          currency: 'EUR',
+          accountType: 'checking',
+          openedOn: null,
+          openingBalance: input.amount,
+          openingBalanceOn: ctx.today,
+        });
+        return { id: account.id };
+      },
+    };
+
+    const logger = harness.services.logger;
+    const financial = defineAction(
+      { getContext: () => requireAuthoritativeSession(deps, headers), logger },
+      definition,
+    );
+    const ordinary = defineAction(
+      { getContext: () => requireSession(deps, headers), logger },
+      definition,
+    );
+
+    // Both work while the session exists.
+    expect((await financial({ amount: '1.00' })).ok).toBe(true);
+
+    // Revoked in another context, as a password reset on another device does.
+    await harness.asOwner('DELETE FROM session WHERE user_id = $1', [userId]);
+
+    const refused = await financial({ amount: '2.00' });
+    expect(refused).toMatchObject({ ok: false, error: { code: 'AUTH_REQUIRED' } });
+
+    // The ordinary wrapper still answers from the signed cookie cache — which
+    // is the documented trade for a preference (ADR 0002 decision 14) and
+    // exactly why a financial mutation must not use it. If this ever starts
+    // failing, the cache has changed and the distinction is moot; the previous
+    // assertion is the one that must never fail.
+    const cached = await ordinary({ amount: '3.00' });
+    expect(cached.ok).toBe(true);
+
+    // Nothing the refused call would have created exists.
+    const names = await withUser(harness.db, { userId }, async (tx) => {
+      const result = await tx.execute<{ name: string }>(
+        sql`SELECT name FROM positions ORDER BY name`,
+      );
+      return result.rows.map((row) => row.name);
+    });
+    expect(names).toContain('Account 1.00');
+    expect(names).not.toContain('Account 2.00');
   });
 });

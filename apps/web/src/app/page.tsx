@@ -38,7 +38,9 @@ const LOCALES = [
 export default async function LandingPage() {
   const session = await currentSession();
   if (session !== undefined) {
-    redirect(session.settings.onboardingCompleted ? '/settings/profile' : '/onboarding/1');
+    // Phase 2 gives the application a home page, so a signed-in visitor who
+    // has been through the wizard lands there rather than in Settings.
+    redirect(session.settings.onboardingCompleted ? '/dashboard' : '/onboarding/1');
   }
 
   const selfTest = runFormatterSelfTest(LOCALES);
@@ -75,7 +77,7 @@ export default async function LandingPage() {
           </Link>
         </div>
         <div className="mt-4 flex flex-wrap items-center gap-2">
-          <Badge tone="info">Phase 1 — Auth, settings and FX</Badge>
+          <Badge tone="info">Phase 2 — Accounts, balances and net worth</Badge>
           <Badge tone={allExact ? 'positive' : 'negative'}>
             {allExact ? 'Exact formatting verified' : 'Formatter self-test failed'}
           </Badge>
@@ -162,6 +164,9 @@ export default async function LandingPage() {
               'Verified email, optional two-factor sign-in, DB-backed sessions',
               'Settings: base and reporting currency, time zone, locale, favourites',
               'ECB reference rates for every supported currency, refreshed daily',
+              'Cash accounts and other assets, with balances dated to the day',
+              'Total and financial net worth, with what is missing spelled out',
+              'Statement month-end balances, only once the month has ended',
             ].map((item) => (
               <li key={item} className="flex gap-2">
                 <span aria-hidden="true" className="text-[var(--color-positive)]">

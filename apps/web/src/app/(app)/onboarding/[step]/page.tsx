@@ -3,6 +3,7 @@ import type { Metadata } from 'next';
 import { getServices, listCurrencies } from '@vaultide/application';
 import { requireSessionPage } from '@/server/context';
 import {
+  OnboardingAccountStep,
   OnboardingCurrencyStep,
   OnboardingFavoritesStep,
   OnboardingIdentityStep,
@@ -13,10 +14,12 @@ export const metadata: Metadata = { title: 'Set up Vaultide' };
 export const dynamic = 'force-dynamic';
 
 /**
- * Onboarding steps 1–3 (blueprint Phase 1, 15.2 "Onboarding — steps skippable").
+ * Onboarding steps 1–4 (blueprint 15.2 "Onboarding — steps skippable").
  *
  * One route with the step as a segment, matching 15.1's `/onboarding/[step]`.
- * Later phases add steps 4–11 here, each with the data it needs.
+ * Phase 1 built the first three; Phase 2 adds the fourth — the first cash
+ * account — because Phase 2 is the phase that gives it something to ask about.
+ * Steps 5–11 arrive with theirs.
  */
 export default async function OnboardingStepPage({
   params,
@@ -41,8 +44,10 @@ export default async function OnboardingStepPage({
       return <OnboardingCurrencyStep {...props} />;
     case '3':
       return <OnboardingFavoritesStep {...props} />;
+    case '4':
+      return <OnboardingAccountStep {...props} today={session.today} />;
     default:
-      // Steps 4–11 belong to later phases; an unknown step is not a page.
+      // Steps 5–11 belong to later phases; an unknown step is not a page.
       notFound();
   }
 }

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { authSession, eq, withoutUser } from '@vaultide/db';
+import { USER_OWNED_TABLES, authSession, eq, withoutUser } from '@vaultide/db';
 import { generateSync } from 'otplib';
 import { createAuthClient, tokenFromUrl, type AuthClient } from '../helpers/auth-client';
 import { createHarness, TEST_BASE_URL, type Harness } from '../helpers/harness';
@@ -430,8 +430,12 @@ describe('account deletion (18.3)', () => {
     expect(deleted.status).toBe(200);
 
     expect(await userExists(harness.db, context.userId)).toBe(false);
+    // Every user-owned table, taken from the schema's own list rather than
+    // spelled out here — a table added by a later phase has to be accounted for
+    // by the cascade, and this assertion grows with it instead of going stale.
     const after = await remainingUserRows(harness.db, context.userId);
-    expect(after).toEqual({ user_settings: 0, categories: 0, tags: 0 });
+    expect(Object.keys(after).sort()).toEqual([...USER_OWNED_TABLES].sort());
+    expect(Object.values(after)).toEqual(USER_OWNED_TABLES.map(() => 0));
 
     // 18.3: a confirmation email is sent once the data is gone.
     expect(harness.mailer.latestFor(email, 'account-deleted')).toBeDefined();

@@ -4,6 +4,7 @@ import { useId, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import type { UserSettings } from '@vaultide/application';
 import { completeOnboardingStepAction } from '@/server/actions/settings';
+import { CreateCashAccountForm } from '@/features/accounts/account-forms';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
 import { useHydrated } from '@/lib/use-hydrated';
@@ -41,7 +42,7 @@ function StepShell({
   return (
     <div className="mx-auto w-full max-w-xl">
       <p className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">
-        Step {step} of 3
+        Step {step} of 4
       </p>
       <h1 className="mt-1 text-[length:var(--text-page)] font-semibold tracking-tight">{title}</h1>
       <p className="mt-2 text-[var(--color-muted-foreground)]">{description}</p>
@@ -320,7 +321,12 @@ export function OnboardingFavoritesStep({ settings, currencies }: StepProps) {
     // currency it was rendered with when onboarding began, which is precisely
     // the value the user has just changed. Leaving the wizard happens once per
     // account; a real navigation is the honest way to end it.
-    window.location.assign('/settings/profile');
+    //
+    // Phase 2 adds a fourth step — the first account — so this hands over to
+    // it rather than leaving the wizard. Step 3 still marks onboarding
+    // complete: the required questions are answered by then, and step 4 is
+    // skippable like every other one (15.2).
+    window.location.assign('/onboarding/4');
   }
 
   return (
@@ -380,6 +386,54 @@ export function OnboardingFavoritesStep({ settings, currencies }: StepProps) {
 
         <Actions pending={pending} error={error} submitLabel="Finish setup" onSkip={finish} />
       </form>
+    </StepShell>
+  );
+}
+
+/**
+ * Step 4: the first cash account (spec §90; Phase 2).
+ *
+ * Phase 1 left steps 4 onwards to "the phases that give them something to ask
+ * about", and Phase 2 is where accounts and balances exist. It is skippable
+ * like every other step — the wizard is already marked complete by step 3, so
+ * leaving here lands in the application either way.
+ *
+ * The balance is dated **today**, exactly (15.2). No month-end option appears,
+ * because a statement balance belongs to a month that has already ended (R15).
+ */
+export function OnboardingAccountStep({
+  currencies,
+  settings,
+  today,
+}: StepProps & { today: string }) {
+  function finish(): void {
+    // A full navigation for the same reason step 3 uses one: the header lives
+    // in a layout the App Router would reuse across a client-side push.
+    window.location.assign('/dashboard');
+  }
+
+  return (
+    <StepShell
+      step={4}
+      title="Add your first account"
+      description="One balance is enough to start. Vaultide keeps every figure in the currency it was in, and converts only for display."
+    >
+      <div className="space-y-6">
+        <CreateCashAccountForm
+          currencies={currencies}
+          baseCurrency={settings.baseCurrency}
+          today={today}
+          onCreated={finish}
+        />
+        <button
+          type="button"
+          onClick={finish}
+          className="text-[length:var(--text-meta)] underline"
+          data-testid="onboarding-skip"
+        >
+          Skip for now
+        </button>
+      </div>
     </StepShell>
   );
 }

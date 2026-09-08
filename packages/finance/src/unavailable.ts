@@ -8,6 +8,7 @@
 
 export type UnavailableReason =
   | 'fx_missing'
+  | 'no_valuation'
   | 'no_valuation_in_period'
   | 'missing_month_end'
   | 'missing_opening'

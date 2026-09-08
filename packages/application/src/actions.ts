@@ -41,9 +41,26 @@ export interface ActionDependencies {
   readonly logger: Logger;
 }
 
+/**
+ * The input schema, or a function of the context that builds it.
+ *
+ * 20.1 requires the schema for any **actual-record** date to be
+ * `plainDateNotAfter(ctx.today)`, and a `month_end` valuation to be accepted
+ * only once its month has ended. Both depend on the user's local today, which
+ * only exists once the session has been resolved — so a financial action
+ * declares a factory and gets a schema built for this request.
+ *
+ * The rules are enforced again in the domain services, so neither layer is
+ * trusting the other; this is the one that turns a bypassed client into a
+ * field-level error instead of an exception.
+ */
+export type ActionInput<Schema extends z.ZodType> =
+  | Schema
+  | ((ctx: RequestContext) => Schema);
+
 export interface ActionDefinition<Schema extends z.ZodType, Output> {
   readonly name: string;
-  readonly input: Schema;
+  readonly input: ActionInput<Schema>;
   readonly handler: (args: {
     input: z.output<Schema>;
     ctx: RequestContext;
@@ -90,7 +107,9 @@ export function defineAction<Schema extends z.ZodType, Output>(
     try {
       ctx = await deps.getContext();
 
-      const parsed = definition.input.safeParse(raw);
+      const schema =
+        typeof definition.input === 'function' ? definition.input(ctx) : definition.input;
+      const parsed = schema.safeParse(raw);
       if (!parsed.success) {
         throw new ValidationError('Please check the highlighted fields.', fieldErrorsOf(parsed.error));
       }

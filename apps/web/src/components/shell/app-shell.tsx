@@ -32,14 +32,14 @@ const NAVIGATION: readonly NavigationGroup[] = [
   {
     label: 'Overview',
     items: [
-      { label: 'Dashboard', phase: 2 },
+      { label: 'Dashboard', href: '/dashboard', phase: 2 },
       { label: 'Monthly', phase: 3 },
     ],
   },
   {
     label: 'Finances',
     items: [
-      { label: 'Accounts', phase: 2 },
+      { label: 'Accounts', href: '/accounts', phase: 2 },
       { label: 'Income', phase: 3 },
       { label: 'Spending', phase: 3 },
       { label: 'Investments', phase: 4 },
@@ -170,7 +170,7 @@ export function AppShell({
 
       <footer className="border-t">
         <div className="mx-auto max-w-[var(--container-content)] px-4 py-6 text-[length:var(--text-meta)] text-[var(--color-muted-foreground)] sm:px-6">
-          Vaultide · Phase 1 — auth, settings and FX · blueprint v2.1.2
+          Vaultide · Phase 2 — accounts, balances and net worth · blueprint v2.1.2
         </div>
       </footer>
     </div>

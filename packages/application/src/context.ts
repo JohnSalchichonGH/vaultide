@@ -147,8 +147,16 @@ export function buildRequestContext(input: BuildContextInput): RequestContext {
   };
 }
 
-/** A context for tests and fixtures, with an explicit `today`. */
-export function testContext(overrides: Partial<RequestContext> & { today?: string } = {}) {
+/**
+ * A context for tests and fixtures, with an explicit `today`.
+ *
+ * `today` is taken as a plain `YYYY-MM-DD` string and validated here, rather
+ * than as an already-branded `PlainDate` — a test that wants to freeze the
+ * clock on the last day of September should be able to write the date.
+ */
+export function testContext(
+  overrides: Omit<Partial<RequestContext>, 'today'> & { today?: string } = {},
+) {
   const today = overrides.today ?? '2026-09-06';
   return {
     requestId: 'test-request',

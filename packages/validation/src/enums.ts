@@ -63,3 +63,48 @@ export type CategoryKind = (typeof categoryKinds)[number];
 export function isSystemCategoryKind(value: string): value is SystemCategoryKind {
   return (systemCategoryKinds as readonly string[]).includes(value);
 }
+
+/**
+ * Position lifecycle (6.2 `positions.status`). A position is `archived` or
+ * `closed`, never deleted once it has history (R12, 6.3).
+ */
+export const positionStatuses = ['active', 'closed', 'archived'] as const;
+export type PositionStatus = (typeof positionStatuses)[number];
+
+/** 6.2 `cash_accounts.account_type`. `brokerage_cash` is a cash account too. */
+export const cashAccountTypes = ['checking', 'savings', 'cash', 'brokerage_cash', 'other'] as const;
+export type CashAccountType = (typeof cashAccountTypes)[number];
+
+/** 6.2 `other_assets.asset_type`. */
+export const otherAssetTypes = [
+  'vehicle',
+  'collectible',
+  'private_equity',
+  'equipment',
+  'receivable',
+  'custom',
+] as const;
+export type OtherAssetType = (typeof otherAssetTypes)[number];
+
+/**
+ * 6.2 `position_valuations.source` — how a valuation came to exist.
+ *
+ * The distinction is not decoration: `confirmed_unchanged` is the explicit
+ * per-month confirmation of R22, `accepted_expected` marks a liability balance
+ * taken from a schedule rather than a statement (R9, Phase 5), and `purchase`
+ * is the valuation written with an asset purchase (11.1, Phase 6). Phase 2
+ * writes `entered`, `confirmed_unchanged` and `bulk_entered`.
+ */
+export const valuationSources = [
+  'entered',
+  'confirmed_unchanged',
+  'accepted_expected',
+  'purchase',
+  'imported',
+  'bulk_entered',
+] as const;
+export type ValuationSource = (typeof valuationSources)[number];
+
+/** 6.2 `audit_entries.action` (18.1). */
+export const auditActions = ['insert', 'update', 'delete'] as const;
+export type AuditAction = (typeof auditActions)[number];

@@ -158,7 +158,15 @@ test.describe('sign-up, verification and settings', () => {
     await expect(page.getByTestId('onboarding-favorites')).toBeVisible();
     await page.getByTestId('onboarding-continue').click();
 
+    // --- step 4: the first account, added in Phase 2 ------------------------
+    // The wizard is already complete by step 3; step 4 is skippable like every
+    // other one (15.2), and this scenario is about settings, so it skips.
+    await expect(page.getByTestId('create-cash-account')).toBeVisible();
+    await page.getByTestId('onboarding-skip').click();
+    await expect(page).toHaveURL(/\/dashboard/u);
+
     // --- the settings persisted --------------------------------------------
+    await page.goto('/settings/profile');
     await expect(page).toHaveURL(/\/settings\/profile/u);
     await expect(page.getByTestId('profile-email')).toHaveText(email);
     await expect(page.getByTestId('timezone')).toHaveValue('Europe/Madrid');
@@ -197,7 +205,9 @@ test.describe('sign-up, verification and settings', () => {
     // signing in must land them in the application. The previous
     // `/(settings|onboarding)/` pattern accepted either answer, which is why a
     // sign-in that always went to `/onboarding/1` reached production unnoticed.
-    await expect(page).toHaveURL(/\/settings\/profile/u);
+    // Phase 2 gives the application a home page, so that landing is now the
+    // dashboard; the assertion is exactly as specific as it was.
+    await expect(page).toHaveURL(/\/dashboard/u);
 
     // Everything chosen before the sign-out is still there.
     await page.goto('/settings/currencies');

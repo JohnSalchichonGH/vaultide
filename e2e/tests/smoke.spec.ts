@@ -17,7 +17,9 @@ test.describe('Vaultide shell', () => {
 
     await expect(page).toHaveTitle('Vaultide');
     await expect(page.getByRole('heading', { level: 1, name: 'Vaultide' })).toBeVisible();
-    await expect(page.getByText('Phase 1 — Auth, settings and FX', { exact: true })).toBeVisible();
+    await expect(
+      page.getByText('Phase 2 — Accounts, balances and net worth', { exact: true }),
+    ).toBeVisible();
     await expect(page.getByText('Blueprint v2.1.2').first()).toBeVisible();
     await expect(page.getByRole('contentinfo')).toContainText('Vaultide');
 

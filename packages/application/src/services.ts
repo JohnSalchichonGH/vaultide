@@ -10,6 +10,7 @@ import { createLogger, type Logger } from './logging';
 import { createMailerFromEnv } from './mail/providers';
 import type { Mailer } from './mail/mailer';
 import type { SettingsDependencies } from './settings/service';
+import type { PositionDependencies } from './positions/service';
 
 /**
  * The composition root (blueprint 4.1, 19).
@@ -32,6 +33,12 @@ export interface Services {
   readonly fxProvider: FxProvider;
   /** Ready-made dependency bundle for the settings use cases. */
   readonly settings: SettingsDependencies;
+  /**
+   * The Phase 2 financial use cases: positions, valuations, quick update and
+   * the net-worth queries. They need the database and the rate service, and
+   * nothing else — the engines they call are pure.
+   */
+  readonly positions: PositionDependencies;
 }
 
 export interface ServiceOverrides {
@@ -153,6 +160,7 @@ export function createServices(overrides: ServiceOverrides = {}): Services {
         for (const currency of currencies) await fx.ensureHistory(currency);
       },
     },
+    positions: { db, fx },
   };
 }
 

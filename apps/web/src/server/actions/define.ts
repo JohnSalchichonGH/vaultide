@@ -1,5 +1,11 @@
 import 'server-only';
-import { getServices, defineAction, type ActionResult, type RequestContext } from '@vaultide/application';
+import {
+  getServices,
+  defineAction,
+  type ActionInput,
+  type ActionResult,
+  type RequestContext,
+} from '@vaultide/application';
 import type { z } from 'zod';
 import { requireAuthoritativeSession, requireSession } from '../context';
 
@@ -18,7 +24,7 @@ import { requireAuthoritativeSession, requireSession } from '../context';
  */
 export function action<Schema extends z.ZodType, Output>(definition: {
   name: string;
-  input: Schema;
+  input: ActionInput<Schema>;
   handler: (args: { input: z.output<Schema>; ctx: RequestContext }) => Promise<Output>;
 }): (raw: unknown) => Promise<ActionResult<Output>> {
   return defineAction(
@@ -38,12 +44,14 @@ export function action<Schema extends z.ZodType, Output>(definition: {
  * It is a separate factory rather than a flag on `action` on purpose: a boolean
  * someone forgets to pass is invisible in review, whereas a financial mutation
  * declared with the wrong factory is a question anyone reading the file can
- * ask. Phase 1 has no financial mutations, so nothing uses this yet — it exists
- * so that the first one cannot be written the wrong way.
+ * ask. Phase 2 declares every one of its mutations with it, and
+ * `test/financial-actions.test.ts` enumerates this directory and fails if a new
+ * action appears that uses the ordinary wrapper without being on the explicit
+ * non-financial list.
  */
 export function financialAction<Schema extends z.ZodType, Output>(definition: {
   name: string;
-  input: Schema;
+  input: ActionInput<Schema>;
   handler: (args: { input: z.output<Schema>; ctx: RequestContext }) => Promise<Output>;
 }): (raw: unknown) => Promise<ActionResult<Output>> {
   return defineAction(

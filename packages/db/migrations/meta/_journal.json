@@ -29,6 +29,20 @@
       "when": 1788786558587,
       "tag": "0003_phase1_privileges_and_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788864988682,
+      "tag": "0004_phase2_positions_valuations",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788864999000,
+      "tag": "0005_phase2_privileges_and_triggers",
+      "breakpoints": true
     }
   ]
 }
