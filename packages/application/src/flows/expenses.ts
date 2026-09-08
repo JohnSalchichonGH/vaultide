@@ -83,15 +83,36 @@ export async function requireCategory(
 }
 
 /**
- * `capital_improvement` links an asset (6.2 domain rule), and Phase 3 has no
- * properties or other-asset flows to link, so the category is refused here
- * rather than written without its link.
+ * The protected category kinds an ordinary expense may not be filed under
+ * (7.4, 6.2).
+ *
+ * A category's **kind** is its accounting semantics, not a label, so two of the
+ * seven system kinds cannot be chosen here:
+ *
+ *  - `capital_improvement` is defined by 7.4 only "(linked to a property/other
+ *    asset)", and Phase 3 has neither to link. Writing one unlinked would put a
+ *    capital expenditure in the ledger with nothing to capitalize against.
+ *  - `transfer_fee` is defined by 7.4 only "(linked to a transfer)". A fee is
+ *    one `expense_entries` row owned by the transfer aggregate (M14), created
+ *    and deleted with its transfer; an unlinked row filed under the same kind
+ *    would land in "Interest & fees" while belonging to no transfer, and is a
+ *    fact the matrix does not define. The transfer service creates the real
+ *    ones, and it does not come through here.
+ *
+ * The other five system kinds are ordinary tracked expenses that happen to
+ * carry a non-consumption bucket, and are allowed.
  */
 function assertCategoryUsableInPhase3(category: CategoryRecord): void {
   if (category.kind === 'capital_improvement') {
     throw new ValidationError(
       'A capital improvement has to be linked to the property or asset it improves, which arrives with properties.',
       { categoryId: ['Choose another category.'] },
+    );
+  }
+  if (category.kind === 'transfer_fee') {
+    throw new ValidationError(
+      'A transfer fee belongs to the transfer it was charged on. Add it on the transfer, so the two stay together and the fee is counted once.',
+      { categoryId: ['Add this fee from its transfer.'] },
     );
   }
 }

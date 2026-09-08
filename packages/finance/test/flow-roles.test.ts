@@ -13,6 +13,7 @@ import {
   incomeRole,
   transferLegs,
   type CategoryKind,
+  type FlowRole,
   type ExpenseFlow,
   type IncomeFlow,
   type TransferFlow,
@@ -126,6 +127,32 @@ describe('expense roles', () => {
       for (const settlement of EXPENSE_SETTLEMENTS) {
         expect(['K', 'Nout', 'none']).toContain(expenseRole(categoryKind, settlement));
       }
+    }
+  });
+
+  it('gives every Phase 3 category kind the cash role 7.4 assigns it', () => {
+    // Named one by one rather than only swept by the loop above, because these
+    // are the branches that decide whether a cost lands in tracked spending.
+    // 7.4 puts `external_outflow` in K — it is cash that left and which we can
+    // name, and 12.5 then decomposes `TrackedTotalSpending` into
+    // `Consumption + PropertyOperatingCosts + InterestAndFees +
+    // TransactionCosts + ExternalOutflows`, so moving it to Nout would take it
+    // out of tracked spending and break that identity. What keeps it out of
+    // *consumption* is its bucket, not its cash role.
+    const expected: [CategoryKind, FlowRole][] = [
+      ['general', 'K'],
+      ['food', 'K'],
+      ['tax', 'K'],
+      ['property_operating', 'K'],
+      ['investment_fee', 'K'],
+      ['transfer_fee', 'K'],
+      ['acquisition_cost', 'K'],
+      ['disposal_cost', 'K'],
+      ['external_outflow', 'K'],
+      ['capital_improvement', 'Nout'],
+    ];
+    for (const [categoryKind, role] of expected) {
+      expect(expenseRole(categoryKind, 'tracked_cash'), categoryKind).toBe(role);
     }
   });
 

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql, withUser, withoutUser } from '@vaultide/db';
+import { settingsInput } from '@vaultide/validation';
 import { createHarness, type Harness } from '../helpers/harness';
 import {
   findSettings,
@@ -189,6 +190,33 @@ describe('updating settings', () => {
 
     const current = await readSettings(harness.db, USER_A);
     await setCountAdditionalSpending(harness.services.settings, USER_A, current.version, true);
+  });
+
+  it('cannot reach the savings-rate preference through the ordinary settings path', async () => {
+    // Not a source-text assertion: this sends the field to the service that used
+    // to accept it and proves the value does not move. The Zod input drops the
+    // key and `UpdateSettingsFields` no longer carries it, so the only way in is
+    // `setCountAdditionalSpending` behind its authoritative-session action
+    // (12.5, ADR 0003, v2.1.6 §30.9).
+    const before = await readSettings(harness.db, USER_A);
+    expect(before.countAdditionalSpending).toBe(true);
+
+    const smuggled = { locale: 'en-GB', countAdditionalSpending: false } as unknown as Parameters<
+      typeof updateSettings
+    >[3];
+    const after = await updateSettings(harness.services.settings, USER_A, before.version, smuggled);
+
+    expect(after.countAdditionalSpending).toBe(true);
+    expect((await readSettings(harness.db, USER_A)).countAdditionalSpending).toBe(true);
+  });
+
+  it('drops the field at the schema boundary too', () => {
+    const parsed = settingsInput.updateSettingsInput.parse({
+      locale: 'en-GB',
+      countAdditionalSpending: false,
+      expectedVersion: 1,
+    });
+    expect(parsed).not.toHaveProperty('countAdditionalSpending');
   });
 
   it('refuses a stale version rather than overwriting a concurrent change', async () => {

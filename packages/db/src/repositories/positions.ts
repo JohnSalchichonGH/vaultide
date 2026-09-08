@@ -526,14 +526,33 @@ export async function loadFinancialWindow(
 }
 
 /**
- * Is there a cash account of this currency that participates on `on` (8.1)?
+ * Is there a cash account of this currency in the bucket `(M, C)` that a flow
+ * dated `on` would fall into (blueprint 8.1)?
  *
  * The question a tracked-cash flow with **no** cash position has to answer.
- * 8.1 is explicit that such a flow belongs to its currency bucket and that
- * "validation requires a participating cash account of that currency" — the
- * null leg means "I have not said which account", never "this was not tracked".
- * Without one the flow would land in a bucket with nothing to reconcile
- * against, which is the `flow_without_cash_account` issue.
+ * 8.1 says such a flow "belongs to the bucket" and that "validation requires a
+ * participating cash account of that currency" — the null leg means "I have not
+ * said which account", never "this was not tracked". Without one the flow lands
+ * in a bucket with nothing to reconcile against, which is 8.5's blocking
+ * `flow_without_cash_account`.
+ *
+ * ## The predicate is the month's, not the day's
+ *
+ * 8.1 defines the bucket as "all cash positions of currency C **open at any
+ * time during M**: `(opened_on IS NULL OR opened_on <= end(M)) AND (closed_on
+ * IS NULL OR closed_on >= start(M))`", and that is reproduced exactly here.
+ *
+ * Asking whether an account is open on the flow's own *date* is a different and
+ * stricter question, and using it would reject flows the engine will happily
+ * reconcile: an account opened on 20 September participates in September's
+ * bucket, so a null-leg flow dated the 5th has somewhere to go. Rejecting it
+ * would be the validation layer disagreeing with the engine about what a bucket
+ * contains.
+ *
+ * This is only about the **null-leg** case. A flow that names an account is
+ * judged against that account's own window by the domain rule "date within
+ * position window" (20.1), which is the day-level question and is asked
+ * elsewhere.
  */
 export async function hasParticipatingCashAccount(
   db: Database,
@@ -541,6 +560,7 @@ export async function hasParticipatingCashAccount(
   currency: string,
   on: string,
 ): Promise<boolean> {
+  const monthStart = `${on.slice(0, 7)}-01`;
   const rows = await withUser(db, { userId }, async (tx) =>
     tx
       .select({ id: positions.id })
@@ -549,8 +569,11 @@ export async function hasParticipatingCashAccount(
         and(
           eq(positions.kind, 'cash'),
           eq(positions.currency, currency),
-          or(isNull(positions.openedOn), lte(positions.openedOn, on)),
-          or(isNull(positions.closedOn), gte(positions.closedOn, on)),
+          or(
+            isNull(positions.openedOn),
+            lte(positions.openedOn, sql`(date_trunc('month', ${monthStart}::date) + interval '1 month - 1 day')::date`),
+          ),
+          or(isNull(positions.closedOn), gte(positions.closedOn, monthStart)),
         ),
       )
       .limit(1),

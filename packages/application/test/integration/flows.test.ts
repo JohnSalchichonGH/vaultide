@@ -3,7 +3,7 @@ import { sql, withUser, withoutUser } from '@vaultide/db';
 import { createHarness, type Harness } from '../helpers/harness';
 import { testContext, type RequestContext } from '../../src/context';
 import { provisionUser } from '../../src/users/provisioning';
-import { createCashAccount, updateCashAccount } from '../../src/positions/service';
+import { createCashAccount, createOtherAsset, updateCashAccount } from '../../src/positions/service';
 import { recordValuation } from '../../src/positions/valuations';
 import { listCategories } from '../../src/users/categories';
 import {
@@ -110,6 +110,7 @@ beforeEach(async () => {
   await harness.asOwner('DELETE FROM audit_entries');
   await harness.asOwner('DELETE FROM position_valuations');
   await harness.asOwner('DELETE FROM cash_accounts');
+  await harness.asOwner('DELETE FROM other_assets');
   await harness.asOwner('DELETE FROM positions');
 
   const checking = await createCashAccount(harness.services.positions, SEPT_15, {
@@ -412,6 +413,271 @@ describe('expense entries', () => {
 
     const audit = await auditFor(USER_A, created.id);
     expect(audit.map((row) => row.action)).toEqual(['insert', 'update', 'delete']);
+  });
+});
+
+describe('explicit cash attribution is validated on every path', () => {
+  // 20.1 lists these as domain rules: "leg currency = position currency" and
+  // "date within position window". They are asked of every flow that names an
+  // account, on every service.
+
+  it('refuses a leg whose currency is not the account’s', async () => {
+    const usd = await createCashAccount(harness.services.positions, SEPT_15, {
+      name: 'USD',
+      currency: 'USD',
+      accountType: 'checking',
+      openedOn: null,
+    });
+
+    await expect(
+      createIncomeEntry(deps(), SEPT_15, {
+        kind: 'other',
+        receivedOn: '2026-09-15',
+        netAmount: '10.00',
+        currency: 'EUR',
+        settlement: 'tracked_cash',
+        cashPositionId: usd.id,
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+
+    await expect(
+      createExpenseEntry(deps(), SEPT_15, {
+        categoryId: groceries,
+        incurredOn: '2026-09-15',
+        amount: '10.00',
+        currency: 'EUR',
+        settlement: 'tracked_cash',
+        cashPositionId: usd.id,
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+
+  it('refuses a flow dated before the account opened', async () => {
+    const opened = await createCashAccount(harness.services.positions, SEPT_15, {
+      name: 'Opened in September',
+      currency: 'EUR',
+      accountType: 'checking',
+      openedOn: '2026-09-10',
+    });
+
+    await expect(
+      createIncomeEntry(deps(), SEPT_15, {
+        kind: 'other',
+        receivedOn: '2026-09-05',
+        netAmount: '10.00',
+        currency: 'EUR',
+        settlement: 'tracked_cash',
+        cashPositionId: opened.id,
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+
+    // On the opening day itself it is fine.
+    await expect(
+      createIncomeEntry(deps(), SEPT_15, {
+        kind: 'other',
+        receivedOn: '2026-09-10',
+        netAmount: '10.00',
+        currency: 'EUR',
+        settlement: 'tracked_cash',
+        cashPositionId: opened.id,
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it('refuses an expense attributed to a position that is not cash', async () => {
+    const car = await createOtherAsset(harness.services.positions, SEPT_15, {
+      name: 'Car',
+      currency: 'EUR',
+      assetType: 'vehicle',
+      includeInFinancialNetWorth: false,
+    });
+
+    await expect(
+      createExpenseEntry(deps(), SEPT_15, {
+        categoryId: groceries,
+        incurredOn: '2026-09-15',
+        amount: '10.00',
+        currency: 'EUR',
+        settlement: 'tracked_cash',
+        cashPositionId: car.id,
+      }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('accepts a null-leg flow when the only account of that currency opens later in the month', async () => {
+    // 8.1 defines a bucket as the accounts "open at any time during M", so an
+    // account opened on the 20th participates in September and a null-leg flow
+    // dated the 5th has somewhere to go. Judging by the flow's own day instead
+    // would reject a flow the engine will happily reconcile.
+    //
+    // CHF isolates the case: the only CHF account is the late one, so nothing
+    // else can satisfy the check.
+    await createCashAccount(harness.services.positions, SEPT_30, {
+      name: 'Opened late',
+      currency: 'CHF',
+      accountType: 'checking',
+      openedOn: '2026-09-20',
+    });
+
+    await expect(
+      createIncomeEntry(deps(), SEPT_30, {
+        kind: 'other',
+        receivedOn: '2026-09-05',
+        netAmount: '10.00',
+        currency: 'CHF',
+        settlement: 'tracked_cash',
+        cashPositionId: null,
+      }),
+    ).resolves.toBeDefined();
+
+    // And a month in which it does not participate at all is still refused.
+    await expect(
+      createIncomeEntry(deps(), SEPT_30, {
+        kind: 'other',
+        receivedOn: '2026-08-05',
+        netAmount: '10.00',
+        currency: 'CHF',
+        settlement: 'tracked_cash',
+        cashPositionId: null,
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+
+  it('refuses a transfer whose endpoint is not open on the day', async () => {
+    const opened = await createCashAccount(harness.services.positions, SEPT_15, {
+      name: 'Opened in September',
+      currency: 'EUR',
+      accountType: 'checking',
+      openedOn: '2026-09-10',
+    });
+
+    await expect(
+      createCashTransfer(deps(), SEPT_15, {
+        occurredOn: '2026-09-05',
+        fromPositionId: bbva,
+        toPositionId: opened.id,
+        fromAmount: '50.00',
+        toAmount: '50.00',
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+
+  it('refuses another tenant’s account as a transfer endpoint, without leaking it', async () => {
+    const theirs = await createCashAccount(harness.services.positions, on('2026-09-15', USER_B), {
+      name: 'Theirs',
+      currency: 'EUR',
+      accountType: 'checking',
+      openedOn: null,
+    });
+
+    await expect(
+      createCashTransfer(deps(), SEPT_15, {
+        occurredOn: '2026-09-05',
+        fromPositionId: bbva,
+        toPositionId: theirs.id,
+        fromAmount: '50.00',
+        toAmount: '50.00',
+      }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('refuses a fee charged to an account the transfer does not touch', async () => {
+    const third = await createCashAccount(harness.services.positions, SEPT_15, {
+      name: 'Third',
+      currency: 'EUR',
+      accountType: 'checking',
+      openedOn: null,
+    });
+
+    await expect(
+      createCashTransfer(deps(), SEPT_15, {
+        occurredOn: '2026-09-05',
+        fromPositionId: bbva,
+        toPositionId: savings,
+        fromAmount: '200.00',
+        toAmount: '200.00',
+        fee: {
+          amount: '1.50',
+          categoryId: transferFeeCategory,
+          cashPositionId: third.id,
+          currency: 'EUR',
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+
+  it('refuses a fee in a currency the paying account does not hold', async () => {
+    await expect(
+      createCashTransfer(deps(), SEPT_15, {
+        occurredOn: '2026-09-05',
+        fromPositionId: bbva,
+        toPositionId: savings,
+        fromAmount: '200.00',
+        toAmount: '200.00',
+        fee: {
+          amount: '1.50',
+          categoryId: transferFeeCategory,
+          cashPositionId: bbva,
+          currency: 'USD',
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+});
+
+describe('the protected transfer-fee category belongs to the transfer', () => {
+  it('refuses an ordinary expense filed under it', async () => {
+    // 7.4 defines the `transfer_fee` row only "(linked to a transfer)", and a
+    // fee is one row owned by the transfer aggregate (M14). An unlinked one
+    // would land in "Interest & fees" belonging to no transfer.
+    await expect(
+      createExpenseEntry(deps(), SEPT_15, {
+        categoryId: transferFeeCategory,
+        incurredOn: '2026-09-05',
+        amount: '1.50',
+        currency: 'EUR',
+        settlement: 'tracked_cash',
+        cashPositionId: bbva,
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+
+  it('still creates one through the transfer, filed under that same category', async () => {
+    const { fee } = await createCashTransfer(deps(), SEPT_15, {
+      occurredOn: '2026-09-05',
+      fromPositionId: bbva,
+      toPositionId: savings,
+      fromAmount: '200.00',
+      toAmount: '200.00',
+      fee: {
+        amount: '1.50',
+        categoryId: transferFeeCategory,
+        cashPositionId: bbva,
+        currency: 'EUR',
+      },
+    });
+    expect(fee?.categoryId).toBe(transferFeeCategory);
+  });
+
+  it('exposes no way for an expense mutation to claim a transfer', async () => {
+    // The field is absent from the service args and from the Zod input, so a
+    // caller cannot forge a linkage; this asserts the shape rather than a
+    // rejection, because there is nothing to send.
+    const args: Record<string, unknown> = {
+      categoryId: groceries,
+      incurredOn: '2026-09-05',
+      amount: '5.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId: bbva,
+      transferId: '00000000-0000-4000-8000-000000000000',
+    };
+    const created = await createExpenseEntry(
+      deps(),
+      SEPT_15,
+      args as unknown as Parameters<typeof createExpenseEntry>[2],
+    );
+    expect(created.transferId).toBeNull();
   });
 });
 
