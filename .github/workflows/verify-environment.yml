@@ -9,6 +9,14 @@ name: Verify environment
 
 on:
   workflow_dispatch:
+    inputs:
+      manifest_prefix:
+        description: >-
+          Print the full stored state of positions whose name starts with this,
+          for checking a synthetic acceptance account against what the
+          interface showed. Leave empty for real deployments.
+        required: false
+        default: ''
   schedule:
     # Weekly, so drift is noticed without waiting for the next deploy.
     - cron: '15 6 * * 1'
@@ -53,6 +61,52 @@ jobs:
         # app_backup can read the catalogs it needs, so the same script runs;
         # the refused write at the end is the assertion that matters.
         run: node scripts/db/verify-environment.mjs
+
+  verify-financial-invariants:
+    name: Financial invariants, live
+    runs-on: ubuntu-latest
+    # Read-only, as app_backup. The database enforces one balance per day and
+    # a month-end that falls on a month end; it cannot enforce that a closed
+    # account closed at zero or that every write left an audit row, because
+    # those are rules about other rows. This asks whether they still hold.
+    environment: backup
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Check the invariants no constraint can express
+        env:
+          DATABASE_URL_BACKUP: ${{ secrets.DATABASE_URL_BACKUP }}
+          # Through the environment, never interpolated into the command line.
+          MANIFEST_PREFIX: ${{ inputs.manifest_prefix }}
+        run: pnpm db:verify-invariants
+
+  verify-rls-isolation:
+    name: Row level security isolates tenants, live
+    runs-on: ubuntu-latest
+    # Connects as the runtime role itself and proves an unidentified session
+    # sees nothing (17.4). It runs in its own environment because that
+    # credential lives there, which is also why it cannot prove the tables are
+    # non-empty — the job above does that, from the other side of the fence.
+    environment: production
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Read the user-owned tables as nobody
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: pnpm db:verify-rls
 
   verify-currency-set:
     name: Supported currencies still match the provider

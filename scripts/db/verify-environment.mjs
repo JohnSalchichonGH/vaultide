@@ -85,6 +85,29 @@ try {
   );
   check('the schema has tables to check', tables.rows.length > 0, `${tables.rows.length} tables`);
 
+  // Row level security has to be both enabled *and* forced: without FORCE, the
+  // table owner is exempt from its own policies, and `app_owner` runs the
+  // migrations (17.4). A table carrying `user_id` and no forced RLS is a table
+  // one bug away from serving another tenant's rows.
+  const unsecured = await owner.query(
+    `SELECT c.relname
+       FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public'
+        AND c.relkind = 'r'
+        AND EXISTS (SELECT 1 FROM pg_attribute a
+                     WHERE a.attrelid = c.oid AND a.attname = 'user_id' AND a.attnum > 0)
+        AND NOT (c.relrowsecurity AND c.relforcerowsecurity)
+      ORDER BY c.relname`,
+  );
+  check(
+    'every user-owned table forces row level security',
+    unsecured.rows.length === 0,
+    unsecured.rows.length === 0
+      ? 'all user_id tables'
+      : unsecured.rows.map((row) => row.relname).join(', '),
+  );
+
   const WRITES = ['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE'];
 
   /**
