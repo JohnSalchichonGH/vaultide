@@ -36,10 +36,9 @@ export default async function AccountsPage({
   ]);
 
   const { locale, baseCurrency } = session.settings;
-  const live = netWorth.positions.filter((position) => position.status !== 'archived');
+  const live = netWorth.positions;
   const cash = live.filter((position) => position.kind === 'cash');
   const other = live.filter((position) => position.kind === 'other_asset');
-  const archived = netWorth.positions.filter((position) => position.status === 'archived');
 
   return (
     <div className="space-y-6">
@@ -299,30 +298,6 @@ export default async function AccountsPage({
         </>
       )}
 
-      {archived.length === 0 ? null : (
-        <Card>
-          <CardHeader>
-            <CardTitle>Archived</CardTitle>
-            <CardDescription>
-              Hidden from the lists and out of net worth; their history is untouched.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ul className="space-y-1">
-              {archived.map((position) => (
-                <li key={position.id}>
-                  <Link className="underline" href={`/accounts/${position.id}`}>
-                    {position.name}
-                  </Link>{' '}
-                  <span className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">
-                    ({position.currency})
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </CardContent>
-        </Card>
-      )}
     </div>
   );
 }

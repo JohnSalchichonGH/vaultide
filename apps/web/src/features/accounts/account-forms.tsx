@@ -4,12 +4,10 @@ import { useId, useState, useTransition, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import type { PositionDto } from '@vaultide/application';
 import {
-  archivePositionAction,
   closePositionAction,
   createCashAccountAction,
   createOtherAssetAction,
   deletePositionAction,
-  restorePositionAction,
   updateCashAccountAction,
   updateOtherAssetAction,
 } from '@/server/actions/positions';
@@ -550,12 +548,17 @@ export function EditPositionForm({ position, today }: { position: PositionDto; t
 }
 
 /**
- * Close, archive, restore, delete (M6, R12, 6.3).
+ * Close and delete (M6, R12, 6.3).
  *
- * These are separate from the edit form because they are not edits: each one
- * changes whether the position counts towards net worth at all, and closing is
- * refused outright while a balance remains — with a sentence saying what to do
- * instead, rather than a constraint violation.
+ * Separate from the edit form because they are not edits: closing changes
+ * whether the position counts towards net worth at all, and it is refused
+ * outright while a balance remains — with a sentence saying what to do instead,
+ * rather than a constraint violation. Deleting is possible only while there is
+ * no history to lose.
+ *
+ * There is no archive button. §25 gives Phase 2 "create/edit/close", and what
+ * archiving means for net worth is 12.3's "removed from tracking" — which needs
+ * the date it was removed on, and belongs with the decomposition in Phase 7.
  */
 function PositionLifecycleButtons({ position, today }: { position: PositionDto; today: string }) {
   const router = useRouter();
@@ -595,42 +598,6 @@ function PositionLifecycleButtons({ position, today }: { position: PositionDto; 
           Close
         </button>
       ) : null}
-
-      {position.status === 'archived' ? (
-        <button
-          type="button"
-          data-testid="restore-position"
-          disabled={pending}
-          className="rounded-[var(--radius-control)] border px-3 py-2"
-          onClick={() => {
-            run(() =>
-              restorePositionAction({
-                positionId: position.id,
-                expectedVersion: position.version,
-              }),
-            );
-          }}
-        >
-          Restore
-        </button>
-      ) : (
-        <button
-          type="button"
-          data-testid="archive-position"
-          disabled={pending}
-          className="rounded-[var(--radius-control)] border px-3 py-2"
-          onClick={() => {
-            run(() =>
-              archivePositionAction({
-                positionId: position.id,
-                expectedVersion: position.version,
-              }),
-            );
-          }}
-        >
-          Archive
-        </button>
-      )}
 
       {position.valuationCount === 0 ? (
         <button

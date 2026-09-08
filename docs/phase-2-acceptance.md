@@ -4,6 +4,15 @@ Evidence for every acceptance criterion in blueprint §25 (Phase 2) and §26.
 Recorded 2026-09-08, on branch `main`, on top of the Phase 1 checkpoint
 (`a506e66`). Phase 3 has not been started.
 
+**Phase 2 is deployed in production at <https://vaultide.app>, commit
+`e738b60`**, with the migrations applied, the environment and role checks
+re-run, and a verified encrypted backup of the expanded schema. One thing is
+outstanding: the authenticated journey has not been walked on the production
+deployment, because signing up there needs a verification email this session
+cannot receive. It is proven locally against a real PostgreSQL 18 and the same
+standalone artifact production runs. See
+"[What is not yet verified in production](#what-is-not-yet-verified-in-production)".
+
 Phase 2 delivers the first real financial state in Vaultide: the unified
 `positions` supertype with cash accounts and other assets, the unified
 `position_valuations` table, the audit trail, the freshness and net-worth
@@ -67,7 +76,7 @@ production build of the web app.
 | Types | `pnpm -r run typecheck` | **pass**, 6 packages |
 | Unit + property | `pnpm -r run test:unit` | **247 passed** — finance 177, application 36, validation 16, web 15, db 3 |
 | Integration (db) | `pnpm --filter @vaultide/db run test:integration` | **113 passed** (7 files) |
-| Integration (application) | `pnpm --filter @vaultide/application run test:integration` | **119 passed** (5 files) |
+| Integration (application) | `pnpm --filter @vaultide/application run test:integration` | **118 passed** (5 files) |
 | Finance coverage gate | `vitest run --coverage` | **pass** — statements 99.66 %, branches 98.26 %, functions 100 %, lines 99.80 %; §21's gate is ≥ 95 % lines and branches |
 | Build | `pnpm run build` | **pass** — 21 routes |
 | End to end | `pnpm test:e2e` | **51 passed** — 17 specs × chromium desktop, webkit desktop, chromium mobile, against the FX fixture and no public network |
@@ -77,7 +86,7 @@ production build of the web app.
 | Fresh database from zero | `fresh-database.test.ts` (inside the db suite) | **pass** — admin bootstrap → migrations as `app_owner` → currency seed → role assertions, against a schema that now has five more tables |
 
 Phase 2 adds 70 unit and property tests to `finance`, 52 raw-SQL database
-tests, 37 application integration tests, 5 action-registry tests in `apps/web`
+tests, 36 application integration tests, 5 action-registry tests in `apps/web`
 and 4 end-to-end scenarios (12 runs across the browser matrix).
 
 ---
@@ -220,6 +229,121 @@ Three independent proofs, because convention is not one:
 
 ---
 
+## Deployed and verified in production
+
+**Phase 2 is deployed at <https://vaultide.app>, commit `e738b60`.**
+
+| Workflow | Run | Result |
+|---|---|---|
+| CI (`e738b60`) | `34222434497` | success — lint/boundaries/types, unit and property, fresh database and roles, build and the 51-test browser matrix |
+| Deploy production | `34222828114` | success — migrations `0004`/`0005` as `app_owner` over the direct endpoint, currency seed, deploy hook |
+| Verify environment | `34223083180` | success — all five jobs |
+| Nightly backup (post-Phase-2 schema) | `34223190343` | success |
+
+### The released commit is the branch
+
+```
+$ curl -s https://vaultide.app/api/health
+{"status":"ok","database":"ok","checkedAt":"2026-09-08T11:53:10.970Z","version":"e738b60"}
+```
+
+`e738b60` is `main`. The landing page carries the Phase 2 badge and footer, so
+the artifact serving traffic is the one that was built from this commit and not
+a cached earlier one.
+
+### Environment and RLS, against the production database
+
+`verify-environment.yml` run `34223083180` — **all 22 checks passed** as
+`app_owner`, and the backup-role job passed live:
+
+- three roles, none a superuser, none able to create roles or databases;
+- `app_user` and `app_owner` cannot bypass RLS; `app_backup` can;
+- `app_owner` owns the public schema; **6 migrations applied**; 159 currencies
+  seeded, CLF present with four minor units, no crypto codes;
+- **16 tables**, up from 11;
+- `app_user` cannot write reference data, and — new in Phase 2 — **holds only
+  the narrowed privileges on `fx_rates` and `audit_entries`**, with a separate
+  check that both tables exist, so a migration that had not run would fail here
+  rather than pass silently;
+- `app_backup` can read every table and write none.
+
+### The routes exist and are closed to anonymous callers
+
+```
+/dashboard                 307 → /sign-in?next=%2Fdashboard
+/accounts                  307 → /sign-in?next=%2Faccounts
+/accounts/<uuid>           307 → /sign-in?next=%2Faccounts%2F…
+/onboarding/4              307 → /sign-in?next=%2Fonboarding%2F4
+/api/test/mailbox          404
+/api/test/fx-provider      404
+/api/cron/fx-refresh       404   (no bearer secret, and no hint the route exists)
+```
+
+The security headers of 17.3 are unchanged and still present on every response:
+CSP with a per-request nonce and `strict-dynamic`, HSTS with preload,
+`frame-ancestors 'none'`, `X-Content-Type-Options`, `Referrer-Policy`,
+`Permissions-Policy`, `Cross-Origin-Opener-Policy`.
+
+### Backup, with the expanded schema
+
+`nightly-backup.yml` run `34223190343`, taken after the migrations:
+
+- `pg_dump -Fc` as `app_backup` over the direct endpoint;
+- **row counts verified against the live database, table by table — all 16
+  match**, including the five new ones (`positions`, `cash_accounts`,
+  `other_assets`, `position_valuations`, `audit_entries`, each 0 = 0 at this
+  point) alongside `currencies` 159, `fx_rates` 1,958, `categories` 42;
+- 120,543 bytes of dump, encrypted with `age` to 120,759 bytes;
+- uploaded to `s3://vaultide-backups-prod/2026/09/vaultide-production-2026-09-08T11-55-22-389Z.dump.age`
+  and **read back out of the bucket**, digest
+  `fc5b75c0a07edd48bada1a4b3b534a0bcfa7a6ca42a97c59b43bd0b13cdd1ddf` matching
+  the one taken at encryption time;
+- the Sentry cron monitor checked in `in_progress` then `ok`.
+
+A dump in which every table is empty is refused by the verifier, so "all zeros
+matched" could not have passed on its own.
+
+### What is not yet verified in production
+
+**The authenticated Phase 2 journey has not been walked on the production
+deployment.** Creating an account there needs a verification email, and this
+session has no way to receive one — the capturing mailbox is a test-build
+capability and returns 404 in production, which is the correct behaviour and
+also what blocks this.
+
+The blueprint asks for that walk on a **disposable synthetic account with
+synthetic values**, so it is deliberately not being done on the account that
+already exists. Everything it would cover is proven locally against a real
+PostgreSQL 18 and a production build of the same artifact — the browser matrix
+runs `node server.js` from `.next/standalone`, which is what Vercel runs — and
+the production evidence above establishes that the same code, schema, roles and
+privileges are in place there.
+
+What remains, in the order it should be done:
+
+1. sign up a disposable account at <https://vaultide.app> and verify it from the
+   email;
+2. onboarding steps 1–4, giving the first cash account a synthetic balance;
+3. add a second cash account in a foreign currency and check the native and
+   reporting figures and the rate shown on the detail page;
+4. add an other asset, leave it excluded, and check that total and financial net
+   worth differ by exactly its value; include it and check total does not move;
+5. quick-update both accounts and check the earlier balances are still in the
+   history;
+6. correct a past balance, then confirm a month-end statement balance once a
+   month has ended;
+7. sign out and back in, confirm everything persisted;
+8. delete the disposable account;
+9. run `nightly-backup.yml` again and compare the manifest with run
+   `34223190343` — the row deltas measure the cascade, which is how Phase 1
+   verified deletion in production.
+
+Steps 8 and 9 also satisfy the blueprint's requirement to clean the disposable
+data up afterwards; the archives holding it expire under the 30-day retention
+and bucket lock recorded in ADR 0003 §5.
+
+---
+
 ## Deviations from the blueprint, and why
 
 None changes the architecture, the accounting model, the schema semantics or
@@ -254,7 +378,18 @@ the roadmap.
    3, so step 4 is skippable exactly like the others, and balances entered there
    are dated today with `exact` precision (15.2).
 
-5. **A narrow ESLint carve-out for chart coordinates.** 7.1.1 says charts
+5. **Archiving was built, then removed.** §25 gives Phase 2
+   "create/edit/close cash accounts". Archiving was implemented before that was
+   checked and came out again, because there is no correct Phase 2 answer: an
+   archived position that keeps counting makes the button meaningless, and one
+   that stops counting at every date silently rewrites every past net-worth
+   figure. 12.3's "removed from tracking" is the right answer and needs an
+   archived-on date the schema does not carry, plus the decomposition Phase 7
+   owns. Closing remains the supported, dated way to stop something counting.
+   `position_status` keeps its `archived` value because the enum is 6.2's closed
+   set. Reasoning in ADR 0004 §5.
+
+6. **A narrow ESLint carve-out for chart coordinates.** 7.1.1 says charts
    "receive `Number(amount)` for coordinates only" and scopes the money lint
    rule to `finance`, `application`, `db` and the format module. This repository
    applies the rule to the whole web app, which is stricter than the blueprint

@@ -6,12 +6,10 @@ import { testContext } from '../../src/context';
 import type { RequestContext } from '../../src/context';
 import { provisionUser } from '../../src/users/provisioning';
 import {
-  archivePosition,
   closePosition,
   createCashAccount,
   createOtherAsset,
   removePosition,
-  restorePosition,
   updateCashAccount,
   updateOtherAsset,
 } from '../../src/positions/service';
@@ -338,7 +336,7 @@ describe('correcting and deleting a balance (2.6, R12, 18.1)', () => {
   });
 });
 
-describe('closing, archiving and deleting a position (M6, R12, 6.3)', () => {
+describe('closing and deleting a position (M6, R12, 6.3)', () => {
   it('refuses to close an account that still holds money, and says what to do', async () => {
     // §26 Phase 2, item 8.
     const account = await makeCashAccount(SEPT_6, {
@@ -398,25 +396,6 @@ describe('closing, archiving and deleting a position (M6, R12, 6.3)', () => {
     });
   });
 
-  it('archives and restores without touching history', async () => {
-    const account = await makeCashAccount(SEPT_6, {
-      openingBalance: '500.00',
-      openingBalanceOn: '2026-09-01',
-    });
-
-    const archived = await archivePosition(deps(), SEPT_6, {
-      positionId: account.id,
-      expectedVersion: account.version,
-    });
-    expect(archived.status).toBe('archived');
-    expect(await positionHistory(deps(), SEPT_6, account.id)).toHaveLength(1);
-
-    const restored = await restorePosition(deps(), SEPT_6, {
-      positionId: account.id,
-      expectedVersion: archived.version,
-    });
-    expect(restored.status).toBe('active');
-  });
 });
 
 describe('the dormant flag (R22, 6.2)', () => {

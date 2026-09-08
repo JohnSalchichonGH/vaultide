@@ -477,6 +477,13 @@ export interface FinancialWindow {
  * `loadFinancialWindow` (blueprint 23.2) — everything a read needs, in two
  * bulk queries rather than one per position.
  *
+ * Every position, whatever its status: a closed one contributes nothing after
+ * its closing date and the engine knows it, and there is no way to archive one
+ * in Phase 2 (what archiving means for net worth is 12.3's "removed from
+ * tracking", which needs a date this schema does not carry). When archiving
+ * arrives, this query is the place that has to decide what an archived position
+ * is worth at a past date — silently filtering it here would rewrite history.
+ *
  * Valuations are loaded with no lower bound, only `valued_on <= to`. That is
  * deliberate: a position's value at a date is its **latest valuation on or
  * before** it, so a window that started at `from` would silently turn a balance

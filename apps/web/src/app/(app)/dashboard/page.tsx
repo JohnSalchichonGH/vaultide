@@ -29,7 +29,7 @@ export default async function DashboardPage() {
   const netWorth = await getNetWorth(getServices().positions, session);
 
   const { locale } = session.settings;
-  const positions = netWorth.positions.filter((position) => position.status !== 'archived');
+  const positions = netWorth.positions;
   const cashAccounts = positions.filter((position) => position.kind === 'cash');
   const hasAnything = positions.length > 0;
 

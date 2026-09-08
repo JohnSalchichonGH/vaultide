@@ -23,6 +23,16 @@ import type { FxService } from '../fx/service';
 /**
  * Position lifecycle services (blueprint 5.2, 6.2, 6.3, M6, R22).
  *
+ * Creating, editing, **closing** and deleting. Not archiving: §25 gives Phase 2
+ * "create/edit/close cash accounts", and what archiving means for net worth is
+ * 12.3's "removed from tracking" bucket — which needs a date the position was
+ * removed on, and that belongs with the decomposition in Phase 7. Building the
+ * button now would mean choosing between two wrong answers: an archived account
+ * that still counts (so the button does nothing a user can see) or one that
+ * retroactively vanishes from every past figure. `position_status` keeps its
+ * `archived` value, because the enum is the closed set of 6.2 and later phases
+ * extend it rather than re-create it.
+ *
  * Every function here is reached only through `financialAction`, whose session
  * is validated against the store rather than the signed cookie cache (ADR
  * 0003). These are the writes that change what somebody's net worth says.
@@ -336,51 +346,6 @@ export async function closePosition(
     args.positionId,
     args.expectedVersion,
     { status: 'closed', closedOn: args.closedOn },
-  );
-  if (updated === undefined) throw new VersionConflictError();
-  return updated;
-}
-
-/**
- * Archive a position: hide it without touching its history (R12, 6.3).
- *
- * Archiving a position that still has value is allowed and is a different
- * statement from closing one — but it removes the position from net worth from
- * that point, so the UI says so. Phase 7's decomposition reports it as "removed
- * from tracking" (12.3).
- */
-export async function archivePosition(
-  deps: PositionDependencies,
-  ctx: RequestContext,
-  args: { positionId: string; expectedVersion: number },
-): Promise<PositionRow> {
-  await requirePosition(deps, ctx, args.positionId);
-  const updated = await updatePosition(
-    deps.db,
-    { userId: ctx.userId, requestId: ctx.requestId },
-    args.positionId,
-    args.expectedVersion,
-    { status: 'archived' },
-  );
-  if (updated === undefined) throw new VersionConflictError();
-  return updated;
-}
-
-export async function restorePosition(
-  deps: PositionDependencies,
-  ctx: RequestContext,
-  args: { positionId: string; expectedVersion: number },
-): Promise<PositionRow> {
-  const existing = await requirePosition(deps, ctx, args.positionId);
-  if (existing.status !== 'archived') {
-    throw new ImpossibleOperationError('That account is not archived.');
-  }
-  const updated = await updatePosition(
-    deps.db,
-    { userId: ctx.userId, requestId: ctx.requestId },
-    args.positionId,
-    args.expectedVersion,
-    { status: 'active' },
   );
   if (updated === undefined) throw new VersionConflictError();
   return updated;

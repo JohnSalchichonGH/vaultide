@@ -132,11 +132,6 @@ export function closePositionInput(today: string) {
   });
 }
 
-export const archivePositionInput = z.object({
-  positionId: z.uuid(),
-  expectedVersion,
-});
-
 export const deletePositionInput = z.object({ positionId: z.uuid() });
 
 /**

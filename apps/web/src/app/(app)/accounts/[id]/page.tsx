@@ -156,8 +156,9 @@ export default async function AccountDetailPage({
         <CardHeader>
           <CardTitle>Settings</CardTitle>
           <CardDescription>
-            Renaming changes nothing financial. Closing and archiving both stop it counting
-            towards net worth; closing needs a final balance of zero first.
+            Renaming changes nothing financial. Closing stops it counting towards net worth
+            from its closing date, and needs a final balance of zero first — so the money is
+            always accounted for somewhere.
           </CardDescription>
         </CardHeader>
         <CardContent>

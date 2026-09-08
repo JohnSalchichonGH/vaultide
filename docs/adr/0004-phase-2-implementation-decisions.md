@@ -2,7 +2,7 @@
 
 **Status:** accepted · **Date:** 2026-09-08 · **Phase:** 2
 
-Four decisions taken while building positions, valuations and the two
+Five decisions taken while building positions, valuations and the two
 net-worth metrics that the blueprint does not settle, that a later phase could
 plausibly get wrong, and whose reasoning is not obvious from the code alone.
 
@@ -119,3 +119,36 @@ is **corrected**, not duplicated (M1 permits one valuation per position per
 date). That touches today's row and no other, so no history is overwritten — the
 distinction the blueprint draws between correcting the present and rewriting the
 past.
+
+---
+
+## 5. There is no archive button in Phase 2
+
+**Decision.** Positions can be created, edited, **closed** and deleted. They
+cannot be archived. `position_status` keeps its `archived` value — the enum is
+the closed set of 6.2 and later phases extend it rather than re-create it — but
+nothing can produce a row in that state.
+
+**Why.** §25 gives Phase 2 "create/edit/close cash accounts", and archiving was
+built before that was checked. It had to come out, because there is no correct
+answer available yet:
+
+- If an archived position keeps counting, the button does nothing a user can
+  observe, and the interface would have to lie about it.
+- If it stops counting at every date, archiving silently rewrites every past
+  net-worth figure — the balance sheet of last March changes because of
+  something done today.
+
+The right answer is 12.3's **removed from tracking** bucket: the position leaves
+the balance sheet on a date, and the change is reported as a driver rather than
+happening invisibly. That needs an archived-on date the schema does not carry
+and a decomposition Phase 7 owns.
+
+**Consequences.** Closing is the supported way to stop something counting, and
+it is dated and exact: M6 requires a final valuation of zero, so the money is
+always accounted for somewhere. Phase 7 adds archiving together with the date
+column and the driver bucket.
+
+One place to be careful when it does: `loadFinancialWindow` loads every
+position regardless of status, which is correct today and would become the bug
+above the moment archiving exists. A comment there says so.

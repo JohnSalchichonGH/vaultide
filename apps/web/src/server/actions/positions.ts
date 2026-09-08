@@ -2,7 +2,6 @@
 
 import { revalidatePath } from 'next/cache';
 import {
-  archivePosition,
   closePosition,
   confirmMonthEnd,
   confirmUnchanged,
@@ -15,7 +14,6 @@ import {
   recordValuation,
   removePosition,
   removeValuation,
-  restorePosition,
   updateCashAccount,
   updateOtherAsset,
 } from '@vaultide/application';
@@ -124,26 +122,6 @@ export const closePositionAction = financialAction({
     const closed = await closePosition(getServices().positions, ctx, input);
     refreshFinancialViews();
     return { id: closed.id, version: closed.version };
-  },
-});
-
-export const archivePositionAction = financialAction({
-  name: 'positions.archive',
-  input: positionInput.archivePositionInput,
-  async handler({ input, ctx }) {
-    const archived = await archivePosition(getServices().positions, ctx, input);
-    refreshFinancialViews();
-    return { id: archived.id, version: archived.version };
-  },
-});
-
-export const restorePositionAction = financialAction({
-  name: 'positions.restore',
-  input: positionInput.archivePositionInput,
-  async handler({ input, ctx }) {
-    const restored = await restorePosition(getServices().positions, ctx, input);
-    refreshFinancialViews();
-    return { id: restored.id, version: restored.version };
   },
 });
 
