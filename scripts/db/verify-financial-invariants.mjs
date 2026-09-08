@@ -173,7 +173,8 @@ if (manifestPrefix) {
   console.log(`  distinct owners: ${owners.rows[0].owners}`);
 
   const positions = await client.query(
-    `SELECT p.id, p.kind, p.name, p.currency, p.status, p.opened_on, p.closed_on, p.version,
+    `SELECT p.id, p.kind, p.name, p.currency, p.status, p.version,
+            p.opened_on::text AS opened_on, p.closed_on::text AS closed_on,
             c.account_type, c.is_dormant, o.asset_type, o.include_in_financial_net_worth
        FROM positions p
        LEFT JOIN cash_accounts c ON c.position_id = p.id
@@ -197,14 +198,15 @@ if (manifestPrefix) {
     );
 
     const valuations = await client.query(
-      `SELECT valued_on, amount, source, date_precision, version
+      // ::text because a DATE arrives as a JavaScript Date otherwise, and
+      // printing one of those turns a financial date into a local timestamp.
+      `SELECT valued_on::text AS valued_on, amount, source, date_precision, version
          FROM position_valuations WHERE position_id = $1 ORDER BY valued_on DESC`,
       [position.id],
     );
     for (const valuation of valuations.rows) {
-      const date = String(valuation.valued_on).slice(0, 10);
       console.log(
-        `      ${date}  ${String(valuation.amount).padStart(16)}  ` +
+        `      ${valuation.valued_on}  ${String(valuation.amount).padStart(16)}  ` +
           `${valuation.date_precision.padEnd(9)} ${valuation.source.padEnd(20)} v${String(valuation.version)}`,
       );
     }
