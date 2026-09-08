@@ -5,7 +5,7 @@ Recorded 2026-09-08, on branch `main`, on top of the Phase 1 checkpoint
 (`a506e66`). Phase 3 has not been started.
 
 **Phase 2 is deployed in production at <https://vaultide.app>, commit
-`e738b60`**, with the migrations applied, the environment and role checks
+`0e6d818`**, with the migrations applied, the environment and role checks
 re-run, and a verified encrypted backup of the expanded schema. One thing is
 outstanding: the authenticated journey has not been walked on the production
 deployment, because signing up there needs a verification email this session
@@ -172,6 +172,13 @@ The submission is one transaction: 20.3 has a bulk save abort entirely on any
 conflict, and a half-applied balance sheet is exactly the state that would make
 a net-worth figure quietly wrong.
 
+**Dormant accounts** (R22, 6.2) are the one automatic carry there is: empty,
+left open, carried at zero without a monthly confirmation, and excluded from the
+quick update. The flag is refused unless the latest balance is exactly zero and
+is cleared the moment a non-zero balance is recorded — clearing it does **not**
+consume the position's optimistic version, because it is a consequence of a
+balance write and must not invalidate an account form somebody has open.
+
 **Nothing is derived into a column.** There is no current-balance field, no
 running total and no cached net worth. Correcting a six-month-old balance
 simply changes what every later figure reads.
@@ -234,25 +241,34 @@ Three independent proofs, because convention is not one:
 
 ## Deployed and verified in production
 
-**Phase 2 is deployed at <https://vaultide.app>, commit `e738b60`.**
+**Phase 2 is deployed at <https://vaultide.app>, commit `0e6d818` — the head of
+`main`.**
 
-| Workflow | Run | Result |
-|---|---|---|
-| CI (`e738b60`) | `34222434497` | success — lint/boundaries/types, unit and property, fresh database and roles, build and the browser matrix |
-| Deploy production | `34222828114` | success — migrations `0004`/`0005` as `app_owner` over the direct endpoint, currency seed, deploy hook |
-| Verify environment | `34223083180` | success — all five jobs |
-| Nightly backup (post-Phase-2 schema) | `34223190343` | success |
+| Workflow | Run | Commit | Result |
+|---|---|---|---|
+| CI | `34222434497` | `e738b60` | success — lint/boundaries/types, unit and property, fresh database and roles, build and the browser matrix |
+| Deploy production | `34222828114` | `e738b60` | success — **migrations `0004` and `0005` applied as `app_owner`** over the direct endpoint, currency seed, deploy hook |
+| Verify environment | `34223083180` | `235bf42` | success — all five jobs |
+| Nightly backup (post-Phase-2 schema) | `34223190343` | `235bf42` | success |
+| CI | `34223063086` | `235bf42` | success |
+| Deploy production | `34223479375` | `235bf42` | success |
+| CI | `34224373651` | `0e6d818` | success |
+| Deploy production | `34224860011` | `0e6d818` | success |
+
+The schema migrations landed with `34222828114`; the later runs are the docs,
+the ops verifier and the dormant control, each of which went through the same
+gate. Production has been green at every step.
 
 ### The released commit is the branch
 
 ```
 $ curl -s https://vaultide.app/api/health
-{"status":"ok","database":"ok","checkedAt":"2026-09-08T11:53:10.970Z","version":"e738b60"}
+{"status":"ok","database":"ok","checkedAt":"2026-09-08T12:14:34.597Z","version":"0e6d818"}
 ```
 
-`e738b60` is `main`. The landing page carries the Phase 2 badge and footer, so
-the artifact serving traffic is the one that was built from this commit and not
-a cached earlier one.
+`0e6d818` is the head of `main`. The landing page carries the Phase 2 badge and
+footer, so the artifact serving traffic is the one built from this commit and
+not a cached earlier one.
 
 ### Environment and RLS, against the production database
 
