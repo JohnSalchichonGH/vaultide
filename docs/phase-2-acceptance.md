@@ -74,7 +74,7 @@ production build of the web app.
 | Lint + money rule | `pnpm -r run lint` | **pass**, 6 packages |
 | Module boundaries | `pnpm run lint:boundaries` | **pass** — no violations, 232 modules, 665 dependencies |
 | Types | `pnpm -r run typecheck` | **pass**, 6 packages |
-| Unit + property | `pnpm -r run test:unit` | **247 passed** — finance 177, application 36, validation 16, web 15, db 3 |
+| Unit + property | `pnpm -r run test:unit` | **248 passed** — finance 178, application 36, validation 16, web 15, db 3 |
 | Integration (db) | `pnpm --filter @vaultide/db run test:integration` | **113 passed** (7 files) |
 | Integration (application) | `pnpm --filter @vaultide/application run test:integration` | **118 passed** (5 files) |
 | Finance coverage gate | `vitest run --coverage` | **pass** — statements 99.66 %, branches 98.26 %, functions 100 %, lines 99.80 %; §21's gate is ≥ 95 % lines and branches |
@@ -85,7 +85,7 @@ production build of the web app.
 | Currency reconciliation | `pnpm db:verify-currencies` | **pass** — 150 = 150, in sync with the live approved chain (`ECB -> BDI`) |
 | Fresh database from zero | `fresh-database.test.ts` (inside the db suite) | **pass** — admin bootstrap → migrations as `app_owner` → currency seed → role assertions, against a schema that now has five more tables |
 
-Phase 2 adds 70 unit and property tests to `finance`, 52 raw-SQL database
+Phase 2 adds 71 unit and property tests to `finance`, 52 raw-SQL database
 tests, 36 application integration tests, 5 action-registry tests in `apps/web`
 and 4 end-to-end scenarios (12 runs across the browser matrix).
 

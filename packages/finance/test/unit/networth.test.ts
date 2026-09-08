@@ -262,6 +262,23 @@ describe('golden: complex-user (an excluded car, a dormant account, a closed one
     expect(result.totalNetWorth.availability).toBe('available');
   });
 
+  it('ignores an inclusion flag on anything that is not an other asset', () => {
+    // The preference exists on `other_assets` and nowhere else (M15), so a
+    // stray flag on a cash position — which the schema cannot even store — must
+    // not be able to take it out of the headline metric.
+    const account = position('BBVA', { id: 'f1', includeInFinancialNetWorth: false });
+    const result = at(
+      [entry(account, [valuation('f1', '2026-08-31', '8055.00')])],
+      '2026-08-31',
+      complexUser.fx,
+    );
+
+    expect(result.positions[0]?.inFinancialNetWorth).toBe(true);
+    expect(exact(result.financialNetWorth)).toBe('8055');
+    expect(exact(result.totalNetWorth)).toBe('8055');
+    expect(result.metricsDiffer).toBe(false);
+  });
+
   it('is partial when a tracked asset has never been valued', () => {
     const result = at(complexUser.positionsWithUnvaluedAsset, '2026-08-31', complexUser.fx);
 
