@@ -1219,7 +1219,7 @@ describe('accepting and skipping occurrences', () => {
     const accepted = await acceptSuggestion(deps(), sept30, {
       templateId: template.id,
       occurrenceDate: '2026-10-25',
-      financialDate: '2026-09-30',
+      receivedToday: true,
     });
 
     expect(accepted.kind).toBe('income');
@@ -1228,13 +1228,26 @@ describe('accepting and skipping occurrences', () => {
     expect(accepted.entry.receivedOn).toBe('2026-09-30');
   });
 
-  it('refuses a financial date in the future while allowing a future occurrence', async () => {
+  it('refuses a future financial date, and refuses pinning a future occurrence to another day', async () => {
     const template = await salaryTemplate();
+
+    // A future financial date is never a fact about money.
     await expect(
       acceptSuggestion(deps(), SEPT_15, {
         templateId: template.id,
-        occurrenceDate: '2026-10-25',
+        occurrenceDate: '2026-09-25',
         financialDate: '2026-09-16',
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+
+    // And a future occurrence cannot be pinned to an arbitrary past day: taking
+    // it early says it arrived *today* (30.10).
+    await expect(
+      acceptSuggestion(deps(), SEPT_15, {
+        templateId: template.id,
+        occurrenceDate: '2026-09-25',
+        receivedToday: true,
+        financialDate: '2026-09-01',
       }),
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
   });
@@ -1428,7 +1441,7 @@ describe('accepting and skipping occurrences', () => {
     const accepted = await acceptSuggestion(deps(), sept30, {
       templateId: template.id,
       occurrenceDate: '2026-10-25',
-      financialDate: '2026-09-30',
+      receivedToday: true,
     });
     if (accepted.kind !== 'income') throw new Error('expected an income entry');
     expect(accepted.entry.netAmount).toBe('2250.00000000');
@@ -1681,7 +1694,7 @@ describe('which occurrences may be accepted', () => {
     const accepted = await acceptSuggestion(deps(), SEPT_15, {
       templateId: template.id,
       occurrenceDate: '2026-09-25',
-      financialDate: '2026-09-15',
+      receivedToday: true,
     });
     if (accepted.kind !== 'income') throw new Error('expected an income entry');
     expect(accepted.entry.occurrenceDate).toBe('2026-09-25');
@@ -1751,5 +1764,252 @@ describe('a transfer with a corrupted number of fees fails closed', () => {
     expect(await countRows(USER_A, 'expense_entries')).toBe(0);
     const audit = await auditFor(USER_A, fee?.id as string);
     expect(audit.map((row) => row.action)).toEqual(['insert', 'delete']);
+  });
+});
+
+describe('early materialization reaches only the next unresolved occurrence', () => {
+  // 30.10. The bound is the schedule, not a window: a user may always record
+  // what actually arrived early, and may never step over an earlier occurrence
+  // that is still unresolved, because that would leave a gap completeness can
+  // never explain.
+
+  async function monthlyOnTheFirst(over: { startDate?: string; endDate?: string } = {}) {
+    const { template } = await createTemplate(deps(), SEPT_15, {
+      kind: 'income',
+      name: 'Salary',
+      incomeKind: 'employment',
+      currency: 'EUR',
+      frequency: 'monthly',
+      dayOfMonth: 1,
+      startDate: over.startDate ?? '2026-01-01',
+      ...(over.endDate === undefined ? {} : { endDate: over.endDate }),
+      cashPositionId: bbva,
+      amount: '2100.00',
+    });
+    return template;
+  }
+
+  it('accepts a due occurrence normally, with no mode required', async () => {
+    const template = await monthlyOnTheFirst();
+    const accepted = await acceptSuggestion(deps(), SEPT_15, {
+      templateId: template.id,
+      occurrenceDate: '2026-09-01',
+    });
+    if (accepted.kind !== 'income') throw new Error('expected an income entry');
+    expect(accepted.entry.receivedOn).toBe('2026-09-01');
+    expect(accepted.entry.occurrenceDate).toBe('2026-09-01');
+  });
+
+  it('accepts the first unresolved future occurrence as received today', async () => {
+    const template = await monthlyOnTheFirst();
+    const accepted = await acceptSuggestion(deps(), SEPT_15, {
+      templateId: template.id,
+      occurrenceDate: '2026-10-01',
+      receivedToday: true,
+    });
+    if (accepted.kind !== 'income') throw new Error('expected an income entry');
+    expect(accepted.entry.occurrenceDate).toBe('2026-10-01');
+    expect(accepted.entry.receivedOn).toBe('2026-09-15');
+  });
+
+  it('refuses the second future occurrence while the first is unresolved', async () => {
+    const template = await monthlyOnTheFirst();
+    await expect(
+      acceptSuggestion(deps(), SEPT_15, {
+        templateId: template.id,
+        occurrenceDate: '2026-11-01',
+        receivedToday: true,
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+
+  it('refuses a far-future occurrence while a nearer one is unresolved', async () => {
+    const template = await monthlyOnTheFirst();
+    await expect(
+      acceptSuggestion(deps(), SEPT_15, {
+        templateId: template.id,
+        occurrenceDate: '2027-09-01',
+        receivedToday: true,
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+
+  it('moves eligibility on once the first future occurrence is accepted', async () => {
+    const template = await monthlyOnTheFirst();
+    await acceptSuggestion(deps(), SEPT_15, {
+      templateId: template.id,
+      occurrenceDate: '2026-10-01',
+      receivedToday: true,
+    });
+
+    const second = await acceptSuggestion(deps(), SEPT_15, {
+      templateId: template.id,
+      occurrenceDate: '2026-11-01',
+      receivedToday: true,
+    });
+    if (second.kind !== 'income') throw new Error('expected an income entry');
+    expect(second.entry.occurrenceDate).toBe('2026-11-01');
+    expect(second.entry.receivedOn).toBe('2026-09-15');
+  });
+
+  it('moves eligibility on once the first future occurrence is skipped', async () => {
+    const template = await monthlyOnTheFirst();
+    await skipSuggestion(deps(), SEPT_15, {
+      templateId: template.id,
+      occurrenceDate: '2026-10-01',
+      reason: 'skipped',
+    });
+
+    const second = await acceptSuggestion(deps(), SEPT_15, {
+      templateId: template.id,
+      occurrenceDate: '2026-11-01',
+      receivedToday: true,
+    });
+    if (second.kind !== 'income') throw new Error('expected an income entry');
+    expect(second.entry.occurrenceDate).toBe('2026-11-01');
+  });
+
+  it('requires the explicit mode for any future occurrence', async () => {
+    const template = await monthlyOnTheFirst();
+    await expect(
+      acceptSuggestion(deps(), SEPT_15, {
+        templateId: template.id,
+        occurrenceDate: '2026-10-01',
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+
+  it('refuses a future date the schedule does not generate', async () => {
+    const template = await monthlyOnTheFirst();
+    await expect(
+      acceptSuggestion(deps(), SEPT_15, {
+        templateId: template.id,
+        occurrenceDate: '2026-10-02',
+        receivedToday: true,
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+
+  it('refuses an early claim past end_date', async () => {
+    const template = await monthlyOnTheFirst({ endDate: '2026-09-30' });
+    await expect(
+      acceptSuggestion(deps(), SEPT_15, {
+        templateId: template.id,
+        occurrenceDate: '2026-10-01',
+        receivedToday: true,
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+
+  it('refuses an early claim on an archived template', async () => {
+    const template = await monthlyOnTheFirst();
+    await archiveTemplate(deps(), SEPT_15, {
+      templateId: template.id,
+      expectedVersion: template.version,
+    });
+    await expect(
+      acceptSuggestion(deps(), SEPT_15, {
+        templateId: template.id,
+        occurrenceDate: '2026-10-01',
+        receivedToday: true,
+      }),
+    ).rejects.toMatchObject({ code: 'IMPOSSIBLE_OPERATION' });
+  });
+
+  it('imposes no horizon on an annual source whose next payment is months away', async () => {
+    const { template } = await createTemplate(deps(), SEPT_15, {
+      kind: 'income',
+      name: 'Bonus',
+      incomeKind: 'bonus',
+      currency: 'EUR',
+      frequency: 'annual',
+      dayOfMonth: 1,
+      startDate: '2026-06-01',
+      cashPositionId: bbva,
+      amount: '5000.00',
+    });
+
+    const accepted = await acceptSuggestion(deps(), SEPT_15, {
+      templateId: template.id,
+      occurrenceDate: '2027-06-01',
+      receivedToday: true,
+    });
+    if (accepted.kind !== 'income') throw new Error('expected an income entry');
+    expect(accepted.entry.occurrenceDate).toBe('2027-06-01');
+    expect(accepted.entry.receivedOn).toBe('2026-09-15');
+  });
+
+  it('takes the term the future occurrence falls under, not the one for today', async () => {
+    const template = await monthlyOnTheFirst();
+    await setTemplateTerm(deps(), SEPT_15, {
+      templateId: template.id,
+      effectiveFrom: '2026-10-01',
+      amount: '2250.00',
+      expected: { state: 'absent' },
+    });
+
+    const accepted = await acceptSuggestion(deps(), SEPT_15, {
+      templateId: template.id,
+      occurrenceDate: '2026-10-01',
+      receivedToday: true,
+    });
+    if (accepted.kind !== 'income') throw new Error('expected an income entry');
+    expect(accepted.entry.netAmount).toBe('2250.00000000');
+    expect(accepted.entry.receivedOn).toBe('2026-09-15');
+  });
+
+  it('lets exactly one of two concurrent early claims win', async () => {
+    const template = await monthlyOnTheFirst();
+    const results = await Promise.allSettled([
+      acceptSuggestion(deps(), SEPT_15, {
+        templateId: template.id,
+        occurrenceDate: '2026-10-01',
+        receivedToday: true,
+      }),
+      acceptSuggestion(deps(), SEPT_15, {
+        templateId: template.id,
+        occurrenceDate: '2026-10-01',
+        receivedToday: true,
+      }),
+    ]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(await countRows(USER_A, 'income_entries')).toBe(1);
+  });
+
+  it('will not let a concurrent pair claim two future occurrences at once', async () => {
+    // The eligibility check runs under the template's lock, so whichever
+    // request goes second sees the other's row: October is either taken (and
+    // November becomes eligible) or still open (and November is not). Both
+    // cannot succeed against an empty schedule.
+    const template = await monthlyOnTheFirst();
+    const results = await Promise.allSettled([
+      acceptSuggestion(deps(), SEPT_15, {
+        templateId: template.id,
+        occurrenceDate: '2026-10-01',
+        receivedToday: true,
+      }),
+      acceptSuggestion(deps(), SEPT_15, {
+        templateId: template.id,
+        occurrenceDate: '2026-11-01',
+        receivedToday: true,
+      }),
+    ]);
+    const claimed = await withUser(harness.db, { userId: USER_A }, async (tx) => {
+      const result = await tx.execute<{ occurrence_date: string }>(
+        sql`SELECT occurrence_date::text AS occurrence_date
+              FROM income_entries ORDER BY occurrence_date`,
+      );
+      return result.rows.map((row) => row.occurrence_date);
+    });
+
+    // Whichever way the two interleaved, the sequence has no gap and no
+    // occurrence was taken twice: either October alone, or October then
+    // November. November alone would mean somebody stepped over October.
+    expect(claimed).toEqual(
+      results.filter((result) => result.status === 'fulfilled').length === 2
+        ? ['2026-10-01', '2026-11-01']
+        : ['2026-10-01'],
+    );
+    expect(new Set(claimed).size).toBe(claimed.length);
   });
 });

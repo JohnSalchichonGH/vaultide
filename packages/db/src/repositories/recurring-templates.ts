@@ -484,6 +484,45 @@ export async function listMaterializedOccurrences(
 }
 
 /**
+ * Every occurrence date of one template that is already resolved — by a
+ * materialized flow or by an explicit skip.
+ *
+ * Read inside the transaction holding the template's lock, so the eligibility
+ * decision of 30.10 sees the same state the write will (20.3).
+ */
+export async function listResolvedOccurrenceDatesIn(
+  tx: Transaction,
+  templateId: string,
+): Promise<string[]> {
+  const [income, expenses, moves, skips] = await Promise.all([
+    tx
+      .select({ occurrenceDate: incomeEntries.occurrenceDate })
+      .from(incomeEntries)
+      .where(
+        and(eq(incomeEntries.templateId, templateId), isNotNull(incomeEntries.occurrenceDate)),
+      ),
+    tx
+      .select({ occurrenceDate: expenseEntries.occurrenceDate })
+      .from(expenseEntries)
+      .where(
+        and(eq(expenseEntries.templateId, templateId), isNotNull(expenseEntries.occurrenceDate)),
+      ),
+    tx
+      .select({ occurrenceDate: transfers.occurrenceDate })
+      .from(transfers)
+      .where(and(eq(transfers.templateId, templateId), isNotNull(transfers.occurrenceDate))),
+    tx
+      .select({ occurrenceDate: recurringTemplateSkips.occurrenceDate })
+      .from(recurringTemplateSkips)
+      .where(eq(recurringTemplateSkips.templateId, templateId)),
+  ]);
+
+  return [...income, ...expenses, ...moves, ...skips].map(
+    (row) => row.occurrenceDate as string,
+  );
+}
+
+/**
  * Is this exact occurrence already materialized? Read inside the transaction
  * that holds the template's lock, so accept and skip cannot interleave (20.3).
  */

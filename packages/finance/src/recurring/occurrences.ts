@@ -154,3 +154,59 @@ export function firstOccurrence(schedule: RecurrenceSchedule): PlainDate | undef
   /* v8 ignore next -- unreachable: the second candidate is always >= start. */
   return undefined;
 }
+
+/**
+ * The earliest scheduled occurrence after `today` that nothing has resolved yet
+ * (blueprint 30.10).
+ *
+ * This is the bound on early materialization — "received today" reaches this
+ * occurrence and no other. It is deliberately **not** a horizon in days or
+ * months: the schedule already knows the right answer, and any fixed window
+ * would be too short for an annual source whose genuine next payment is eight
+ * months away and too long for a monthly one.
+ *
+ * What it protects is the sequence. Letting somebody claim November while
+ * October is still unresolved would leave a hole that completeness (12.6) then
+ * reports for ever, and no later action can tell whether October was missed or
+ * never happened. Taking the first unresolved occurrence means a user can always
+ * record what actually arrived early, and can never step over an earlier one.
+ *
+ * `resolved` holds the occurrence dates already carrying a materialized flow or
+ * a skip row. The search is bounded by that set rather than by a constant: at
+ * most `resolved.size` future candidates can be resolved, so the answer is found
+ * within one more than that, or `end_date` ends the schedule first.
+ */
+export function nextUnresolvedOccurrence(
+  schedule: RecurrenceSchedule,
+  today: PlainDate,
+  resolved: ReadonlySet<string>,
+): PlainDate | undefined {
+  const step = monthsPerPeriod(schedule.frequency);
+  const firstTargetMonth = startOfMonth(schedule.startDate);
+  const todayMonth = startOfMonth(today);
+
+  const monthSpan =
+    (yearOf(todayMonth) - yearOf(firstTargetMonth)) * 12 +
+    (monthOf(todayMonth) - monthOf(firstTargetMonth));
+
+  // Start a whole period before today's month so a day clamped backwards inside
+  // its month is never skipped over.
+  let index = Math.max(0, Math.floor(monthSpan / step) - 1);
+  let futureChecked = 0;
+
+  for (;;) {
+    const date = occurrenceAt(schedule, index);
+    index += 1;
+
+    if (schedule.endDate !== null && date > schedule.endDate) return undefined;
+    // Dates increase with the index, so both of these stop being true.
+    if (date < schedule.startDate) continue;
+    if (date <= today) continue;
+
+    if (!resolved.has(date)) return date;
+
+    futureChecked += 1;
+    /* v8 ignore next -- unreachable: only `resolved.size` candidates can match. */
+    if (futureChecked > resolved.size) return undefined;
+  }
+}

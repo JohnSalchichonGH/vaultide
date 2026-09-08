@@ -5,6 +5,7 @@ import {
   anchorDay,
   firstOccurrence,
   monthsPerPeriod,
+  nextUnresolvedOccurrence,
   occurrencesInRange,
   termForOccurrence,
   termsForOccurrences,
@@ -290,5 +291,63 @@ describe('a term is chosen by the scheduled occurrence, not the financial date',
   it('is unaffected by the order the terms arrive in', () => {
     const reversed = [...terms].reverse();
     expect(termForOccurrence(reversed, plainDate('2026-10-05'))?.id).toBe('b');
+  });
+});
+
+describe('the next occurrence nothing has resolved', () => {
+  // 30.10: early materialization reaches this occurrence and no other. The
+  // bound is the schedule, never a window in days or months.
+  const monthly = schedule({ dayOfMonth: 1, startDate: plainDate('2026-01-01') });
+  const today = plainDate('2026-09-15');
+
+  it('is the first scheduled date after today when nothing is resolved', () => {
+    expect(nextUnresolvedOccurrence(monthly, today, new Set())).toBe('2026-10-01');
+  });
+
+  it('skips past the ones already resolved, in order', () => {
+    expect(nextUnresolvedOccurrence(monthly, today, new Set(['2026-10-01']))).toBe('2026-11-01');
+    expect(
+      nextUnresolvedOccurrence(monthly, today, new Set(['2026-10-01', '2026-11-01'])),
+    ).toBe('2026-12-01');
+  });
+
+  it('ignores resolved occurrences that are not in the future', () => {
+    // August is behind us; it says nothing about what comes next.
+    expect(nextUnresolvedOccurrence(monthly, today, new Set(['2026-08-01']))).toBe('2026-10-01');
+  });
+
+  it('imposes no horizon: a distant annual occurrence is still the next one', () => {
+    const annual = schedule({
+      frequency: 'annual',
+      dayOfMonth: 1,
+      startDate: plainDate('2026-06-01'),
+    });
+    expect(nextUnresolvedOccurrence(annual, today, new Set())).toBe('2027-06-01');
+  });
+
+  it('runs out when end_date ends the schedule', () => {
+    const ending = schedule({
+      dayOfMonth: 1,
+      startDate: plainDate('2026-01-01'),
+      endDate: plainDate('2026-10-01'),
+    });
+    expect(nextUnresolvedOccurrence(ending, today, new Set())).toBe('2026-10-01');
+    expect(nextUnresolvedOccurrence(ending, today, new Set(['2026-10-01']))).toBeUndefined();
+  });
+
+  it('follows the clamped anchor rather than a nominal day', () => {
+    const anchored = schedule({ dayOfMonth: 31, startDate: plainDate('2026-01-01') });
+    expect(nextUnresolvedOccurrence(anchored, plainDate('2026-01-31'), new Set())).toBe(
+      '2026-02-28',
+    );
+  });
+
+  it('has nothing left once the schedule is exhausted', () => {
+    const past = schedule({
+      dayOfMonth: 1,
+      startDate: plainDate('2020-01-01'),
+      endDate: plainDate('2020-03-01'),
+    });
+    expect(nextUnresolvedOccurrence(past, today, new Set())).toBeUndefined();
   });
 });

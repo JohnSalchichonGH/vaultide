@@ -291,6 +291,13 @@ export function acceptSuggestionInput(today: string) {
     templateId: z.uuid(),
     occurrenceDate: plainDate,
     financialDate: plainDateNotAfter(today).optional(),
+    /**
+     * The explicit early-materialization mode, and the only way to accept an
+     * occurrence dated after today. The service additionally requires that
+     * occurrence to be the next one nothing has resolved (30.10), and fixes its
+     * financial date to today.
+     */
+    receivedToday: z.boolean().optional(),
     /** "This month only": overrides the term for this occurrence alone. */
     amount: moneyString({ nonNegative: true }).optional(),
     cashPositionId: z.uuid().nullable().optional(),

@@ -7,6 +7,7 @@ import {
   insertIncomeEntryIn,
   insertSkipIn,
   listMaterializedOccurrences,
+  listResolvedOccurrenceDatesIn,
   listSkips,
   listTerms,
   lockTemplateIn,
@@ -19,6 +20,7 @@ import {
 } from '@vaultide/db';
 import {
   Decimal,
+  nextUnresolvedOccurrence,
   occurrencesInRange,
   plainDate,
   termForOccurrence,
@@ -121,12 +123,7 @@ export async function listSuggestions(
     }));
 
     const dates = occurrencesInRange(
-      {
-        frequency: template.frequency,
-        dayOfMonth: template.dayOfMonth,
-        startDate: plainDate(template.startDate),
-        endDate: template.endDate === null ? null : plainDate(template.endDate),
-      },
+      scheduleOf(template),
       plainDate(args.from),
       plainDate(args.to),
     );
@@ -164,18 +161,22 @@ export async function listSuggestions(
   return suggestions;
 }
 
+function scheduleOf(template: RecurringTemplateRow) {
+  return {
+    frequency: template.frequency,
+    dayOfMonth: template.dayOfMonth,
+    startDate: plainDate(template.startDate),
+    endDate: template.endDate === null ? null : plainDate(template.endDate),
+  };
+}
+
 /** The occurrence must be one this template actually has (6.2). */
 function assertScheduledOccurrence(
   template: RecurringTemplateRow,
   occurrenceDate: string,
 ): void {
   const dates = occurrencesInRange(
-    {
-      frequency: template.frequency,
-      dayOfMonth: template.dayOfMonth,
-      startDate: plainDate(template.startDate),
-      endDate: template.endDate === null ? null : plainDate(template.endDate),
-    },
+    scheduleOf(template),
     plainDate(occurrenceDate),
     plainDate(occurrenceDate),
   );
@@ -194,7 +195,7 @@ function assertScheduledOccurrence(
  */
 async function claimOccurrenceIn(
   tx: Transaction,
-  args: { templateId: string; occurrenceDate: string },
+  args: { templateId: string; occurrenceDate: string; today?: string },
 ): Promise<RecurringTemplateRow> {
   const template = await lockTemplateIn(tx, args.templateId);
   if (template === undefined) throw new NotFoundError('That source no longer exists.');
@@ -204,6 +205,29 @@ async function claimOccurrenceIn(
     );
   }
   assertScheduledOccurrence(template, args.occurrenceDate);
+
+  // A future occurrence may be materialized only if it is the next one nothing
+  // has resolved (30.10). Computed here, under the template's lock, so a
+  // concurrent acceptance of the earlier occurrence cannot slip in between the
+  // decision and the write — and so the rule holds against any caller, not only
+  // against a well-behaved interface.
+  if (args.today !== undefined && args.occurrenceDate > args.today) {
+    const resolved = new Set(await listResolvedOccurrenceDatesIn(tx, args.templateId));
+    const eligible = nextUnresolvedOccurrence(
+      scheduleOf(template),
+      plainDate(args.today),
+      resolved,
+    );
+
+    if (eligible === undefined || eligible !== args.occurrenceDate) {
+      throw new ValidationError(
+        eligible === undefined
+          ? 'This source has no upcoming date left to record early.'
+          : `The next one still to record is ${eligible}. Record that one before this, so nothing is left with a gap behind it.`,
+        { occurrenceDate: ['This is not the next date still to record.'] },
+      );
+    }
+  }
 
   const skip = await findSkipIn(tx, args.templateId, args.occurrenceDate);
   if (skip !== undefined) {
@@ -223,11 +247,17 @@ export interface AcceptSuggestionArgs {
   readonly templateId: string;
   readonly occurrenceDate: string;
   /**
-   * When the money actually moved. Defaults to the occurrence's own date, and
-   * "received today" passes today — the occurrence keeps its scheduled identity
-   * either way.
+   * When the money actually moved. Defaults to the occurrence's own date. For a
+   * future occurrence it is not an input at all: `receivedToday` fixes it to
+   * `ctx.today`, so a caller cannot pair a future occurrence with an arbitrary
+   * past date (30.10).
    */
   readonly financialDate?: string | undefined;
+  /**
+   * The explicit "I received this today" mode, and the **only** way to
+   * materialize an occurrence dated after today.
+   */
+  readonly receivedToday?: boolean | undefined;
   /** Overrides the term's amount for this occurrence only ("this month only"). */
   readonly amount?: string | undefined;
   readonly cashPositionId?: string | null | undefined;
@@ -253,15 +283,43 @@ export async function acceptSuggestion(
   const template = await findTemplate(deps.db, ctx.userId, args.templateId);
   if (template === undefined) throw new NotFoundError('That source no longer exists.');
 
-  const financialDate = args.financialDate ?? args.occurrenceDate;
+  // Two shapes, and only one of them may carry a future occurrence.
+  //
+  // Ordinary acceptance: the occurrence has arrived, and the financial date is
+  // its own date unless the user says otherwise — bound by "not after today"
+  // (M5), because that date is the financial fact.
+  //
+  // Early materialization: the occurrence is still ahead, so it is reachable
+  // only through the explicit mode, only if it is the next unresolved one
+  // (checked under the lock below), and its financial date is today by
+  // definition rather than by choice (30.10).
+  const isFutureOccurrence = args.occurrenceDate > ctx.today;
+  let financialDate: string;
 
-  // Only the **financial** date is bound by "not after today" (M5). The
-  // occurrence's own date is scheduling metadata and may legitimately be later.
-  if (financialDate > ctx.today) {
-    throw new ValidationError(
-      'This has not happened yet. Accept it on the day, or record that you received it today.',
-      { financialDate: ['This date is in the future.'] },
-    );
+  if (isFutureOccurrence) {
+    if (args.receivedToday !== true) {
+      throw new ValidationError(
+        'This has not happened yet. Accept it on the day, or say that you received it today.',
+        { occurrenceDate: ['This date has not arrived yet.'] },
+      );
+    }
+    if (args.financialDate !== undefined && args.financialDate !== ctx.today) {
+      // Recording something ahead of its date says it arrived *today*. Any
+      // other date would be a claim about a day nothing was known to happen.
+      throw new ValidationError(
+        'Money received before its scheduled date is recorded as arriving today.',
+        { financialDate: ['This has to be today.'] },
+      );
+    }
+    financialDate = ctx.today;
+  } else {
+    financialDate = args.financialDate ?? args.occurrenceDate;
+    if (financialDate > ctx.today) {
+      throw new ValidationError(
+        'This has not happened yet. Accept it on the day, or say that you received it today.',
+        { financialDate: ['This date is in the future.'] },
+      );
+    }
   }
 
   const terms = (await listTerms(deps.db, ctx.userId, args.templateId)).map((row) => ({
@@ -296,7 +354,7 @@ export async function acceptSuggestion(
   const occurrence = { templateId: args.templateId, occurrenceDate: args.occurrenceDate };
 
   const result = await withUser(deps.db, { userId: ctx.userId }, async (tx) => {
-    const locked = await claimOccurrenceIn(tx, occurrence);
+    const locked = await claimOccurrenceIn(tx, { ...occurrence, today: ctx.today });
 
     if (locked.kind === 'income') {
       if (locked.incomeKind === null) {
