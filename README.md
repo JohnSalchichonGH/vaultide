@@ -5,31 +5,41 @@ flows you know; Vaultide infers spending by cash reconciliation, keeps records i
 their native currency with historical FX, separates capital flows from investment
 performance, explains what changed your net worth, and projects it forward.
 
-**Current state: Phase 1 — auth, users, settings, currencies, FX.** You can
-create an account, confirm your address, sign in (optionally with a
-second factor), set what you think in and what totals are shown in, and delete
-everything. Exchange rates for every supported currency are refreshed daily. No
-balances, no spending, no net worth yet — those arrive with Phases 2 and 3.
+**Current state: Phase 2 — accounts, balances and net worth.** You can create
+an account, confirm your address, sign in (optionally with a second factor), and
+set what you think in and what totals are shown in. Then: cash accounts and
+other assets in any supported currency, balances dated to the day and never into
+the future, statement month-end balances once a month has ended, quick update,
+and both net-worth metrics — total (everything you track) and financial (the
+headline). A value nobody has recorded is shown as unknown, never as zero, and a
+total that could not include something says so and says what. No spending,
+income or transfers yet — those arrive with Phase 3.
 
 The authoritative specification is
 [`docs/implementation-blueprint.md`](docs/implementation-blueprint.md) (frozen,
 v2.1.2). Implementation-level choices are recorded in [`docs/adr/`](docs/adr/):
 [Phase 0](docs/adr/0001-phase-0-implementation-decisions.md),
-[Phase 1](docs/adr/0002-phase-1-implementation-decisions.md). Each phase's
+[Phase 1](docs/adr/0002-phase-1-implementation-decisions.md),
+[pre-Phase-2 gates](docs/adr/0003-pre-phase-2-security-and-cost-gates.md),
+[Phase 2](docs/adr/0004-phase-2-implementation-decisions.md). Each phase's
 evidence is in `docs/phase-N-acceptance.md`.
 
 ## Layout
 
 ```text
 apps/web            Next.js App Router: auth pages, settings, onboarding, shell,
+                    dashboard, accounts and account detail,
                     /api/auth, /api/cron/fx-refresh, /api/health
 packages/finance    pure engines — money, dates, FX lookup and conversion,
-                    Unavailable/Partial, sign, numeric backends
+                    Unavailable/Partial, sign, numeric backends, position values
+                    and freshness, total and financial net worth
 packages/validation Zod primitives and inputs shared by client, server, database
 packages/db         Drizzle schema, migrations, RLS policies, repositories, seed
-packages/application use cases: Better Auth, sessions, mailer, settings, FX service
+packages/application use cases: Better Auth, sessions, mailer, settings, FX service,
+                    positions, valuations, quick update, net-worth queries
 packages/config     tsconfig, ESLint (incl. the money-coercion rule), boundaries
-e2e                 Playwright: smoke plus the full auth and settings flow
+e2e                 Playwright: smoke, the auth and settings flow, and the
+                    accounts, balances and net-worth journey
 scripts/db          role bootstrap, local PostgreSQL, currency reconciliation
 scripts/backup      dump → verify → encrypt
 ```

@@ -1,0 +1,121 @@
+# ADR 0004 — Phase 2 implementation decisions
+
+**Status:** accepted · **Date:** 2026-09-08 · **Phase:** 2
+
+Four decisions taken while building positions, valuations and the two
+net-worth metrics that the blueprint does not settle, that a later phase could
+plausibly get wrong, and whose reasoning is not obvious from the code alone.
+
+Everything else in Phase 2 follows the frozen blueprint
+(`docs/implementation-blueprint.md`, v2.1.2) as written; the deviations that do
+exist are listed in `docs/phase-2-acceptance.md` and none of them changes the
+architecture, the accounting model or the schema semantics.
+
+---
+
+## 1. Aggregates sum in a canonical order, because decimal addition is not associative
+
+**Decision.** `netWorthAt` orders its position contributions by position id
+before summing, and exposes them in that same order.
+
+**Why.** A converted amount is a division. `USD 3,000 ÷ 1.1596` does not
+terminate, so it is held to 40 significant digits (7.1), and adding several such
+values in a different order can differ in the fortieth digit — decimal
+arithmetic stops being associative the moment a value is rounded to any
+precision at all.
+
+This was found by a property test, not reasoned about in advance: the same
+balance sheet, with its positions in two different orders, produced two strings
+that differed in the last digit. The difference is invisible at any scale a
+person sees and it would still have been wrong to allow, because "the same
+records produce the same number" is not a thing a finance engine should leave to
+the order a query happened to return rows in.
+
+**Consequences.** Every aggregate in `finance/networth` accumulates
+deterministically, and the property tests assert it for random balance sheets.
+Phase 7's decompositions and Phase 10's projections should do the same: any new
+aggregation over converted values needs a fixed accumulation order.
+
+The related identity `financial = total − excluded` is therefore asserted
+**exactly** where no division is involved, and to 10⁻²⁵ of a unit where a rate
+is — twenty-three orders of magnitude below the smallest amount
+`NUMERIC(24,8)` can hold. Asserting exact string equality there would be
+asserting something the arithmetic cannot deliver; the tests say which case is
+which and why.
+
+---
+
+## 2. "Not tracked yet" is a third answer, distinct from "unknown"
+
+**Decision.** A position's value at a date can be `not_yet_tracked` — the
+position was not on the balance sheet then — and that is **not** the same as
+`missing`, which means it is tracked and nobody has said what it is worth.
+`not_yet_tracked` positions are left out of totals entirely; `missing` ones make
+every total containing them `partial`.
+
+**Why.** Both would be "no valuation on or before this date" if the engine only
+looked at rows, and collapsing them makes one of two errors inevitable:
+
+- treat both as missing, and every month before an account was added turns the
+  net-worth series `partial` — a chart of nothing but warnings;
+- treat both as absent, and a car the user has tracked but never valued silently
+  drops out of net worth while the total is presented as complete. That is
+  precisely the failure the whole "unknown is not zero" rule exists to prevent.
+
+The line between them is the blueprint's own: 12.3 defines when a position's
+identity starts (`t_start` — its `opened_on` if set, otherwise its first
+valuation), and before that date the position is genuinely not part of the
+balance sheet.
+
+**Consequences.** `trackingStartsOn` is the single place that answers it, and
+Phase 7's "newly tracked" driver bucket is the same rule seen from the other
+side — it should use this function rather than re-deriving it. A position with no
+`opened_on` and no valuations at all is `missing` at every date, which is the
+honest answer for "I own this, I have not said what it is worth".
+
+---
+
+## 3. `loadFinancialWindow` has no lower date bound, deliberately
+
+**Decision.** The window loads every valuation dated on or before the as-of
+date, with no `from`. The `from` argument that 23.2 shows is used for the FX
+range only.
+
+**Why.** A position's value at a date is its **latest valuation on or before**
+it. A window that started at `from` would not find a balance carried from before
+the window, and the engine would report it as `missing` — turning a correct,
+carried figure into a partial total. The bound would be a performance
+optimisation that silently changes financial output.
+
+At the scale 23.1 assumes (≈ 10k valuations per user over thirty years) this is
+a single indexed scan on `(user_id, valued_on)`.
+
+**Consequences.** When volume makes a lower bound worth having, it has to arrive
+**together with** a per-position "latest valuation before `from`" query, not
+without one. A future session optimising this without that second query will
+produce a subtly wrong balance sheet that no type checker will catch — which is
+why it is recorded here rather than left as a comment.
+
+---
+
+## 4. Quick Update is one transaction, all or nothing
+
+**Decision.** A quick update either writes every balance in the submission or
+writes none. A version conflict on any entry rolls the whole thing back.
+
+**Why.** 15.3 describes the modal but not what happens when one entry conflicts.
+20.3 settles the same question for the bulk history editor — "the batch aborts
+entirely on any conflict" — and a quick update is the same shape of write:
+several positions' balances, saved together, read together a moment later as one
+net-worth figure. A half-applied set of balances is exactly the state that makes
+a total quietly wrong while looking complete.
+
+**Consequences.** The modal reports one outcome rather than per-row results, and
+`quickUpdateValuations` throws rather than skipping a conflicting row. Phase 3's
+bulk history grid should behave identically, which is what 20.3 already says.
+
+A related detail worth stating: a position that already has a balance for today
+is **corrected**, not duplicated (M1 permits one valuation per position per
+date). That touches today's row and no other, so no history is overwritten — the
+distinction the blueprint draws between correcting the present and rewriting the
+past.

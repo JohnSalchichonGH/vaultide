@@ -86,7 +86,25 @@ try {
   check('the schema has tables to check', tables.rows.length > 0, `${tables.rows.length} tables`);
 
   const WRITES = ['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE'];
-  const violations = { userWrite: [], backupWrite: [], backupRead: [] };
+
+  /**
+   * Tables the runtime role holds narrower privileges on than the bootstrap's
+   * default grants would give (blueprint 6.1). Each entry lists the writes
+   * `app_user` must **not** have; they are removed by a migration, so this is
+   * also how a deployment proves that migration actually ran.
+   *
+   *   fx_rates       rows are immutable — a conversion made last year must
+   *                  still reproduce next year (6.2, Phase 1).
+   *   audit_entries  insert-only — the role that deletes a valuation must not
+   *                  be able to erase the record of it (18.1, Phase 2).
+   */
+  const RUNTIME_WRITE_EXCEPTIONS = {
+    fx_rates: ['UPDATE', 'DELETE', 'TRUNCATE'],
+    audit_entries: ['UPDATE', 'DELETE', 'TRUNCATE'],
+  };
+
+  const violations = { userWrite: [], backupWrite: [], backupRead: [], narrowed: [] };
+  const seenNarrowed = new Set();
 
   for (const { tablename } of tables.rows) {
     const qualified = `public.${tablename}`;
@@ -109,6 +127,17 @@ try {
       }
     }
 
+    const forbidden = RUNTIME_WRITE_EXCEPTIONS[tablename];
+    if (forbidden !== undefined) {
+      seenNarrowed.add(tablename);
+      if (!row.user_select) violations.narrowed.push(`${tablename}.SELECT missing`);
+      for (const privilege of forbidden) {
+        if (row[`user_${privilege.toLowerCase()}`]) {
+          violations.narrowed.push(`${tablename}.${privilege}`);
+        }
+      }
+    }
+
     // A backup must be able to read everything and change nothing (R27, T12).
     if (!row.backup_select) violations.backupRead.push(tablename);
     for (const privilege of WRITES) {
@@ -120,6 +149,18 @@ try {
 
   check('app_user cannot write reference data', violations.userWrite.length === 0,
     violations.userWrite.join(', '));
+  check(
+    'app_user holds only the narrowed privileges on immutable tables',
+    violations.narrowed.length === 0,
+    violations.narrowed.join(', '),
+  );
+  // A missing table here means a migration has not run, which the privilege
+  // check above could not have noticed on its own.
+  const missingNarrowed = Object.keys(RUNTIME_WRITE_EXCEPTIONS).filter(
+    (table) => !seenNarrowed.has(table),
+  );
+  check('every table with narrowed privileges exists', missingNarrowed.length === 0,
+    missingNarrowed.join(', '));
   check('app_backup can read every table', violations.backupRead.length === 0,
     violations.backupRead.join(', '));
   check('app_backup can write no table', violations.backupWrite.length === 0,
