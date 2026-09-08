@@ -170,6 +170,29 @@ try {
     unlistedOwned.length === 0 ? `${String(owned.length)} tables` : unlistedOwned.join(', '),
   );
 
+  // 6.1: every closed set is a PostgreSQL enum type, never text + CHECK. The
+  // tables above cannot exist without them, but naming them here turns that
+  // from an inference into an assertion — and names what a later phase must
+  // extend rather than replace.
+  const enums = await owner.query(
+    `SELECT t.typname FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+       WHERE n.nspname = 'public' AND t.typtype = 'e'`,
+  );
+  const enumNames = new Set(enums.rows.map((row) => row.typname));
+  const EXPECTED_ENUMS = [
+    'audit_action', 'cash_account_type', 'category_kind', 'date_precision',
+    'expense_settlement', 'income_kind', 'income_settlement', 'other_asset_type',
+    'position_kind', 'position_status', 'recurrence_frequency', 'skip_reason',
+    'template_kind', 'transfer_kind', 'valuation_source',
+  ];
+  const missingEnums = EXPECTED_ENUMS.filter((name) => !enumNames.has(name));
+  check(
+    'every closed set exists as an enum type',
+    missingEnums.length === 0,
+    missingEnums.length === 0 ? `${String(EXPECTED_ENUMS.length)} types` : missingEnums.join(', '),
+  );
+
   console.log('');
   console.log('Schema invariants no constraint can express');
 
