@@ -68,7 +68,12 @@ describe('financial server actions authorize against the session store', () => {
     // A refactor that moves or renames the directory must fail loudly here
     // rather than silently making this suite vacuous.
     expect(actions.length).toBeGreaterThan(10);
-    expect(new Set(actions.map((item) => item.file))).toContain('positions.ts');
+    const files = new Set(actions.map((item) => item.file));
+    expect(files).toContain('positions.ts');
+    // Phase 3's flow and recurring mutations live in their own modules; a
+    // rename that emptied one of them would otherwise make this suite vacuous.
+    expect(files).toContain('flows.ts');
+    expect(files).toContain('recurring.ts');
   });
 
   it('declares every action either financial or explicitly not', () => {
@@ -83,13 +88,69 @@ describe('financial server actions authorize against the session store', () => {
   });
 
   it('uses the financial wrapper for every position, valuation and quick-update mutation', () => {
-    const financialModules = ['positions.ts'];
+    const financialModules = ['positions.ts', 'flows.ts', 'recurring.ts'];
     const inFinancialModules = actions.filter((item) => financialModules.includes(item.file));
 
     expect(inFinancialModules.length).toBeGreaterThan(0);
     for (const item of inFinancialModules) {
       expect(item.wrapper, `${item.file}: ${item.name}`).toBe('financialAction');
     }
+  });
+
+  it('keeps every Phase 3 flow, recurring and savings-preference mutation financial', () => {
+    // The savings-rate preference lives on `user_settings` and used to ride
+    // along with locale and currencies on the cached-session action. It is a
+    // financial input — flipping it re-interprets every past month's personal
+    // savings (12.5) — so it moved to its own action here, and this asserts it
+    // did not drift back onto the cheap path (v2.1.6 §30.9).
+    const expected = [
+      'flows.createIncomeEntry',
+      'flows.updateIncomeEntry',
+      'flows.deleteIncomeEntry',
+      'flows.createExpenseEntry',
+      'flows.updateExpenseEntry',
+      'flows.deleteExpenseEntry',
+      'flows.createTransfer',
+      'flows.updateTransfer',
+      'flows.deleteTransfer',
+      'recurring.createTemplate',
+      'recurring.updateTemplate',
+      'recurring.archiveTemplate',
+      'recurring.unarchiveTemplate',
+      'recurring.setTemplateTerm',
+      'recurring.acceptSuggestion',
+      'recurring.skipSuggestion',
+      'recurring.unskipSuggestion',
+      'settings.setCountAdditionalSpending',
+    ];
+
+    const declared = new Set<string>();
+    for (const file of ['flows.ts', 'recurring.ts']) {
+      const source = readFileSync(path.join(actionsDir, file), 'utf8');
+      for (const match of source.matchAll(/name:\s*'([^']+)'/gu)) declared.add(match[1] as string);
+    }
+
+    for (const name of expected) expect(declared, name).toContain(name);
+    for (const item of actions.filter((entry) => entry.file !== 'positions.ts')) {
+      if (item.file === 'settings.ts') continue;
+      expect(item.wrapper, `${item.file}: ${item.name}`).toBe('financialAction');
+    }
+  });
+
+  it('no longer lets the ordinary settings action write the savings-rate preference', () => {
+    // Removing it from the schema is what actually enforces this; the check is
+    // here because the schema lives in another package and a re-added field
+    // would be invisible in this app's diff.
+    const source = readFileSync(path.join(actionsDir, 'settings.ts'), 'utf8');
+    expect(source).not.toContain('countAdditionalSpending');
+  });
+
+  it('exposes no recurring-template hard delete', () => {
+    // 6.3 permits deleting an unreferenced template, but its terms and skips
+    // cascade and a skip can carry an occupancy fact whose removal has to be
+    // audited. Retirement is archiving until a phase defines that behaviour.
+    const source = readFileSync(path.join(actionsDir, 'recurring.ts'), 'utf8');
+    expect(source).not.toMatch(/deleteTemplate/u);
   });
 
   it('does not list an action that no longer exists', () => {

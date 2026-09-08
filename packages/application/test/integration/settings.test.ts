@@ -4,6 +4,7 @@ import { createHarness, type Harness } from '../helpers/harness';
 import {
   findSettings,
   readSettings,
+  setCountAdditionalSpending,
   setReportingCurrency,
   updateSettings,
 } from '../../src/settings/service';
@@ -134,7 +135,6 @@ describe('updating settings', () => {
       favoriteCurrencies: ['EUR', 'USD', 'CHF'],
       staleInvestmentMonths: 3,
       stalePropertyMonths: 24,
-      countAdditionalSpending: false,
     });
 
     expect(after.version).toBe(before.version + 1);
@@ -145,13 +145,50 @@ describe('updating settings', () => {
       locale: 'es-ES',
       staleInvestmentMonths: 3,
       stalePropertyMonths: 24,
-      countAdditionalSpending: false,
+      // Untouched by this path: the savings-rate preference has its own
+      // service and its own authoritative-session action (12.5, ADR 0003).
+      countAdditionalSpending: true,
     });
     expect([...after.favoriteCurrencies].sort()).toEqual(['CHF', 'EUR', 'USD']);
 
     // And it is really persisted, not merely returned.
     const reread = await readSettings(harness.db, USER_A);
     expect(reread).toEqual(after);
+  });
+
+  it('changes the savings-rate preference only through its own service', async () => {
+    // 12.5: this decides whether spending paid from outside tracked accounts
+    // reduces personal savings, so flipping it re-interprets every past month.
+    // It is a financial write and does not ride along with locale and
+    // currencies on the cached-session path (ADR 0003, v2.1.6 §30.9).
+    const before = await readSettings(harness.db, USER_A);
+    expect(before.countAdditionalSpending).toBe(true);
+
+    const after = await setCountAdditionalSpending(
+      harness.services.settings,
+      USER_A,
+      before.version,
+      false,
+    );
+
+    expect(after.countAdditionalSpending).toBe(false);
+    expect(after.version).toBe(before.version + 1);
+    expect((await readSettings(harness.db, USER_A)).countAdditionalSpending).toBe(false);
+
+    // Back on, so the rest of the suite sees the default.
+    await setCountAdditionalSpending(harness.services.settings, USER_A, after.version, true);
+  });
+
+  it('refuses a stale version for the savings-rate preference too', async () => {
+    const before = await readSettings(harness.db, USER_A);
+    await setCountAdditionalSpending(harness.services.settings, USER_A, before.version, false);
+
+    await expect(
+      setCountAdditionalSpending(harness.services.settings, USER_A, before.version, true),
+    ).rejects.toMatchObject({ code: 'CONFLICT_VERSION' });
+
+    const current = await readSettings(harness.db, USER_A);
+    await setCountAdditionalSpending(harness.services.settings, USER_A, current.version, true);
   });
 
   it('refuses a stale version rather than overwriting a concurrent change', async () => {

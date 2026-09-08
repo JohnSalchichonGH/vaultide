@@ -100,8 +100,18 @@ export interface UpdateSettingsFields {
   readonly favoriteCurrencies?: readonly string[] | undefined;
   readonly staleInvestmentMonths?: number | undefined;
   readonly stalePropertyMonths?: number | undefined;
-  readonly countAdditionalSpending?: boolean | undefined;
 }
+
+/*
+ * `countAdditionalSpending` is deliberately absent above.
+ *
+ * It lives on `user_settings` like a preference and behaves like a financial
+ * input: it decides whether spending paid from outside tracked accounts reduces
+ * personal savings (12.5), so flipping it re-interprets every historical
+ * `PersonalSavings` and `SavingsRate`. `setCountAdditionalSpending` below is its
+ * only writer, and the action that calls it validates the session against the
+ * store rather than the five-minute cookie cache (ADR 0003).
+ */
 
 /**
  * Update settings under an optimistic version check (20.3).
@@ -155,9 +165,6 @@ export async function updateSettings(
   if (fields.stalePropertyMonths !== undefined) {
     patch.stalePropertyMonths = fields.stalePropertyMonths;
   }
-  if (fields.countAdditionalSpending !== undefined) {
-    patch.countAdditionalSpending = fields.countAdditionalSpending;
-  }
 
   const updated = await updateUserSettings(db, userId, expectedVersion, patch);
 
@@ -188,4 +195,40 @@ export async function setReportingCurrency(
   reportingCurrency: string,
 ): Promise<UserSettings> {
   return updateSettings(deps, userId, expectedVersion, { reportingCurrency });
+}
+
+/**
+ * The one financial preference on `user_settings` (6.2, 12.5).
+ *
+ * "Count spending I paid from outside my tracked accounts in my savings rate."
+ * Default on, so that `TotalSpending` (tracked + additional) and `SavingsRate`
+ * agree with each other; turning it off makes the rate tracked-only, and the
+ * interface says which one it is showing.
+ *
+ * It has its own service, its own input and its own action for one reason:
+ * changing it changes what **every** past month's `PersonalSavings` and
+ * `SavingsRate` mean. That is a financial write, so ADR 0003 applies and the
+ * action behind it revalidates the session against the store — unlike the
+ * timezone, locale and favourite currencies, which are cheap, reversible
+ * display preferences and deliberately stay on the cached path.
+ *
+ * Optimistic version and audit behaviour are the ordinary `user_settings` ones.
+ */
+export async function setCountAdditionalSpending(
+  deps: SettingsDependencies,
+  userId: string,
+  expectedVersion: number,
+  countAdditionalSpending: boolean,
+): Promise<UserSettings> {
+  const updated = await updateUserSettings(deps.db, userId, expectedVersion, {
+    countAdditionalSpending,
+  });
+
+  if (updated === undefined) {
+    const current = await findSettings(deps.db, userId);
+    if (current === undefined) throw new NotFoundError('Settings have not been created yet.');
+    throw new VersionConflictError();
+  }
+
+  return toDto(updated);
 }

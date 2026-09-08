@@ -10,6 +10,7 @@ import { createLogger, type Logger } from './logging';
 import { createMailerFromEnv } from './mail/providers';
 import type { Mailer } from './mail/mailer';
 import type { SettingsDependencies } from './settings/service';
+import type { FlowDependencies } from './flows/shared';
 import type { PositionDependencies } from './positions/service';
 
 /**
@@ -39,6 +40,13 @@ export interface Services {
    * nothing else — the engines they call are pure.
    */
   readonly positions: PositionDependencies;
+  /**
+   * The Phase 3 flow use cases: income, expenses, transfers, templates and the
+   * accept/skip services. The same two dependencies as `positions` — the
+   * engines they call are pure — but named separately so a reader can see which
+   * services a change touches.
+   */
+  readonly flows: FlowDependencies;
 }
 
 export interface ServiceOverrides {
@@ -161,6 +169,7 @@ export function createServices(overrides: ServiceOverrides = {}): Services {
       },
     },
     positions: { db, fx },
+    flows: { db, fx },
   };
 }
 

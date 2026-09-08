@@ -36,7 +36,15 @@ export const updateSettingsInput = z
     favoriteCurrencies: favoriteCurrencies.optional(),
     staleInvestmentMonths: staleMonths.optional(),
     stalePropertyMonths: staleMonths.optional(),
-    countAdditionalSpending: z.boolean().optional(),
+    /*
+     * `countAdditionalSpending` is deliberately **not** here. It decides
+     * whether spending paid from outside tracked accounts reduces personal
+     * savings (12.5), so changing it re-interprets every historical
+     * `PersonalSavings` and `SavingsRate` — a financial write, not a display
+     * preference. It has its own input in `inputs/flows.ts` and its own
+     * action, which validates the session against the store rather than the
+     * cookie cache (ADR 0003).
+     */
     /** Optimistic concurrency (20.3): the version the form was rendered from. */
     expectedVersion: z.number().int().positive(),
   })

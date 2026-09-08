@@ -1,8 +1,24 @@
 import { Writable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { POSITION_KINDS } from '@vaultide/finance';
-import { positionKinds } from '@vaultide/validation';
+import {
+  CATEGORY_KINDS,
+  EXPENSE_SETTLEMENTS,
+  INCOME_KINDS,
+  INCOME_SETTLEMENTS,
+  POSITION_KINDS,
+  RECURRENCE_FREQUENCIES,
+  TRANSFER_KINDS,
+} from '@vaultide/finance';
+import {
+  categoryKinds,
+  expenseSettlements,
+  incomeKinds,
+  incomeSettlements,
+  positionKinds,
+  recurrenceFrequencies,
+  transferKinds,
+} from '@vaultide/validation';
 import {
   actionLogRecord,
   AuthRequiredError,
@@ -43,6 +59,22 @@ describe('cross-package enum consistency', () => {
     // finance is pure and cannot import validation (section 19), so this is the
     // test that stops the two lists from drifting apart.
     expect([...POSITION_KINDS]).toEqual([...positionKinds]);
+  });
+
+  it('keeps the Phase 3 flow closed sets identical too', () => {
+    // Same reason, four more sets: the role matrix in finance switches on these
+    // values and the database enum is generated from the validation list, so a
+    // value added to one and not the other would classify as `none` and quietly
+    // drop a flow out of reconciliation.
+    expect([...INCOME_KINDS]).toEqual([...incomeKinds]);
+    expect([...INCOME_SETTLEMENTS]).toEqual([...incomeSettlements]);
+    expect([...EXPENSE_SETTLEMENTS]).toEqual([...expenseSettlements]);
+    expect([...TRANSFER_KINDS]).toEqual([...transferKinds]);
+    expect([...CATEGORY_KINDS]).toEqual([...categoryKinds]);
+  });
+
+  it('keeps the recurrence frequencies identical', () => {
+    expect([...RECURRENCE_FREQUENCIES]).toEqual([...recurrenceFrequencies]);
   });
 });
 

@@ -10,6 +10,7 @@ import {
   deleteTagAction,
   updateSettingsAction,
 } from '@/server/actions/settings';
+import { setCountAdditionalSpendingAction } from '@/server/actions/recurring';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
@@ -210,12 +211,36 @@ export function CurrencySettingsForm({
         setError(null);
         setSaved(false);
         startTransition(async () => {
+          /*
+           * Two writes, deliberately.
+           *
+           * The currency preferences are cheap and reversible and go through
+           * the ordinary cached-session action. The savings-rate setting is a
+           * financial input — it re-interprets every past month's personal
+           * savings (12.5) — so it goes through its own action, which
+           * revalidates the session against the store (ADR 0003). It is
+           * written first: if the session has been revoked, the request that
+           * matters fails before anything else is saved.
+           */
+          if (countAdditionalSpending !== settings.countAdditionalSpending) {
+            const preference = await setCountAdditionalSpendingAction({
+              countAdditionalSpending,
+              expectedVersion: settings.version,
+            });
+            if (!preference.ok) {
+              setError(preference.error.message);
+              return;
+            }
+          }
+
           const result = await updateSettingsAction({
             baseCurrency,
             reportingCurrency,
             favoriteCurrencies: favorites,
-            countAdditionalSpending,
-            expectedVersion: settings.version,
+            expectedVersion:
+              countAdditionalSpending === settings.countAdditionalSpending
+                ? settings.version
+                : settings.version + 1,
           });
           if (!result.ok) {
             setError(result.error.message);

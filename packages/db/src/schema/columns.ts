@@ -44,6 +44,16 @@ export const currencyCodeArrayColumn = customType<{ data: string[]; driverData: 
 });
 
 /**
+ * Flow labels (6.2): the user's own words, stored on the flow as `text[]` with
+ * a GIN index. The managed picker list is the `tags` table (T6, D24).
+ */
+export const tagsColumn = customType<{ data: string[]; driverData: string[] }>({
+  dataType: () => 'text[]',
+  fromDriver: (value) => value.map((tag) => String(tag)),
+  toDriver: (value) => value,
+});
+
+/**
  * System times (6.1): `timestamptz`, UTC. `updated_at` is maintained by the
  * `set_updated_at` trigger every table installs, so no application path can
  * forget it and no client can set it.

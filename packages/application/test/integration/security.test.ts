@@ -6,10 +6,12 @@ import { createHarness, TEST_BASE_URL, type Harness } from '../helpers/harness';
 import { AUTH_RATE_LIMITS, AUTH_RATE_LIMIT_DEFAULT } from '../../src/auth/config';
 import { requireAuthoritativeSession, requireSession } from '../../src/auth/session';
 import { defineAction } from '../../src/actions';
-import type { RequestContext } from '../../src/context';
+import { testContext, type RequestContext } from '../../src/context';
 import { AuthRequiredError } from '../../src/errors';
 import { scrubEvent } from '../../src/observability';
 import { createCashAccount } from '../../src/positions/service';
+import { createIncomeEntry } from '../../src/flows/income';
+import { readSettings, setCountAdditionalSpending } from '../../src/settings/service';
 
 /**
  * The Phase 1 security suite (blueprint 17.3, 18.2, 21.4).
@@ -375,5 +377,131 @@ describe('a revoked session cannot write a balance (ADR 0003, Phase 2)', () => {
     });
     expect(names).toContain('Account 1.00');
     expect(names).not.toContain('Account 2.00');
+  });
+});
+
+describe('a revoked session cannot write a Phase 3 flow or the savings preference (ADR 0003)', () => {
+  /**
+   * The same proof for the mutations Phase 3 adds.
+   *
+   * Two of them are worth naming. An **income entry** is the write the whole
+   * reconciliation identity rests on, so it must fail the moment the session
+   * row is gone. And `count_additional_spending` is the one that used to ride
+   * the cached path: it lives on `user_settings` like a preference and decides
+   * whether spending paid from outside tracked accounts reduces personal
+   * savings (12.5), so flipping it re-interprets every past month. v2.1.6
+   * §30.9 moved it to its own authoritative action, and this is the regression
+   * that keeps it there.
+   */
+
+  async function signedIn(email: string): Promise<{ headers: Headers; userId: string }> {
+    const client = createAuthClient(harness.services.auth, TEST_BASE_URL);
+    harness.mailer.clear();
+    await client.post('/sign-up/email', { name: 'Flow Writer', email, password: PASSWORD });
+
+    const verification = harness.mailer.latestFor(email, 'verification');
+    if (verification === undefined) throw new Error('no verification email');
+    await client.get(`/verify-email?token=${encodeURIComponent(tokenFromUrl(verification.text))}`);
+    await client.post('/sign-in/email', { email, password: PASSWORD });
+
+    const headers = new Headers({ Cookie: client.cookieHeader() });
+    const context = await requireSession(
+      { auth: harness.services.auth, db: harness.db },
+      headers,
+    );
+    return { headers, userId: context.userId };
+  }
+
+  it('refuses an income entry once the session row is gone, and writes nothing', async () => {
+    const email = unique('flow-write');
+    const { headers, userId } = await signedIn(email);
+    const deps = { auth: harness.services.auth, db: harness.db };
+
+    const account = await createCashAccount(
+      harness.services.positions,
+      testContext({ today: '2026-09-15', userId }),
+      { name: 'Flow account', currency: 'EUR', accountType: 'checking', openedOn: null },
+    );
+
+    const definition = {
+      name: 'flows.createIncomeEntry',
+      input: z.object({ netAmount: z.string() }),
+      handler: async ({ input, ctx }: { input: { netAmount: string }; ctx: RequestContext }) => {
+        const entry = await createIncomeEntry(harness.services.flows, ctx, {
+          kind: 'employment',
+          receivedOn: ctx.today,
+          netAmount: input.netAmount,
+          currency: 'EUR',
+          settlement: 'tracked_cash',
+          cashPositionId: account.id,
+        });
+        return { id: entry.id };
+      },
+    };
+
+    const financial = defineAction(
+      {
+        getContext: () => requireAuthoritativeSession(deps, headers),
+        logger: harness.services.logger,
+      },
+      definition,
+    );
+
+    expect((await financial({ netAmount: '10.00' })).ok).toBe(true);
+
+    await harness.asOwner('DELETE FROM session WHERE user_id = $1', [userId]);
+
+    expect(await financial({ netAmount: '20.00' })).toMatchObject({
+      ok: false,
+      error: { code: 'AUTH_REQUIRED' },
+    });
+
+    const amounts = await withUser(harness.db, { userId }, async (tx) => {
+      const result = await tx.execute<{ net_amount: string }>(
+        sql`SELECT net_amount FROM income_entries ORDER BY net_amount`,
+      );
+      return result.rows.map((row) => row.net_amount);
+    });
+    expect(amounts).toEqual(['10.00000000']);
+  });
+
+  it('refuses the savings-rate preference once the session row is gone', async () => {
+    const email = unique('savings-preference');
+    const { headers, userId } = await signedIn(email);
+    const deps = { auth: harness.services.auth, db: harness.db };
+
+    const definition = {
+      name: 'settings.setCountAdditionalSpending',
+      input: z.object({ value: z.boolean(), expectedVersion: z.number() }),
+      handler: async ({
+        input,
+        ctx,
+      }: {
+        input: { value: boolean; expectedVersion: number };
+        ctx: RequestContext;
+      }) => setCountAdditionalSpending(harness.services.settings, ctx.userId, input.expectedVersion, input.value),
+    };
+
+    const financial = defineAction(
+      {
+        getContext: () => requireAuthoritativeSession(deps, headers),
+        logger: harness.services.logger,
+      },
+      definition,
+    );
+
+    const before = await readSettings(harness.db, userId);
+    expect((await financial({ value: false, expectedVersion: before.version })).ok).toBe(true);
+
+    await harness.asOwner('DELETE FROM session WHERE user_id = $1', [userId]);
+
+    const after = await readSettings(harness.db, userId);
+    expect(await financial({ value: true, expectedVersion: after.version })).toMatchObject({
+      ok: false,
+      error: { code: 'AUTH_REQUIRED' },
+    });
+
+    // Still off: the refused call changed nothing.
+    expect((await readSettings(harness.db, userId)).countAdditionalSpending).toBe(false);
   });
 });

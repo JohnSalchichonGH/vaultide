@@ -108,3 +108,124 @@ export type ValuationSource = (typeof valuationSources)[number];
 /** 6.2 `audit_entries.action` (18.1). */
 export const auditActions = ['insert', 'update', 'delete'] as const;
 export type AuditAction = (typeof auditActions)[number];
+
+/**
+ * Recurring template kinds (6.2 `recurring_templates.kind`).
+ *
+ * `contribution` exists because 6.2's enum is a closed set and Phase 4 owns the
+ * workflow; Phase 3 creates no contribution template and materializes none.
+ */
+export const templateKinds = ['income', 'expense', 'contribution'] as const;
+export type TemplateKind = (typeof templateKinds)[number];
+
+/**
+ * Income kinds (6.2 `income_entries.kind`, `recurring_templates.income_kind`).
+ *
+ * The first seven are ordinary income. `external_inflow` explains money that
+ * entered the tracked balance sheet without being income, and `adjustment` is
+ * what "Accept as adjustment" writes against an unexplained inflow (8.5).
+ * Neither may be a template (6.2 CHECK).
+ */
+export const ordinaryIncomeKinds = [
+  'employment',
+  'rental',
+  'interest',
+  'dividend',
+  'freelance',
+  'bonus',
+  'other',
+] as const;
+export const specialIncomeKinds = ['external_inflow', 'adjustment'] as const;
+export const incomeKinds = [...ordinaryIncomeKinds, ...specialIncomeKinds] as const;
+export type OrdinaryIncomeKind = (typeof ordinaryIncomeKinds)[number];
+export type IncomeKind = (typeof incomeKinds)[number];
+
+/** 6.2 `recurring_templates.frequency`. */
+export const recurrenceFrequencies = ['monthly', 'quarterly', 'semiannual', 'annual'] as const;
+export type RecurrenceFrequency = (typeof recurrenceFrequencies)[number];
+
+/** 6.2 `income_entries.settlement` (7.4, F5). */
+export const incomeSettlements = ['tracked_cash', 'reinvested', 'external'] as const;
+export type IncomeSettlement = (typeof incomeSettlements)[number];
+
+/** 6.2 `expense_entries.settlement` (7.4, R24). */
+export const expenseSettlements = [
+  'tracked_cash',
+  'untracked_self',
+  'third_party',
+  'deducted_from_asset',
+] as const;
+export type ExpenseSettlement = (typeof expenseSettlements)[number];
+
+/** 6.2 `recurring_template_skips.reason` (F18, 11.2). */
+export const skipReasons = ['skipped', 'vacant', 'non_payment', 'other'] as const;
+export type SkipReason = (typeof skipReasons)[number];
+
+/** Only a rental template can record an occupancy fact (6.2, F18). */
+export const rentalOnlySkipReasons = ['vacant', 'non_payment'] as const;
+
+export function isRentalOnlySkipReason(value: string): boolean {
+  return (rentalOnlySkipReasons as readonly string[]).includes(value);
+}
+
+/** 6.2 `transfers.kind` (7.5). Phase 3 services accept `cash_transfer` only. */
+export const transferKinds = [
+  'cash_transfer',
+  'contribution',
+  'withdrawal',
+  'investment_switch',
+  'loan_proceeds',
+  'financed_purchase',
+  'asset_purchase',
+  'asset_sale',
+] as const;
+export type TransferKind = (typeof transferKinds)[number];
+
+/**
+ * What Phase 3 may actually write, as opposed to what the closed sets contain
+ * (v2.1.6 §30.9, blueprint 7.4 and §25 Phase 3).
+ *
+ * These are **phase** restrictions over unchanged enums, so the phase that owns
+ * the missing workflow lifts one by widening a list here — never by a
+ * migration. Each is enforced in `validation` and again in the domain service.
+ */
+
+/** `reinvested` needs an investment position, which Phase 3 has not got. */
+export const phase3IncomeSettlements = ['tracked_cash', 'external'] as const;
+
+/**
+ * `external` is accepted only for the five ordinary kinds 7.4 actually covers.
+ *
+ * 7.4 defines `external` twice, and neither row fits a Phase 3 dividend or
+ * interest: ordinary external income names employment, freelance, bonus, rental
+ * and other, while an externally paid *distribution* is defined only when it is
+ * linked to an investment, where it keeps the investment-performance credit and
+ * pairs with an equal external outflow. Phase 3 has no investment positions, so
+ * every `dividend`/`interest` row it could write with `settlement = external`
+ * would be the case the matrix does not cover. Phase 4 lifts this together with
+ * the link that gives such a row meaning.
+ */
+export const phase3ExternalIncomeKinds = [
+  'employment',
+  'freelance',
+  'bonus',
+  'rental',
+  'other',
+] as const;
+
+/** `deducted_from_asset` needs an investment position (Phase 4). */
+export const phase3ExpenseSettlements = ['tracked_cash', 'untracked_self', 'third_party'] as const;
+
+/** Phase 3 application behaviour exposes exactly one transfer kind (§25). */
+export const phase3TransferKinds = ['cash_transfer'] as const;
+
+/**
+ * `external_inflow` and `adjustment` exist to explain **tracked** cash, so an
+ * external one could not affect the discrepancy it was created for.
+ */
+export function allowedIncomeSettlements(kind: IncomeKind): readonly IncomeSettlement[] {
+  if ((specialIncomeKinds as readonly string[]).includes(kind)) return ['tracked_cash'];
+  return (phase3ExternalIncomeKinds as readonly string[]).includes(kind)
+    ? ['tracked_cash', 'external']
+    : ['tracked_cash'];
+}

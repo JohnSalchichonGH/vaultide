@@ -11,3 +11,5 @@ export * from './fx/index';
 export * from './numeric/index';
 export * from './positions/index';
 export * from './networth/index';
+export * from './flows/index';
+export * from './recurring/index';

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { cashAccounts } from '../schema/cash-accounts';
 import { otherAssets } from '../schema/other-assets';
 import { positions } from '../schema/positions';
@@ -525,6 +525,39 @@ export async function loadFinancialWindow(
   });
 }
 
+/**
+ * Is there a cash account of this currency that participates on `on` (8.1)?
+ *
+ * The question a tracked-cash flow with **no** cash position has to answer.
+ * 8.1 is explicit that such a flow belongs to its currency bucket and that
+ * "validation requires a participating cash account of that currency" — the
+ * null leg means "I have not said which account", never "this was not tracked".
+ * Without one the flow would land in a bucket with nothing to reconcile
+ * against, which is the `flow_without_cash_account` issue.
+ */
+export async function hasParticipatingCashAccount(
+  db: Database,
+  userId: string,
+  currency: string,
+  on: string,
+): Promise<boolean> {
+  const rows = await withUser(db, { userId }, async (tx) =>
+    tx
+      .select({ id: positions.id })
+      .from(positions)
+      .where(
+        and(
+          eq(positions.kind, 'cash'),
+          eq(positions.currency, currency),
+          or(isNull(positions.openedOn), lte(positions.openedOn, on)),
+          or(isNull(positions.closedOn), gte(positions.closedOn, on)),
+        ),
+      )
+      .limit(1),
+  );
+  return rows.length > 0;
+}
+
 /** The currencies a user's positions are held in — what the FX table must cover. */
 export async function positionCurrencies(db: Database, userId: string): Promise<string[]> {
   const rows = await withUser(db, { userId }, async (tx) =>
@@ -547,27 +580,44 @@ export async function updateCashDormantFlag(
   positionId: string,
   isDormant: boolean,
 ): Promise<void> {
-  await withUser(db, { userId: ctx.userId }, async (tx) => {
-    const [before] = await tx
-      .select()
-      .from(cashAccounts)
-      .where(eq(cashAccounts.positionId, positionId))
-      .limit(1)
-      .for('update');
-    if (before === undefined || before.isDormant === isDormant) return;
+  await withUser(db, { userId: ctx.userId }, async (tx) =>
+    updateCashDormantFlagIn(tx, ctx, positionId, isDormant),
+  );
+}
 
-    const [after] = await tx
-      .update(cashAccounts)
-      .set({ isDormant })
-      .where(eq(cashAccounts.positionId, positionId))
-      .returning();
+/**
+ * The same clear, inside a caller's transaction.
+ *
+ * Phase 3 needs this: 8.8 says an attributed flow clears dormancy, and the
+ * clear has to be part of the flow's own transaction so the two facts cannot
+ * come apart — a recorded flow with the account still flagged dormant would let
+ * a month carry at zero against evidence that it did not.
+ */
+export async function updateCashDormantFlagIn(
+  tx: Transaction,
+  ctx: AuditContext,
+  positionId: string,
+  isDormant: boolean,
+): Promise<void> {
+  const [before] = await tx
+    .select()
+    .from(cashAccounts)
+    .where(eq(cashAccounts.positionId, positionId))
+    .limit(1)
+    .for('update');
+  if (before === undefined || before.isDormant === isDormant) return;
 
-    await recordAudit(tx, ctx, {
-      entityTable: 'cash_accounts',
-      entityId: positionId,
-      action: 'update',
-      before: before,
-      after: after as unknown as Record<string, unknown>,
-    });
+  const [after] = await tx
+    .update(cashAccounts)
+    .set({ isDormant })
+    .where(eq(cashAccounts.positionId, positionId))
+    .returning();
+
+  await recordAudit(tx, ctx, {
+    entityTable: 'cash_accounts',
+    entityId: positionId,
+    action: 'update',
+    before: before,
+    after: after as unknown as Record<string, unknown>,
   });
 }
