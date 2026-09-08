@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { formatMoney, formatPercent, runFormatterSelfTest, SELF_TEST_AMOUNT } from '@/lib/format';
+import {
+  formatMoney,
+  formatPercent,
+  formatRate,
+  RATE_DECIMALS,
+  roundDecimalString,
+  runFormatterSelfTest,
+  SELF_TEST_AMOUNT,
+} from '@/lib/format';
 import { normalizeMoneyInput } from '@/lib/money-input';
 import { validateRecordDate } from '@/lib/date-input';
 
@@ -74,5 +82,50 @@ describe('record dates are never in the future (M5, R17)', () => {
   it('treats an empty value per the field requirement', () => {
     expect(validateRecordDate('', today)).toBeNull();
     expect(validateRecordDate('', today, { required: true })).toBe('Enter a date.');
+  });
+});
+
+describe('exchange rates are read, not dumped (7.1.1, 16.2)', () => {
+  /**
+   * A **derived** cross rate is a division carried at the engine's 40
+   * significant digits, and the account page used to print all of them —
+   * `0.8604371020478403028738599208397866115987`. That is an artifact of the
+   * arithmetic, not a figure, and it said nothing about which direction it
+   * meant. Found on the production deployment during the Phase 2 journey.
+   */
+  const EXACT = '0.8604371020478403028738599208397866115987';
+
+  it('states the direction, so 0.86 cannot be read backwards', () => {
+    expect(formatRate({ rate: EXACT, from: 'USD', to: 'EUR', locale: 'en-GB' })).toBe(
+      '1 USD = 0.860437 EUR',
+    );
+  });
+
+  it('stops at six decimals rather than showing engine precision', () => {
+    const formatted = formatRate({ rate: EXACT, from: 'USD', to: 'EUR', locale: 'en-GB' });
+    const decimals = /\d+[.,](\d+)/u.exec(formatted)?.[1] ?? '';
+    expect(decimals.length).toBeLessThanOrEqual(RATE_DECIMALS);
+    expect(formatted).not.toContain('8604371020');
+  });
+
+  it('rounds the rate itself, rather than the figures derived from it', () => {
+    // Six decimals is a display choice; the exact rate stays in the DTO and is
+    // what the engine multiplies by, so no conversion is computed from the
+    // rounded string. Asserted here so nobody later "simplifies" the DTO to
+    // carry the rounded value.
+    expect(roundDecimalString(EXACT, RATE_DECIMALS)).toBe('0.860437');
+    expect(EXACT.length).toBeGreaterThan(30);
+  });
+
+  it('formats in the reader’s locale', () => {
+    expect(formatRate({ rate: EXACT, from: 'USD', to: 'EUR', locale: 'es-ES' })).toBe(
+      '1 USD = 0,860437 EUR',
+    );
+  });
+
+  it('keeps a whole-number rate readable', () => {
+    expect(formatRate({ rate: '1', from: 'EUR', to: 'EUR', locale: 'en-GB' })).toBe(
+      '1 EUR = 1.00 EUR',
+    );
   });
 });

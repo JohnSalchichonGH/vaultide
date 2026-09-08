@@ -196,7 +196,11 @@ test.describe('accounts, balances and the two net-worth metrics', () => {
     await page.getByRole('link', { name: 'US checking' }).click();
     await expect(page.getByTestId('position-native')).toContainText('$');
     await expect(page.getByTestId('position-reporting')).toContainText('€');
-    await expect(page.getByTestId('position-rate')).not.toHaveText('—');
+    // The rate is a reading, not a dump of engine precision: it states its
+    // direction and stops at six decimals (found in production, Phase 2).
+    await expect(page.getByTestId('position-rate')).toHaveText(
+      /^1 USD = \d+[.,]\d{1,6} EUR on \d{4}-\d{2}-\d{2} \(/u,
+    );
 
     // --- an other asset, excluded from the headline figure ------------------
     await page.goto('/accounts?tab=other');

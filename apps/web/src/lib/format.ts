@@ -79,3 +79,43 @@ export function runFormatterSelfTest(
     };
   });
 }
+
+/**
+ * How many decimals of an exchange rate are worth showing.
+ *
+ * Stored rates are `NUMERIC(24,12)` (6.2) and the ECB publishes five or six
+ * significant digits; a **derived** cross rate, however, is a division carried
+ * at the engine's 40 significant digits (7.1), and printing all of them shows
+ * an artifact of the arithmetic rather than a figure anyone can read. Six
+ * decimals reproduce any realistic conversion to the cent and stop there.
+ */
+export const RATE_DECIMALS = 6;
+
+export interface RateFormatInput {
+  /** The exact rate as a decimal string: one unit of `from` in `to`. */
+  readonly rate: string;
+  readonly from: string;
+  readonly to: string;
+  readonly locale?: string;
+}
+
+/**
+ * `1 USD = 0,860437 EUR` — a rate with its direction stated.
+ *
+ * The orientation matters and cannot be guessed from the number: 0.86 could be
+ * dollars per euro or euros per dollar, and the two are different claims. The
+ * exact value stays in the DTO as evidence; this is the reading of it.
+ *
+ * Rounded from the decimal string and formatted through `Intl`'s string path,
+ * so the rate never passes through a JavaScript number (7.1.1, R31).
+ */
+export function formatRate(input: RateFormatInput): string {
+  const rounded = roundDecimalString(input.rate, RATE_DECIMALS);
+  const formatted = new Intl.NumberFormat(input.locale ?? DEFAULT_LOCALE, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: RATE_DECIMALS,
+    // `Intl.NumberFormat` accepts a decimal string as an exact mathematical
+    // value, which is the same path `formatMoney` relies on.
+  }).format(rounded as unknown as number);
+  return `1 ${input.from} = ${formatted} ${input.to}`;
+}

@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { FreshnessBadge, MonthEndBadge } from '@/components/finance/freshness-badge';
 import { MoneyText } from '@/components/finance/money-text';
+import { formatRate } from '@/lib/format';
 import { EditPositionForm } from '@/features/accounts/account-forms';
 import { ValuationEditor } from '@/features/accounts/valuation-editor';
 
@@ -111,7 +112,12 @@ export default async function AccountDetailPage({
               <dd className="tabular" data-testid="position-rate">
                 {position.value.rate === null
                   ? '—'
-                  : `${position.value.rate.rate} on ${position.value.rate.rateDate} (${position.value.rate.source}${
+                  : `${formatRate({
+                      rate: position.value.rate.rate,
+                      from: position.currency,
+                      to: detail.reportingCurrency,
+                      locale,
+                    })} on ${position.value.rate.rateDate} (${position.value.rate.source}${
                       position.value.rate.exact ? '' : ', nearest earlier'
                     })`}
               </dd>
