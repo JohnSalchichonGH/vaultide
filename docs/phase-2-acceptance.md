@@ -4,14 +4,14 @@ Evidence for every acceptance criterion in blueprint §25 (Phase 2) and §26.
 Recorded 2026-09-08, on branch `main`, on top of the Phase 1 checkpoint
 (`a506e66`). Phase 3 has not been started.
 
-**Phase 2 is deployed in production at <https://vaultide.app>, commit
-`0e6d818`**, with the migrations applied, the environment and role checks
-re-run, and a verified encrypted backup of the expanded schema. One thing is
-outstanding: the authenticated journey has not been walked on the production
-deployment, because signing up there needs a verification email this session
-cannot receive. It is proven locally against a real PostgreSQL 18 and the same
-standalone artifact production runs. See
-"[What is not yet verified in production](#what-is-not-yet-verified-in-production)".
+**Phase 2 is deployed in production at <https://vaultide.app>**, with the
+migrations applied, the environment and role checks re-run, a verified
+encrypted backup of the expanded schema, and — since 2026-09-08 — **the
+authenticated journey walked end to end on the production deployment itself**,
+on a disposable account with synthetic values, which was then deleted through
+the product and the cascade measured. Nothing in this record is now claimed
+from local evidence alone. See
+"[The authenticated production journey](#the-authenticated-production-journey)".
 
 Phase 2 delivers the first real financial state in Vaultide: the unified
 `positions` supertype with cash accounts and other assets, the unified
@@ -166,14 +166,14 @@ production build of the web app.
 | Suite | Command | Result |
 |---|---|---|
 | Lint + money rule | `pnpm -r run lint` | **pass**, 6 packages |
-| Module boundaries | `pnpm run lint:boundaries` | **pass** — no violations, 232 modules, 665 dependencies |
+| Module boundaries | `pnpm run lint:boundaries` | **pass** — no violations, 232 modules, 666 dependencies |
 | Types | `pnpm -r run typecheck` | **pass**, 6 packages |
-| Unit + property | `pnpm -r run test:unit` | **249 passed** — finance 179, application 36, validation 16, web 15, db 3 |
+| Unit + property | `pnpm -r run test:unit` | **254 passed** — finance 179, application 36, validation 16, web 20, db 3 |
 | Integration (db) | `pnpm --filter @vaultide/db run test:integration` | **113 passed** (7 files) |
 | Integration (application) | `pnpm --filter @vaultide/application run test:integration` | **123 passed** (5 files) |
 | Finance coverage gate | `vitest run --coverage` | **pass** — statements 99.66 %, branches 98.26 %, functions 100 %, lines 99.80 %; §21's gate is ≥ 95 % lines and branches |
 | Build | `pnpm run build` | **pass** — 21 routes |
-| End to end | `pnpm test:e2e` | **54 passed** — 18 specs × chromium desktop, webkit desktop, chromium mobile, against the FX fixture and no public network |
+| End to end | `pnpm test:e2e` | **54 passed** — 18 specs × chromium desktop, webkit desktop, chromium mobile, against the FX fixture and no public network. Four assertions were added after the production journey, in the matrix rather than in a unit test, because they are about layout and rendering |
 | Real provider (separate, serial) | `pnpm test:live` | **6 passed** against the live Frankfurter v2 |
 | Secret scan | `gitleaks --config .gitleaks.toml` | **pass** — 34 commits scanned, no leaks |
 | Currency reconciliation | `pnpm db:verify-currencies` | **pass** — 150 = 150, in sync with the live approved chain (`ECB -> BDI`) |
@@ -335,8 +335,8 @@ Three independent proofs, because convention is not one:
 
 ## Deployed and verified in production
 
-**Phase 2 is deployed at <https://vaultide.app>, commit `0e6d818` — the head of
-`main`.**
+**Phase 2 is deployed at <https://vaultide.app>, and the deployed commit is
+always the head of `main`.**
 
 | Workflow | Run | Commit | Result |
 |---|---|---|---|
@@ -348,21 +348,44 @@ Three independent proofs, because convention is not one:
 | Deploy production | `34223479375` | `235bf42` | success |
 | CI | `34224373651` | `0e6d818` | success |
 | Deploy production | `34224860011` | `0e6d818` | success |
+| CI | `34226911159` | `3371d71` | success — the "confirm unchanged" correction |
+| Deploy production | `34227391287` | `3371d71` | success |
+| CI | `34235655250` | `4145c5d` | success — the readable exchange rate |
+| Deploy production | `34236267774` | `4145c5d` | success |
+| Verify environment | `34247793949` | `aaa8a2e` | success — first run with the live financial invariants |
+| Verify environment | `34249561967` | `aaa8a2e` | success — the post-deletion reading |
+| Nightly backup (post-deletion) | `34249700070` | `aaa8a2e` | success |
 
 The schema migrations landed with `34222828114`; the later runs are the docs,
-the ops verifier and the dormant control, each of which went through the same
-gate. Production has been green at every step.
+the ops verifiers, the dormant control and the two corrections the production
+journey turned up, each of which went through the same gate. Production has been
+green at every step.
+
+One red mark is worth naming rather than leaving to be discovered: run
+`34249116215` shows `failure` for the single job "The FX adapter still speaks to
+Frankfurter v2", which reached the public rate service and got `request failed`
+after 26.8 seconds. That job is deliberately isolated in this workflow so an
+upstream hiccup cannot redden a pull request; it passed twelve minutes earlier
+in `34247793949` and again afterwards in `34249561967`. It is upstream weather,
+not a Phase 2 defect.
 
 ### The released commit is the branch
+
+`/api/health` reports the commit the running artifact was built from, so the
+question "is production the branch?" has a one-line answer that does not depend
+on anybody remembering to look:
 
 ```
 $ curl -s https://vaultide.app/api/health
 {"status":"ok","database":"ok","checkedAt":"2026-09-08T12:14:34.597Z","version":"0e6d818"}
 ```
 
-`0e6d818` is the head of `main`. The landing page carries the Phase 2 badge and
-footer, so the artifact serving traffic is the one built from this commit and
-not a cached earlier one.
+That reading is from `0e6d818`; each deployment since has been verified the same
+way, and the closing check for this record is stated in the freeze report rather
+than here, because a document cannot quote the hash of the commit that contains
+it. `deploy-production.yml` builds with `VAULTIDE_VERSION` set to the commit it
+is deploying, so a stale artifact would report a different hash rather than
+silently serve. The landing page also carries the Phase 2 badge and footer.
 
 ### Environment and RLS, against the production database
 
@@ -379,6 +402,35 @@ not a cached earlier one.
   check that both tables exist, so a migration that had not run would fail here
   rather than pass silently;
 - `app_backup` can read every table and write none.
+
+### The invariants a constraint cannot express
+
+Added after the production journey, and run against the live database as
+`app_backup` by `verify-environment.yml` (`pnpm db:verify-invariants`). The
+schema already enforces one balance per position per day, a month-end balance
+that falls on a month end, and a closed position carrying a closing date. It
+cannot enforce rules *about other rows*, and those are only true for as long as
+the service is the sole writer:
+
+- a closed position closed at **zero** — the latest balance on or before its
+  closing date, which is the rule M6 states and no constraint can hold;
+- every position and every balance left an **audit row** when it was written;
+- every balance belongs to its **position's owner**, and every audit row to the
+  same user as its subject;
+- every position has a **subtype row of the right kind**;
+- no balance is dated in the future, allowing a day for the user's timezone.
+
+The script prints counts and the identifiers of failures — never an amount
+belonging to anybody. A `--manifest <prefix>` flag dumps the stored state of
+positions by name prefix, which is how the journey above was checked against
+what the interface had claimed.
+
+The same run also asserts, from the catalogs, **which tables carry row level
+security and which deliberately do not**: the eight user-owned tables each
+enable RLS with exactly one policy; the three Better Auth tables carry none,
+because a session must be read before anyone knows whose request it is; and any
+*other* table with a `user_id` and no policy fails the check, which is the
+failure actually worth catching.
 
 ### The routes exist and are closed to anonymous callers
 
@@ -416,44 +468,142 @@ CSP with a per-request nonce and `strict-dynamic`, HSTS with preload,
 A dump in which every table is empty is refused by the verifier, so "all zeros
 matched" could not have passed on its own.
 
-### What is not yet verified in production
+### The authenticated production journey
 
-**The authenticated Phase 2 journey has not been walked on the production
-deployment.** Creating an account there needs a verification email, and this
-session has no way to receive one — the capturing mailbox is a test-build
-capability and returns 404 in production, which is the correct behaviour and
-also what blocks this.
+Walked on <https://vaultide.app> on 2026-09-08, one step at a time, on a
+**disposable account with synthetic values** (EUR 1,234.56, USD 2,345.67, other
+asset EUR 4,567.89). The server's today was 2026-09-08; reporting currency EUR;
+locale `es-ES`. Every figure below was predicted before the page was opened and
+then compared, because a number read only after the fact is not a check.
 
-The blueprint asks for that walk on a **disposable synthetic account with
-synthetic values**, so it is deliberately not being done on the account that
-already exists. Everything it would cover is proven locally against a real
-PostgreSQL 18 and a production build of the same artifact — the browser matrix
-runs `node server.js` from `.next/standalone`, which is what Vercel runs — and
-the production evidence above establishes that the same code, schema, roles and
-privileges are in place there.
+| # | Step | Result |
+|---|---|---|
+| 1–2 | Sign up, receive the real Resend verification email, verify | from `no-reply@vaultide.app`, subject "Confirm your Vaultide email address", link host `vaultide.app`; not signed in before verifying (`autoSignIn: false`, 17.1), signed in after |
+| 3 | Onboarding 1–4 | defaults, then Europe/Madrid, `es-ES`, favourites USD + JPY. **BTC is not offered** (R28). Reporting currency EUR; the empty total renders `0,00 €` and is `available`, not partial — nothing tracked is a complete zero |
+| 4–5 | First EUR cash account, `1234,56` typed **with a comma** | native `1234,56 €`, as of 2026-09-08, "Up to date", amber "No month-end balance for 2026-08". Both metrics `1234,56 €`; "Since 2026-08-31: +1234,56 €" — a complete zero baseline, not `—` |
+| 6 | Second cash account, **no balance** | Balance `—`, In EUR `—`, "No value recorded". Cash `1234,56 €` + **Partial**, naming the account. "Since 2026-08-31: `—`" — a delta against a partial figure is refused. All twelve month ends went `unavailable`, because an unvalued account is `missing` at every date |
+| 7–8 | USD balance `2345,67` | native unchanged; reporting `2018,30 €`; rate `0.8604371020478403028738599208397866115987` USD→EUR on 2026-09-07 through the EUR pivot, "nearest earlier". Both metrics `3252,86 €`, Partial gone, the series refilled |
+| 9–10 | Other asset `4567,89 €`, **excluded** | badge "Total only". Total `7820,75 €` = 3252,86 + 4567,89 **exactly**; financial **unmoved** at `3252,86 €`; excluded component `4567,89 €`; the metrics-differ note appeared |
+| 11–12 | Turn inclusion **on** | badge flips; **value, date and history unchanged — one row, no dated event**. Total does **not** move; financial rises by exactly `4567,89` |
+| 12b | The discriminating test | a second, **past** snapshot dated 2026-08-31 was added, then inclusion toggled off: the **closed month's** financial figure moved `4000,00 € → 0,00 €` while total today stayed put. A dated-event implementation would have left the past alone. See §3 above |
+| 13–15 | Quick Update `1300,00` / `2400,00`, other asset **left blank** | "Saved **2** balances dated 2026-09-08" — blank means *keep the last snapshot*, not zero. Cash `3366,47 €`; the USD leg landed on the cent predicted in advance. One row per account, old values **corrected in place**, kind still Snapshot |
+| 16 | A past balance, then a correction to it | `2026-07-31` recorded and corrected to `1100,00`. The present did not move; the past did — `2026-07-31 → 1100,00 €` and **`2026-08-31 → 5100,00 €`**. August has no balance of its own for that account, so that figure exists only because the engine carries the July one forward |
+| 17 | Confirm the statement balance | kind `Snapshot → Statement balance`; July left the awaiting list; **not one figure moved** — confirming is a precision change, not an amount change |
+| 18 | "Unchanged this month" for 2026-08 | new row `2026-08-31 / 1100,00 € / Statement balance · confirmed unchanged` — **July's statement balance**, not today's `1350,00` snapshot. Badge amber → green "2026-08 closed". 2026-09 absent, September not having ended; 2026-06 still disabled — no cascade |
+| 19 | Close an account holding `2400,00 US$` | refused: *"This account still holds a balance. Record where the money went — a balance of zero on the closing date — and then close it."* The account stays active |
+| 20 | Zero it, then close | **no figure moved**, which is what the zero-balance precondition exists to guarantee. Freshness became "Closed"; the chip fell to "1 of 1 accounts updated this month" |
+| 21–23 | Sign out, sign back in | every figure survived the round trip |
 
-What remains, in the order it should be done:
+Three guards against a second balance for one day were each seen to hold: the
+unique `(position_id, valued_on)` constraint, Quick Update correcting in place,
+and "Record a balance" refusing outright — *"There is already a balance for
+2026-09-08. Edit it instead of adding another."*
 
-1. sign up a disposable account at <https://vaultide.app> and verify it from the
-   email;
-2. onboarding steps 1–4, giving the first cash account a synthetic balance;
-3. add a second cash account in a foreign currency and check the native and
-   reporting figures and the rate shown on the detail page;
-4. add an other asset, leave it excluded, and check that total and financial net
-   worth differ by exactly its value; include it and check total does not move;
-5. quick-update both accounts and check the earlier balances are still in the
-   history;
-6. correct a past balance, then confirm a month-end statement balance once a
-   month has ended;
-7. sign out and back in, confirm everything persisted;
-8. delete the disposable account;
-9. run `nightly-backup.yml` again and compare the manifest with run
-   `34223190343` — the row deltas measure the cascade, which is how Phase 1
-   verified deletion in production.
+The strict previous-`month_end` rule was confirmed in the interface as well as
+in the service: every month whose predecessor had no statement balance offered a
+**disabled** "Unchanged this month" carrying the tooltip *"Close the previous
+month first — this carries its statement balance forward."*
 
-Steps 8 and 9 also satisfy the blueprint's requirement to clean the disposable
-data up afterwards; the archives holding it expire under the 30-day retention
-and bucket lock recorded in ADR 0003 §5.
+**One thing this journey did not discriminate**, recorded so the evidence is not
+read as stronger than it is: at step 18 July's row was simultaneously "the latest
+valuation on or before 2026-08-31" and "July's `month_end`", so the pre-fix code
+would have carried the same figure. The case that separates them — confirming a
+month whose predecessor has no statement balance — is proven by the disabled
+control above and by the nine regressions in `positions.test.ts`, which is where
+that invariant is actually pinned.
+
+#### FX behaviour observed during the journey
+
+The ECB fixing for 2026-09-08 published **between** step 8 and step 12b. The USD
+leg moved `2018,30 € → 2019,69 €` on its own, with the stored native amount
+untouched, and the detail page went from `1 USD = 0,860437 EUR on 2026-09-07
+(ecb, nearest earlier)` to `1 USD = 0,86103 EUR on 2026-09-08 (ecb)`. Nothing
+converted is stored, so the same figures simply read differently once a newer
+rate existed — 7.4 and 10.2, seen happening rather than asserted.
+
+### The production database, read back as `app_backup`
+
+`verify-environment.yml` run `34247793949`, job "Financial invariants, live" —
+read-only, `SELECT`-only, `BYPASSRLS`. Stored state after the journey:
+
+```
+Synthetic EUR checking [cash/EUR] active v1 checking dormant=false
+  2026-09-08  1350.00000000  exact      entered              v3
+  2026-08-31  1100.00000000  month_end  confirmed_unchanged  v1
+  2026-07-31  1100.00000000  month_end  entered              v3
+  audit: position_valuations.insert=3 .update=4  positions.insert=1
+Synthetic USD checking [cash/USD] closed closed=2026-09-08 v2
+  2026-09-08     0.00000000  exact      entered              v3
+  audit: position_valuations.insert=1 .update=2  positions.insert=1 .update=1
+Synthetic other asset [other_asset/EUR] active v5 custom  include=true
+  2026-09-08  4567.89000000  exact      entered              v1
+  2026-08-31  4000.00000000  exact      entered              v1
+  audit: position_valuations.insert=2  positions.insert=1 .update=4
+```
+
+The row versions are the evidence, and they settle two of the three review items
+above from the storage side rather than the interface:
+
+- the EUR row for 2026-09-08 is at **v3** from three writes to **one** row —
+  entered `1234,56`, Quick Update to `1300,00`, inline edit to `1350,00`. A
+  same-day Quick Update correction is an ordinary versioned edit with `update`
+  audit rows (§2);
+- the other asset carries **four** `positions.update` audit rows — the inclusion
+  toggles — and exactly **two** valuation rows, the two balances recorded.
+  Toggling inclusion wrote no valuation and no dated event (§3);
+- the six `position_valuations.update` rows across both accounts are exactly the
+  six corrections made by hand. Nothing wrote silently.
+
+### Account deletion, measured
+
+The disposable account was deleted through the product. A wrong password with
+the correct confirmation phrase was refused — *"Invalid password"* — so deletion
+re-authenticates rather than trusting the session cookie (18.3).
+
+Production held only that one account with any financial rows, so a **second**
+disposable account was created first, holding a single `999,99 €` balance, in
+order to measure "another account is unaffected" rather than assume it:
+
+| | before | after | |
+|---|---|---|---|
+| balances | 7 | **1** | −6, exactly the deleted account's six |
+| positions | 4 | **1** | −3, exactly its three |
+| owners | 2 | **1** | |
+| audit rows | 22 | **2** | −20, exactly its twenty |
+
+The keeper account's balance, version and both audit rows were untouched. All
+ten live invariants still held afterwards, which is the check that the cascade
+removed whole objects: no orphaned valuation, no subtype row without a parent,
+no audit row pointing at a position that no longer exists. Audit rows cascade
+from the `user` row by design — erasure means the record of what was erased goes
+with it.
+
+### Backup after the deletion
+
+`nightly-backup.yml` run `34249700070`: dump 125,647 bytes as `app_backup`,
+every table row count matched live, `age` encryption to 125,863 bytes, uploaded
+to `s3://vaultide-backups-prod/2026/09/` despite the 30-day object lock, read
+back out of the bucket, digest
+`f2f730467afaad2a2a54e173ace86fabfea4467efb0acc88a6f10572a4967bcd` matching the
+one taken at encryption time.
+
+Manifest delta against run `34223190343`, taken before the journey:
+
+| Table | before | after | Why |
+|---|---|---|---|
+| `user`, `account`, `user_settings` | 2 | 3 | +journey account, +keeper, −journey account. Two users predate the journey and hold no positions, which is why the earlier run showed `positions = 0` alongside two users |
+| `categories` | 42 | 63 | 21 defaults per user; the deleted account's 21 cascaded away |
+| `positions`, `position_valuations`, `cash_accounts` | 0 | 1 | the keeper's only |
+| `other_assets` | 0 | 0 | the journey's other asset is gone |
+| `audit_entries` | 0 | 2 | the keeper's only |
+| `fx_rates` | 1,958 | 2,059 | the 2026-09-08 ECB fixing publishing mid-journey — the same event that moved the USD leg |
+| `currencies` | 159 | 159 | reference data, untouched |
+
+ADR 0003 §5 records that immutable backup objects may retain a deleted account
+for up to the 30-day retention window. **Here they retain nothing**: backups ran
+at 10:28, 11:54 and 16:13, and the disposable account was created after 11:54
+and deleted before 16:13, so no dump was ever taken while it held anything. The
+caveat stands as a general statement; it has nothing to cover in this case.
 
 ---
 
@@ -536,6 +686,52 @@ None weakens an assertion.
 
 ## Defects found and fixed while implementing Phase 2
 
+### Found in production, during the authenticated journey
+
+None of these produced a wrong figure. All five are about what the page shows,
+which is the half of the product a local test suite is worst at judging — and
+four of them only became visible with real data in front of a real person.
+
+- **The exchange rate was dumped, not read.** The account detail page printed
+  the engine's derived cross rate at full precision —
+  `0.8604371020478403028738599208397866115987` — with no direction and no
+  explanation. It is a rate, so it must be *read*: `1 USD = 0,860437 EUR on
+  2026-09-07 (ecb, nearest earlier)`, rounded for display at six decimals in the
+  user's locale. Only the display rounds; the conversion still multiplies by the
+  exact rate, which is why the reporting figure did not move by a cent when this
+  landed. Regressions in `apps/web/test/format.test.ts`, including one asserting
+  that it is the **rate** that is rounded and never a figure derived from it,
+  plus a tightened browser assertion.
+
+- **The chart's plotted points were ovals.** The line is drawn with
+  `preserveAspectRatio="none"` so twelve months fill whatever width the card
+  has, which scales x and y by different factors: fine for a path, wrong for
+  anything with a shape of its own. An SVG `<circle>` came out an ellipse and the
+  2px stroke came out thicker one way than the other. The stroke now opts out of
+  scaling and the points are drawn over the top in the page's own coordinates.
+
+- **The chart never said which metric it drew.** It plots *financial* net worth
+  by design; the metric name lived in the `aria-label`, the `sr-only` caption
+  and the table header, so a screen-reader user was told and a sighted user was
+  not. Harmless while the two metrics agree, and misleading the moment they
+  diverge — which is exactly when the headline above shows two numbers.
+
+- **Total net worth had no change-since line.** The delta was computed and
+  carried in the DTO and only the financial one was rendered, so a reader could
+  see that total net worth was higher but not what it had *done*. Each metric
+  moves for its own reasons; each now carries its own change.
+
+- **The quick-update modal opened in the top-left corner.** A `<dialog>` opened
+  with `showModal()` is laid out with `inset: 0` and fit-content sizing and
+  centres itself through the user agent's `margin: auto` — which Tailwind v4's
+  preflight resets to zero along with every other element's. One class puts it
+  back.
+
+The regressions for the last four are in the **browser matrix**, where a layout
+fault can actually be observed: a plotted point is as wide as it is tall, the
+chart names its metric, the two change lines differ while an asset is excluded
+and agree once it is included, and the open dialog's centre is the viewport's.
+
 - **Summing converted amounts was order-dependent in the fortieth digit.** A
   property test comparing a net worth computed from positions in two different
   orders failed on an exact string comparison. The cause is real and is not a
@@ -588,3 +784,22 @@ None weakens an assertion.
    `pnpm test:e2e` stops authenticating after `pnpm run test:integration`; re-run
    `pnpm db:bootstrap` with the passwords you want before the browser suite. CI
    is unaffected: each job gets its own PostgreSQL service container.
+
+6. **A chart with nothing to draw renders blank, with the reason only in the
+   table alternative.** Observed at step 6 of the production journey: adding an
+   account with no balance makes every historical point `unavailable`, because
+   an unvalued account is `missing` at every date, and the picture goes empty.
+   That is the honest consequence — it corrected itself the moment a balance was
+   recorded — and no wrong figure is ever shown; the `aria-label` and the "View
+   as table" fallback both say `unavailable` for each month, which is what 16.3
+   requires. What is missing is an inline note in the picture itself, so a
+   sighted user does not have to open the table to learn why it is empty. Left
+   for Phase 8, which builds the real charting layer.
+
+7. **Deleting a balance and closing an account are both one click, with no
+   confirmation step.** Deleting is audited before and after, and closing
+   refuses unless the balance is zero, so neither can lose money silently — but
+   Phase 2 has no reopen action, which makes closing effectively one-way from
+   the interface. Whether these want a confirmation is a product decision, not a
+   defect, and it belongs with the wider destructive-action review rather than
+   with a net-worth phase.
