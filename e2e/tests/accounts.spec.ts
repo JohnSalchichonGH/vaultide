@@ -370,3 +370,43 @@ function headlineOf(text: string): string {
   if (match === null) throw new Error(`No figure in: ${text}`);
   return match[0];
 }
+
+test.describe('dormant accounts', () => {
+  test('can only be marked dormant at zero, and stop being dormant when money returns', async ({
+    page,
+    request,
+  }) => {
+    const email = uniqueEmail('e2e-dormant');
+    await onboard(page, request, email);
+
+    await page.goto('/accounts?tab=cash');
+    await ready(page, 'account-submit');
+    const today = await todayFromForm(page);
+
+    await addCashAccount(page, { name: 'Old bank', currency: 'EUR', balance: '120.00' });
+    await page.getByRole('link', { name: 'Old bank' }).click();
+    await ready(page, 'edit-submit');
+
+    // While it still holds money, the server refuses and says what to do.
+    await page.getByTestId('edit-dormant').check();
+    await page.getByTestId('edit-submit').click();
+    await expect(page.getByTestId('accounts-error')).toContainText('exactly zero');
+
+    // Empty it — correcting today's balance rather than adding a second one for
+    // the same day, which M1 forbids — and the flag is accepted.
+    await page.getByTestId(`edit-valuation-${today}`).click();
+    await fillTestId(page, 'edit-valuation-amount', '0');
+    await page.getByTestId('save-valuation-edit').click();
+    await expect(page.getByTestId('position-native')).toContainText('0.00');
+
+    await page.reload();
+    await page.getByTestId('edit-dormant').check();
+    await page.getByTestId('edit-submit').click();
+    await expect(page.getByTestId('accounts-success')).toHaveText('Saved.');
+    await expect(page.getByText('Dormant').first()).toBeVisible();
+
+    // A dormant account is left out of the quick update (15.3).
+    await page.goto('/accounts?tab=cash');
+    await expect(page.getByTestId('quick-update-open')).toBeDisabled();
+  });
+});

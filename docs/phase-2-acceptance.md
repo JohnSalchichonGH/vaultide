@@ -79,7 +79,7 @@ production build of the web app.
 | Integration (application) | `pnpm --filter @vaultide/application run test:integration` | **118 passed** (5 files) |
 | Finance coverage gate | `vitest run --coverage` | **pass** — statements 99.66 %, branches 98.26 %, functions 100 %, lines 99.80 %; §21's gate is ≥ 95 % lines and branches |
 | Build | `pnpm run build` | **pass** — 21 routes |
-| End to end | `pnpm test:e2e` | **51 passed** — 17 specs × chromium desktop, webkit desktop, chromium mobile, against the FX fixture and no public network |
+| End to end | `pnpm test:e2e` | **54 passed** — 18 specs × chromium desktop, webkit desktop, chromium mobile, against the FX fixture and no public network |
 | Real provider (separate, serial) | `pnpm test:live` | **6 passed** against the live Frankfurter v2 |
 | Secret scan | `gitleaks --config .gitleaks.toml` | **pass** — 34 commits scanned, no leaks |
 | Currency reconciliation | `pnpm db:verify-currencies` | **pass** — 150 = 150, in sync with the live approved chain (`ECB -> BDI`) |
@@ -87,7 +87,10 @@ production build of the web app.
 
 Phase 2 adds 71 unit and property tests to `finance`, 52 raw-SQL database
 tests, 36 application integration tests, 5 action-registry tests in `apps/web`
-and 4 end-to-end scenarios (12 runs across the browser matrix).
+and 5 end-to-end scenarios (15 runs across the browser matrix): the full
+journey in two currencies with an excluded asset, an unvalued asset shown as
+unknown, the 30 September → 1 October month close, first-balance marking, and
+the dormant flag.
 
 ---
 
@@ -235,7 +238,7 @@ Three independent proofs, because convention is not one:
 
 | Workflow | Run | Result |
 |---|---|---|
-| CI (`e738b60`) | `34222434497` | success — lint/boundaries/types, unit and property, fresh database and roles, build and the 51-test browser matrix |
+| CI (`e738b60`) | `34222434497` | success — lint/boundaries/types, unit and property, fresh database and roles, build and the browser matrix |
 | Deploy production | `34222828114` | success — migrations `0004`/`0005` as `app_owner` over the direct endpoint, currency seed, deploy hook |
 | Verify environment | `34223083180` | success — all five jobs |
 | Nightly backup (post-Phase-2 schema) | `34223190343` | success |
@@ -466,3 +469,12 @@ None weakens an assertion.
 
 4. **The `data` settings page still has no export.** Export is a Phase 7
    deliverable (18.3).
+
+5. **Running the integration suites invalidates a hand-made local end-to-end
+   credential.** Database roles are cluster-wide, and `provisionDatabase` runs
+   the real `bootstrap-roles.sql` with fresh random passwords for each suite —
+   which is exactly what makes the fresh-database test meaningful. The
+   consequence locally is that a `DATABASE_URL` assembled by hand for
+   `pnpm test:e2e` stops authenticating after `pnpm run test:integration`; re-run
+   `pnpm db:bootstrap` with the passwords you want before the browser suite. CI
+   is unaffected: each job gets its own PostgreSQL service container.

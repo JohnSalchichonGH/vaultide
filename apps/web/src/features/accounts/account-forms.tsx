@@ -462,12 +462,13 @@ export function CreateOtherAssetForm({
   );
 }
 
-/** Rename, retype, mark dormant. */
+/** Rename, mark dormant, and — for other assets — set the inclusion preference. */
 export function EditPositionForm({ position, today }: { position: PositionDto; today: string }) {
   const router = useRouter();
   const nameId = useId();
   const [name, setName] = useState(position.name);
   const [include, setInclude] = useState(position.includeInFinancialNetWorth === true);
+  const [dormant, setDormant] = useState(position.isDormant === true);
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
@@ -488,6 +489,7 @@ export function EditPositionForm({ position, today }: { position: PositionDto; t
                 positionId: position.id,
                 expectedVersion: position.version,
                 name,
+                isDormant: dormant,
               })
             : await updateOtherAssetAction({
                 positionId: position.id,
@@ -516,7 +518,34 @@ export function EditPositionForm({ position, today }: { position: PositionDto; t
         />
       </div>
 
-      {isCash ? null : (
+      {isCash ? (
+        /*
+         * Dormant (6.2, R22): the only account state that carries at zero
+         * without a monthly confirmation. The server refuses it unless the
+         * latest balance is exactly zero, and clears it again the moment a
+         * non-zero balance is recorded — so the flag can never quietly assert
+         * "still empty" about an account that is not.
+         */
+        <label className="flex items-start gap-2 rounded-[var(--radius-control)] border p-3">
+          <input
+            type="checkbox"
+            data-testid="edit-dormant"
+            checked={dormant}
+            onChange={(event) => {
+              setDormant(event.target.checked);
+            }}
+          />
+          <span>
+            This account is <strong>dormant</strong>
+            <span className="block text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">
+              Empty and left open. A dormant account carries at zero without being confirmed
+              every month, and is left out of the quick update. It can only be marked dormant
+              while its balance is exactly zero, and recording anything in it again turns this
+              off.
+            </span>
+          </span>
+        </label>
+      ) : (
         <label className="flex items-start gap-2 rounded-[var(--radius-control)] border p-3">
           <input
             type="checkbox"
