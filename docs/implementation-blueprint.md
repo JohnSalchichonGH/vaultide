@@ -1,6 +1,6 @@
-# Vaultide — Personal Finance Platform Implementation Blueprint (frozen, v2.1.2)
+# Vaultide — Personal Finance Platform Implementation Blueprint (frozen, v2.1.3)
 
-**Status:** Planning deliverable (no code written). Produced 2026-09-06 against the supplied product specification; revised after an adversarial model review, a product-owner review (v2), a targeted consistency pass (v2.1), a defect-fix freeze pass (v2.1.1) and four final corrections (v2.1.2). This version supersedes every earlier version in full and is the frozen input to Phase 0.
+**Status:** Planning deliverable (no code written). Produced 2026-09-06 against the supplied product specification; revised after an adversarial model review, a product-owner review (v2), a targeted consistency pass (v2.1), a defect-fix freeze pass (v2.1.1), four final corrections (v2.1.2) and one narrow post-Phase-2 consistency correction (v2.1.3, the onboarding step allocation — no product behaviour, schema, accounting or security semantics changed). This version supersedes every earlier version in full; v2.1.2 was the frozen input to Phase 0, and Phases 0–2 were built and frozen against it.
 **Audience:** The Claude Code session(s) that will implement the application phase by phase, and the product owner.
 **Product name:** **Vaultide**. The repository root is `vaultide/`, workspace packages are published under the `@vaultide/*` namespace, and "Vaultide" is the product-facing name in app metadata, authentication and email branding, and hosting/monitoring project names. Historical local prototype paths quoted in Section 1.3 keep their real on-disk names.
 
@@ -1853,7 +1853,7 @@ Each phase is a usable vertical slice, sized so a Claude Code session can comple
 ### Phase 7 — Full monthly workflow, decompositions, historical editing, export
 
 - **Objective:** the complete "how did I get here" layer and safe history editing.
-- **Functionality:** wealth-change decompositions for total and financial net worth (drivers + allocation) per month and per range; completeness with missing items; monthly editor complete (all eight sections, current-month behavior, keyboard flow, confirm-all-unchanged); history drawer with restore; bulk editor complete; data export; onboarding steps 4–11.
+- **Functionality:** wealth-change decompositions for total and financial net worth (drivers + allocation) per month and per range; completeness with missing items; monthly editor complete (all eight sections, current-month behavior, keyboard flow, confirm-all-unchanged); history drawer with restore; bulk editor complete; data export; onboarding steps 5–10.
 - **Finance:** Section 12 complete (signed identities, newly tracked/removed, non-financial purchases/sales, capital improvements, FX residuals, completeness).
 - **Testing:** 12.7 golden and the excluded-car variant; property tests 1, 8, 18, 20; `multi-currency` and `complex-user` fixtures; export security test; full cascade deletion; **first restore drill** with dump-count verification.
 - **Acceptance:** for every fixture and random data, drivers sum to ΔNW exactly for both metrics; buying the excluded car shows "Purchases of non-financial assets −20,000" only in the financial view; the dashboard shows "August 83 % complete — missing mortgage balance" and "September in progress"; restoring a valuation from history creates a new audit row; export contains every table for the user and nothing else; the restore drill is logged.
@@ -2101,21 +2101,50 @@ None found. A final sweep of the document for the stale terms listed in 30.1 (ro
 | 3 | Personal savings rate counts self-paid additional spending per a default-on user setting (`count_additional_spending`), so "Total spending" and "Savings rate" agree; tracked savings, total spending and the projection baseline restated consistently | 1, F16, F19, R24, 6.2, 12.5, 12.7, 13.2, 13.6, 15.2–15.5, 21.1–21.2, Phase 3, 26, D33, D40, 30.2 |
 | 4 | Dependency lines stated as Next.js 16.x and Better Auth 1.7.x (latest compatible stable release within those lines at implementation time) | Context, 17.1, D16 |
 
+### 30.6 v2.1.3 correction
+
+Raised after Phase 2 was frozen and production-verified, while reconciling the
+acceptance record against this document. It is a roadmap bookkeeping error, not
+a design question: nothing about what onboarding *does* was ever in doubt.
+
+| # | Correction | Where |
+|---|---|---|
+| 1 | Phase 7's onboarding scope read "steps 4–11", which both re-claimed a step already shipped and invented a step 11 that no section defines. Corrected to **steps 5–10** | 25 (Phase 7) |
+
+**The contradiction.** 15.2 defines the wizard as **steps 1–10** of spec §90.
+Phase 1 took steps **1–3**; Phase 2 took step **4**, the first cash account,
+because Phase 2 is the phase that gives it something to ask about. Phase 7's
+"steps 4–11" therefore disagreed with 15.2 at the top end and with the delivered
+state at the bottom.
+
+**The resolution**, decided by the product owner: the total remains **1–10** as
+15.2 has always said, and the allocation is **Phase 1: 1–3 · Phase 2: 4 ·
+Phase 7: 5–10**. Phase 7's other scope is untouched.
+
+Nothing else changed: no product behaviour, no schema, no migration, no
+accounting or security semantics, and no phase's implementation. `/onboarding/5`
+and beyond still return 404, which remains the honest answer until Phase 7 gives
+them something to ask.
+
+Spec §90 itself is not part of this repository — 15.2's "steps 1–10 of spec §90"
+is the authority relied on here, and the underlying specification was not
+consulted directly.
+
 ---
 
 ## Ready for Phase 0
 
-No genuine blockers remain. The blueprint is frozen as v2.1.2; Phase 0 may begin.
+No genuine blockers remain. The blueprint was frozen as v2.1.2 and Phase 0 began from it; it is frozen as v2.1.3 after the correction in 30.6, which changed no phase already delivered.
 
 ---
 
 ## Freeze check
 
-- The seven v2.1.1 defects (30.4) and the four v2.1.2 corrections (30.5) were corrected and propagated to the schema, algorithms, tests, phases and acceptance criteria; no accounting identity changed except in wording or representation (30.2), and the personal savings rate is an additional derived figure layered on the unchanged tracked identity.
+- The seven v2.1.1 defects (30.4), the four v2.1.2 corrections (30.5) and the v2.1.3 onboarding-range correction (30.6) were corrected and propagated to the schema, algorithms, tests, phases and acceptance criteria; no accounting identity changed except in wording or representation (30.2), and the personal savings rate is an additional derived figure layered on the unchanged tracked identity.
 - The default Monte Carlo configuration validates: the explicit class matrix in 13.9 is symmetric with unit diagonal, its smallest eigenvalue is ≈ +0.0265 and its Cholesky factorization succeeds, so it passes the same PSD validator as custom matrices; a dedicated golden test asserts this.
 - No contradictory month-to-date rules remain: every section now states the latest-common-date rule, with unavailability only when no common snapshot date exists.
 - Required schema nullability is explicit: every column in 6.2 is `NOT NULL` unless written `NULL`, liability-payment parts are exact non-null non-negative `NUMERIC(24,8)`, every closed set is a PostgreSQL enum, and NULL/enum rejection tests are generated per table.
 - Recurring skips are represented durably in `recurring_template_skips`, audited and RLS-protected like every other user table; JSON holds UI dismissal keys only.
 - Scenario revision pointers cannot cross scenarios or tenants (composite foreign keys, M19), and month-to-date opening balances are defined by the same rules as completed months (8.1, 8.6).
-- No remaining blocker was found. The blueprint is frozen as v2.1.2.
+- No remaining blocker was found. The blueprint is frozen as v2.1.3.
 

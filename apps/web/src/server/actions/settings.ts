@@ -113,7 +113,7 @@ export const deleteTagAction = action({
   },
 });
 
-/** Onboarding steps 1-3 (Phase 1 scope); steps 4-11 arrive with their phases. */
+/** Onboarding steps 1-3 (Phase 1 scope); step 4 is Phase 2, steps 5-10 later. */
 export const completeOnboardingStepAction = action({
   name: 'onboarding.completeStep',
   input: z.discriminatedUnion('step', [

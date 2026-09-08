@@ -769,6 +769,12 @@ semantics or the roadmap.
    something to ask about. `/onboarding/[step]` returns a 404 for them today,
    which is honest.
 
+   *Superseded by blueprint v2.1.3 (30.6).* "4–11" was the roadmap wording at
+   the time and was wrong at both ends: 15.2 defines the wizard as steps 1–10,
+   and step 4 arrived with Phase 2. The authoritative allocation is Phase 1:
+   1–3 · Phase 2: 4 · Phase 7: 5–10. The sentence above is left as written
+   because it records what Phase 1 was built against.
+
 5. **The `data` settings page has no export.** Export is a Phase 7 deliverable
    (18.3); the page says so and lists what is held instead.
 

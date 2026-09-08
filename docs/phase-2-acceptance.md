@@ -835,7 +835,7 @@ and agree once it is included, and the open dialog's centre is the viewport's.
    it has to arrive together with a per-position "latest before `from`" query,
    not without one.
 
-2. **Onboarding steps 5–11** still return 404, which remains honest.
+2. **Onboarding steps 5–10** still return 404, which remains honest.
 
 3. **First restore drill** is a Phase 7 acceptance criterion (§22.5) and stays
    scheduled. The backup side is proven end to end.

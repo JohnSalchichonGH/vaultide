@@ -19,7 +19,7 @@ export const dynamic = 'force-dynamic';
  * One route with the step as a segment, matching 15.1's `/onboarding/[step]`.
  * Phase 1 built the first three; Phase 2 adds the fourth — the first cash
  * account — because Phase 2 is the phase that gives it something to ask about.
- * Steps 5–11 arrive with theirs.
+ * Steps 5–10 arrive with theirs.
  */
 export default async function OnboardingStepPage({
   params,
@@ -47,7 +47,7 @@ export default async function OnboardingStepPage({
     case '4':
       return <OnboardingAccountStep {...props} today={session.today} />;
     default:
-      // Steps 5–11 belong to later phases; an unknown step is not a page.
+      // Steps 5–10 belong to later phases; an unknown step is not a page.
       notFound();
   }
 }
