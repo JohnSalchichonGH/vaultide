@@ -13,6 +13,7 @@ import {
   cashMonthState,
   endOfMonth,
   endOfMonthKey,
+  monthEndBalance,
   isMonthClosable,
   monthKey,
   money,
@@ -22,6 +23,7 @@ import {
   plainDate,
   serialize,
   startOfMonth,
+  startOfMonthKey,
   type FxTable,
   type MonthKey,
   type PlainDate,
@@ -144,6 +146,11 @@ function cashMonthStateDto(
   const versionOf = (id: string): number =>
     rows.find((row) => row.id === id)?.version ?? 1;
 
+  // "Unchanged this month" carries the previous month's statement balance, so
+  // it is only available once that month is closed (8.1, R22).
+  const previousMonth = monthKey(addMonths(startOfMonthKey(month), -1));
+  const canConfirmUnchanged = monthEndBalance(entry.valuations, previousMonth) !== undefined;
+
   return {
     month: (month as string).slice(0, 7),
     open: state.open,
@@ -165,6 +172,7 @@ function cashMonthStateDto(
             amount: serialize(money(state.confirmableSnapshot.amount, currency)),
             version: versionOf(state.confirmableSnapshot.id),
           },
+    canConfirmUnchanged,
   };
 }
 

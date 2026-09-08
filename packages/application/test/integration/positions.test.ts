@@ -247,13 +247,65 @@ describe('the two date rules (M5, R15)', () => {
   });
 });
 
-describe('"confirm unchanged for this month" (R22)', () => {
-  it('carries the previous statement balance forward, explicitly', async () => {
-    const account = await makeCashAccount(OCT_1);
+describe('"confirm unchanged for this month" (R22, 8.1)', () => {
+  /**
+   * The action carries **the previous month's statement balance** forward, and
+   * nothing else. It originally reached for the latest valuation on or before
+   * the previous month end, which agrees whenever that month is closed and,
+   * when it is not, carries a figure across an unobserved month and stamps it
+   * as a statement balance — the failure C7, F1 and R5 exist to prevent.
+   */
+
+  async function accountWithJulyOnly(ctx: RequestContext = OCT_1) {
+    const account = await makeCashAccount(ctx, { name: 'BBVA' });
+    await recordValuation(deps(), ctx, {
+      positionId: account.id,
+      valuedOn: '2026-07-31',
+      amount: '8000.00',
+      datePrecision: 'month_end',
+    });
+    return account;
+  }
+
+  it('refuses September while August has no month-end balance', async () => {
+    const account = await accountWithJulyOnly();
+
+    await expect(
+      confirmUnchanged(deps(), OCT_1, { positionId: account.id, month: '2026-09' }),
+    ).rejects.toMatchObject({
+      code: 'INCOMPLETE_DATA',
+      message: expect.stringContaining('August 2026'),
+    });
+
+    // Nothing was written: no September row, and July is untouched.
+    const history = await positionHistory(deps(), OCT_1, account.id);
+    expect(history.map((row) => row.valuedOn)).toEqual(['2026-07-31']);
+    expect(history[0]?.amount).toBe('8000.00000000');
+    expect(history[0]?.version).toBe(1);
+  });
+
+  it('refuses an unclosed month even when an ordinary snapshot sits on its last day', async () => {
+    // An exact snapshot dated 31 August is not August's statement balance
+    // (8.8), so it is not something to carry either.
+    const account = await accountWithJulyOnly();
     await recordValuation(deps(), OCT_1, {
       positionId: account.id,
       valuedOn: '2026-08-31',
-      amount: '8055.00',
+      amount: '8123.45',
+      datePrecision: 'exact',
+    });
+
+    await expect(
+      confirmUnchanged(deps(), OCT_1, { positionId: account.id, month: '2026-09' }),
+    ).rejects.toMatchObject({ code: 'INCOMPLETE_DATA' });
+  });
+
+  it('succeeds once August is closed, carrying August’s exact amount', async () => {
+    const account = await accountWithJulyOnly();
+    const august = await recordValuation(deps(), OCT_1, {
+      positionId: account.id,
+      valuedOn: '2026-08-31',
+      amount: '8055.55',
       datePrecision: 'month_end',
     });
 
@@ -263,9 +315,59 @@ describe('"confirm unchanged for this month" (R22)', () => {
     });
 
     expect(carried.valuedOn).toBe('2026-09-30');
-    expect(carried.amount).toBe('8055.00000000');
-    expect(carried.datePrecision).toBe('month_end');
+    // August's exact native amount, not July's and not a rounded copy.
+    expect(carried.amount).toBe(august.amount);
+    expect(carried.amount).toBe('8055.55000000');
     expect(carried.source).toBe('confirmed_unchanged');
+    expect(carried.datePrecision).toBe('month_end');
+    expect(carried.version).toBe(1);
+
+    // No earlier valuation was mutated — same amounts, same versions, and no
+    // `update` in either row's audit trail.
+    const history = await positionHistory(deps(), OCT_1, account.id);
+    expect(history.map((row) => [row.valuedOn, row.amount, row.version])).toEqual([
+      ['2026-09-30', '8055.55000000', 1],
+      ['2026-08-31', '8055.55000000', 1],
+      ['2026-07-31', '8000.00000000', 1],
+    ]);
+    for (const row of history.filter((item) => item.valuedOn !== '2026-09-30')) {
+      expect((await auditRows(USER_A, row.id)).map((entry) => entry.action)).toEqual(['insert']);
+    }
+
+    // The new row is on the record, as an insert with no before-image (18.1).
+    const audit = await auditRows(USER_A, carried.id);
+    expect(audit.map((row) => row.action)).toEqual(['insert']);
+    expect(audit[0]?.before).toBeNull();
+    expect(audit[0]?.after).toMatchObject({
+      amount: '8055.55000000',
+      source: 'confirmed_unchanged',
+      datePrecision: 'month_end',
+    });
+
+    // …and September now reports as closed, so October could reconcile against
+    // an opening the user actually confirmed.
+    const detail = await getPositionDetail(deps(), on('2026-10-01'), account.id);
+    expect(detail.position.lastCompletedMonth).toMatchObject({
+      month: '2026-09',
+      open: 'month_end',
+      close: 'month_end',
+      included: true,
+    });
+    expect(
+      detail.monthsAwaitingStatement.map((month) => month.month),
+    ).not.toContain('2026-09');
+  });
+
+  it('tells the interface which months are eligible before it offers the button', async () => {
+    const account = await accountWithJulyOnly();
+    const detail = await getPositionDetail(deps(), OCT_1, account.id);
+
+    const august = detail.monthsAwaitingStatement.find((month) => month.month === '2026-08');
+    const september = detail.monthsAwaitingStatement.find((month) => month.month === '2026-09');
+
+    // August can be confirmed — July is closed. September cannot, yet.
+    expect(august?.canConfirmUnchanged).toBe(true);
+    expect(september?.canConfirmUnchanged).toBe(false);
   });
 
   it('refuses to confirm a month that has not ended', async () => {
@@ -280,6 +382,21 @@ describe('"confirm unchanged for this month" (R22)', () => {
     await expect(
       confirmUnchanged(deps(), OCT_1, { positionId: account.id, month: '2026-09' }),
     ).rejects.toMatchObject({ code: 'INCOMPLETE_DATA' });
+  });
+
+  it('refuses a second confirmation for the same month', async () => {
+    const account = await accountWithJulyOnly();
+    await recordValuation(deps(), OCT_1, {
+      positionId: account.id,
+      valuedOn: '2026-08-31',
+      amount: '8055.00',
+      datePrecision: 'month_end',
+    });
+    await confirmUnchanged(deps(), OCT_1, { positionId: account.id, month: '2026-09' });
+
+    await expect(
+      confirmUnchanged(deps(), OCT_1, { positionId: account.id, month: '2026-09' }),
+    ).rejects.toMatchObject({ code: 'CONFLICT_DUPLICATE' });
   });
 });
 
@@ -482,6 +599,50 @@ describe('quick update (15.3, 20.3)', () => {
       // only today.
       ['2026-08-31', '8055.00000000'],
     ]);
+  });
+
+  it('audits a same-day correction and moves its version, like any other edit', async () => {
+    // The correction path writes through the same repository as every other
+    // balance edit, so it must leave the same trail. Asserted separately from
+    // the test above, which proves the row count and that history is untouched:
+    // this one proves the correction is *recorded*, not merely applied.
+    const bbva = await makeCashAccount(SEPT_6, {
+      name: 'BBVA',
+      openingBalance: '8055.00',
+      openingBalanceOn: '2026-08-31',
+    });
+
+    await quickUpdate(deps(), SEPT_6, { entries: [{ positionId: bbva.id, amount: '8120.00' }] });
+    const [today] = await positionHistory(deps(), SEPT_6, bbva.id);
+    expect(today?.valuedOn).toBe('2026-09-06');
+    expect(today?.version).toBe(1);
+
+    await quickUpdate(deps(), SEPT_6, { entries: [{ positionId: bbva.id, amount: '8130.00' }] });
+
+    const history = await positionHistory(deps(), SEPT_6, bbva.id);
+    // Exactly one row for today, and the August row is byte-identical.
+    expect(history.filter((row) => row.valuedOn === '2026-09-06')).toHaveLength(1);
+    const august = history.find((row) => row.valuedOn === '2026-08-31');
+    expect(august?.amount).toBe('8055.00000000');
+    expect(august?.version).toBe(1);
+
+    // Optimistic concurrency moved, so a form rendered before the correction is
+    // now stale rather than silently overwriting it (20.3).
+    const corrected = history.find((row) => row.valuedOn === '2026-09-06');
+    expect(corrected?.version).toBe(2);
+    expect(corrected?.id).toBe(today?.id);
+
+    // …and the change is on the record, with both images (18.1).
+    const audit = await auditRows(USER_A, today!.id);
+    expect(audit.map((row) => row.action)).toEqual(['insert', 'update']);
+    const update = audit.find((row) => row.action === 'update');
+    expect(update?.before).toMatchObject({ amount: '8120.00000000' });
+    expect(update?.after).toMatchObject({ amount: '8130.00000000' });
+    expect(update?.changed_fields).toContain('amount');
+
+    // The August row carries only the entry from when it was written; the
+    // correction did not touch it.
+    expect((await auditRows(USER_A, august!.id)).map((row) => row.action)).toEqual(['insert']);
   });
 
   it('lands entirely or not at all', async () => {

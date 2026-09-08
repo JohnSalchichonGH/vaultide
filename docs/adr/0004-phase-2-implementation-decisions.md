@@ -2,7 +2,7 @@
 
 **Status:** accepted · **Date:** 2026-09-08 · **Phase:** 2
 
-Five decisions taken while building positions, valuations and the two
+Six decisions taken while building positions, valuations and the two
 net-worth metrics that the blueprint does not settle, that a later phase could
 plausibly get wrong, and whose reasoning is not obvious from the code alone.
 
@@ -152,3 +152,44 @@ column and the driver bucket.
 One place to be careful when it does: `loadFinancialWindow` loads every
 position regardless of status, which is correct today and would become the bug
 above the moment archiving exists. A comment there says so.
+
+---
+
+## 6. `include_in_financial_net_worth` is a timeless classification, not a dated event
+
+**Decision.** The other-asset inclusion preference is a **reporting definition**
+with no effective date. Changing it never moves total net worth, changes whether
+the asset participates in financial net worth, and recomputes the **entire**
+historical financial-net-worth series under the current classification. It
+creates no driver and no event, and there is no effective-date column.
+
+**Why.** Financial net worth is a definition the user chooses, not a thing that
+happens to them. If somebody decides cars are outside their financial net worth,
+last March's figure has to be computed the same way as today's, or the series
+is not comparable with itself — a chart whose earlier points use a definition
+the user has since rejected is worse than useless for the one question it exists
+to answer ("am I ahead of where I was?").
+
+The alternative — treating the toggle as a dated event — would put a spike in
+the series on the day a preference was edited, and would need 12.3's driver
+machinery to explain it. That is the right model for *acquiring or disposing of*
+an asset, which is a real event with a real date, and it is exactly what 12.4's
+"purchases and sales of non-financial assets" lines are for. Reclassifying one
+is not the same act.
+
+M15 and R18 support this reading: the preference lives on `other_assets` alone,
+12.1 says "the inclusion preference is not dated, so toggling it recomputes the
+financial series consistently across all history (audited)", and total net worth
+is defined over everything the user tracks with no preference in it at all.
+
+**Consequences.** The engine reads the current flag at every as-of date, so no
+code branches on "when was this changed". The toggle is still **audited**,
+because it changes what a reported figure means even though it changes no
+record. Verified by `networth.test.ts` → *reclassifies the whole history when
+the inclusion flag is toggled*: total net worth is byte-identical at every point
+of a thirteen-point series, the historical August point moves by exactly the
+car's value along with the current point, and a month before the car was on the
+balance sheet is unaffected either way.
+
+Phase 7's decomposition must not invent a driver for this. If a user wants a
+dated change of what they own, that is a purchase or a sale.

@@ -404,11 +404,23 @@ function MonthEndSection({
                   as the statement balance
                 </button>
               )}
+              {/*
+               * Offered only once the previous month is closed: this carries
+               * that month's statement balance forward, so without one there is
+               * nothing to carry (8.1, R22). The server refuses it either way —
+               * this exists so the reason is visible before the click, not
+               * after it.
+               */}
               <button
                 type="button"
                 data-testid={`confirm-unchanged-${month.month}`}
-                disabled={pending}
-                className="rounded-[var(--radius-control)] border px-3 py-2"
+                disabled={pending || !month.canConfirmUnchanged}
+                title={
+                  month.canConfirmUnchanged
+                    ? undefined
+                    : 'Close the previous month first — this carries its statement balance forward.'
+                }
+                className="rounded-[var(--radius-control)] border px-3 py-2 disabled:opacity-60"
                 onClick={() => {
                   setError(null);
                   startTransition(async () => {

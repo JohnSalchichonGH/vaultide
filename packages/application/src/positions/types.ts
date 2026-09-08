@@ -67,6 +67,13 @@ export interface CashMonthStateDto {
    * the statement balance now that the month has ended (8.1, R15).
    */
   readonly confirmable: { readonly valuationId: string; readonly amount: MoneyDto; readonly version: number } | null;
+  /**
+   * Whether "confirm unchanged" can be used for this month: it carries the
+   * **previous month's statement balance**, so it needs one to exist (8.1,
+   * R22). The server enforces this regardless; the flag exists so the interface
+   * can say why rather than offering a button that will be refused.
+   */
+  readonly canConfirmUnchanged: boolean;
 }
 
 export interface PositionDto {

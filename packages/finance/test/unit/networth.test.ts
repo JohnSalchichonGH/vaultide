@@ -253,6 +253,53 @@ describe('golden: complex-user (an excluded car, a dormant account, a closed one
     expect(exact(after.components.otherAssetsExcluded)).toBe('0');
   });
 
+  it('reclassifies the whole history when the inclusion flag is toggled', () => {
+    // The preference is a **reporting definition**, not a dated event: it is a
+    // statement about what "financial net worth" means for this user, so it
+    // applies to every date at once. If somebody decides cars are outside their
+    // financial net worth, last March's comparison has to use that same
+    // definition or the series is not comparable with itself.
+    //
+    // Consequently: total net worth never moves, and every historical point of
+    // the financial series moves together with the current one. There is no
+    // effective-date column and no driver — nothing "entered" or "left" on the
+    // day the switch was flipped.
+    const seriesFor = (positions: typeof complexUser.positions) =>
+      netWorthSeries({
+        positions,
+        reportingCurrency: complexUser.REPORTING,
+        fx: complexUser.fx,
+        today: complexUser.TODAY,
+        months: 12,
+      });
+
+    const excluded = seriesFor(complexUser.positions);
+    const included = seriesFor(complexUser.positionsWithCarIncluded);
+
+    // The car was valued on 31 August, so August and the provisional point are
+    // the dates it is part of the balance sheet at.
+    const augustExcluded = excluded.find((point) => point.asOf === '2026-08-31');
+    const augustIncluded = included.find((point) => point.asOf === '2026-08-31');
+
+    // Total is untouched at every point in the series.
+    expect(excluded.map((point) => point.totalNetWorth.value.amount.toFixed())).toEqual(
+      included.map((point) => point.totalNetWorth.value.amount.toFixed()),
+    );
+
+    // …and the historical financial point moves by exactly the car, not only
+    // the current one.
+    expect(exact(augustExcluded!.financialNetWorth)).toBe('13055');
+    expect(exact(augustIncluded!.financialNetWorth)).toBe('33055');
+    expect(exact(excluded.at(-1)!.financialNetWorth)).toBe('13055');
+    expect(exact(included.at(-1)!.financialNetWorth)).toBe('33055');
+
+    // Before the car was on the balance sheet at all, the classification
+    // changes nothing — there is nothing to classify.
+    const july = (points: typeof excluded) =>
+      exact(points.find((point) => point.asOf === '2026-07-31')!.financialNetWorth);
+    expect(july(included)).toBe(july(excluded));
+  });
+
   it('carries a dormant account at zero and drops a closed one', () => {
     const result = at(complexUser.positions, '2026-08-31', complexUser.fx);
     const byId = new Map(result.positions.map((item) => [item.value.position.id, item]));

@@ -1,6 +1,5 @@
 import {
   deleteValuation,
-  findLatestValuation,
   findPosition,
   findValuation,
   findValuationOn,
@@ -24,6 +23,7 @@ import {
   monthKeyOf,
   plainDate,
   startOfMonth,
+  type MonthKey,
 } from '@vaultide/finance';
 import type { RequestContext } from '../context';
 import {
@@ -50,6 +50,31 @@ import type { PositionDependencies } from './service';
  *  - no actual record may be dated after the user's local today (M5, R17);
  *  - a `month_end` balance may be written only once its month has ended (R15).
  */
+
+/**
+ * `2026-08-01` → `August 2026`, for the one message that reads better with a
+ * name than with a date. English like every other domain message (18.2); the
+ * locale-aware formatting lives in the interface.
+ */
+const MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+] as const;
+
+function monthName(month: MonthKey): string {
+  const [year, index] = (month as string).split('-');
+  return `${MONTH_NAMES[Number(index) - 1] ?? String(index)} ${String(year)}`;
+}
 
 export interface ValuationArgs {
   readonly positionId: string;
@@ -323,11 +348,35 @@ export async function confirmUnchanged(
     );
   }
 
-  const previousEnd = endOfMonthKey(monthKey(addMonths(startOfMonth(end), -1)));
-  const previous = await findLatestValuation(deps.db, ctx.userId, args.positionId, previousEnd);
-  if (previous === undefined) {
+  const previousMonth = monthKey(addMonths(startOfMonth(end), -1));
+  const previousEnd = endOfMonthKey(previousMonth);
+
+  /*
+   * The previous month's **statement** balance, and nothing else.
+   *
+   * 8.1 says this action writes a month-end valuation "equal to the previous
+   * month-end balance". Reaching for the latest valuation on or before that
+   * date instead would agree whenever the previous month is closed — and, when
+   * it is not, would carry a figure across an unobserved month and stamp it as
+   * a statement balance. The user asserted that *this* month did not change;
+   * that says nothing about the month before it.
+   *
+   * The damage is not immediate — the confirmed month's own opening is still
+   * `carried`, so it stays unavailable — but the month *after* it becomes
+   * reconcilable against an opening nobody confirmed, and any movement in the
+   * skipped month is then silently absorbed into its inferred spending. That is
+   * the exact failure C7, F1 and R5 exist to prevent.
+   *
+   * Deliberately not widened to `closed_zero`, `dormant_zero` or `opened_zero`
+   * (8.1): those are settled openings with their own semantics, and a dormant
+   * account already carries automatically under R22. Reading them as a
+   * "previous month-end balance" would be a wider definition than the blueprint
+   * gives.
+   */
+  const previous = await findValuationOn(deps.db, ctx.userId, args.positionId, previousEnd);
+  if (previous === undefined || previous.datePrecision !== 'month_end') {
     throw new IncompleteDataError(
-      'There is no earlier balance to carry forward. Enter this month’s statement balance instead.',
+      `${monthName(previousMonth)} has no month-end balance, so there is nothing to carry forward. Close ${monthName(previousMonth)} first, or enter ${monthName(month)}’s statement balance instead.`,
     );
   }
 

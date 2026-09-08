@@ -64,6 +64,100 @@ most of the evidence below is about:
 
 ---
 
+## Post-implementation review items
+
+Three points raised in review after the implementation was complete. Two were
+already correct and needed proof; one was a defect and was fixed.
+
+### 1. "Confirm unchanged for this month" carried across an unobserved month — **defect, fixed**
+
+8.1 says this action writes a month-end valuation "equal to **the previous
+month-end balance**". The implementation instead took the latest valuation on or
+**before** the previous month end, of any precision. Those agree whenever the
+previous month is closed, and diverge when it is not.
+
+Reproduced against a real database before changing anything: an account with a
+31 July statement balance of 8,000 and **nothing at all for August**, confirming
+*September* unchanged on 1 October, produced
+
+```
+{"valuedOn":"2026-09-30","amount":"8000.00000000","precision":"month_end","source":"confirmed_unchanged"}
+```
+
+— a July figure written as September's **statement** balance, across an entirely
+unobserved August. Reachable in one click: `monthsAwaitingStatement` listed every
+unclosed completed month and offered the action on each without checking the one
+before it.
+
+The immediate damage is nil (September's own opening is still `carried`, so the
+month stays unavailable), but **October** then becomes reconcilable against an
+opening nobody confirmed, and any August movement is silently absorbed into
+October's inferred spending — the exact failure C7, F1 and R5 exist to prevent.
+
+**Fix.** `confirmUnchanged` now requires an explicit valuation dated `end(M−1)`
+with `date_precision = 'month_end'`, and otherwise refuses with
+`INCOMPLETE_DATA` naming the month: *"August 2026 has no month-end balance, so
+there is nothing to carry forward. Close August 2026 first, or enter September
+2026's statement balance instead."* Deliberately **not** widened to
+`closed_zero`, `dormant_zero` or `opened_zero`: those are settled openings with
+their own semantics, and a dormant account already carries automatically under
+R22 — reading them as a "previous month-end balance" would be a wider definition
+than the blueprint gives.
+
+The interface disables the button when the previous month is unresolved, from a
+new `canConfirmUnchanged` flag on the month DTO, so the reason is visible before
+the click. The server-side invariant remains the authority.
+
+**Proof** — `positions.test.ts`, `"confirm unchanged for this month" (R22, 8.1)`:
+
+| Assertion | Test |
+|---|---|
+| July closed, August missing → September refused, and **nothing written** (July untouched, version 1) | *refuses September while August has no month-end balance* |
+| An ordinary snapshot dated 31 August is not August's statement balance and does not qualify (8.8) | *refuses an unclosed month even when an ordinary snapshot sits on its last day* |
+| Once August is closed: succeeds; the new row carries **August's exact native amount** (`8055.55000000`, byte-identical to August's), `source = confirmed_unchanged`, `date_precision = month_end`, version 1 | *succeeds once August is closed, carrying August's exact amount* |
+| No earlier valuation mutated — every earlier row keeps its amount and version 1, and carries only its original `insert` audit entry | same test |
+| Audit: one `insert` with `before` null and an `after` carrying the amount, source and precision | same test |
+| The month then reports `open: month_end`, `close: month_end`, `included: true`, and leaves the awaiting-statement list | same test |
+| Refused before September has ended | *refuses to confirm a month that has not ended* |
+| Refused with nothing earlier at all | *refuses when there is nothing earlier to carry* |
+| A second confirmation of the same month is `CONFLICT_DUPLICATE` (M1) | *refuses a second confirmation for the same month* |
+| The DTO marks August eligible and September not, before the button is offered | *tells the interface which months are eligible before it offers the button* |
+
+### 2. Quick Update same-day correction is audited and versioned — **verified**
+
+The correction path goes through `updateValuationIn`, the same repository
+function every other balance edit uses, so it takes the same `SELECT … FOR
+UPDATE`, the same optimistic version check and the same before/after audit row.
+The existing test proved the row count and untouched history; it did not prove
+the trail.
+
+**Proof** — `positions.test.ts` → *audits a same-day correction and moves its
+version, like any other edit*: today's row is created at version 1; a second
+quick update for the same position and date leaves **exactly one** row for that
+date, same row id, at version 2; the August row is byte-identical at version 1
+and carries only its original `insert`; and `audit_entries` holds
+`['insert','update']` for the corrected row with `before.amount =
+8120.00000000`, `after.amount = 8130.00000000` and `changed_fields` containing
+`amount`. A stale `expectedVersion` aborting the whole submission is proven
+separately by *aborts the whole batch on a version conflict rather than writing
+half of it*.
+
+### 3. Other-asset inclusion is a timeless classification — **verified**
+
+Confirmed against the schema and the engine: `other_assets` has no effective-date
+column, `inFinancialNetWorth` reads the current flag at **every** as-of date, and
+`netWorthSeries` recomputes each point from the same records. Toggling therefore
+never moves total net worth, moves the whole financial series together, creates
+no driver and needs no dated field. Recorded as decision 6 in ADR 0004.
+
+**Proof** — `networth.test.ts` → *reclassifies the whole history when the
+inclusion flag is toggled*: across a thirteen-point series, total net worth is
+byte-identical at every point; the **historical** 31 August financial point moves
+13,055 → 33,055 exactly as the current point does; and 31 July — before the car
+was on the balance sheet at all — is unchanged either way.
+
+---
+
 ## Test results
 
 Run locally on 2026-09-08 against PostgreSQL 18 (the version Neon runs) and a
@@ -74,9 +168,9 @@ production build of the web app.
 | Lint + money rule | `pnpm -r run lint` | **pass**, 6 packages |
 | Module boundaries | `pnpm run lint:boundaries` | **pass** — no violations, 232 modules, 665 dependencies |
 | Types | `pnpm -r run typecheck` | **pass**, 6 packages |
-| Unit + property | `pnpm -r run test:unit` | **248 passed** — finance 178, application 36, validation 16, web 15, db 3 |
+| Unit + property | `pnpm -r run test:unit` | **249 passed** — finance 179, application 36, validation 16, web 15, db 3 |
 | Integration (db) | `pnpm --filter @vaultide/db run test:integration` | **113 passed** (7 files) |
-| Integration (application) | `pnpm --filter @vaultide/application run test:integration` | **118 passed** (5 files) |
+| Integration (application) | `pnpm --filter @vaultide/application run test:integration` | **123 passed** (5 files) |
 | Finance coverage gate | `vitest run --coverage` | **pass** — statements 99.66 %, branches 98.26 %, functions 100 %, lines 99.80 %; §21's gate is ≥ 95 % lines and branches |
 | Build | `pnpm run build` | **pass** — 21 routes |
 | End to end | `pnpm test:e2e` | **54 passed** — 18 specs × chromium desktop, webkit desktop, chromium mobile, against the FX fixture and no public network |
@@ -85,8 +179,8 @@ production build of the web app.
 | Currency reconciliation | `pnpm db:verify-currencies` | **pass** — 150 = 150, in sync with the live approved chain (`ECB -> BDI`) |
 | Fresh database from zero | `fresh-database.test.ts` (inside the db suite) | **pass** — admin bootstrap → migrations as `app_owner` → currency seed → role assertions, against a schema that now has five more tables |
 
-Phase 2 adds 71 unit and property tests to `finance`, 52 raw-SQL database
-tests, 36 application integration tests, 5 action-registry tests in `apps/web`
+Phase 2 adds 72 unit and property tests to `finance`, 52 raw-SQL database
+tests, 41 application integration tests, 5 action-registry tests in `apps/web`
 and 5 end-to-end scenarios (15 runs across the browser matrix): the full
 journey in two currencies with an excluded asset, an unvalued asset shown as
 unknown, the 30 September → 1 October month close, first-balance marking, and
@@ -124,7 +218,7 @@ than by three hard-coded names.
 | Package | Added |
 |---|---|
 | `finance` | `positions/{types,valuation,cash-state}.ts` — position values with their freshness states and the seven cash month states of 8.1; `networth/{types,engine,series}.ts` — total and financial net worth in one pass, aggregates carrying availability and what is missing, and the month-end series with its provisional point. Golden fixtures `simple-user`, `multi-currency`, `complex-user`, each with a README containing the hand computation. |
-| `validation` | `inputs/positions.ts` — account, asset, valuation, close, archive and quick-update schemas, with the date rules built from `ctx.today`; the Phase 2 enums. |
+| `validation` | `inputs/positions.ts` — account, asset, valuation, close and quick-update schemas, with the date rules built from `ctx.today`; the Phase 2 enums. |
 | `db` | `schema/{positions,cash-accounts,other-assets,position-valuations,audit}.ts`; `repositories/{audited,positions,valuations}.ts`; `loadFinancialWindow`. |
 | `application` | `positions/{types,mapping,queries,service,valuations}.ts` — the DTOs, the row↔engine boundary, the read services and every Phase 2 mutation. `defineAction` now accepts a schema **factory** so a financial action's schema can be built from the request's `today`. |
 | `apps/web` | `(app)/dashboard`, `(app)/accounts` (with the other-assets tab) and `(app)/accounts/[id]`; `components/finance/{freshness-badge,aggregate-figure}.tsx`; `components/charts/net-worth-chart.tsx`; `features/accounts/{account-forms,valuation-editor,quick-update}.tsx`; `server/actions/positions.ts`; onboarding step 4. |
