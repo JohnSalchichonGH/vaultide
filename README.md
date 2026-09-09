@@ -15,14 +15,19 @@ net-worth metrics — total (everything you track) and financial (the headline).
 value nobody has recorded is shown as unknown, never as zero, and a total that
 could not include something says so and says what.
 
-**Phase 3 has reached slice 6, on the server only.** Income, expenses and
+**Phase 3 has reached slice 8, on the server only.** Income, expenses and
 transfers with their linked fee; recurring sources with their occurrences,
-terms, acceptances and skips; and completed-month reconciliation — the engine
-that infers what a finished month spent from its own statement balances and
-records, per native currency, and says when it cannot. None of it has an
-interface yet: there is no income, spending or monthly page, and month-to-date,
-multi-month spans, the savings and consumption analytics and the bulk-history
-editor are not implemented. Phase 3 is neither accepted nor frozen.
+terms, acceptances and skips, and how complete a past month's recurring record
+is; completed-month reconciliation with its issues and per-account residuals —
+the engine that infers what a finished month spent from its own statement
+balances and records, per native currency, and says when it cannot; the current
+month so far, measured to the one date every account has evidence for; and
+multi-month spans, which reconcile a stretch whose interior month ends are
+missing and report it once for the interval rather than spreading it back over
+the months inside. None of it has an interface yet: there is no income, spending
+or monthly page and no bulk-history editor, the savings and consumption
+analytics are not a product surface, and no Phase 3 journey has been accepted
+end to end. Phase 3 is neither accepted nor frozen.
 
 The authoritative specification is
 [`docs/implementation-blueprint.md`](docs/implementation-blueprint.md) (frozen,
@@ -44,14 +49,15 @@ apps/web            Next.js App Router: auth pages, settings, onboarding, shell,
 packages/finance    pure engines — money, dates, FX lookup and conversion,
                     Unavailable/Partial, sign, numeric backends, position values
                     and freshness, total and financial net worth, flow roles,
-                    recurring occurrences and terms, completed-month
-                    reconciliation
+                    recurring occurrences and terms, completed-month,
+                    month-to-date and multi-month-span reconciliation
 packages/validation Zod primitives and inputs shared by client, server, database
 packages/db         Drizzle schema, migrations, RLS policies, repositories, seed
 packages/application use cases: Better Auth, sessions, mailer, settings, FX service,
                     positions, valuations, quick update, net-worth queries,
                     income, expenses, transfers, recurring templates and
-                    suggestions, completed-month reconciliation reads
+                    suggestions, completed-month, month-to-date and span
+                    reconciliation reads
 packages/config     tsconfig, ESLint (incl. the money-coercion rule), boundaries
 e2e                 Playwright: smoke, the auth and settings flow, and the
                     accounts, balances and net-worth journey
