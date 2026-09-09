@@ -90,8 +90,10 @@ export interface Issue {
   /** The amount the issue is about (the unexplained inflow, the residual). */
   readonly amount?: Decimal;
   /**
-   * 8.5: `unexplained_inflow` variant A when `ΣK ≤ total`, B when `ΣK > total`.
-   * The two read differently to a user and the distinction is the blueprint's.
+   * 8.5, as v2.1.8 30.11 selects them: `unexplained_inflow` variant A when the
+   * tracked total is negative (cash grew more than the records explain), B when
+   * it is zero or above (known expenses exceed the cash that left). The two read
+   * differently to a user and the distinction is the blueprint's.
    */
   readonly variant?: 'a' | 'b';
   readonly templateId?: string;
@@ -120,6 +122,28 @@ export interface AccountState {
   readonly residual?: Decimal;
 }
 
+/**
+ * 8.9's totals, and the line that runs through them.
+ *
+ * The four role sums are sums of **source records**. They need no balance
+ * evidence, so they are exact and present whatever the statements say, and a
+ * zero among them is a measured zero: `ΣK = 0` means no known tracked expense,
+ * not "unknown". `cashDelta` is 8.2's `Σ_{included}(close − open)` — always
+ * that sum and nothing else, which for an unavailable bucket covers only the
+ * accounts that had usable endpoints.
+ *
+ * `trackedTotalSpending` and `unclassified` are inferred from those balances,
+ * so they are **absent** rather than zero when the bucket is `unavailable`
+ * (8.4). That absence is the only signal that the month has no spending figure.
+ *
+ * **The four sums must never be presented as a spending result while the
+ * bucket's status is `unavailable`.** They say what was recorded, not what was
+ * spent, and in that state they are not even the identity's inputs: with no
+ * usable inclusion set there is nothing to restrict them to, so they cover every
+ * known flow of the currency. When the bucket does reconcile they are the
+ * identity's inputs exactly as 8.2 requires — the legs of included accounts plus
+ * the null-leg ones.
+ */
 export interface BucketTotals {
   readonly externalInflows: Decimal;
   readonly nonIncomeInflows: Decimal;

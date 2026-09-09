@@ -23,16 +23,19 @@ const INTEREST_BEARING: readonly string[] = ['savings', 'brokerage_cash'];
 const INTEREST_RESIDUAL_FRACTION = new Decimal('0.005');
 
 /**
- * The three figures the arithmetic produces, when it ran.
+ * The figures the arithmetic produces, when it ran.
  *
- * They travel together and none of them is optional, so the detector cannot
- * reach for a missing one and substitute zero. That substitution is the exact
- * mistake 8.4 forbids — an unavailable bucket has no spending figure, and a
- * defensive `?? 0` here would turn "we do not know" into "nothing was spent"
- * and then raise or suppress issues on the strength of it.
+ * They travel together and neither is optional, so the detector cannot reach
+ * for a missing one and substitute zero. That substitution is the exact mistake
+ * 8.4 forbids — an unavailable bucket has no spending figure, and a defensive
+ * `?? 0` here would turn "we do not know" into "nothing was spent" and then
+ * raise or suppress issues on the strength of it.
+ *
+ * `ΣK` is deliberately **not** here. v2.1.8 30.11 selects the unexplained-inflow
+ * variants on the sign of the tracked total, and passing `ΣK` in would only
+ * offer the comparison that turned out to be impossible.
  */
 export interface ComputedFigures {
-  readonly knownTrackedExpenses: Decimal;
   readonly trackedTotalSpending: Decimal;
   readonly unclassified: Decimal;
 }
@@ -54,24 +57,23 @@ function issue(key: IssueKey, rest: Omit<Issue, 'key' | 'class'>): Issue {
 }
 
 /**
- * 8.5's two readings of an unexplained inflow: A when `ΣK ≤ total`, B when
- * `ΣK > total`.
+ * 8.5's two readings of an unexplained inflow, as v2.1.8 30.11 selects them.
  *
- * Written exactly as 8.5 states it, which makes a defect in 8.5 visible rather
- * than hiding it. The issue triggers on `unclassified < 0`, and
- * `unclassified = total − ΣK`, so the trigger is itself `ΣK > total` — variant
- * A's condition is the negation of the trigger and can never hold. Under the
- * literal text every unexplained inflow is variant B, including 8.10's own
- * forgotten-salary example, whose natural reading ("cash grew more than your
- * records explain") is variant A's.
+ * The split is the **sign of the tracked total**, not a comparison against
+ * `ΣK`. 30.11 records why: the issue is raised on `unclassified < 0`, and 8.2
+ * makes `unclassified = total − ΣK`, so the trigger already *is* `ΣK > total`.
+ * A variant selected by `ΣK ≤ total` was the trigger's own negation and could
+ * never occur, which made every unexplained inflow read as "known expenses
+ * exceed the cash that left" — including 8.10's forgotten salary, where the
+ * truth is the opposite: cash grew and nothing recorded says why.
  *
- * This is a product decision, not one to make here by quietly reinterpreting
- * `total`, so the condition stays literal and the checkpoint report carries the
- * question. When it is settled the answer belongs in this one function.
+ * Exactly zero is variant B's. A tracked total of zero means the month's flows
+ * explain its cash exactly, which is not growth, even though `ΣK > 0` still
+ * leaves known expenses that the cash cannot account for. There is no epsilon
+ * on either side: 8.4's tolerance is exactly zero.
  */
-function unexplainedInflowVariant(knownTrackedExpenses: Decimal, total: Decimal): 'a' | 'b' {
-  /* v8 ignore next -- unreachable as 8.5 is written; see above. */
-  return knownTrackedExpenses.lessThanOrEqualTo(total) ? 'a' : 'b';
+function unexplainedInflowVariant(total: Decimal): 'a' | 'b' {
+  return total.lessThan(0) ? 'a' : 'b';
 }
 
 export function detectIssues(input: IssueInput): Issue[] {
@@ -116,10 +118,7 @@ export function detectIssues(input: IssueInput): Issue[] {
         issue('unexplained_inflow', {
           currency,
           amount: computed.unclassified.abs(),
-          variant: unexplainedInflowVariant(
-            computed.knownTrackedExpenses,
-            computed.trackedTotalSpending,
-          ),
+          variant: unexplainedInflowVariant(computed.trackedTotalSpending),
         }),
       );
     }

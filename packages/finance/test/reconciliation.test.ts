@@ -230,9 +230,10 @@ describe('the 8.10 golden with the salary forgotten', () => {
     const issue = bucket?.issues.find((i) => i.key === 'unexplained_inflow');
     expect(issue?.amount?.toString()).toBe('1702');
     expect(issue?.class).toBe('blocking');
-    // 8.5 variant B: ΣK 411 > total −1,291, so known expenses exceed the cash
-    // that left, rather than cash simply growing unexplained.
-    expect(issue?.variant).toBe('b');
+    // v2.1.8 30.11: the tracked total is negative, so this is variant A —
+    // cash grew more than the records explain, which is exactly the salary
+    // nobody entered. Under v2.1.7 it read as B, and that was the defect.
+    expect(issue?.variant).toBe('a');
   });
 
   it('neither clamps the negative figure nor reports it as spending', () => {
@@ -241,31 +242,78 @@ describe('the 8.10 golden with the salary forgotten', () => {
   });
 });
 
-describe('the unexplained-inflow variants of 8.5', () => {
-  it('reads variant B whenever the issue is raised at all', () => {
-    // 8.5 triggers on `unclassified < 0` and splits on `ΣK ≤ total` (A) versus
-    // `ΣK > total` (B). Since `unclassified = total − ΣK`, the trigger *is*
-    // `ΣK > total`, so variant A's condition is the negation of the trigger and
-    // never holds. This test pins what the blueprint literally says; the
-    // checkpoint report asks the product owner to settle it.
-    const grewUnexplained = reconcileCompletedMonth(
-      input({ cashAccounts: [oneAccount('300')] }),
-    ).buckets[0];
-    expect(grewUnexplained?.totals.trackedTotalSpending?.toString()).toBe('-300');
-    expect(grewUnexplained?.issues.find((i) => i.key === 'unexplained_inflow')?.variant).toBe('b');
+describe('the unexplained-inflow variants of v2.1.8 30.11', () => {
+  /** The issue this bucket raised, if it raised one. */
+  const inflowOf = (bucket: { issues: readonly { key: string; variant?: 'a' | 'b' }[] } | undefined) =>
+    bucket?.issues.find((i) => i.key === 'unexplained_inflow');
 
-    // The other reading of 8.5 — known expenses exceeding the cash that left —
-    // reaches the same variant.
-    const expensesExceed = reconcileCompletedMonth(
+  it('reads variant A when the tracked total is negative', () => {
+    // Δ = +0.01 with nothing recorded: total −0.01, ΣK 0, unclassified −0.01.
+    // Cash grew and no record says why, which is the forgotten-income shape.
+    const bucket = reconcileCompletedMonth(
+      input({ cashAccounts: [oneAccount('0.01')] }),
+    ).buckets[0];
+    expect(bucket?.totals.trackedTotalSpending?.toString()).toBe('-0.01');
+    expect(bucket?.totals.knownTrackedExpenses.toString()).toBe('0');
+    expect(bucket?.totals.unclassified?.toString()).toBe('-0.01');
+    expect(inflowOf(bucket)?.variant).toBe('a');
+    expect(bucket?.status).toBe('unresolved');
+  });
+
+  it('reads variant B at a tracked total of exactly zero', () => {
+    // 30.11 puts zero on B's side: the flows explain the cash exactly, which is
+    // not growth, even though a known expense the cash cannot account for
+    // remains. Δ = 0, ΣK = 0.01 → total 0, unclassified −0.01.
+    const bucket = reconcileCompletedMonth(
       input({
-        cashAccounts: [oneAccount('300')],
-        income: [income({ netAmount: new Decimal('400') })],
-        expenses: [expense({ amount: new Decimal('500') })],
+        cashAccounts: [oneAccount('0')],
+        expenses: [expense({ amount: new Decimal('0.01') })],
       }),
     ).buckets[0];
-    expect(expensesExceed?.totals.trackedTotalSpending?.toString()).toBe('100');
-    expect(expensesExceed?.totals.unclassified?.toString()).toBe('-400');
-    expect(expensesExceed?.issues.find((i) => i.key === 'unexplained_inflow')?.variant).toBe('b');
+    expect(bucket?.totals.trackedTotalSpending?.toString()).toBe('0');
+    expect(bucket?.totals.knownTrackedExpenses.toString()).toBe('0.01');
+    expect(bucket?.totals.unclassified?.toString()).toBe('-0.01');
+    expect(inflowOf(bucket)?.variant).toBe('b');
+    expect(bucket?.status).toBe('unresolved');
+  });
+
+  it('raises nothing when the tracked total and the known expenses are both zero', () => {
+    const bucket = reconcileCompletedMonth(
+      input({ cashAccounts: [oneAccount('0')] }),
+    ).buckets[0];
+    expect(bucket?.totals.trackedTotalSpending?.toString()).toBe('0');
+    expect(bucket?.totals.unclassified?.toString()).toBe('0');
+    expect(inflowOf(bucket)).toBeUndefined();
+    expect(bucket?.status).toBe('reliable');
+  });
+
+  it('reads variant B for a positive tracked total the known expenses exceed', () => {
+    // Δ = −100 with a 120 expense: total 100, ΣK 120, unclassified −20.
+    const bucket = reconcileCompletedMonth(
+      input({
+        cashAccounts: [oneAccount('-100')],
+        expenses: [expense({ amount: new Decimal('120') })],
+      }),
+    ).buckets[0];
+    expect(bucket?.totals.trackedTotalSpending?.toString()).toBe('100');
+    expect(bucket?.totals.knownTrackedExpenses.toString()).toBe('120');
+    expect(bucket?.totals.unclassified?.toString()).toBe('-20');
+    expect(inflowOf(bucket)?.variant).toBe('b');
+  });
+
+  it('reports the magnitude of the unclassified figure in both variants', () => {
+    const a = reconcileCompletedMonth(input({ cashAccounts: [oneAccount('300')] })).buckets[0];
+    expect(a?.totals.unclassified?.toString()).toBe('-300');
+    expect(inflowOf(a)?.variant).toBe('a');
+    expect(a?.issues.find((i) => i.key === 'unexplained_inflow')?.amount?.toString()).toBe('300');
+
+    const b = reconcileCompletedMonth(
+      input({
+        cashAccounts: [oneAccount('-100')],
+        expenses: [expense({ amount: new Decimal('120') })],
+      }),
+    ).buckets[0];
+    expect(b?.issues.find((i) => i.key === 'unexplained_inflow')?.amount?.toString()).toBe('20');
   });
 
   it('raises nothing at all when the arithmetic comes out non-negative', () => {
@@ -929,6 +977,175 @@ describe('possible_missing_interest', () => {
 
   it('says nothing for an account where interest is not plausible', () => {
     expect(raised(savingsAccount('9950.01', '10000', 'checking'))).toBe(false);
+  });
+});
+
+describe('what an unavailable bucket still knows', () => {
+  /** BBVA with August's statement and none for September, plus the salary. */
+  const septemberWithoutClosing = () =>
+    input({
+      cashAccounts: [account(BBVA, 'BBVA', [monthEnd(BBVA, '2026-08-31', '8055')])],
+      income: [income({ netAmount: new Decimal('2100') })],
+      expenses: [expense({ amount: new Decimal('411') })],
+    });
+
+  it('reports the flow sums exactly, because they need no balance evidence', () => {
+    // 8.9's four role sums are sums of source records. A recorded salary is a
+    // fact whatever the statements say, and reporting 0 here would throw a
+    // known number away.
+    const bucket = reconcileCompletedMonth(septemberWithoutClosing()).buckets[0];
+    expect(bucket?.status).toBe('unavailable');
+    expect(bucket?.totals.externalInflows.toString()).toBe('2100');
+    expect(bucket?.totals.knownTrackedExpenses.toString()).toBe('411');
+  });
+
+  it('still reports no spending figure at all', () => {
+    const bucket = reconcileCompletedMonth(septemberWithoutClosing()).buckets[0];
+    expect(bucket?.totals.trackedTotalSpending).toBeUndefined();
+    expect(bucket?.totals.unclassified).toBeUndefined();
+  });
+
+  it('distinguishes a measured zero from an unknown', () => {
+    // No known tracked expense was recorded, so the sum is zero and means it.
+    const bucket = reconcileCompletedMonth(
+      input({
+        cashAccounts: [account(BBVA, 'BBVA', [monthEnd(BBVA, '2026-08-31', '8055')])],
+        income: [income({ netAmount: new Decimal('2100') })],
+      }),
+    ).buckets[0];
+    expect(bucket?.totals.knownTrackedExpenses.toString()).toBe('0');
+    expect(bucket?.totals.trackedTotalSpending).toBeUndefined();
+  });
+
+  it('sums the cash change over the accounts that did have endpoints', () => {
+    // 8.2's cash change, applied unchanged. BBVA is settled and moves -100;
+    // Savings has no evidence at all and contributes nothing, which is why the
+    // bucket has no spending figure even though the change is a number.
+    const bucket = reconcileCompletedMonth(
+      input({
+        cashAccounts: [
+          account(BBVA, 'BBVA', [
+            monthEnd(BBVA, '2026-08-31', '1000'),
+            monthEnd(BBVA, '2026-09-30', '900'),
+          ]),
+          account(SAVINGS, 'Savings', []),
+        ],
+      }),
+    ).buckets[0];
+    expect(bucket?.status).toBe('unavailable');
+    expect(bucket?.totals.cashDelta.toString()).toBe('-100');
+    expect(bucket?.totals.trackedTotalSpending).toBeUndefined();
+  });
+
+  it('reports the null-leg flow it cannot place', () => {
+    const usd = reconcileCompletedMonth(
+      input({
+        cashAccounts: [oneAccount('0')],
+        income: [income({ cashPositionId: null, currency: USD, netAmount: new Decimal('75') })],
+      }),
+    ).buckets.find((b) => b.currency === 'USD');
+    expect(usd?.status).toBe('unavailable');
+    expect(usd?.totals.externalInflows.toString()).toBe('75');
+    expect(usd?.totals.trackedTotalSpending).toBeUndefined();
+  });
+});
+
+describe('completed-month status precedence (8.3, 8.4)', () => {
+  it('is unresolved, not estimated, when an excluded account and a negative unclassified meet', () => {
+    // 8.4 gives `estimated` the condition "computed, unclassified >= 0, at
+    // least one excluded first_balance account". With unclassified below zero
+    // the month is `unresolved`, and the exclusion is still reported.
+    const bucket = reconcileCompletedMonth(
+      input({
+        cashAccounts: [
+          account(BBVA, 'BBVA', [
+            monthEnd(BBVA, '2026-08-31', '1000'),
+            monthEnd(BBVA, '2026-09-30', '1300'),
+          ]),
+          account(SAVINGS, 'Savings', [monthEnd(SAVINGS, '2026-09-30', '5000')], {}, 'savings'),
+        ],
+      }),
+    ).buckets[0];
+    expect(bucket?.totals.unclassified?.toString()).toBe('-300');
+    expect(bucket?.status).toBe('unresolved');
+    expect(bucket?.issues.map((i) => i.key).sort()).toEqual([
+      'first_balance',
+      'unexplained_inflow',
+    ]);
+  });
+
+  it('is unavailable, not unresolved, when an endpoint is missing as well', () => {
+    // 8.3 emits the unavailable bucket and moves on before any arithmetic, so
+    // no unexplained inflow can be detected: there is nothing to judge.
+    const bucket = reconcileCompletedMonth(
+      input({
+        cashAccounts: [
+          account(BBVA, 'BBVA', [monthEnd(BBVA, '2026-08-31', '1000')]),
+          account(SAVINGS, 'Savings', [
+            monthEnd(SAVINGS, '2026-08-31', '0'),
+            monthEnd(SAVINGS, '2026-09-30', '900'),
+          ]),
+        ],
+      }),
+    ).buckets[0];
+    expect(bucket?.status).toBe('unavailable');
+    expect(bucket?.issues.some((i) => i.key === 'unexplained_inflow')).toBe(false);
+    expect(bucket?.issues.some((i) => i.key === 'missing_month_end')).toBe(true);
+  });
+
+  it('is unavailable, not estimated, when an excluded account and an unusable one meet', () => {
+    const bucket = reconcileCompletedMonth(
+      input({
+        cashAccounts: [
+          account(BBVA, 'BBVA', [monthEnd(BBVA, '2026-08-31', '1000')]),
+          account(SAVINGS, 'Savings', [monthEnd(SAVINGS, '2026-09-30', '5000')], {}, 'savings'),
+        ],
+      }),
+    ).buckets[0];
+    expect(bucket?.status).toBe('unavailable');
+    expect(bucket?.issues.some((i) => i.key === 'first_balance')).toBe(true);
+  });
+
+  it('gives the month the worst of its buckets', () => {
+    // EUR reconciles; USD has a flow no account can take. 8.4: the month is
+    // unavailable, and the reliable bucket keeps saying it is reliable.
+    const result = reconcileCompletedMonth(
+      input({
+        cashAccounts: [oneAccount('0')],
+        income: [income({ cashPositionId: null, currency: USD })],
+      }),
+    );
+    expect(result.buckets.find((b) => b.currency === 'EUR')?.status).toBe('reliable');
+    expect(result.buckets.find((b) => b.currency === 'USD')?.status).toBe('unavailable');
+    expect(result.monthStatus).toBe('unavailable');
+  });
+
+  it('takes unresolved over estimated across buckets', () => {
+    const result = reconcileCompletedMonth(
+      input({
+        cashAccounts: [
+          // EUR: an excluded first-balance account makes the bucket estimated.
+          account(BBVA, 'BBVA', [
+            monthEnd(BBVA, '2026-08-31', '1000'),
+            monthEnd(BBVA, '2026-09-30', '1000'),
+          ]),
+          account(SAVINGS, 'Savings', [monthEnd(SAVINGS, '2026-09-30', '5000')], {}, 'savings'),
+          // USD: cash grew with nothing to explain it.
+          account(
+            'usd-account',
+            'USD',
+            [
+              monthEnd('usd-account', '2026-08-31', '0'),
+              monthEnd('usd-account', '2026-09-30', '300'),
+            ],
+            { currency: 'USD' },
+          ),
+        ],
+      }),
+    );
+    expect(result.buckets.find((b) => b.currency === 'EUR')?.status).toBe('estimated');
+    expect(result.buckets.find((b) => b.currency === 'USD')?.status).toBe('unresolved');
+    expect(result.monthStatus).toBe('unresolved');
   });
 });
 

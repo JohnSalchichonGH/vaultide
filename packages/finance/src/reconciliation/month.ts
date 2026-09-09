@@ -214,13 +214,40 @@ function reconcileBucket(
     month,
   );
 
-  const zeroTotals = (): BucketTotals => ({
-    externalInflows: new Decimal(0),
-    nonIncomeInflows: new Decimal(0),
-    nonExpenseOutflows: new Decimal(0),
-    knownTrackedExpenses: new Decimal(0),
-    cashDelta: new Decimal(0),
-  });
+  /**
+   * The four role sums of every known flow in this currency and month, with a
+   * cash change beside them.
+   *
+   * Used where the bucket cannot be reconciled. The distinction 8.9's shape
+   * rests on is that these four are sums of **source records** — they need no
+   * balance evidence and are exact whatever the statements say — while
+   * `trackedTotalSpending` and `unclassified` are inferred from balances and
+   * are therefore absent when the balances are not usable. A month with a
+   * recorded salary and a missing statement has `ΣI = 2,100` and no spending
+   * figure at all; reporting `ΣI = 0` there would be a known number thrown
+   * away, which is worse than the unknown-as-zero mistake, not better.
+   *
+   * `ΣK = 0` from this function means there were no known tracked expenses.
+   * That is a measured zero.
+   *
+   * Note what is *not* claimed: an unavailable bucket's sums are not the
+   * identity's inputs, because there is no identity and no inclusion set to
+   * restrict them to. When the bucket does reconcile, the sums are taken over
+   * the included accounts' legs plus the null-leg ones, exactly as 8.2 requires.
+   */
+  const knownTotals = (delta: Decimal): BucketTotals => {
+    const known = legs.filter((leg) => leg.currency === currency);
+    const roleTotal = (role: RoleLeg['role']): Decimal =>
+      sum(known.filter((leg) => leg.role === role).map((leg) => leg.amount));
+
+    return {
+      externalInflows: roleTotal('I'),
+      nonIncomeInflows: roleTotal('Nin'),
+      nonExpenseOutflows: roleTotal('Nout'),
+      knownTrackedExpenses: roleTotal('K'),
+      cashDelta: delta,
+    };
+  };
 
   // 8.3: a currency whose only presence is a null-leg flow has nothing to
   // reconcile against.
@@ -229,7 +256,7 @@ function reconcileBucket(
       currency,
       status: 'unavailable',
       accounts: [],
-      totals: zeroTotals(),
+      totals: knownTotals(new Decimal(0)),
       additionalSpending,
       thirdPartyPaid,
       issues: detectIssues({
@@ -264,7 +291,13 @@ function reconcileBucket(
       currency,
       status: 'unavailable',
       accounts: states,
-      totals: zeroTotals(),
+      // 8.2's own definition of Δ, applied unchanged: the sum over the accounts
+      // whose endpoints are settled. With one of them unusable that covers only
+      // part of the bucket, which is precisely why no spending figure follows
+      // from it.
+      totals: knownTotals(
+        sum(included.map((entry) => entry.closingAmount.minus(entry.openingAmount))),
+      ),
       additionalSpending,
       thirdPartyPaid,
       issues: detectIssues({
@@ -348,7 +381,7 @@ function reconcileBucket(
     currency,
     states: accountsOut,
     legs,
-    computed: { knownTrackedExpenses, trackedTotalSpending, unclassified },
+    computed: { trackedTotalSpending, unclassified },
     noParticipatingAccount: false,
     missingOccurrences: missing,
     accountTypes,

@@ -55,6 +55,20 @@ export interface ReconciliationAccountDto {
   readonly residual: MoneyDto | null;
 }
 
+/**
+ * 8.9's totals.
+ *
+ * The four role sums are sums of source records and are always exact — a zero
+ * among them is a measured zero. `trackedTotalSpending` and `unclassified` need
+ * usable balance evidence and are `null`, never `0`, when the bucket could not
+ * be reconciled (8.4).
+ *
+ * **The interface must not present the four sums as a spending result while
+ * `status` is `unavailable`.** In that state they describe what was recorded,
+ * not what was spent: a September with a €2,100 salary and a missing statement
+ * balance reports `externalInflows` 2100 and no spending figure at all, and
+ * `cashDelta` then covers only the accounts that had usable endpoints.
+ */
 export interface ReconciliationTotalsDto {
   readonly externalInflows: MoneyDto;
   readonly nonIncomeInflows: MoneyDto;

@@ -110,10 +110,15 @@ Unclassified         = −1,291.00 − 411.00 = −1,702.00
 ```
 
 `unclassified < 0` → status **`unresolved`** with the blocking issue
-`unexplained_inflow` of **1,702.00**. It is 8.5's **variant B**, because
-`ΣK = 411.00 > total = −1,291.00`: the known expenses exceed the cash that left,
-so either an inflow is missing or an expense was paid from outside tracked cash.
-Here it is the first, and it is exactly the salary.
+`unexplained_inflow` of **1,702.00**. It is 8.5's **variant A** (v2.1.8 30.11),
+because the tracked total is negative: cash grew by more than the recorded flows
+explain. Here that is exactly the salary nobody entered.
+
+v2.1.7 selected the variants by comparing `ΣK` against the tracked total, which
+made this example read as variant B — "known expenses exceed the cash that left".
+That comparison is implied by the trigger itself (`unclassified < 0` *is*
+`ΣK > total`), so it could only ever produce B; 30.11 replaces it with the sign
+of the tracked total, and the amount is unchanged.
 
 Nothing clamps the negative figure to zero and nothing reports it as spending:
 `−1,291.00` is what the records say, and saying so is the point of the status.

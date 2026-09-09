@@ -12,6 +12,7 @@ import { createCashTransfer } from '../../src/flows/transfers';
 import { archiveTemplate, createTemplate } from '../../src/recurring/templates';
 import { acceptSuggestion, skipSuggestion } from '../../src/recurring/suggestions';
 import { getMonthReconciliation, parseMonth } from '../../src/reconciliation/service';
+import { loadCompletedMonth } from '../../src/reconciliation/loader';
 import { ValidationError } from '../../src/errors';
 
 /**
@@ -333,6 +334,13 @@ describe('a month whose statement balance is missing', () => {
     expect(bucket?.totals.trackedTotalSpending).toBeNull();
     expect(bucket?.totals.unclassified).toBeNull();
 
+    // 8.9: the role sums are sums of source records and need no balance
+    // evidence, so the salary is still 2,100 and the absent spending figure is
+    // the only thing that says the month cannot be reconciled. `0` here would
+    // have thrown away a number the user entered.
+    expect(bucket?.totals.externalInflows.amount).toBe('2100');
+    expect(bucket?.totals.knownTrackedExpenses.amount).toBe('0');
+
     // Both accounts lack a September statement — BBVA has only August's, and
     // Savings has nothing at all — and each is named in its own issue rather
     // than the month simply saying "something is missing".
@@ -505,5 +513,31 @@ describe('an account first tracked in the month', () => {
     expect(excluded?.included).toBe(false);
     expect(excluded?.opening).toBeNull();
     expect(bucket?.issues.find((i) => i.key === 'first_balance')?.class).toBe('info');
+  });
+});
+
+describe('the pre-classified leg seam', () => {
+  it('is empty on every production load', async () => {
+    // The seam exists for records a later phase will own — a mortgage payment
+    // whose principal is `Nout` and whose interest is `K`, an investment
+    // contribution's cash leg — and for the pure golden that has to contain
+    // both. Phase 3 has no table for either, so its loader supplies none, and
+    // there is no request shape that could.
+    await recordSeptember();
+
+    const data = await loadCompletedMonth(readDeps(), USER_A, SEPTEMBER, '2026-10-01');
+    expect(data.input.preClassifiedLegs ?? []).toEqual([]);
+  });
+
+  it('is reachable from the engine input alone, never from a request', async () => {
+    // `getMonthReconciliation` takes a month and nothing else: a caller cannot
+    // hand it a leg, and no action or DTO carries one. The classification of a
+    // user's record into I/Nin/Nout/K stays inside the role matrix, computed
+    // from the record's own fields (7.4).
+    await recordSeptember();
+
+    const result = await getMonthReconciliation(readDeps(), OCTOBER_1, SEPTEMBER);
+    expect(getMonthReconciliation.length).toBe(3);
+    expect(Object.keys(result)).toEqual(['month', 'status', 'buckets']);
   });
 });
