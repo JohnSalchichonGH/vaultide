@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 import { expenseEntries } from '../schema/expense-entries';
 import { incomeEntries } from '../schema/income-entries';
 import { recurringTemplateSkips } from '../schema/recurring-template-skips';
@@ -477,6 +477,84 @@ export async function listMaterializedOccurrences(
     ]);
 
     return [...income, ...expenses, ...moves].map((row) => ({
+      templateId: row.templateId as string,
+      occurrenceDate: row.occurrenceDate as string,
+    }));
+  });
+}
+
+/**
+ * Every occurrence resolved inside a date range, across every template.
+ *
+ * The completed-month reconciler's completeness input (12.6): one query per
+ * table, bounded by `occurrence_date`, rather than one query per template. It
+ * takes no template ids — a month asks "what did anything resolve here?", and
+ * an occurrence carries the template it belongs to.
+ *
+ * Skips count exactly as materialized flows do. A skip is a fact the user
+ * stated ("no rent in August"), and 12.6 treats a stated absence and a recorded
+ * flow the same way: both resolve the occurrence, and only an occurrence with
+ * neither is missing.
+ */
+export async function listResolvedOccurrencesInRange(
+  db: Database,
+  userId: string,
+  from: string,
+  to: string,
+): Promise<{ templateId: string; occurrenceDate: string }[]> {
+  return withUser(db, { userId }, async (tx) => {
+    const [income, expenses, moves, skips] = await Promise.all([
+      tx
+        .select({
+          templateId: incomeEntries.templateId,
+          occurrenceDate: incomeEntries.occurrenceDate,
+        })
+        .from(incomeEntries)
+        .where(
+          and(
+            isNotNull(incomeEntries.occurrenceDate),
+            gte(incomeEntries.occurrenceDate, from),
+            lte(incomeEntries.occurrenceDate, to),
+          ),
+        ),
+      tx
+        .select({
+          templateId: expenseEntries.templateId,
+          occurrenceDate: expenseEntries.occurrenceDate,
+        })
+        .from(expenseEntries)
+        .where(
+          and(
+            isNotNull(expenseEntries.occurrenceDate),
+            gte(expenseEntries.occurrenceDate, from),
+            lte(expenseEntries.occurrenceDate, to),
+          ),
+        ),
+      tx
+        .select({ templateId: transfers.templateId, occurrenceDate: transfers.occurrenceDate })
+        .from(transfers)
+        .where(
+          and(
+            isNotNull(transfers.occurrenceDate),
+            gte(transfers.occurrenceDate, from),
+            lte(transfers.occurrenceDate, to),
+          ),
+        ),
+      tx
+        .select({
+          templateId: recurringTemplateSkips.templateId,
+          occurrenceDate: recurringTemplateSkips.occurrenceDate,
+        })
+        .from(recurringTemplateSkips)
+        .where(
+          and(
+            gte(recurringTemplateSkips.occurrenceDate, from),
+            lte(recurringTemplateSkips.occurrenceDate, to),
+          ),
+        ),
+    ]);
+
+    return [...income, ...expenses, ...moves, ...skips].map((row) => ({
       templateId: row.templateId as string,
       occurrenceDate: row.occurrenceDate as string,
     }));
