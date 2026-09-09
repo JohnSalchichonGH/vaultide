@@ -120,7 +120,7 @@ export function toTransferFlow(row: TransferRow): TransferFlow {
   };
 }
 
-function toCompletenessTemplate(row: RecurringTemplateRow): CompletenessTemplate {
+export function toCompletenessTemplate(row: RecurringTemplateRow): CompletenessTemplate {
   return {
     templateId: row.id,
     name: row.name,

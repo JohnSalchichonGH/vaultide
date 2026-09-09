@@ -336,3 +336,100 @@ export interface MonthToDateSavingsDto {
   /** The last day the source-only figures include: `asOf` when it exists, else today. */
   readonly sourceOnlyThrough: string;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Reporting-currency cash flow (12.3, 12.5, 8.11, v2.1.13 30.16)             */
+/* -------------------------------------------------------------------------- */
+
+/** A contribution that is not inside a figure, and the currency it came from. */
+export interface MissingReportingContributionDto {
+  readonly currency: string;
+  readonly reason: string;
+  readonly detail?: string;
+}
+
+/** How the rates behind a figure were found. Never a status, never an availability. */
+export interface FxProvenanceDto {
+  /** A residual converted at an average rate (8.11). */
+  readonly estimatedConversion: boolean;
+  /** Some lookup fell back rather than averaging, or fell off its own date. */
+  readonly approximate: boolean;
+  /** Every lookup landed exactly on the date asked for. */
+  readonly exact: boolean;
+}
+
+/**
+ * One reporting-currency figure.
+ *
+ * Availability is this figure's own, over the contributions its formula
+ * consumes: a missing rate for a memo nobody totals leaves the savings rate
+ * alone, and a missing rate for additional spending leaves personal savings
+ * alone when the setting is off (30.16 item 7). `value` is the exact sum of what
+ * could be stated and is never the whole figure when `availability` says
+ * otherwise.
+ */
+export interface ReportingAmountDto {
+  readonly value: MoneyDto;
+  readonly availability: 'available' | 'partial' | 'unavailable';
+  readonly missing: readonly MissingReportingContributionDto[];
+  /** The reconciliation quality of the native derived figures feeding this one. */
+  readonly quality?: 'reliable' | 'estimated' | 'provisional';
+  readonly provenance: FxProvenanceDto;
+}
+
+/**
+ * `PersonalSavings / ExternalIncome` as an exact unrounded decimal string, or
+ * unavailable — never partial, and never a percentage: 7.3 rounds at the display
+ * boundary, so "58.24 %" is made where it is shown.
+ */
+export type ReportingSavingsRateDto =
+  | { readonly kind: 'ratio'; readonly value: string }
+  | { readonly kind: 'unavailable'; readonly reason: string; readonly detail?: string };
+
+/** The fifteen figures 12.5 states, in the reporting currency. */
+export interface ReportingCashFlowFiguresDto {
+  readonly reportingCurrency: string;
+  readonly externalIncome: ReportingAmountDto;
+  readonly knownConsumption: ReportingAmountDto;
+  readonly propertyOperatingCosts: ReportingAmountDto;
+  readonly interestAndFees: ReportingAmountDto;
+  readonly transactionCosts: ReportingAmountDto;
+  readonly externalOutflows: ReportingAmountDto;
+  readonly unclassified: ReportingAmountDto;
+  readonly consumption: ReportingAmountDto;
+  readonly trackedTotalSpending: ReportingAmountDto;
+  readonly additionalSpending: ReportingAmountDto;
+  readonly thirdPartyPaid: ReportingAmountDto;
+  readonly trackedSavingsFromIncome: ReportingAmountDto;
+  readonly personalSavings: ReportingAmountDto;
+  readonly totalSpending: ReportingAmountDto;
+  readonly savingsRate: ReportingSavingsRateDto;
+  /** Whether the rate counts additional spending, so a reader can label it. */
+  readonly countsAdditionalSpending: boolean;
+}
+
+/** A completed month, reported once. The unit a later rolling slice consumes. */
+export interface MonthReportingCashFlowDto extends ReportingCashFlowFiguresDto {
+  /** `YYYY-MM`. */
+  readonly month: string;
+  /** 8.4's worst-across-buckets status for the month, in native terms. */
+  readonly monthStatus: ReconciliationStatusDto;
+}
+
+/**
+ * The current month, reported through `D`.
+ *
+ * `asOf` is `null` exactly when no common date exists, and then there is no
+ * tracked interval at all — `hasTrackedInterval` says so, every tracked figure
+ * is unavailable, and only the two untracked settlements are reported, over
+ * `[start(M), today]`. `sourceOnlyThrough` names whichever cut-off those two
+ * actually used (30.16 items 3 and 6).
+ */
+export interface MonthToDateReportingCashFlowDto extends ReportingCashFlowFiguresDto {
+  /** `YYYY-MM`. */
+  readonly month: string;
+  readonly asOf: string | null;
+  readonly monthStatus: ReconciliationStatusDto;
+  readonly sourceOnlyThrough: string;
+  readonly hasTrackedInterval: boolean;
+}

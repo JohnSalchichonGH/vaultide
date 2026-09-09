@@ -8,5 +8,7 @@ export * from './mtd-loader';
 export * from './mtd-service';
 export * from './span-service';
 export * from './savings-service';
+export * from './range-loader';
+export * from './reporting-service';
 export * from './service';
 export * from './types';
