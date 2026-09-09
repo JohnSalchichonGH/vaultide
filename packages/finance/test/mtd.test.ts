@@ -361,37 +361,166 @@ describe('J — every participating account excluded', () => {
     expect(result.asOf).toBeNull();
     expect(result.status).toBe('unavailable');
     expect(result.asOf === null ? result.reason : undefined).toBe('mtd_no_common_date');
+    // 8.6: "Without `D` no issue whose trigger needs the interval or the
+    // arithmetic is evaluated at all; only `mtd_no_common_date` is raised." The
+    // two exclusions are real, and they are the account-state read model's to
+    // report — this result claims no interval and so reports nothing about one.
+    expect(result.issues.map((i) => i.key)).toEqual(['mtd_no_common_date']);
   });
 });
 
-describe('J2 — one currency excluded, another supplying the date', () => {
-  it('leaves the excluded currency unavailable and reconciles the other', () => {
-    // The EUR bucket's only account is the month's first_balance exclusion, so
-    // it has nothing to reconcile — but USD does, and its evidence fixes D for
-    // both (30.13 items 3 and 6).
-    const result = reconcileMonthToDate(
-      input({
-        cashAccounts: [
-          account(A, 'Newly tracked', [snap(A, '2026-09-06', '5000')]),
-          account(B, 'USD account', [opening(B, '500'), snap(B, '2026-09-06', '480')], {
-            currency: 'USD',
-          }),
-        ],
-      }),
-    );
+describe('J2 — a currency whose accounts are all excluded, while another supplies the date', () => {
+  const EXCLUDED_ONE = 'excluded-one';
+  const EXCLUDED_TWO = 'excluded-two';
 
+  /**
+   * Two pre-existing EUR accounts first tracked this month, and one USD account
+   * with a proper opening and a snapshot on the 6th.
+   *
+   * The EUR pair are the month's `first_balance` exclusions, so they take no
+   * part in choosing `D` (8.6) and USD fixes it alone. What is left is an EUR
+   * bucket whose included set is empty — 8.4's "no included account" — while
+   * `D` exists and USD reconciles truthfully through it.
+   */
+  const fixture = () =>
+    input({
+      cashAccounts: [
+        account(EXCLUDED_ONE, 'Newly tracked', [snap(EXCLUDED_ONE, '2026-09-06', '5000')]),
+        account(EXCLUDED_TWO, 'Also newly tracked', [snap(EXCLUDED_TWO, '2026-09-06', '900')]),
+        account(C, 'USD account', [opening(C, '500'), snap(C, '2026-09-06', '480')], {
+          currency: 'USD',
+        }),
+      ],
+      // Attributed to an excluded account: 8.1 takes it out with the account.
+      income: [income({ cashPositionId: EXCLUDED_ONE, netAmount: new Decimal('5000') })],
+      expenses: [expense({ cashPositionId: EXCLUDED_TWO, amount: new Decimal('40') })],
+    });
+
+  const result = reconcileMonthToDate(fixture());
+  const eurBucket = computed(result).buckets.find((b) => b.currency === 'EUR');
+  const usdBucket = computed(result).buckets.find((b) => b.currency === 'USD');
+
+  it('takes the date from the currency that can supply one', () => {
     expect(result.asOf).toBe('2026-09-06');
-    const eurBucket = computed(result).buckets.find((b) => b.currency === 'EUR');
-    const usdBucket = computed(result).buckets.find((b) => b.currency === 'USD');
+  });
 
+  it('still produces the EUR bucket, because EUR has participating accounts', () => {
+    // Not dropped: 8.1 enumerates a bucket from participating cash positions,
+    // and an excluded account is participating — it is excluded from the
+    // arithmetic, not from the month.
+    expect(computed(result).buckets.map((b) => b.currency)).toEqual(['EUR', 'USD']);
+    expect(eurBucket?.accounts.map((a) => a.positionId).sort()).toEqual([
+      EXCLUDED_ONE,
+      EXCLUDED_TWO,
+    ]);
+  });
+
+  it('makes it unavailable, with no reason and both info issues kept', () => {
+    // 8.4's `unavailable` row: "…or no included account…". No `missing_opening`
+    // reason — nothing was unreadable, it was excluded.
     expect(eurBucket?.status).toBe('unavailable');
-    // Not a missing opening: the account was excluded, not unreadable.
     expect(eurBucket?.reason).toBeUndefined();
-    expect(eurBucket?.totals.cashDelta).toBeUndefined();
-    expect(eurBucket?.issues.map((i) => i.key)).toEqual(['first_balance']);
+    expect(eurBucket?.issues.map((i) => i.key)).toEqual(['first_balance', 'first_balance']);
+    expect(eurBucket?.issues.every((i) => i.class === 'info')).toBe(true);
+    expect(eurBucket?.issues.map((i) => i.positionId).sort()).toEqual([
+      EXCLUDED_ONE,
+      EXCLUDED_TWO,
+    ]);
+  });
 
+  it('sums the roles over a scope that excludes both accounts, so all four are zero', () => {
+    // Measured zeros, not unknowns: the 5,000 of income and the 40 of expense
+    // are attributed to excluded accounts, so 8.1 takes them out of the bucket.
+    expect(eurBucket?.totals.externalInflows.toString()).toBe('0');
+    expect(eurBucket?.totals.nonIncomeInflows.toString()).toBe('0');
+    expect(eurBucket?.totals.nonExpenseOutflows.toString()).toBe('0');
+    expect(eurBucket?.totals.knownTrackedExpenses.toString()).toBe('0');
+  });
+
+  it('reports no balance-derived figure, and never a cash change of zero', () => {
+    // 30.12: an empty included set has no complete change to measure, so there
+    // is no Δ — not a Δ of nothing.
+    expect(eurBucket?.totals.cashDelta).toBeUndefined();
+    expect(eurBucket?.totals.trackedTotalSpending).toBeUndefined();
+    expect(eurBucket?.totals.unclassified).toBeUndefined();
+  });
+
+  it('leaves the USD reconciliation standing, and the month unavailable', () => {
+    // 30.13 item 4: the failure is bucket-local, and the month takes the worst.
     expect(usdBucket?.status).toBe('provisional');
     expect(usdBucket?.totals.cashDelta?.toString()).toBe('-20');
+    expect(usdBucket?.totals.trackedTotalSpending?.toString()).toBe('20');
+    expect(result.status).toBe('unavailable');
+  });
+});
+
+describe('J3 — a null leg in a currency whose accounts are all excluded', () => {
+  const EXCLUDED = 'excluded-only';
+
+  const result = reconcileMonthToDate(
+    input({
+      cashAccounts: [
+        account(EXCLUDED, 'Newly tracked', [snap(EXCLUDED, '2026-09-06', '5000')]),
+        account(C, 'USD account', [opening(C, '500'), snap(C, '2026-09-06', '500')], {
+          currency: 'USD',
+        }),
+      ],
+      income: [income({ cashPositionId: null, netAmount: new Decimal('700') })],
+    }),
+  );
+  const eurBucket = computed(result).buckets.find((b) => b.currency === 'EUR');
+
+  it('keeps the null leg in the bucket, because EUR has a participating account', () => {
+    // 8.1's support condition is **participation**, not inclusion: "a flow with
+    // a null cash position but currency C belongs to the bucket; validation
+    // requires a participating cash account of that currency". An excluded
+    // account still participates, so the leg is supported and counted — and it
+    // is not assigned to that account to make it so.
+    expect(eurBucket?.totals.externalInflows.toString()).toBe('700');
+  });
+
+  it('raises no flow_without_cash_account, because the currency has an account', () => {
+    expect(eurBucket?.issues.map((i) => i.key)).toEqual(['first_balance']);
+  });
+
+  it('is still unavailable, with no balance-derived figure', () => {
+    // The leg is in the bucket; the bucket still has no included account to
+    // measure a change over.
+    expect(eurBucket?.status).toBe('unavailable');
+    expect(eurBucket?.totals.cashDelta).toBeUndefined();
+    expect(eurBucket?.totals.trackedTotalSpending).toBeUndefined();
+    expect(result.status).toBe('unavailable');
+  });
+});
+
+describe('J4 — a null leg in a currency with no participating account at all', () => {
+  const result = reconcileMonthToDate(
+    input({
+      cashAccounts: [
+        account(A, 'BBVA', [opening(A, '1000'), snap(A, '2026-09-06', '1000')]),
+      ],
+      income: [income({ cashPositionId: null, currency: USD, netAmount: new Decimal('75') })],
+    }),
+  );
+  const usdBucket = computed(result).buckets.find((b) => b.currency === 'USD');
+
+  it('is unavailable and not unresolved, although the issue is blocking', () => {
+    // 8.5 classes `flow_without_cash_account` as blocking, and 8.6 makes its
+    // MTD consequence an unavailable bucket rather than the ordinary
+    // blocking → unresolved path. The engine reaches this state before any
+    // arithmetic exists to judge, so the ladder is never consulted.
+    expect(usdBucket?.status).toBe('unavailable');
+    expect(usdBucket?.status).not.toBe('unresolved');
+    const raised = usdBucket?.issues.find((i) => i.key === 'flow_without_cash_account');
+    expect(raised?.class).toBe('blocking');
+    expect(raised?.amount?.toString()).toBe('75');
+  });
+
+  it('still reports the leg it could not place, and no balance-derived figure', () => {
+    expect(usdBucket?.totals.externalInflows.toString()).toBe('75');
+    expect(usdBucket?.totals.cashDelta).toBeUndefined();
+    expect(usdBucket?.totals.trackedTotalSpending).toBeUndefined();
+    expect(usdBucket?.totals.unclassified).toBeUndefined();
     expect(result.status).toBe('unavailable');
   });
 });
@@ -578,23 +707,6 @@ describe('O and P — a flow with no account named', () => {
     expect(bucket?.totals.externalInflows.toString()).toBe('100');
     expect(bucket?.totals.trackedTotalSpending?.toString()).toBe('0');
     expect(bucket?.status).toBe('provisional');
-  });
-
-  it('is reported, not dropped, when its currency has no participating account', () => {
-    const result = reconcileMonthToDate(
-      input({
-        cashAccounts: [
-          account(A, 'BBVA', [opening(A, '1000'), snap(A, '2026-09-06', '1000')]),
-        ],
-        income: [income({ cashPositionId: null, currency: USD, netAmount: new Decimal('75') })],
-      }),
-    );
-    const usd = computed(result).buckets.find((b) => b.currency === 'USD');
-    expect(usd?.status).toBe('unavailable');
-    const raised = usd?.issues.find((i) => i.key === 'flow_without_cash_account');
-    expect(raised?.class).toBe('blocking');
-    expect(raised?.amount?.toString()).toBe('75');
-    expect(result.status).toBe('unavailable');
   });
 
   it('does not let a leg on a non-participating account conjure a bucket', () => {

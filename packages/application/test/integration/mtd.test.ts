@@ -287,6 +287,46 @@ describe('account states at the as-of date', () => {
     expect(result.buckets?.[0]?.accounts.map((x) => x.positionId)).toEqual([a]);
   });
 
+  it('keeps a currency whose accounts are all excluded, with no figures', async () => {
+    // The EUR pair are the month's first_balance exclusions, so USD fixes the
+    // date alone. The EUR bucket still exists — 8.1 enumerates it from
+    // participating accounts — and reports both info issues, four measured
+    // zeros and no balance-derived figure at all.
+    const one = await makeAccount('Newly tracked');
+    const two = await makeAccount('Also newly tracked');
+    const usdAccount = await makeAccount('USD account', { currency: 'USD' });
+    await opening(usdAccount, '500.00');
+    await snapshot(one, '2026-09-06', '5000.00');
+    await snapshot(two, '2026-09-06', '900.00');
+    await snapshot(usdAccount, '2026-09-06', '480.00');
+    await createIncomeEntry(deps(), on('2026-09-04'), {
+      kind: 'employment',
+      receivedOn: '2026-09-04',
+      netAmount: '5000.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId: one,
+    });
+
+    const result = await getMonthToDate(readDeps(), SEPT_10);
+    expect(result.asOf).toBe('2026-09-06');
+
+    const eur = result.buckets?.find((x) => x.currency === 'EUR');
+    expect(eur?.status).toBe('unavailable');
+    expect(eur?.reason).toBeNull();
+    expect(eur?.issues.map((i) => i.key)).toEqual(['first_balance', 'first_balance']);
+    expect(eur?.totals.externalInflows.amount).toBe('0');
+    expect(eur?.totals.knownTrackedExpenses.amount).toBe('0');
+    expect(eur?.totals.cashDelta).toBeNull();
+    expect(eur?.totals.trackedTotalSpending).toBeNull();
+    expect(eur?.totals.unclassified).toBeNull();
+
+    const usd = result.buckets?.find((x) => x.currency === 'USD');
+    expect(usd?.status).toBe('provisional');
+    expect(usd?.totals.cashDelta?.amount).toBe('-20');
+    expect(result.status).toBe('unavailable');
+  });
+
   it('makes one bucket unavailable for a missing opening and leaves the other', async () => {
     const a = await makeAccount('BBVA');
     const b = await makeAccount('USD account', { currency: 'USD' });
