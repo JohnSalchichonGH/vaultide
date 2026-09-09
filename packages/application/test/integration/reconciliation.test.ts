@@ -352,6 +352,60 @@ describe('a month whose statement balance is missing', () => {
   });
 });
 
+describe('a first-balance account inside an unavailable month', () => {
+  it('keeps its attributed income out of the sums', async () => {
+    // 8.1 excludes a `first_balance` account and its attributed flow legs from
+    // the month. Another account losing its statement makes the bucket
+    // unavailable; it does not bring the excluded leg back.
+    await recordValuation(harness.services.positions, OCTOBER_1, {
+      positionId: bbva,
+      valuedOn: '2026-08-31',
+      amount: '8055.00',
+      datePrecision: 'month_end',
+    });
+    await createIncomeEntry(deps(), on('2026-09-25'), {
+      kind: 'employment',
+      receivedOn: '2026-09-25',
+      netAmount: '2100.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId: bbva,
+    });
+
+    const brokerage = await createCashAccount(harness.services.positions, OCTOBER_1, {
+      name: 'Brokerage cash',
+      currency: 'EUR',
+      accountType: 'brokerage_cash',
+      openedOn: null,
+    });
+    await createIncomeEntry(deps(), on('2026-09-10'), {
+      kind: 'interest',
+      receivedOn: '2026-09-10',
+      netAmount: '500.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId: brokerage.id,
+    });
+    await recordValuation(harness.services.positions, OCTOBER_1, {
+      positionId: brokerage.id,
+      valuedOn: '2026-09-30',
+      amount: '500.00',
+      datePrecision: 'month_end',
+    });
+
+    const { result, bucket } = await eurBucket();
+    expect(result.status).toBe('unavailable');
+    // BBVA's salary only. The 500 on the newly tracked account is excluded with
+    // the account, exactly as it would be in a month that reconciled.
+    expect(bucket?.totals.externalInflows.amount).toBe('2100');
+    expect(bucket?.totals.trackedTotalSpending).toBeNull();
+
+    const excluded = bucket?.accounts.find((a) => a.positionId === brokerage.id);
+    expect(excluded?.excludedFirstBalance).toBe(true);
+    expect(bucket?.issues.some((i) => i.key === 'first_balance')).toBe(true);
+  });
+});
+
 describe('a forgotten salary', () => {
   it('is unresolved with a blocking unexplained inflow', async () => {
     await recordSeptember({ withSalary: false });

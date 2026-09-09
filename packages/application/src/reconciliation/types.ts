@@ -56,27 +56,34 @@ export interface ReconciliationAccountDto {
 }
 
 /**
- * 8.9's totals.
+ * 8.9's totals. The finance package's `BucketTotals` carries the full
+ * definition of each field; this mirrors it.
  *
- * The four role sums are sums of source records and are always exact — a zero
- * among them is a measured zero. `trackedTotalSpending` and `unclassified` need
- * usable balance evidence and are `null`, never `0`, when the bucket could not
- * be reconciled (8.4).
- *
- * **The interface must not present the four sums as a spending result while
- * `status` is `unavailable`.** In that state they describe what was recorded,
- * not what was spent: a September with a €2,100 salary and a missing statement
- * balance reports `externalInflows` 2100 and no spending figure at all, and
- * `cashDelta` then covers only the accounts that had usable endpoints.
+ * The four role sums are taken over one set in every status: the month's
+ * tracked-cash legs of this currency attributed to a participating,
+ * non-`first_balance` account, plus every leg with no account named (8.1). They
+ * need no balance evidence and are always exact, and a zero among them is a
+ * measured zero.
  */
 export interface ReconciliationTotalsDto {
+  /** `ΣI`. Always exact, over the scope above. */
   readonly externalInflows: MoneyDto;
+  /** `ΣNin`. Always exact, over the scope above. */
   readonly nonIncomeInflows: MoneyDto;
+  /** `ΣNout`. Always exact, over the scope above. */
   readonly nonExpenseOutflows: MoneyDto;
+  /** `ΣK`. Always exact, over the scope above; zero means no known expense. */
   readonly knownTrackedExpenses: MoneyDto;
+  /**
+   * The bucket's cash change when `status` says it reconciled. When `status` is
+   * `unavailable` this is a **partial diagnostic** covering only the accounts
+   * that had usable endpoints, and the interface must not show it as the
+   * bucket's cash change.
+   */
   readonly cashDelta: MoneyDto;
   /** `null` when the bucket is `unavailable` — unknown is never zero. */
   readonly trackedTotalSpending: MoneyDto | null;
+  /** `null` on the same condition, for the same reason. */
   readonly unclassified: MoneyDto | null;
 }
 

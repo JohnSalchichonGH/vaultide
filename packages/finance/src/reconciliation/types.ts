@@ -123,35 +123,73 @@ export interface AccountState {
 }
 
 /**
- * 8.9's totals, and the line that runs through them.
+ * 8.9's totals, and what each one is a total *of*.
  *
- * The four role sums are sums of **source records**. They need no balance
- * evidence, so they are exact and present whatever the statements say, and a
- * zero among them is a measured zero: `ΣK = 0` means no known tracked expense,
- * not "unknown". `cashDelta` is 8.2's `Σ_{included}(close − open)` — always
- * that sum and nothing else, which for an unavailable bucket covers only the
- * accounts that had usable endpoints.
+ * ## The reconciliation scope
  *
- * `trackedTotalSpending` and `unclassified` are inferred from those balances,
- * so they are **absent** rather than zero when the bucket is `unavailable`
- * (8.4). That absence is the only signal that the month has no spending figure.
+ * The four role sums are taken over one set, fixed by 8.1 before any statement
+ * balance is consulted: the month's tracked-cash legs of this currency that are
+ * attributed to a **participating, non-`first_balance`** account, plus every
+ * leg with no account named. 8.1 excludes a `first_balance` account "and their
+ * attributed flow legs" from M, which is a fact about that account's opening
+ * state and does not depend on what the other accounts' statements say.
  *
- * **The four sums must never be presented as a spending result while the
- * bucket's status is `unavailable`.** They say what was recorded, not what was
- * spent, and in that state they are not even the identity's inputs: with no
- * usable inclusion set there is nothing to restrict them to, so they cover every
- * known flow of the currency. When the bucket does reconcile they are the
- * identity's inputs exactly as 8.2 requires — the legs of included accounts plus
- * the null-leg ones.
+ * That set is 8.2's "attributed to included accounts, or null-leg" wherever 8.2
+ * applies: 8.3 only computes the identity when no participating, non-excluded
+ * account has a `carried` or `missing` end, and then the included accounts are
+ * exactly the participating ones less the `first_balance` ones. So the scope is
+ * one thing in every status, not two things wearing one name.
+ *
+ * A leg naming an account that does not participate in M is in neither part of
+ * that set, and so is in no sum. Phase 3 cannot write one (20.1 keeps a flow
+ * inside its account's window); this is the read-side answer for legacy or
+ * externally corrupted rows.
  */
 export interface BucketTotals {
+  /** `ΣI`. **Always exact**, over the scope above, in every status. */
   readonly externalInflows: Decimal;
+  /** `ΣNin`. **Always exact**, over the scope above, in every status. */
   readonly nonIncomeInflows: Decimal;
+  /** `ΣNout`. **Always exact**, over the scope above, in every status. */
   readonly nonExpenseOutflows: Decimal;
+  /**
+   * `ΣK`. **Always exact**, over the scope above, in every status.
+   *
+   * Zero here is a **measured** zero: it means no known tracked expense was
+   * recorded in this currency and month, never "unknown". None of these four
+   * needs balance evidence, so none of them is ever a stand-in for a figure
+   * that could not be computed.
+   */
   readonly knownTrackedExpenses: Decimal;
+  /**
+   * `Δ` — 8.2's `Σ_{a ∈ included} (close_a − open_a)`.
+   *
+   * **Status-dependent, and deliberately flagged as such.** When the bucket
+   * reconciles, every account in the scope is included, so this is the bucket's
+   * cash change and the `−Δ` term of the identity.
+   *
+   * When the bucket is `unavailable` it is a **partial diagnostic**: it covers
+   * only the accounts that had usable endpoints, and the accounts that did not
+   * are simply missing from it. It is emphatically *not* the bucket's cash
+   * change, and no spending figure follows from it.
+   *
+   * That second reading is an **open question in the blueprint**, not a settled
+   * semantic: 8.3 never computes `Δ` for an unavailable bucket, and 8.9 types
+   * this field as always present, so a partial sum over a subset is undefined
+   * there. A value is reported because the shape requires one. Read it only
+   * when the status says the bucket reconciled.
+   */
   readonly cashDelta: Decimal;
-  /** Absent when the bucket could not be computed — never zero (8.4). */
+  /**
+   * `ΣI + ΣNin − ΣNout − Δ`. **Absent** — never zero — when the bucket could
+   * not be reconciled, because it is inferred from balance evidence that was
+   * not there (8.4).
+   */
   readonly trackedTotalSpending?: Decimal;
+  /**
+   * `trackedTotalSpending − ΣK`. **Absent** on exactly the same condition, and
+   * for the same reason.
+   */
   readonly unclassified?: Decimal;
 }
 

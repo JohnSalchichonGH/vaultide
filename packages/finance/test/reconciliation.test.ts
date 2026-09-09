@@ -1050,6 +1050,183 @@ describe('what an unavailable bucket still knows', () => {
   });
 });
 
+describe('which flows belong to a bucket (8.1)', () => {
+  const NEWLY_TRACKED = 'newly-tracked';
+  const NO_STATEMENT = 'no-statement';
+  const GONE = 'closed-in-august';
+
+  /** Both endpoints settled: this one is included in every fixture below. */
+  const usable = () =>
+    account(BBVA, 'BBVA', [
+      monthEnd(BBVA, '2026-08-31', '1000'),
+      monthEnd(BBVA, '2026-09-30', '1000'),
+    ]);
+
+  /** 8.1 `first_balance`: pre-existing, first balance lands in M, excluded. */
+  const newlyTracked = () =>
+    account(
+      NEWLY_TRACKED,
+      'Newly tracked',
+      [monthEnd(NEWLY_TRACKED, '2026-09-30', '5000')],
+      {},
+      'savings',
+    );
+
+  /** No September statement: this is what makes a bucket unavailable. */
+  const withoutStatement = () =>
+    account(NO_STATEMENT, 'No statement', [monthEnd(NO_STATEMENT, '2026-08-31', '800')]);
+
+  const attributedIncome = (positionId: string, amount: string) =>
+    income({ cashPositionId: positionId, netAmount: new Decimal(amount) });
+
+  it('leaves a first-balance account out of the sums when the bucket is unavailable', () => {
+    // 8.1 excludes such an account "and their attributed flow legs" from M.
+    // That is a fact about the account's opening state; another account losing
+    // its statement cannot bring the excluded leg back.
+    const bucket = reconcileCompletedMonth(
+      input({
+        cashAccounts: [usable(), newlyTracked(), withoutStatement()],
+        income: [attributedIncome(NEWLY_TRACKED, '500')],
+      }),
+    ).buckets[0];
+
+    expect(bucket?.status).toBe('unavailable');
+    expect(bucket?.totals.externalInflows.toString()).toBe('0');
+  });
+
+  it('leaves the known expenses of a first-balance account out too', () => {
+    const bucket = reconcileCompletedMonth(
+      input({
+        cashAccounts: [usable(), newlyTracked(), withoutStatement()],
+        expenses: [
+          expense({ cashPositionId: NEWLY_TRACKED, amount: new Decimal('500') }),
+        ],
+      }),
+    ).buckets[0];
+
+    expect(bucket?.status).toBe('unavailable');
+    expect(bucket?.totals.knownTrackedExpenses.toString()).toBe('0');
+  });
+
+  it('keeps a null-leg flow in the bucket while dropping the first-balance one', () => {
+    // A null leg is a fact about the currency, not about an account (8.1), so
+    // the exclusion of one account says nothing about it. Nor is it assigned to
+    // the account that remains.
+    const bucket = reconcileCompletedMonth(
+      input({
+        cashAccounts: [usable(), newlyTracked()],
+        income: [
+          attributedIncome(NEWLY_TRACKED, '500'),
+          income({ cashPositionId: null, netAmount: new Decimal('700') }),
+        ],
+      }),
+    ).buckets[0];
+
+    expect(bucket?.status).toBe('estimated');
+    expect(bucket?.totals.externalInflows.toString()).toBe('700');
+    // The null leg is in no account's residual: BBVA moved by nothing and has
+    // nothing attributed to it.
+    expect(bucket?.accounts.find((a) => a.positionId === BBVA)?.residual?.toString()).toBe('0');
+  });
+
+  it('keeps the null leg when the bucket is unavailable as well', () => {
+    const bucket = reconcileCompletedMonth(
+      input({
+        cashAccounts: [usable(), newlyTracked(), withoutStatement()],
+        income: [
+          attributedIncome(NEWLY_TRACKED, '500'),
+          income({ cashPositionId: null, netAmount: new Decimal('700') }),
+        ],
+      }),
+    ).buckets[0];
+
+    expect(bucket?.status).toBe('unavailable');
+    expect(bucket?.totals.externalInflows.toString()).toBe('700');
+  });
+
+  it('applies the same membership rule whatever the status turns out to be', () => {
+    // reliable, estimated and unavailable differ in whether the arithmetic can
+    // run, never in which flows belong to the bucket.
+    const flows = {
+      income: [
+        attributedIncome(NEWLY_TRACKED, '500'),
+        attributedIncome(BBVA, '900'),
+        income({ cashPositionId: null, netAmount: new Decimal('700') }),
+      ],
+    };
+
+    const reliable = reconcileCompletedMonth(
+      input({ cashAccounts: [usable()], ...flows }),
+    ).buckets[0];
+    const estimated = reconcileCompletedMonth(
+      input({ cashAccounts: [usable(), newlyTracked()], ...flows }),
+    ).buckets[0];
+    const unavailable = reconcileCompletedMonth(
+      input({ cashAccounts: [usable(), newlyTracked(), withoutStatement()], ...flows }),
+    ).buckets[0];
+
+    expect([reliable?.status, estimated?.status, unavailable?.status]).toEqual([
+      'reliable',
+      'estimated',
+      'unavailable',
+    ]);
+    for (const bucket of [reliable, estimated, unavailable]) {
+      // 900 attributed to the included account + 700 with no account named.
+      // The 500 on the newly tracked account is out of all three: in the first
+      // it names no participating account, in the other two it is excluded.
+      expect(bucket?.totals.externalInflows.toString()).toBe('1600');
+    }
+  });
+
+  it('leaves out a leg naming an account that does not take part in the month', () => {
+    // 8.3 builds the flow set as "attributed to included accounts, plus
+    // null-leg flows", and an account closed before the month is in neither.
+    // Phase 3 cannot write such a row — a flow must fall inside its account's
+    // own window — so this is the read-side answer for legacy or externally
+    // corrupted state. It is not silently re-attributed, not treated as a null
+    // leg, and raises no issue, because 8.5 has no key for it.
+    const bucket = reconcileCompletedMonth(
+      input({
+        cashAccounts: [
+          usable(),
+          account(GONE, 'Closed in August', [monthEnd(GONE, '2026-08-31', '0')], {
+            closedOn: '2026-08-15',
+          }),
+        ],
+        income: [attributedIncome(GONE, '400')],
+      }),
+    ).buckets[0];
+
+    expect(bucket?.accounts.map((a) => a.positionId)).toEqual([BBVA]);
+    expect(bucket?.totals.externalInflows.toString()).toBe('0');
+    expect(bucket?.status).toBe('reliable');
+    expect(bucket?.issues).toEqual([]);
+  });
+
+  it('reports the cash change over the accounts that had endpoints, and no spending figure', () => {
+    // 8.3 never computes a cash change for an unavailable bucket and 8.9 types
+    // the field as always present, so what a partial sum means there is an open
+    // question rather than a settled semantic. This pins today's behaviour so a
+    // change to it has to be deliberate.
+    const bucket = reconcileCompletedMonth(
+      input({
+        cashAccounts: [
+          account(BBVA, 'BBVA', [
+            monthEnd(BBVA, '2026-08-31', '1000'),
+            monthEnd(BBVA, '2026-09-30', '700'),
+          ]),
+          withoutStatement(),
+        ],
+      }),
+    ).buckets[0];
+
+    expect(bucket?.status).toBe('unavailable');
+    expect(bucket?.totals.cashDelta.toString()).toBe('-300');
+    expect(bucket?.totals.trackedTotalSpending).toBeUndefined();
+    expect(bucket?.totals.unclassified).toBeUndefined();
+  });
+});
+
 describe('completed-month status precedence (8.3, 8.4)', () => {
   it('is unresolved, not estimated, when an excluded account and a negative unclassified meet', () => {
     // 8.4 gives `estimated` the condition "computed, unclassified >= 0, at

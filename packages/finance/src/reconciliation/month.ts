@@ -214,49 +214,89 @@ function reconcileBucket(
     month,
   );
 
-  /**
-   * The four role sums of every known flow in this currency and month, with a
-   * cash change beside them.
-   *
-   * Used where the bucket cannot be reconciled. The distinction 8.9's shape
-   * rests on is that these four are sums of **source records** — they need no
-   * balance evidence and are exact whatever the statements say — while
-   * `trackedTotalSpending` and `unclassified` are inferred from balances and
-   * are therefore absent when the balances are not usable. A month with a
-   * recorded salary and a missing statement has `ΣI = 2,100` and no spending
-   * figure at all; reporting `ΣI = 0` there would be a known number thrown
-   * away, which is worse than the unknown-as-zero mistake, not better.
-   *
-   * `ΣK = 0` from this function means there were no known tracked expenses.
-   * That is a measured zero.
-   *
-   * Note what is *not* claimed: an unavailable bucket's sums are not the
-   * identity's inputs, because there is no identity and no inclusion set to
-   * restrict them to. When the bucket does reconcile, the sums are taken over
-   * the included accounts' legs plus the null-leg ones, exactly as 8.2 requires.
-   */
-  const knownTotals = (delta: Decimal): BucketTotals => {
-    const known = legs.filter((leg) => leg.currency === currency);
-    const roleTotal = (role: RoleLeg['role']): Decimal =>
-      sum(known.filter((leg) => leg.role === role).map((leg) => leg.amount));
+  const months = [...accounts]
+    .sort((a, b) => a.position.id.localeCompare(b.position.id))
+    .map((account) => accountMonthOf(account, month));
+  const states = months.map((entry) => entry.state);
 
-    return {
-      externalInflows: roleTotal('I'),
-      nonIncomeInflows: roleTotal('Nin'),
-      nonExpenseOutflows: roleTotal('Nout'),
-      knownTrackedExpenses: roleTotal('K'),
-      cashDelta: delta,
-    };
-  };
+  const accountTypes = new Map(accounts.map((a) => [a.position.id, a.accountType]));
+  const excluded = states.filter((state) => state.excludedFirstBalance);
+  const unusable = states.filter((state) => !state.included && !state.excludedFirstBalance);
+  const included = months.filter((entry) => entry.state.included);
+
+  /**
+   * Which flow legs belong to this bucket at all (8.1), decided **before**
+   * anybody asks whether the arithmetic can run.
+   *
+   * 8.1 settles membership in two sentences and neither mentions endpoint
+   * evidence. "Flows in (M, C)" are the month's tracked-cash legs of currency C,
+   * and "a flow with a null cash position but currency C belongs to the bucket".
+   * Then the excluded-accounts sentence takes some of them back out: an account
+   * whose opening is `first_balance` is excluded from the bucket for M — "their
+   * Δ **and their attributed flow legs**".
+   *
+   * So the scope is: participating accounts of this currency, less those
+   * excluded as `first_balance`, plus every null leg. Nothing here is
+   * conditioned on a statement balance, which is what keeps the four role sums
+   * meaning one thing in every status.
+   *
+   * That it agrees with 8.2 is not a coincidence to be checked case by case.
+   * 8.2 sums the flows "attributed to included accounts, or null-leg", and 8.3
+   * only reaches 8.2 when no participating, non-excluded account has a
+   * `carried` or `missing` end — at which point the included accounts *are* the
+   * participating accounts less the `first_balance` ones. The two definitions
+   * coincide exactly wherever the identity is computed, and this one keeps
+   * saying something when the identity is not.
+   *
+   * A leg naming an account that does not participate in M is in neither part
+   * and is therefore in no sum. Phase 3's writes cannot produce one — a flow
+   * must fall inside its account's own window (20.1) — so this is the read-side
+   * answer for legacy or externally-corrupted rows, and it is 8.3's own
+   * `flows ← ... attributed to included accounts, plus null-leg flows` read
+   * literally rather than a rule invented here.
+   */
+  const scopeIds = new Set(
+    states.filter((state) => !state.excludedFirstBalance).map((state) => state.positionId),
+  );
+  const scopeLegs = legs.filter(
+    (leg) =>
+      leg.currency === currency &&
+      (leg.cashPositionId === null || scopeIds.has(leg.cashPositionId)),
+  );
+
+  const totalOf = (role: RoleLeg['role']): Decimal =>
+    sum(scopeLegs.filter((leg) => leg.role === role).map((leg) => leg.amount));
+
+  /**
+   * The four role sums over that scope, with a cash change beside them.
+   *
+   * The four are sums of **source records**: they need no balance evidence and
+   * are exact in every status, and a zero among them is a measured zero — `ΣK =
+   * 0` means no known tracked expense was recorded, not "unknown". A month with
+   * a recorded salary and a missing statement still has `ΣI = 2,100`; reporting
+   * `ΣI = 0` there would throw away a number the user entered.
+   *
+   * `trackedTotalSpending` and `unclassified` are the ones inferred from
+   * balances, and they are absent — never zero — when the balances cannot carry
+   * them (8.4).
+   */
+  const totalsWith = (delta: Decimal): BucketTotals => ({
+    externalInflows: totalOf('I'),
+    nonIncomeInflows: totalOf('Nin'),
+    nonExpenseOutflows: totalOf('Nout'),
+    knownTrackedExpenses: totalOf('K'),
+    cashDelta: delta,
+  });
 
   // 8.3: a currency whose only presence is a null-leg flow has nothing to
-  // reconcile against.
+  // reconcile against. No participating account means no cash change to state,
+  // and the empty sum is exactly zero rather than a stand-in for one.
   if (accounts.length === 0) {
     return {
       currency,
       status: 'unavailable',
       accounts: [],
-      totals: knownTotals(new Decimal(0)),
+      totals: totalsWith(new Decimal(0)),
       additionalSpending,
       thirdPartyPaid,
       issues: detectIssues({
@@ -273,16 +313,6 @@ function reconcileBucket(
     };
   }
 
-  const months = [...accounts]
-    .sort((a, b) => a.position.id.localeCompare(b.position.id))
-    .map((account) => accountMonthOf(account, month));
-  const states = months.map((entry) => entry.state);
-
-  const accountTypes = new Map(accounts.map((a) => [a.position.id, a.accountType]));
-  const excluded = states.filter((state) => state.excludedFirstBalance);
-  const unusable = states.filter((state) => !state.included && !state.excludedFirstBalance);
-  const included = months.filter((entry) => entry.state.included);
-
   // 8.3/8.4: a participating, non-excluded account with a `carried` or
   // `missing` end makes the bucket unavailable, and so does having nothing left
   // to reconcile with.
@@ -291,11 +321,14 @@ function reconcileBucket(
       currency,
       status: 'unavailable',
       accounts: states,
-      // 8.2's own definition of Δ, applied unchanged: the sum over the accounts
-      // whose endpoints are settled. With one of them unusable that covers only
-      // part of the bucket, which is precisely why no spending figure follows
-      // from it.
-      totals: knownTotals(
+      // 8.2's definition of Δ applied to the accounts that have both
+      // endpoints. **This is an open question, not a settled semantic**: 8.3
+      // never computes Δ for an unavailable bucket, and 8.9 types `cashDelta`
+      // as always present, so the blueprint says nothing about what a partial
+      // sum over a subset of the bucket means. It is reported here because the
+      // shape requires a value; it is not the bucket's cash change and no
+      // spending figure follows from it. See the note on `BucketTotals`.
+      totals: totalsWith(
         sum(included.map((entry) => entry.closingAmount.minus(entry.openingAmount))),
       ),
       additionalSpending,
@@ -320,29 +353,19 @@ function reconcileBucket(
     };
   }
 
-  const includedIds = new Set(included.map((entry) => entry.state.positionId));
-
-  // 8.1: the bucket's flows are those attributed to an included account, plus
-  // the null-leg ones. A leg attributed to an excluded account is left out with
-  // that account — including one side of a transfer whose other side is
-  // included, which is why a transfer is not forced to cancel.
-  const bucketLegs = legs.filter(
-    (leg) =>
-      leg.currency === currency &&
-      (leg.cashPositionId === null || includedIds.has(leg.cashPositionId)),
-  );
-
-  const totalOf = (role: RoleLeg['role']): Decimal =>
-    sum(bucketLegs.filter((leg) => leg.role === role).map((leg) => leg.amount));
-
-  const externalInflows = totalOf('I');
-  const nonIncomeInflows = totalOf('Nin');
-  const nonExpenseOutflows = totalOf('Nout');
-  const knownTrackedExpenses = totalOf('K');
-
+  // Here the scope and the included accounts are the same set: 8.3 only reaches
+  // this point when no participating, non-excluded account has a `carried` or
+  // `missing` end, which leaves the participating accounts less the
+  // `first_balance` ones — exactly what 8.2 calls the included accounts. A leg
+  // attributed to an excluded account stays out with that account, including
+  // one side of a transfer whose other side is in, which is why a transfer is
+  // not forced to cancel.
   const cashDelta = sum(
     included.map((entry) => entry.closingAmount.minus(entry.openingAmount)),
   );
+
+  const roleSums = totalsWith(cashDelta);
+  const { externalInflows, nonIncomeInflows, nonExpenseOutflows, knownTrackedExpenses } = roleSums;
 
   const trackedTotalSpending = externalInflows
     .plus(nonIncomeInflows)
@@ -356,7 +379,7 @@ function reconcileBucket(
   // attribution the user never gave.
   const withResiduals: AccountState[] = included.map((entry) => {
     const attributed = sum(
-      bucketLegs
+      scopeLegs
         .filter((leg) => leg.cashPositionId === entry.state.positionId)
         .map((leg) => signedEffect(leg)),
     );
@@ -367,15 +390,7 @@ function reconcileBucket(
     (state) => withResiduals.find((withOne) => withOne.positionId === state.positionId) ?? state,
   );
 
-  const totals: BucketTotals = {
-    externalInflows,
-    nonIncomeInflows,
-    nonExpenseOutflows,
-    knownTrackedExpenses,
-    cashDelta,
-    trackedTotalSpending,
-    unclassified,
-  };
+  const totals: BucketTotals = { ...roleSums, trackedTotalSpending, unclassified };
 
   const issues = detectIssues({
     currency,
