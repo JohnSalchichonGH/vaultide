@@ -217,3 +217,122 @@ export interface SpanDto {
   readonly trackedTotalSpending: MoneyDto;
   readonly unclassified: MoneyDto;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Savings and the spending decomposition (12.3, 12.5, v2.1.12 30.15)         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The eight classifications that hold whatever the balances did.
+ *
+ * Each is a sum or a partition of source records, so 30.12's rule reaches them
+ * exactly as it reaches the role sums: they need no balance evidence, they are
+ * exact in every status, and a zero among them is a measured zero. A month
+ * whose statement is missing still knows what its own records said.
+ */
+export interface SavingsSourceDto {
+  /** The part of the bucket's `ΣI` that 12.5 counts as income. */
+  readonly externalIncome: MoneyDto;
+  /** `ΣK` less the four buckets below — the remainder, never an input. */
+  readonly knownConsumption: MoneyDto;
+  readonly propertyOperatingCosts: MoneyDto;
+  readonly interestAndFees: MoneyDto;
+  readonly transactionCosts: MoneyDto;
+  readonly externalOutflows: MoneyDto;
+  /** `untracked_self` over the same interval the figures above used. */
+  readonly additionalSpending: MoneyDto;
+  /** `third_party` over the same interval. In no total at all. */
+  readonly thirdPartyPaid: MoneyDto;
+}
+
+/**
+ * `PersonalSavings / ExternalIncome` — an exact unrounded ratio as a decimal
+ * string, never a JS number and never a percentage. 7.3 puts rounding at the
+ * display boundary, so "58.24 %" is made where it is shown.
+ */
+export type SavingsRateDto =
+  | { readonly kind: 'ratio'; readonly value: string }
+  | { readonly kind: 'unavailable'; readonly reason: string };
+
+/**
+ * 12.5's five derived figures, present together or absent together.
+ *
+ * A discriminated union rather than five nullable fields, so there is no shape
+ * in which a personal-savings figure is readable without the consumption it was
+ * derived from, and none in which an `unresolved` bucket carries a total
+ * spending figure at all (30.15 item 1).
+ */
+export type SavingsDerivedDto =
+  | {
+      readonly kind: 'available';
+      /** The reconciliation quality these inherit; never a second status order. */
+      readonly quality: 'reliable' | 'estimated' | 'provisional';
+      readonly consumption: MoneyDto;
+      readonly trackedSavingsFromIncome: MoneyDto;
+      readonly personalSavings: MoneyDto;
+      readonly totalSpending: MoneyDto;
+      readonly savingsRate: SavingsRateDto;
+      /** Whether the rate counts additional spending, so a reader can label it. */
+      readonly countsAdditionalSpending: boolean;
+    }
+  | {
+      readonly kind: 'unavailable';
+      /**
+       * Two reasons and not one: `unresolved` computed an identity that
+       * contradicts itself, `reconciliation_unavailable` never reached the
+       * identity. Telling a user the same thing about both would be wrong.
+       */
+      readonly because: 'unresolved' | 'reconciliation_unavailable';
+    };
+
+/** One native-currency savings result, beside its reconciliation bucket. */
+export interface NativeSavingsDto {
+  readonly currency: string;
+  readonly reconciliationStatus: ReconciliationStatusDto;
+  readonly source: SavingsSourceDto;
+  readonly derived: SavingsDerivedDto;
+}
+
+/**
+ * A currency in which the user recorded spending but reconciles nothing.
+ *
+ * `untracked_self` and `third_party` carry no cash role (7.4), so neither needs
+ * a cash account of that currency to exist — and a currency with no account has
+ * no bucket. The amounts are real and are reported as themselves; no
+ * reconciliation bucket is fabricated to carry them, and no `Consumption`,
+ * `TotalSpending`, `PersonalSavings` or `SavingsRate` is invented for a
+ * currency that never reconciled.
+ */
+export interface SourceOnlySpendingDto {
+  readonly currency: string;
+  readonly additionalSpending: MoneyDto;
+  readonly thirdPartyPaid: MoneyDto;
+}
+
+/** A completed month's savings, per native currency. */
+export interface MonthSavingsDto {
+  /** `YYYY-MM`. */
+  readonly month: string;
+  readonly buckets: readonly NativeSavingsDto[];
+  readonly sourceOnlyByCurrency: readonly SourceOnlySpendingDto[];
+}
+
+/**
+ * The current month's savings, through the one date the evidence reaches.
+ *
+ * `buckets` is `null` exactly when no common date exists: 8.6 leaves no
+ * month-to-date interval then, so there is nothing to derive savings from. The
+ * two source-only settlements survive that, because neither depends on
+ * reconciliation — they are reported over `[start(M), today]` instead, and
+ * `sourceOnlyThrough` says so rather than letting a reader assume a date the
+ * result does not have (30.15 item 3).
+ */
+export interface MonthToDateSavingsDto {
+  /** `YYYY-MM`. */
+  readonly month: string;
+  readonly asOf: string | null;
+  readonly buckets: readonly NativeSavingsDto[] | null;
+  readonly sourceOnlyByCurrency: readonly SourceOnlySpendingDto[];
+  /** The last day the source-only figures include: `asOf` when it exists, else today. */
+  readonly sourceOnlyThrough: string;
+}
