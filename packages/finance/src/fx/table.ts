@@ -33,9 +33,10 @@ import {
 
 export interface FxTableOptions {
   /**
-   * Today in the user's timezone. Only used to decide whether a month is the
-   * current one, which changes how thin a monthly average may be (10.2).
-   * Engines never read a clock themselves (7.7).
+   * Today in the user's timezone. Used to recognise a month that has not ended,
+   * which has no whole-month average to give — 10.2 defines the current month's
+   * rate only through `D`, and the caller must say what `D` is. Engines never
+   * read a clock themselves (7.7).
    */
   readonly today: PlainDate;
   /**
@@ -122,29 +123,55 @@ export function createFxTable(rows: readonly FxRateRecord[], options: FxTableOpt
     };
   }
 
-  function samplesIn(code: CurrencyCode, month: MonthKey): FxRateRecord[] {
+  function samplesIn(code: CurrencyCode, month: MonthKey, to: PlainDate): FxRateRecord[] {
     const list = byQuote.get(code);
     if (list === undefined) return [];
     const from = startOfMonthKey(month);
-    const to = endOfMonthKey(month);
     return list.filter((row) => row.rateDate >= from && row.rateDate <= to);
   }
 
-  function monthlyAverage(quote: CurrencyCode | string, month: MonthKey): RateLookup | Unavailable {
+  /**
+   * The average rate for a month, optionally cut off part-way (10.2, 30.16).
+   *
+   * One rule with one variable in it. The window is `[start(M), cutoff]`, and
+   * the cutoff is the caller's `through` or the month's end. Supplying a
+   * `through` is what marks the average as month-to-date, and it changes two
+   * things: five observations are needed before a handful of days may call
+   * itself the month's rate, and the fallback is `rateOn(through)`.
+   *
+   * The date the caller passes is the only date consulted. `end(M)` is not
+   * substituted for it, and neither is today: a figure stated through `D` may
+   * not be converted at a rate observed after `D`, because that would put two
+   * dates inside one number.
+   *
+   * Without a `through` this is a completed month's average, where one stored
+   * observation is still that month's evidence and only a total absence falls
+   * back. Asking for the **current** month that way has no answer — 10.2 defines
+   * a current month's average only through `D` — so it says so rather than
+   * averaging a fortnight and calling it September.
+   */
+  function monthlyAverage(
+    quote: CurrencyCode | string,
+    month: MonthKey,
+    through?: PlainDate,
+  ): RateLookup | Unavailable {
     const code = currencyCode(quote);
-    const monthEnd = endOfMonthKey(month);
-    if (code === PIVOT_CURRENCY) return pivotIdentity(monthEnd);
+    const cutoff = through ?? endOfMonthKey(month);
+    if (code === PIVOT_CURRENCY) return pivotIdentity(cutoff);
 
-    const samples = samplesIn(code, month);
-    const isCurrentMonth = monthKey(options.today) === month;
-    const enough =
-      samples.length > 0 && (!isCurrentMonth || samples.length >= MIN_CURRENT_MONTH_SAMPLES);
+    if (through === undefined && monthKey(options.today) === month) {
+      return missing(
+        `the current month has no average without a cut-off date; 10.2 defines it through D`,
+      );
+    }
 
-    if (!enough) {
-      // Too thin to be an average. Fall back to the dated rate and say so,
-      // rather than averaging three days and calling it a month.
-      const fallbackDate = isCurrentMonth ? options.today : monthEnd;
-      const dated = rateOn(code, fallbackDate);
+    const samples = samplesIn(code, month, cutoff);
+    const minimum = through === undefined ? 1 : MIN_CURRENT_MONTH_SAMPLES;
+
+    if (samples.length < minimum) {
+      // Too thin to be an average. Fall back to the dated rate at the cutoff and
+      // say so, rather than averaging three days and calling it a month.
+      const dated = rateOn(code, cutoff);
       if ('kind' in dated) return dated;
       return { ...dated, approximate: true, sampleCount: samples.length };
     }
@@ -155,9 +182,9 @@ export function createFxTable(rows: readonly FxRateRecord[], options: FxTableOpt
     const sources = [...new Set(samples.map((row) => row.source))].sort();
     return {
       rate: total.dividedBy(samples.length),
-      // An average belongs to the month, not to a day; the month's last day is
+      // An average belongs to its window, not to a day; the window's last day is
       // how it is dated everywhere it is displayed or combined.
-      rateDate: monthEnd,
+      rateDate: cutoff,
       source: sources.join('+'),
       exact: false,
       approximate: false,

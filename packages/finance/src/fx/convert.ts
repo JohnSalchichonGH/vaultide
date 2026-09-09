@@ -40,12 +40,15 @@ function lookup(
   on: PlainDate,
   mode: ConversionMode,
   span: { from: MonthKey; to: MonthKey } | undefined,
+  through: PlainDate | undefined,
 ): RateLookup | Unavailable {
   switch (mode) {
     case 'dated':
       return table.rateOn(quote, on);
     case 'monthly_average':
-      return table.monthlyAverage(quote, monthKey(on));
+      return through === undefined
+        ? table.monthlyAverage(quote, monthKey(on))
+        : table.monthlyAverage(quote, monthKey(on), through);
     case 'span_average':
       return table.spanAverage(
         quote,
@@ -66,7 +69,11 @@ export function crossRate(
   from: CurrencyCode | string,
   to: CurrencyCode | string,
   on: PlainDate,
-  options: { mode?: ConversionMode; span?: { from: MonthKey; to: MonthKey } } = {},
+  options: {
+    mode?: ConversionMode;
+    span?: { from: MonthKey; to: MonthKey };
+    through?: PlainDate;
+  } = {},
 ): RateLookup | Unavailable {
   const source = currencyCode(from);
   const target = currencyCode(to);
@@ -79,13 +86,13 @@ export function crossRate(
   const fromLeg =
     source === PIVOT_CURRENCY
       ? ({ rate: new Decimal(1), rateDate: on, source: 'identity', exact: true } as RateLookup)
-      : lookup(table, source, on, mode, options.span);
+      : lookup(table, source, on, mode, options.span, options.through);
   if (isUnavailable(fromLeg)) return fromLeg;
 
   const toLeg =
     target === PIVOT_CURRENCY
       ? ({ rate: new Decimal(1), rateDate: on, source: 'identity', exact: true } as RateLookup)
-      : lookup(table, target, on, mode, options.span);
+      : lookup(table, target, on, mode, options.span, options.through);
   if (isUnavailable(toLeg)) return toLeg;
 
   return combine(fromLeg, toLeg);
@@ -96,6 +103,11 @@ export interface ConvertOptions {
   readonly mode?: ConversionMode;
   /** The months a `span_average` covers; ignored in the other modes. */
   readonly span?: { from: MonthKey; to: MonthKey };
+  /**
+   * The last day a `monthly_average` may draw on — `D` for a month-to-date
+   * figure (10.2, 30.16). Ignored in the other modes.
+   */
+  readonly through?: PlainDate;
 }
 
 /**
@@ -120,6 +132,7 @@ export function convert(
   const rate = crossRate(table, amount.currency, target, on, {
     mode,
     ...(options.span === undefined ? {} : { span: options.span }),
+    ...(options.through === undefined ? {} : { through: options.through }),
   });
   if (isUnavailable(rate)) return rate;
 

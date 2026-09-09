@@ -78,7 +78,25 @@ export interface Converted {
  */
 export interface FxTable {
   rateOn(quote: CurrencyCode | string, date: PlainDate): RateLookup | Unavailable;
-  monthlyAverage(quote: CurrencyCode | string, month: MonthKey): RateLookup | Unavailable;
+  /**
+   * The average rate for a month (10.2).
+   *
+   * `through` is the last day the average may draw evidence from, and supplying
+   * it is what makes this a **month-to-date** average: a figure stated through
+   * `D` must not be converted with a rate observed after `D`, however new
+   * another account's balance is (v2.1.13 30.16 items 3–5). Supplied, the window
+   * is `[start(M), through]`, fewer than five observations fall back to
+   * `rateOn(through)`, and nothing later is ever consulted.
+   *
+   * Omitted, this is a completed month's average over the whole of `M`, where a
+   * single observation is still an average and only a total absence falls back
+   * — to `rateOn(end(M))`.
+   */
+  monthlyAverage(
+    quote: CurrencyCode | string,
+    month: MonthKey,
+    through?: PlainDate,
+  ): RateLookup | Unavailable;
   spanAverage(
     quote: CurrencyCode | string,
     fromMonth: MonthKey,

@@ -219,27 +219,70 @@ describe('monthly average', () => {
   });
 });
 
-describe('monthly average — the current month', () => {
+describe('monthly average — the current month, through D (30.16)', () => {
   const currentMonthToday = plainDate('2026-09-04');
 
-  it('needs at least five samples before it calls itself an average', () => {
+  it('has no answer without a cut-off, because 10.2 only defines it through D', () => {
+    // A month that has not ended has no whole-month average to give, and
+    // averaging the fortnight so far would be calling a fortnight September.
     const partial = createFxTable(WEEK, { today: currentMonthToday });
     const september = partial.monthlyAverage('USD', monthKey(on('2026-09-04')));
+    expect(isUnavailable(september)).toBe(true);
+  });
+
+  it('FX-MTD-A — D is today, and four observations fall back to rateOn(D)', () => {
+    // today = D = 6 Sep, rates on the 1st to the 4th.
+    const table = createFxTable(WEEK, { today: plainDate('2026-09-06') });
+    const september = table.monthlyAverage(
+      'USD',
+      monthKey(on('2026-09-06')),
+      plainDate('2026-09-06'),
+    );
     if (isUnavailable(september)) throw new Error('expected a lookup');
 
-    // Only four September rates exist so far, so the figure is the dated rate
-    // rather than a four-day mean presented as the month's average (10.2).
     expect(september.sampleCount).toBe(4);
     expect(september.approximate).toBe(true);
+    // The 4 Sep rate is the latest within the lookback from D.
     expect(september.rate.toFixed()).toBe('1.1622');
     expect(september.rateDate).toBe('2026-09-04');
   });
 
-  it('averages once the month has five or more samples', () => {
-    const fuller = createFxTable([...WEEK, rate('USD', '2026-09-07', '1.1650')], {
-      today: plainDate('2026-09-07'),
-    });
-    const september = fuller.monthlyAverage('USD', monthKey(on('2026-09-07')));
+  it('FX-MTD-B — rates after D are not evidence about a figure through D', () => {
+    // today = 10 Sep, D = 6 Sep, and rates exist on the 8th and 9th as well.
+    const table = createFxTable(
+      [...WEEK, rate('USD', '2026-09-08', '9.9999'), rate('USD', '2026-09-09', '9.9999')],
+      { today: plainDate('2026-09-10') },
+    );
+    const september = table.monthlyAverage(
+      'USD',
+      monthKey(on('2026-09-10')),
+      plainDate('2026-09-06'),
+    );
+    if (isUnavailable(september)) throw new Error('expected a lookup');
+
+    // Four eligible observations, so the fallback — and it is `rateOn(6 Sep)`,
+    // never `rateOn(10 Sep)`, and never an average containing the 8th or 9th.
+    expect(september.sampleCount).toBe(4);
+    expect(september.approximate).toBe(true);
+    expect(september.rateDate).toBe('2026-09-04');
+    expect(september.rate.toFixed()).toBe('1.1622');
+  });
+
+  it('FX-MTD-C — five observations through D are their own mean', () => {
+    const table = createFxTable(
+      [
+        ...WEEK,
+        rate('USD', '2026-09-05', '1.1650'),
+        rate('USD', '2026-09-08', '9.9999'),
+        rate('USD', '2026-09-09', '9.9999'),
+      ],
+      { today: plainDate('2026-09-10') },
+    );
+    const september = table.monthlyAverage(
+      'USD',
+      monthKey(on('2026-09-10')),
+      plainDate('2026-09-06'),
+    );
     if (isUnavailable(september)) throw new Error('expected an average');
 
     expect(september.sampleCount).toBe(5);
@@ -251,6 +294,22 @@ describe('monthly average — the current month', () => {
       .plus('1.1650')
       .dividedBy(5);
     expect(september.rate.toFixed()).toBe(expected.toFixed());
+    // Dated at the cut-off, and the 9.9999 rates never entered it.
+    expect(september.rateDate).toBe('2026-09-06');
+  });
+
+  it('FX-MTD-D — nothing within the lookback from D is unavailable, not a reach forward', () => {
+    // The only rates are far before D and far after it. Neither is evidence.
+    const table = createFxTable(
+      [rate('USD', '2026-08-01', '1.1000'), rate('USD', '2026-09-25', '9.9999')],
+      { today: plainDate('2026-09-30') },
+    );
+    const september = table.monthlyAverage(
+      'USD',
+      monthKey(on('2026-09-30')),
+      plainDate('2026-09-20'),
+    );
+    expect(isUnavailable(september)).toBe(true);
   });
 
   it('applies the five-sample rule only to the current month', () => {
@@ -417,25 +476,46 @@ describe('edges the engines depend on', () => {
   });
 
   it('carries "approximate" through a cross rate and through a span', () => {
-    // Four September samples read from within September: too thin to average,
+    // Four September samples read through a 4 Sep cut-off: too thin to average,
     // so the monthly lookup falls back to the dated rate and says so (10.2).
     const inSeptember = createFxTable(WEEK, { today: plainDate('2026-09-04') });
 
     const cross = crossRate(inSeptember, 'USD', 'GBP', on('2026-09-04'), {
       mode: 'monthly_average',
+      through: plainDate('2026-09-04'),
     });
     if (isUnavailable(cross)) throw new Error('expected a rate');
     expect(cross.approximate).toBe(true);
 
-    // And a span containing that month is approximate too: a caller must be
-    // able to tell that part of the average was not an average.
-    const span = inSeptember.spanAverage(
+    // A span may not reach into it. 10.2 weights a span over its **completed**
+    // months' averages, and a month that has not ended has no average to
+    // contribute, so the span says so rather than borrowing a partial one.
+    const reachingIntoSeptember = inSeptember.spanAverage(
+      'USD',
+      monthKey(on('2026-08-01')),
+      monthKey(on('2026-09-01')),
+    );
+    expect(isUnavailable(reachingIntoSeptember)).toBe(true);
+  });
+
+  it('gives a completed span a real average, which is never approximate', () => {
+    // Read from October, both months are complete. `approximate` is now
+    // reachable only through the month-to-date path: a completed month falls
+    // back only with no stored rate at all, and its ten-day lookback from
+    // `end(M)` lies inside the month, so the fallback is unavailable rather
+    // than approximate. A span therefore either averages or does not exist.
+    const completed = createFxTable(
+      [rate('USD', '2026-08-31', '1.1500'), ...WEEK],
+      { today: plainDate('2026-10-05') },
+    );
+    const span = completed.spanAverage(
       'USD',
       monthKey(on('2026-08-01')),
       monthKey(on('2026-09-01')),
     );
     if (isUnavailable(span)) throw new Error('expected a span average');
-    expect(span.approximate).toBe(true);
+    expect(span.approximate).toBe(false);
+    expect(span.sampleCount).toBe(5);
   });
 
   it('treats a span_average with no span as the single month of the date', () => {
