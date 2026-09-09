@@ -215,7 +215,7 @@ describe('a completed month, from real rows', () => {
 
     expect(result.month).toBe('2026-09');
     expect(result.status).toBe('reliable');
-    expect(bucket?.totals.cashDelta.amount).toBe('1402');
+    expect(bucket?.totals.cashDelta?.amount).toBe('1402');
     expect(bucket?.totals.externalInflows.amount).toBe('2100');
     expect(bucket?.totals.nonIncomeInflows.amount).toBe('200');
     expect(bucket?.totals.nonExpenseOutflows.amount).toBe('200');
@@ -290,7 +290,7 @@ describe('a completed month, from real rows', () => {
     // engine thought, and the unclassified part falls by the same 100. Nothing
     // was recomputed: the month is simply read again.
     const after = await eurBucket(on('2027-03-04'));
-    expect(after.bucket?.totals.cashDelta.amount).toBe('1502');
+    expect(after.bucket?.totals.cashDelta?.amount).toBe('1502');
     expect(after.bucket?.totals.unclassified?.amount).toBe('298');
   });
 
@@ -331,6 +331,7 @@ describe('a month whose statement balance is missing', () => {
 
     const { result, bucket } = await eurBucket();
     expect(result.status).toBe('unavailable');
+    expect(bucket?.totals.cashDelta).toBeNull();
     expect(bucket?.totals.trackedTotalSpending).toBeNull();
     expect(bucket?.totals.unclassified).toBeNull();
 

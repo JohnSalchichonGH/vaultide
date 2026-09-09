@@ -268,35 +268,35 @@ function reconcileBucket(
     sum(scopeLegs.filter((leg) => leg.role === role).map((leg) => leg.amount));
 
   /**
-   * The four role sums over that scope, with a cash change beside them.
+   * The four role sums over that scope, and nothing else.
    *
-   * The four are sums of **source records**: they need no balance evidence and
+   * They are sums of **source records**: they need no balance evidence, so they
    * are exact in every status, and a zero among them is a measured zero — `ΣK =
    * 0` means no known tracked expense was recorded, not "unknown". A month with
    * a recorded salary and a missing statement still has `ΣI = 2,100`; reporting
    * `ΣI = 0` there would throw away a number the user entered.
    *
-   * `trackedTotalSpending` and `unclassified` are the ones inferred from
-   * balances, and they are absent — never zero — when the balances cannot carry
-   * them (8.4).
+   * The balance-derived figures are added only where they exist. `cashDelta` is
+   * the change over the **complete** included set or nothing at all (30.12),
+   * and `trackedTotalSpending` and `unclassified` follow from it.
    */
-  const totalsWith = (delta: Decimal): BucketTotals => ({
+  const roleSums = (): BucketTotals => ({
     externalInflows: totalOf('I'),
     nonIncomeInflows: totalOf('Nin'),
     nonExpenseOutflows: totalOf('Nout'),
     knownTrackedExpenses: totalOf('K'),
-    cashDelta: delta,
   });
 
   // 8.3: a currency whose only presence is a null-leg flow has nothing to
-  // reconcile against. No participating account means no cash change to state,
-  // and the empty sum is exactly zero rather than a stand-in for one.
+  // reconcile against. There is no included set, so there is no cash change —
+  // and an empty sum of zero would claim the bucket had been measured and found
+  // not to move (30.12).
   if (accounts.length === 0) {
     return {
       currency,
       status: 'unavailable',
       accounts: [],
-      totals: totalsWith(new Decimal(0)),
+      totals: roleSums(),
       additionalSpending,
       thirdPartyPaid,
       issues: detectIssues({
@@ -321,16 +321,12 @@ function reconcileBucket(
       currency,
       status: 'unavailable',
       accounts: states,
-      // 8.2's definition of Δ applied to the accounts that have both
-      // endpoints. **This is an open question, not a settled semantic**: 8.3
-      // never computes Δ for an unavailable bucket, and 8.9 types `cashDelta`
-      // as always present, so the blueprint says nothing about what a partial
-      // sum over a subset of the bucket means. It is reported here because the
-      // shape requires a value; it is not the bucket's cash change and no
-      // spending figure follows from it. See the note on `BucketTotals`.
-      totals: totalsWith(
-        sum(included.map((entry) => entry.closingAmount.minus(entry.openingAmount))),
-      ),
+      // No `cashDelta` (30.12). Some account of this bucket has no usable
+      // endpoint, so the change over the **complete** included set cannot be
+      // computed, and the change over the accounts that happen to have
+      // endpoints is a different quantity — one that would be indistinguishable
+      // in the result from the Δ of the identity. The role sums stay exact.
+      totals: roleSums(),
       additionalSpending,
       thirdPartyPaid,
       issues: detectIssues({
@@ -364,8 +360,8 @@ function reconcileBucket(
     included.map((entry) => entry.closingAmount.minus(entry.openingAmount)),
   );
 
-  const roleSums = totalsWith(cashDelta);
-  const { externalInflows, nonIncomeInflows, nonExpenseOutflows, knownTrackedExpenses } = roleSums;
+  const sums = roleSums();
+  const { externalInflows, nonIncomeInflows, nonExpenseOutflows, knownTrackedExpenses } = sums;
 
   const trackedTotalSpending = externalInflows
     .plus(nonIncomeInflows)
@@ -390,7 +386,7 @@ function reconcileBucket(
     (state) => withResiduals.find((withOne) => withOne.positionId === state.positionId) ?? state,
   );
 
-  const totals: BucketTotals = { ...roleSums, trackedTotalSpending, unclassified };
+  const totals: BucketTotals = { ...sums, cashDelta, trackedTotalSpending, unclassified };
 
   const issues = detectIssues({
     currency,

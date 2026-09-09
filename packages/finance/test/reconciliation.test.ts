@@ -129,7 +129,7 @@ describe('the 8.10 golden, as recorded', () => {
 
   it('computes the cash change as 56', () => {
     // (7,880 − 8,055) + (8,740 − 8,509) = −175 + 231
-    expect(bucket?.totals.cashDelta.toString()).toBe('56');
+    expect(bucket?.totals.cashDelta?.toString()).toBe('56');
   });
 
   it('sums the four roles exactly as 8.10 does', () => {
@@ -434,7 +434,7 @@ describe('endpoint evidence', () => {
     expect(bucket?.accounts[0]?.closing.state).toBe('closed_zero');
     // 8.8: the remaining balance must have been transferred out, or it is
     // spending — and nobody said where it went.
-    expect(bucket?.totals.cashDelta.toString()).toBe('-100');
+    expect(bucket?.totals.cashDelta?.toString()).toBe('-100');
     expect(bucket?.totals.trackedTotalSpending?.toString()).toBe('100');
     expect(bucket?.status).toBe('reliable');
   });
@@ -451,7 +451,7 @@ describe('endpoint evidence', () => {
       }),
     ).buckets[0];
     expect(bucket?.accounts[0]?.opening.state).toBe('opened_zero');
-    expect(bucket?.totals.cashDelta.toString()).toBe('500');
+    expect(bucket?.totals.cashDelta?.toString()).toBe('500');
     expect(bucket?.totals.trackedTotalSpending?.toString()).toBe('0');
     expect(bucket?.status).toBe('reliable');
   });
@@ -529,7 +529,7 @@ describe('an account whose first balance lands in the month', () => {
     ).buckets[0];
     expect(bucket?.totals.nonExpenseOutflows.toString()).toBe('5000');
     expect(bucket?.totals.nonIncomeInflows.toString()).toBe('0');
-    expect(bucket?.totals.cashDelta.toString()).toBe('-5000');
+    expect(bucket?.totals.cashDelta?.toString()).toBe('-5000');
     expect(bucket?.totals.trackedTotalSpending?.toString()).toBe('0');
   });
 });
@@ -552,7 +552,7 @@ describe('transfers', () => {
     ).buckets[0];
     expect(bucket?.totals.nonIncomeInflows.toString()).toBe('200');
     expect(bucket?.totals.nonExpenseOutflows.toString()).toBe('200');
-    expect(bucket?.totals.cashDelta.toString()).toBe('0');
+    expect(bucket?.totals.cashDelta?.toString()).toBe('0');
     expect(bucket?.totals.trackedTotalSpending?.toString()).toBe('0');
   });
 
@@ -1033,7 +1033,10 @@ describe('what an unavailable bucket still knows', () => {
       }),
     ).buckets[0];
     expect(bucket?.status).toBe('unavailable');
-    expect(bucket?.totals.cashDelta.toString()).toBe('-100');
+    // 30.12: BBVA moved by −100 and Savings has no endpoints at all, so the
+    // change over the complete included set cannot be computed. −100 would be
+    // the change over part of the bucket wearing the whole bucket's name.
+    expect(bucket?.totals.cashDelta).toBeUndefined();
     expect(bucket?.totals.trackedTotalSpending).toBeUndefined();
   });
 
@@ -1203,11 +1206,10 @@ describe('which flows belong to a bucket (8.1)', () => {
     expect(bucket?.issues).toEqual([]);
   });
 
-  it('reports the cash change over the accounts that had endpoints, and no spending figure', () => {
-    // 8.3 never computes a cash change for an unavailable bucket and 8.9 types
-    // the field as always present, so what a partial sum means there is an open
-    // question rather than a settled semantic. This pins today's behaviour so a
-    // change to it has to be deliberate.
+  it('reports no cash change at all when one account is missing its endpoints', () => {
+    // 30.12: BBVA's own −300 is not the bucket's cash change, and reporting it
+    // under that name is what the correction removes. The role sums are
+    // unaffected — they never needed a balance.
     const bucket = reconcileCompletedMonth(
       input({
         cashAccounts: [
@@ -1217,13 +1219,125 @@ describe('which flows belong to a bucket (8.1)', () => {
           ]),
           withoutStatement(),
         ],
+        income: [income({ netAmount: new Decimal('250') })],
       }),
     ).buckets[0];
 
     expect(bucket?.status).toBe('unavailable');
-    expect(bucket?.totals.cashDelta.toString()).toBe('-300');
+    expect(bucket?.totals.cashDelta).toBeUndefined();
     expect(bucket?.totals.trackedTotalSpending).toBeUndefined();
     expect(bucket?.totals.unclassified).toBeUndefined();
+    expect(bucket?.totals.externalInflows.toString()).toBe('250');
+  });
+});
+
+describe('the cash change of a bucket (8.2, v2.1.9 30.12)', () => {
+  const NEWLY_TRACKED = 'newly-tracked-delta';
+  const NO_STATEMENT = 'no-statement-delta';
+
+  const settled = (opening: string, closing: string) =>
+    account(BBVA, 'BBVA', [
+      monthEnd(BBVA, '2026-08-31', opening),
+      monthEnd(BBVA, '2026-09-30', closing),
+    ]);
+
+  const newlyTracked = () =>
+    account(
+      NEWLY_TRACKED,
+      'Newly tracked',
+      [monthEnd(NEWLY_TRACKED, '2026-09-30', '5000')],
+      {},
+      'savings',
+    );
+
+  const withoutStatement = () =>
+    account(NO_STATEMENT, 'No statement', [monthEnd(NO_STATEMENT, '2026-08-31', '800')]);
+
+  it('is an exact zero when the complete included set moved by nothing', () => {
+    // The answer "it did not move" has to remain sayable, which is the whole
+    // reason absence and zero are different things here.
+    const bucket = reconcileCompletedMonth(
+      input({ cashAccounts: [settled('1000', '1000')] }),
+    ).buckets[0];
+    expect(bucket?.status).toBe('reliable');
+    expect(bucket?.totals.cashDelta?.toString()).toBe('0');
+  });
+
+  it('is the exact change when the complete included set moved', () => {
+    const bucket = reconcileCompletedMonth(
+      input({
+        cashAccounts: [settled('1000', '1234.56')],
+        income: [income({ netAmount: new Decimal('234.56') })],
+      }),
+    ).buckets[0];
+    expect(bucket?.status).toBe('reliable');
+    expect(bucket?.totals.cashDelta?.toString()).toBe('234.56');
+    expect(bucket?.totals.trackedTotalSpending?.toString()).toBe('0');
+  });
+
+  it('covers the included accounts only, when one is excluded as first_balance', () => {
+    // The excluded account contributes neither its change nor its legs (8.1),
+    // and what remains is still a complete included set.
+    const bucket = reconcileCompletedMonth(
+      input({
+        cashAccounts: [settled('1000', '900'), newlyTracked()],
+        income: [income({ cashPositionId: NEWLY_TRACKED, netAmount: new Decimal('5000') })],
+      }),
+    ).buckets[0];
+    expect(bucket?.status).toBe('estimated');
+    expect(bucket?.totals.cashDelta?.toString()).toBe('-100');
+    expect(bucket?.totals.externalInflows.toString()).toBe('0');
+    expect(bucket?.totals.trackedTotalSpending?.toString()).toBe('100');
+  });
+
+  it('stays exact when the month is unresolved', () => {
+    // `unresolved` is an answer, not an evidence failure: the arithmetic ran
+    // and a negative unclassified is what it produced.
+    const bucket = reconcileCompletedMonth(
+      input({ cashAccounts: [settled('1000', '1300')] }),
+    ).buckets[0];
+    expect(bucket?.status).toBe('unresolved');
+    expect(bucket?.totals.cashDelta?.toString()).toBe('300');
+    expect(bucket?.totals.unclassified?.toString()).toBe('-300');
+  });
+
+  it('is absent when a required account has no usable endpoint', () => {
+    const bucket = reconcileCompletedMonth(
+      input({
+        cashAccounts: [settled('1000', '900'), withoutStatement()],
+        expenses: [expense({ amount: new Decimal('40') })],
+      }),
+    ).buckets[0];
+    expect(bucket?.status).toBe('unavailable');
+    expect(bucket?.totals.cashDelta).toBeUndefined();
+    expect(bucket?.totals.trackedTotalSpending).toBeUndefined();
+    expect(bucket?.totals.unclassified).toBeUndefined();
+    // The role sums never needed a balance and are unchanged.
+    expect(bucket?.totals.knownTrackedExpenses.toString()).toBe('40');
+  });
+
+  it('is absent, not zero, when every participating account is excluded', () => {
+    // No included set exists, so there is no change to report. Zero would claim
+    // the bucket had been measured and found not to move.
+    const bucket = reconcileCompletedMonth(
+      input({ cashAccounts: [newlyTracked()] }),
+    ).buckets[0];
+    expect(bucket?.status).toBe('unavailable');
+    expect(bucket?.totals.cashDelta).toBeUndefined();
+    expect(bucket?.issues.some((i) => i.key === 'first_balance')).toBe(true);
+  });
+
+  it('is absent for a currency with no participating account at all', () => {
+    const usd = reconcileCompletedMonth(
+      input({
+        cashAccounts: [settled('1000', '1000')],
+        income: [income({ cashPositionId: null, currency: USD, netAmount: new Decimal('75') })],
+      }),
+    ).buckets.find((b) => b.currency === 'USD');
+    expect(usd?.status).toBe('unavailable');
+    expect(usd?.issues.some((i) => i.key === 'flow_without_cash_account')).toBe(true);
+    expect(usd?.totals.cashDelta).toBeUndefined();
+    expect(usd?.totals.externalInflows.toString()).toBe('75');
   });
 });
 

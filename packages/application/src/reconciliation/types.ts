@@ -75,13 +75,15 @@ export interface ReconciliationTotalsDto {
   /** `ΣK`. Always exact, over the scope above; zero means no known expense. */
   readonly knownTrackedExpenses: MoneyDto;
   /**
-   * The bucket's cash change when `status` says it reconciled. When `status` is
-   * `unavailable` this is a **partial diagnostic** covering only the accounts
-   * that had usable endpoints, and the interface must not show it as the
-   * bucket's cash change.
+   * The exact cash change over the complete included account set, or `null`
+   * when that cannot be computed (30.12). Never a partial change over the
+   * accounts that happened to have endpoints.
+   *
+   * `null` and a zero are different answers: a zero means the complete set was
+   * measured and moved by nothing.
    */
-  readonly cashDelta: MoneyDto;
-  /** `null` when the bucket is `unavailable` — unknown is never zero. */
+  readonly cashDelta: MoneyDto | null;
+  /** `null` whenever `cashDelta` is — unknown is never zero. */
   readonly trackedTotalSpending: MoneyDto | null;
   /** `null` on the same condition, for the same reason. */
   readonly unclassified: MoneyDto | null;

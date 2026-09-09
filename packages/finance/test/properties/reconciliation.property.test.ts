@@ -156,16 +156,20 @@ describe('property: the reconciliation identity is exact', () => {
 
         const total = totals.trackedTotalSpending;
         const unclassified = totals.unclassified;
+        const cashDelta = totals.cashDelta;
         expect(total).toBeDefined();
         expect(unclassified).toBeDefined();
-        if (total === undefined || unclassified === undefined) return;
+        // 30.12: the three balance-derived figures travel together. A bucket
+        // that has one has all three.
+        expect(cashDelta).toBeDefined();
+        if (total === undefined || unclassified === undefined || cashDelta === undefined) return;
 
         // TrackedTotalSpending = ΣI + ΣNin − ΣNout − Δ
         expect(
           totals.externalInflows
             .plus(totals.nonIncomeInflows)
             .minus(totals.nonExpenseOutflows)
-            .minus(totals.cashDelta)
+            .minus(cashDelta)
             .equals(total),
         ).toBe(true);
 
@@ -219,6 +223,7 @@ describe('property: the reconciliation identity is exact', () => {
           inputOf(generated, { cashAccounts: [crippled, ...rest] }),
         );
         expect(bucket.status).toBe('unavailable');
+        expect(bucket.totals.cashDelta).toBeUndefined();
         expect(bucket.totals.trackedTotalSpending).toBeUndefined();
         expect(bucket.totals.unclassified).toBeUndefined();
       }),

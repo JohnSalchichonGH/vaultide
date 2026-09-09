@@ -162,28 +162,26 @@ export interface BucketTotals {
    */
   readonly knownTrackedExpenses: Decimal;
   /**
-   * `Δ` — 8.2's `Σ_{a ∈ included} (close_a − open_a)`.
+   * `Δ` — 8.2's `Σ_{a ∈ included} (close_a − open_a)`, over the **complete**
+   * included set, or **absent** (v2.1.9 30.12).
    *
-   * **Status-dependent, and deliberately flagged as such.** When the bucket
-   * reconciles, every account in the scope is included, so this is the bucket's
-   * cash change and the `−Δ` term of the identity.
+   * One meaning, never a partial one. It is present exactly when the bucket
+   * reconciled — `reliable`, `estimated` and `unresolved` alike, since
+   * `unresolved` is an answer rather than an evidence failure — and absent
+   * whenever 8.3 stopped short of computing it: an account with a `carried` or
+   * `missing` end, no included account, or no participating account at all.
    *
-   * When the bucket is `unavailable` it is a **partial diagnostic**: it covers
-   * only the accounts that had usable endpoints, and the accounts that did not
-   * are simply missing from it. It is emphatically *not* the bucket's cash
-   * change, and no spending figure follows from it.
-   *
-   * That second reading is an **open question in the blueprint**, not a settled
-   * semantic: 8.3 never computes `Δ` for an unavailable bucket, and 8.9 types
-   * this field as always present, so a partial sum over a subset is undefined
-   * there. A value is reported because the shape requires one. Read it only
-   * when the status says the bucket reconciled.
+   * Absent specifically rather than zero. Zero is a real answer here — the
+   * complete included set exists and moved by exactly nothing — and it has to
+   * stay available to say that. A sum over whichever accounts happened to have
+   * endpoints would be a different quantity wearing this one's name, and in the
+   * result nothing would distinguish it from the `Δ` of the identity.
    */
-  readonly cashDelta: Decimal;
+  readonly cashDelta?: Decimal;
   /**
-   * `ΣI + ΣNin − ΣNout − Δ`. **Absent** — never zero — when the bucket could
-   * not be reconciled, because it is inferred from balance evidence that was
-   * not there (8.4).
+   * `ΣI + ΣNin − ΣNout − Δ`. **Absent** — never zero — whenever `cashDelta` is,
+   * because it is derived from it and from balance evidence that was not there
+   * (8.4).
    */
   readonly trackedTotalSpending?: Decimal;
   /**

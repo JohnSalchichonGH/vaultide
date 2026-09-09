@@ -115,9 +115,9 @@ function bucketDto(
       nonIncomeInflows: amount(bucket.totals.nonIncomeInflows),
       nonExpenseOutflows: amount(bucket.totals.nonExpenseOutflows),
       knownTrackedExpenses: amount(bucket.totals.knownTrackedExpenses),
-      cashDelta: amount(bucket.totals.cashDelta),
       // Absent, not zero: a bucket the engine could not compute has no figure
-      // and the interface must show the reason instead (8.4).
+      // and the interface must show the reason instead (8.4, 30.12).
+      cashDelta: bucket.totals.cashDelta === undefined ? null : amount(bucket.totals.cashDelta),
       trackedTotalSpending:
         bucket.totals.trackedTotalSpending === undefined
           ? null
