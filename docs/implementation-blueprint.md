@@ -1,6 +1,6 @@
-# Vaultide — Personal Finance Platform Implementation Blueprint (frozen, v2.1.8)
+# Vaultide — Personal Finance Platform Implementation Blueprint (frozen, v2.1.9)
 
-**Status:** Planning deliverable (no code written). Produced 2026-09-06 against the supplied product specification; revised after an adversarial model review, a product-owner review (v2), a targeted consistency pass (v2.1), a defect-fix freeze pass (v2.1.1), four final corrections (v2.1.2) and two narrow post-Phase-2 consistency corrections (v2.1.3, the onboarding step allocation; v2.1.4, one arithmetic slip in the Phase 3 savings golden — neither changed product behaviour, schema, accounting or security semantics), and a pre-Phase-3 clarification pass (v2.1.5, which settles the recurring-occurrence, template-deletion, month-to-date, dormancy, savings-availability and bulk-history questions Phase 3 raised before a line of Phase 3 code was written; it changes the Phase 3 schema and scope and no phase already delivered), extended once more before migration 0006 (v2.1.6, which settles how a recurring template materializes settlement, tightens the occurrence invariant to both-or-neither, and bounds occurrence generation by the template’s own dates), clarified once more before that migration was deployed (v2.1.7, which bounds early materialization to the next unresolved occurrence and separates a template’s schedule from its archive state), and corrected once more when the completed-month engine proved one issue predicate impossible (v2.1.8, which reselects the two `unexplained_inflow` variants on the sign of `TrackedTotalSpending`; it changes no identity, no schema and no phase already delivered). This version supersedes every earlier version in full; v2.1.2 was the frozen input to Phase 0, and Phases 0–2 were built and frozen against it.
+**Status:** Planning deliverable (no code written). Produced 2026-09-06 against the supplied product specification; revised after an adversarial model review, a product-owner review (v2), a targeted consistency pass (v2.1), a defect-fix freeze pass (v2.1.1), four final corrections (v2.1.2) and two narrow post-Phase-2 consistency corrections (v2.1.3, the onboarding step allocation; v2.1.4, one arithmetic slip in the Phase 3 savings golden — neither changed product behaviour, schema, accounting or security semantics), and a pre-Phase-3 clarification pass (v2.1.5, which settles the recurring-occurrence, template-deletion, month-to-date, dormancy, savings-availability and bulk-history questions Phase 3 raised before a line of Phase 3 code was written; it changes the Phase 3 schema and scope and no phase already delivered), extended once more before migration 0006 (v2.1.6, which settles how a recurring template materializes settlement, tightens the occurrence invariant to both-or-neither, and bounds occurrence generation by the template’s own dates), clarified once more before that migration was deployed (v2.1.7, which bounds early materialization to the next unresolved occurrence and separates a template’s schedule from its archive state), corrected once more when the completed-month engine proved one issue predicate impossible (v2.1.8, which reselects the two `unexplained_inflow` variants on the sign of `TrackedTotalSpending`), and corrected again where the same engine had to invent a meaning the result shape demanded (v2.1.9, which makes `cashDelta` absent rather than partial when the complete included-account change cannot be computed). Neither changed an identity, the schema, or a phase already delivered. This version supersedes every earlier version in full; v2.1.2 was the frozen input to Phase 0, and Phases 0–2 were built and frozen against it.
 **Audience:** The Claude Code session(s) that will implement the application phase by phase, and the product owner.
 **Product name:** **Vaultide**. The repository root is `vaultide/`, workspace packages are published under the `@vaultide/*` namespace, and "Vaultide" is the product-facing name in app metadata, authentication and email branding, and hosting/monitoring project names. Historical local prototype paths quoted in Section 1.3 keep their real on-disk names.
 
@@ -243,6 +243,7 @@ The rules below supersede the corresponding spec text. Everything else in the sp
 - **Product-owner review (v1.1 → v2):** the sixteen corrections now embodied in R17–R31, M5, M14–M18 and U9–U10: no future-dated actuals; two net-worth metrics; capital improvements as capex; opening investment basis; monthly model with multi-month spans instead of per-account spans/windows; explicit per-month "confirm unchanged"; multi-currency scenario funding; tracked vs additional spending; explicit liability signs; global FX refresh; dedicated backup role; fiat-only currencies; one coherent Monte Carlo correlation behavior; concrete custom goals; exact display formatting; version wording.
 - **Final consistency pass (v2 → v2.1):** month-end balances only after the month has ended (`today > end(M)`); month-to-date spending only on a common snapshot date; one savings definition with no double counting (F16, 12.5); expense settlement split into self-paid and third-party (R24); `opening_net_invested_basis` naming and labels (R20, 9.3); no inferred vacancy (F18); a single base-currency reserve target without per-currency shares (13.4); properties always in financial net worth in scenarios; no time-dependent database CHECKs (M5); hardened RLS expression (17.4); one-time role bootstrap (22.2); currency minor units 0..8; Monte Carlo factor model with an idiosyncratic component (13.9).
 - **Freeze pass (v2.1 → v2.1.1):** month-to-date uses the *latest common* snapshot date and is unavailable only when no common date exists (8.6); one Monte Carlo correlation schema and an explicit default class matrix verified positive semi-definite (13.2, 13.9); explicit semantics for `income_entries.settlement = external` and a schema rule limiting `reinvested` to investment distributions (7.4, 12.5); explicit `recurring_template_skips` table replacing skip facts in JSON (6.2); a systematic nullability pass with PostgreSQL enums for every closed set (6.1–6.2); an orientation-independent `convertWithSpread` helper for scenario conversions (13.4); stale "lifetime"/"date backstop" wording removed.
+- **Result-shape correction (v2.1.8 → v2.1.9):** 8.3 returns an `unavailable` bucket before `Δ` is computed, while 8.9 required a `cashDelta` on every bucket, so an implementation had to invent a partial sum over whichever accounts happened to have endpoints — a figure indistinguishable, in the result, from the `Δ` of the identity (30.12). `cashDelta` is now optional and absent in exactly that case. The four role sums are unaffected: they are source-flow sums over the 8.1 scope and stay exact in every status.
 - **Issue-catalogue correction (v2.1.7 → v2.1.8):** the two `unexplained_inflow` variants were split on `ΣK` against `TrackedTotalSpending`, a predicate the issue’s own trigger makes impossible to satisfy on the variant-A side (30.11). Variant A is now selected by a **negative** `TrackedTotalSpending` — cash grew more than the recorded flows explain — and variant B by a non-negative one. No identity, algorithm or amount changed; the forgotten-salary example in 8.10 is variant A and its unexplained inflow is still €1,702.
 - **Pre-deployment clarification (v2.1.6 → v2.1.7):** two semantics the implementation could not settle for itself (30.10): "received today" may materialize only the **earliest unresolved future occurrence** of a template, which bounds early acceptance by the schedule rather than by an invented number of days; and `archived_at` is current-state metadata rather than a historical schedule boundary, so a template archived today cannot erase an occurrence a past month was expecting.
 - **Pre-Phase-3 clarification, second pass (v2.1.5 → v2.1.6):** recurring templates materialize tracked-cash flows only in Phase 3, so accepting a suggestion never has to guess a settlement; the occurrence invariant tightened from an implication to both-or-neither; occurrence generation bounded by `start_date` and `end_date` without moving the anchor; term selection keyed to `occurrence_date`; `settlement = external` restricted in Phase 3 to the ordinary income kinds 7.4 actually covers; and one deferred note about a Phase 9 foreign key (30.9).
@@ -593,6 +594,8 @@ Unclassified          = TrackedTotalSpending − Σ K
 
 Equivalently `open + I + Nin − Nout − K − close = Unclassified` (spec §17). Same-currency `cash_transfer`s contribute `+x` (Nin) and `−x` (Nout) and cancel; cross-currency transfers hit two buckets. The identity holds exactly for any numbers; the algorithm's job is to decide whether they are trustworthy.
 
+The two kinds of quantity in that identity behave differently when evidence is missing, and 8.9 keeps them apart. `ΣI`, `ΣNin`, `ΣNout` and `ΣK` are sums of **source records** over the flow scope 8.1 defines — currency C, dated in M, attributed to a participating non-`first_balance` account or to no account at all. They need no balance evidence, so they are exact in every status, and a zero among them means no such record exists rather than "unknown". `Δ` is **balance-derived** and is the change over the *complete* included set; a sum over part of that set is a different quantity and is not `Δ` (30.12). The role sums alone are not a spending figure: only the identity turns them into one, and only when `Δ` exists.
+
 ### 8.3 Algorithm (completed months)
 
 ```
@@ -683,7 +686,10 @@ Presentation: "Combined unclassified spending 1 Sep – 31 Oct: €722 (two mont
 interface BucketResult {
   currency; status: 'reliable' | 'estimated' | 'provisional' | 'unavailable' | 'unresolved';
   accounts: { positionId; opening: { amount?, valuedOn?, state }; closing: { … }; residual?; dormant?: boolean }[];
-  totals: { externalInflows; nonIncomeInflows; nonExpenseOutflows; knownTrackedExpenses; cashDelta; trackedTotalSpending?; unclassified? };
+  totals: { externalInflows; nonIncomeInflows; nonExpenseOutflows; knownTrackedExpenses; cashDelta?; trackedTotalSpending?; unclassified? };
+                                     // the four role sums are exact in every status (8.2, 30.12);
+                                     // cashDelta is the complete included-set change or absent;
+                                     // trackedTotalSpending and unclassified need cashDelta
   additionalSpending;                // untracked_self expenses in this currency and month (never in the identity)
   thirdPartyPaid;                    // third_party expenses (informational; never in totals)
   mtd?: { asOf?: PlainDate; status: 'provisional' | 'unavailable'; reason?: 'mtd_no_common_date' | 'missing_opening'; accountsWithNewerBalances: PositionId[] };
@@ -2424,15 +2430,69 @@ B. `total = 0`, `ΣK = 0` → `unclassified = 0` → no issue at all. `total = 1
 
 ---
 
+### 30.12 v2.1.9 unavailable cash-delta correction
+
+A second correction the completed-month engine surfaced, of the same kind as
+30.11: a place where the specification obliged an implementation to invent
+something. Nothing here changes an identity, a status rule, an issue, the schema
+or a phase already delivered.
+
+**The defect.** 8.3 emits an `unavailable` bucket and moves on *before* `Δ` is
+computed:
+
+```
+if any account (not excluded) has an end in {carried, missing}: status ← 'unavailable' (…); emit; continue
+flows ← …
+Δ ← Σ_{included} (close_a − open_a)
+```
+
+But 8.9 typed `cashDelta` as present on every bucket, with only
+`trackedTotalSpending` and `unclassified` optional. So a bucket that never
+reached `Δ` still had to carry one, and the only values available were a zero —
+which would be a lie whenever balances did move — or a sum over whichever
+accounts happened to have usable endpoints. The second is worse than it looks:
+in the result it is indistinguishable from the `Δ` of the identity, so a reader
+or an interface could take a partial change over a subset of the bucket for the
+bucket's cash change, and could pair it with the role sums to produce a spending
+figure the evidence does not support.
+
+**The correction.** `cashDelta` is the exact change over the **complete**
+included account set, or it is absent.
+
+| Bucket | `cashDelta` |
+|---|---|
+| `reliable`, `estimated`, `unresolved` | `Σ_{a ∈ included} (close_a − open_a)`, exact. `unresolved` is not an evidence problem — the arithmetic ran and `Unclassified < 0` is its answer — so the change is present there like anywhere else |
+| `unavailable`, for any of 8.3's reasons | **absent** |
+
+Absent, and specifically not zero. Zero is a real answer that means the complete
+included set exists and its net change is exactly nothing; it must stay
+available to say that. A bucket with no included account, or one where every
+participating account was excluded as `first_balance`, has no complete set to
+measure and therefore no `Δ` — not a `Δ` of zero.
+
+No partial-subset figure is reported under this field or any other. If a partial
+balance diagnostic is ever wanted it needs its own name and its own definition;
+reusing this one is exactly the confusion this correction removes.
+
+**What does not change.** `ΣI`, `ΣNin`, `ΣNout` and `ΣK` stay exact in every
+status, over 8.1's flow scope, because they are sums of source records and need
+no balance evidence: a September with a recorded salary and no statement balance
+still reports `ΣI = 2,100`, and reporting `0` there would discard a fact the
+user entered. They are not a spending total on their own — `TrackedTotalSpending`
+and `Unclassified` remain absent whenever `cashDelta` is, since they are derived
+from it.
+
+---
+
 ## Ready for Phase 0
 
-No genuine blockers remain. The blueprint was frozen as v2.1.2 and Phase 0 began from it; it is frozen as v2.1.8 after the corrections in 30.6, 30.7, 30.8, 30.9, 30.10 and 30.11, none of which changed a phase already delivered.
+No genuine blockers remain. The blueprint was frozen as v2.1.2 and Phase 0 began from it; it is frozen as v2.1.9 after the corrections in 30.6, 30.7, 30.8, 30.9, 30.10, 30.11 and 30.12, none of which changed a phase already delivered.
 
 ---
 
 ## Freeze check
 
-- The seven v2.1.1 defects (30.4), the four v2.1.2 corrections (30.5), the v2.1.3 onboarding-range correction (30.6), the v2.1.4 savings-golden correction (30.7) the v2.1.5 pre-Phase-3 clarifications (30.8), the v2.1.6 second pass (30.9), the v2.1.7 pre-deployment clarification (30.10) and the v2.1.8 issue-catalogue correction (30.11) were corrected and propagated to the schema, algorithms, tests, phases and acceptance criteria; no accounting identity changed except in wording or representation (30.2), and the personal savings rate is an additional derived figure layered on the unchanged tracked identity.
+- The seven v2.1.1 defects (30.4), the four v2.1.2 corrections (30.5), the v2.1.3 onboarding-range correction (30.6), the v2.1.4 savings-golden correction (30.7) the v2.1.5 pre-Phase-3 clarifications (30.8), the v2.1.6 second pass (30.9), the v2.1.7 pre-deployment clarification (30.10), the v2.1.8 issue-catalogue correction (30.11) and the v2.1.9 result-shape correction (30.12) were corrected and propagated to the schema, algorithms, tests, phases and acceptance criteria; no accounting identity changed except in wording or representation (30.2), and the personal savings rate is an additional derived figure layered on the unchanged tracked identity.
 - The default Monte Carlo configuration validates: the explicit class matrix in 13.9 is symmetric with unit diagonal, its smallest eigenvalue is ≈ +0.0265 and its Cholesky factorization succeeds, so it passes the same PSD validator as custom matrices; a dedicated golden test asserts this.
 - No contradictory month-to-date rules remain: every section now states the latest-common-date rule, with unavailability only when no common snapshot date exists.
 - Required schema nullability is explicit: every column in 6.2 is `NOT NULL` unless written `NULL`, liability-payment parts are exact non-null non-negative `NUMERIC(24,8)`, every closed set is a PostgreSQL enum, and NULL/enum rejection tests are generated per table.
@@ -2442,5 +2502,6 @@ No genuine blockers remain. The blueprint was frozen as v2.1.2 and Phase 0 began
 - A materialized flow carries a template and an occurrence together or neither, a template materializes tracked cash only in Phase 3, and occurrence generation never precedes `start_date` or outlives `end_date` (6.2, 30.9).
 - Early materialization is bounded by the schedule rather than by a horizon, and a template’s archive state cannot rewrite what a past month expected (6.2, 12.6, 15.3, 23.2, 30.10).
 - Every issue predicate in 8.5 is satisfiable: the `unexplained_inflow` variants are selected on the sign of `TrackedTotalSpending`, not on a comparison the trigger already decides (8.5, 30.11).
-- No remaining blocker was found. The blueprint is frozen as v2.1.8.
+- No result field obliges an engine to invent a figure: the role sums are exact source-flow sums in every status, and `cashDelta` is the complete included-set change or absent (8.2, 8.9, 30.12).
+- No remaining blocker was found. The blueprint is frozen as v2.1.9.
 
