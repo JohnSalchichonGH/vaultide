@@ -167,3 +167,59 @@ export interface MonthToDateDto {
   readonly accountsWithNewerBalances: readonly string[];
   readonly issues: readonly ReconciliationIssueDto[];
 }
+
+/* -------------------------------------------------------------------------- */
+/* Multi-month spans (8.7, v2.1.11 30.14)                                     */
+/* -------------------------------------------------------------------------- */
+
+/** 8.7: a span is `reliable` or `unresolved`, and nothing else can be one. */
+export type SpanStatusDto = 'reliable' | 'unresolved';
+
+export interface SpanAccountDto {
+  readonly positionId: string;
+  readonly name: string;
+  readonly openingState: 'month_end' | 'opened_zero' | 'closed_zero' | 'dormant_zero';
+  readonly opening: MoneyDto;
+  readonly closingState: 'month_end' | 'closed_zero' | 'dormant_zero';
+  readonly closing: MoneyDto;
+}
+
+/** Every figure a span reports. All five are exact; none is ever absent. */
+export interface SpanTotalsDto {
+  readonly externalInflows: MoneyDto;
+  readonly nonIncomeInflows: MoneyDto;
+  readonly nonExpenseOutflows: MoneyDto;
+  readonly knownTrackedExpenses: MoneyDto;
+  readonly cashDelta: MoneyDto;
+}
+
+/**
+ * One native-currency reconciliation over a multi-month interval.
+ *
+ * Deliberately smaller than a month's result. There is no `issues` array, no
+ * per-account residual, no `unavailable` branch and no `estimated` status —
+ * each absence is a rule of 8.7 rather than an omission (30.14).
+ *
+ * There is also **no per-month figure**, and none should be derived downstream:
+ * R21 states that a span is never averaged or attributed to a single month. The
+ * interval total and `months` are what an interface shows.
+ */
+export interface SpanDto {
+  readonly currency: string;
+  /** First day of the month after the opening anchor. */
+  readonly from: string;
+  /** Last day of the closing anchor's month. */
+  readonly to: string;
+  /** The months covered, as `YYYY-MM`, in order. */
+  readonly months: readonly string[];
+  readonly status: SpanStatusDto;
+  readonly accounts: readonly SpanAccountDto[];
+  readonly totals: SpanTotalsDto;
+  readonly trackedTotalSpending: MoneyDto;
+  readonly unclassified: MoneyDto;
+  /** `untracked_self` over the interval. Never in the identity (7.4). */
+  readonly additionalSpending: MoneyDto;
+  /** `third_party` over the interval. In no total at all. */
+  readonly thirdPartyPaid: MoneyDto;
+  readonly explanation: readonly string[];
+}

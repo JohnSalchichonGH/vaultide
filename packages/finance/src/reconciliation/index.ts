@@ -9,3 +9,4 @@ export * from './issues';
 export * from './month';
 export * from './mtd';
 export * from './scope';
+export * from './spans';
