@@ -1,6 +1,6 @@
-# Vaultide — Personal Finance Platform Implementation Blueprint (frozen, v2.1.10)
+# Vaultide — Personal Finance Platform Implementation Blueprint (frozen, v2.1.11)
 
-**Status:** Planning deliverable (no code written). Produced 2026-09-06 against the supplied product specification; revised after an adversarial model review, a product-owner review (v2), a targeted consistency pass (v2.1), a defect-fix freeze pass (v2.1.1), four final corrections (v2.1.2) and two narrow post-Phase-2 consistency corrections (v2.1.3, the onboarding step allocation; v2.1.4, one arithmetic slip in the Phase 3 savings golden — neither changed product behaviour, schema, accounting or security semantics), and a pre-Phase-3 clarification pass (v2.1.5, which settles the recurring-occurrence, template-deletion, month-to-date, dormancy, savings-availability and bulk-history questions Phase 3 raised before a line of Phase 3 code was written; it changes the Phase 3 schema and scope and no phase already delivered), extended once more before migration 0006 (v2.1.6, which settles how a recurring template materializes settlement, tightens the occurrence invariant to both-or-neither, and bounds occurrence generation by the template’s own dates), clarified once more before that migration was deployed (v2.1.7, which bounds early materialization to the next unresolved occurrence and separates a template’s schedule from its archive state), corrected once more when the completed-month engine proved one issue predicate impossible (v2.1.8, which reselects the two `unexplained_inflow` variants on the sign of `TrackedTotalSpending`), corrected again where the same engine had to invent a meaning the result shape demanded (v2.1.9, which makes `cashDelta` absent rather than partial when the complete included-account change cannot be computed), and clarified once more before the month-to-date engine was written (v2.1.10, which settles the MTD evidence date, status precedence and result shape that 8.4/8.5/8.6 stated three different ways). None changed an identity, the schema, or a phase already delivered. This version supersedes every earlier version in full; v2.1.2 was the frozen input to Phase 0, and Phases 0–2 were built and frozen against it.
+**Status:** Planning deliverable (no code written). Produced 2026-09-06 against the supplied product specification; revised after an adversarial model review, a product-owner review (v2), a targeted consistency pass (v2.1), a defect-fix freeze pass (v2.1.1), four final corrections (v2.1.2) and two narrow post-Phase-2 consistency corrections (v2.1.3, the onboarding step allocation; v2.1.4, one arithmetic slip in the Phase 3 savings golden — neither changed product behaviour, schema, accounting or security semantics), and a pre-Phase-3 clarification pass (v2.1.5, which settles the recurring-occurrence, template-deletion, month-to-date, dormancy, savings-availability and bulk-history questions Phase 3 raised before a line of Phase 3 code was written; it changes the Phase 3 schema and scope and no phase already delivered), extended once more before migration 0006 (v2.1.6, which settles how a recurring template materializes settlement, tightens the occurrence invariant to both-or-neither, and bounds occurrence generation by the template’s own dates), clarified once more before that migration was deployed (v2.1.7, which bounds early materialization to the next unresolved occurrence and separates a template’s schedule from its archive state), corrected once more when the completed-month engine proved one issue predicate impossible (v2.1.8, which reselects the two `unexplained_inflow` variants on the sign of `TrackedTotalSpending`), corrected again where the same engine had to invent a meaning the result shape demanded (v2.1.9, which makes `cashDelta` absent rather than partial when the complete included-account change cannot be computed), clarified once more before the month-to-date engine was written (v2.1.10, which settles the MTD evidence date, status precedence and result shape that 8.4/8.5/8.6 stated three different ways), and corrected once more before the span engine was written (v2.1.11, which makes a complete month end an intrinsic property of a date, removes a span status and a span field that could never carry a defined value, and states what a span does with a flow it cannot attribute). None changed an identity, the schema, or a phase already delivered. This version supersedes every earlier version in full; v2.1.2 was the frozen input to Phase 0, and Phases 0–2 were built and frozen against it.
 **Audience:** The Claude Code session(s) that will implement the application phase by phase, and the product owner.
 **Product name:** **Vaultide**. The repository root is `vaultide/`, workspace packages are published under the `@vaultide/*` namespace, and "Vaultide" is the product-facing name in app metadata, authentication and email branding, and hosting/monitoring project names. Historical local prototype paths quoted in Section 1.3 keep their real on-disk names.
 
@@ -243,6 +243,7 @@ The rules below supersede the corresponding spec text. Everything else in the sp
 - **Product-owner review (v1.1 → v2):** the sixteen corrections now embodied in R17–R31, M5, M14–M18 and U9–U10: no future-dated actuals; two net-worth metrics; capital improvements as capex; opening investment basis; monthly model with multi-month spans instead of per-account spans/windows; explicit per-month "confirm unchanged"; multi-currency scenario funding; tracked vs additional spending; explicit liability signs; global FX refresh; dedicated backup role; fiat-only currencies; one coherent Monte Carlo correlation behavior; concrete custom goals; exact display formatting; version wording.
 - **Final consistency pass (v2 → v2.1):** month-end balances only after the month has ended (`today > end(M)`); month-to-date spending only on a common snapshot date; one savings definition with no double counting (F16, 12.5); expense settlement split into self-paid and third-party (R24); `opening_net_invested_basis` naming and labels (R20, 9.3); no inferred vacancy (F18); a single base-currency reserve target without per-currency shares (13.4); properties always in financial net worth in scenarios; no time-dependent database CHECKs (M5); hardened RLS expression (17.4); one-time role bootstrap (22.2); currency minor units 0..8; Monte Carlo factor model with an idiosyncratic component (13.9).
 - **Freeze pass (v2.1 → v2.1.1):** month-to-date uses the *latest common* snapshot date and is unavailable only when no common date exists (8.6); one Monte Carlo correlation schema and an explicit default class matrix verified positive semi-definite (13.2, 13.9); explicit semantics for `income_entries.settlement = external` and a schema rule limiting `reinvested` to investment distributions (7.4, 12.5); explicit `recurring_template_skips` table replacing skip facts in JSON (6.2); a systematic nullability pass with PostgreSQL enums for every closed set (6.1–6.2); an orientation-independent `convertWithSpread` helper for scenario conversions (13.4); stale "lifetime"/"date backstop" wording removed.
+- **Span correction (v2.1.10 → v2.1.11):** 8.7 described its own anchors two ways and carried two members no rule could reach (30.14). A complete month end is now an intrinsic property of a date and a currency, so the endpoint set is fixed before candidate pairs are considered and maximality means what it says; `estimated` leaves the span status set, because a complete opening anchor makes a span-level `first_balance` impossible; `perMonthAverageInformational` leaves the shape, because it was defined nowhere and R21 says a span is never averaged; and an unattributable null leg suppresses its candidate rather than being absorbed into a status the shape does not have.
 - **MTD clarification (v2.1.9 → v2.1.10):** eleven questions the month-to-date engine could not answer from 8.4, 8.5 and 8.6 together (30.13): where `provisional` sits in the status order and whether a negative unclassified overrides it; that `D` is one global date while arithmetic failures after it are bucket-local; that no `D` means no MTD totals at all rather than totals over an invented cut-off; that an empty inclusion set does not satisfy the evidence predicate by vacuous truth; that `first_balance` is a month-level exclusion during the search; which issues apply to the current month; and the exact account set behind `mtd_newer_balances`. No identity, schema or delivered phase changes.
 - **Result-shape correction (v2.1.8 → v2.1.9):** 8.3 returns an `unavailable` bucket before `Δ` is computed, while 8.9 required a `cashDelta` on every bucket, so an implementation had to invent a partial sum over whichever accounts happened to have endpoints — a figure indistinguishable, in the result, from the `Δ` of the identity (30.12). `cashDelta` is now optional and absent in exactly that case. The four role sums are unaffected: they are source-flow sums over the 8.1 scope and stay exact in every status.
 - **Issue-catalogue correction (v2.1.7 → v2.1.8):** the two `unexplained_inflow` variants were split on `ΣK` against `TrackedTotalSpending`, a predicate the issue’s own trigger makes impossible to satisfy on the variant-A side (30.11). Variant A is now selected by a **negative** `TrackedTotalSpending` — cash grew more than the recorded flows explain — and variant B by a non-negative one. No identity, algorithm or amount changed; the forgotten-salary example in 8.10 is variant A and its unexplained inflow is still €1,702.
@@ -668,11 +669,27 @@ For the current month the engine computes a **provisional month-to-date** figure
 
 ### 8.7 Multi-month reconciliation spans
 
-When, for bucket C, month-end balances exist for every participating account at `end(M0)` and `end(M1)` with `M1 ≥ M0 + 2` and at least one month in between is `unavailable` for lack of month-end balances, the engine computes a **span** over `(end(M0), end(M1)]` with the same identity using all flows dated in `M0+1 … M1` and the same inclusion rules:
+**A complete month end.** For bucket C, `end(M)` is a **complete month end** when M is a completed month (`today > end(M)`, 8.1) and every cash position of currency C that already existed then — `opened_on ≤ end(M)` — has a known value there: a month-end balance as 8.1 defines one, zero because it closed on or before that date (`closed_zero`), or zero because it is dormant (`dormant_zero`). `carried` and `missing` are not values, and an ordinary snapshot dated the last day is not a month-end balance (8.8). A position not yet opened owes nothing at that date, so a month end before the user's first account of that currency is complete — vacuously, which is why the non-empty test below belongs to the span and not to the anchor.
 
-`SpanResult { from: start(M0+1), to: end(M1), months, totals, trackedTotalSpending, unclassified, status ∈ {reliable, estimated, unresolved}, perMonthAverageInformational }`
+This is a property of the **date, the currency and the source rows alone**. It is never relative to a candidate partner endpoint, and no exclusion decided while evaluating one candidate may change it. The whole model below depends on that.
 
-Presentation: "Combined unclassified spending 1 Sep – 31 Oct: €722 (two months)". The months inside remain `unavailable` individually and link to the span; the span is **never** attributed to a single month, never included in monthly series or rolling averages, and never used by the projection baseline. The wealth decomposition over the same period is exact (it takes any month-end endpoints). Spans are recomputed on read (not stored) and are maximal (the longest gap between consecutive complete month ends).
+**Discovery.** Let `E_C` be the complete month ends of bucket C in order. A candidate span is a pair of **consecutive** members `end(M0) < end(M1)` with `M1 ≥ M0 + 2`. Every month strictly between them then has an incomplete endpoint and is individually `unavailable` for want of month-end balances, which is the condition a span exists to bridge. This is what **maximal** means — the longest gap between consecutive complete month ends — and it makes discovery deterministic and independent of input order: interiors never overlap, spans never nest, each run of missing endpoints belongs to at most one candidate, one anchor may close one span and open the next, and entering a missing balance splits or removes exactly the affected candidate. Non-consecutive pairs are never tried: `E_C` is evidence topology, not a search space to widen when a candidate is suppressed for some other reason.
+
+**The interval.** `from = start(M0+1)`, `to = end(M1)`, `months = M0+1 … M1`; balances over `(end(M0), end(M1)]` and flows over `[from, to]`, inclusive at both ends.
+
+**Participation and endpoints.** An account participates when `opened_on ≤ to AND (closed_on IS NULL OR closed_on ≥ from)` — 8.1's predicate over the interval rather than over one month. Its span opening is its value at `end(M0)`, or `opened_zero` when it opened inside the interval and so did not exist at that anchor; its span closing is its value at `end(M1)`, or `closed_zero` when it closed inside; `dormant_zero` serves at either end. **The span's included set must be non-empty**: an interval with no included account has nothing to reconcile and produces no span at all, never one reporting a change of zero.
+
+**There is no span-level `first_balance`.** A pre-existing account with no usable value at `end(M0)` makes that anchor incomplete, so no span is anchored there; an account whose history begins later opened inside the interval and opens at exactly zero. The exclusion therefore cannot arise inside a valid span, and neither can the `estimated` status that 8.4 defines from it. A constituent month's own `first_balance` classification is never transplanted into the span's arithmetic.
+
+**Identity and result.** The identity is 8.2's, over the interval and in native currency:
+
+`SpanResult { from: start(M0+1), to: end(M1), months, totals, trackedTotalSpending, unclassified, status ∈ {reliable, unresolved} }`
+
+`cashDelta = Σ_{included} (closing − opening)`, then `trackedTotalSpending = ΣI + ΣNin − ΣNout − cashDelta` and `unclassified = trackedTotalSpending − ΣK`, exactly, with no rounding and no tolerance. A `SpanResult` exists only with a complete `cashDelta`; there is no partial one. Status is `reliable` when `unclassified ≥ 0` and `unresolved` when `unclassified < 0`, with 30.11's two readings available from the sign of the tracked total. A span is never `provisional`, never `estimated` and never `unavailable`: where an interval cannot yield an exact result there is simply **no `SpanResult`**. It carries **no issues** — `missing_month_end`, `suggested_income_missing` and the rest belong to the constituent months, and `possible_missing_interest` has no span residual to read.
+
+**Null legs.** A null-leg tracked flow dated `d` is supported when a cash account of its currency participates in **`d`'s own month** under 8.1's month predicate — not somewhere in the interval, not on `d` exactly, and participation rather than inclusion. An unsupported one is a source-model defect this engine does not exist to repair: that candidate produces no span, `E_C` is unchanged, no wider pair is tried, and the constituent month keeps its blocking `flow_without_cash_account` issue.
+
+Presentation: "Combined unclassified spending 1 Sep – 31 Oct: €722 (two months)" — the exact interval total and the number of months, never a per-month figure. The months inside remain `unavailable` individually and link to the span; the span is **never** attributed to a single month, never included in monthly series or rolling averages, and never used by the projection baseline. The wealth decomposition over the same period is exact (it takes any month-end endpoints). Spans are recomputed on read, never stored.
 
 ### 8.8 Special cases
 
@@ -2566,15 +2583,84 @@ identity or a delivered phase changes.
 
 ---
 
+### 30.14 v2.1.11 — span endpoint, inclusion and status correction
+
+8.7 was one paragraph carrying two definitions of its own anchors and two shape
+members no rule could reach. It is restated here before the span engine is
+written. No identity, schema, migration or delivered phase changes, and neither
+completed-month nor month-to-date semantics move.
+
+1. **A complete month end is intrinsic.** 8.7 said "month-end balances exist for
+   every participating account", which would have demanded a statement balance
+   from a dormant account and from one closed mid-month — contradicting 8.1's
+   settled endpoint states and 8.8's "zero-balance dormant accounts never
+   block". It now names the states 8.1 already defines, and says plainly that
+   completeness depends on the date, the currency and the rows alone.
+2. **Why that matters more than wording.** Had completeness been allowed to
+   depend on the candidate — for instance by excluding an account as
+   "first_balance for this span" so its missing opening stopped mattering — the
+   same month end would be complete when paired forward and incomplete when
+   paired backward. The ordered set `E_C` would not exist, and "maximal (the
+   longest gap between consecutive complete month ends)" would have no referent.
+   Discovery would depend on which candidate was tried first.
+3. **An anchor may be empty; a span may not.** A month end before the user's
+   first account of that currency has no obligations and is complete. That is
+   what lets an account opened later start a span at exactly `opened_zero`. The
+   non-empty requirement belongs to the span's included set, which must contain
+   at least one account — otherwise there is nothing to reconcile and no span,
+   rather than one reporting a change of zero from an empty sum.
+4. **Spans are historical.** Both anchors are completed month ends. The current
+   month is never an incomplete gap merely because its month end has not
+   happened; the current month's truth is 8.6's, and a span never reaches it.
+5. **No span-level `first_balance`, and therefore no `estimated` span.** If an
+   account existed at the opening anchor without a usable value there, the
+   anchor is incomplete and nothing is anchored on it; if it appears only later,
+   it opened inside the interval and opens at zero. So the exclusion cannot
+   occur inside a valid span, and 8.4's `estimated` — which is defined by that
+   exclusion and by nothing else — is unreachable. It is removed from the span
+   status set. Completed months keep it; only the span contract is narrowed.
+6. **`perMonthAverageInformational` is removed.** It appeared once in the
+   document, in the shape line, with no formula, no denominator, no rounding and
+   no currency; 8.7's own presentation shows the interval total and the number
+   of months rather than an average; and R21 and 1.5 both say a span is **never
+   averaged**. An engine cannot carry a figure nobody defined. No replacement is
+   introduced — not a per-month, per-day or normalized amount under any name.
+   Presentation may divide two exposed values at a scale it chooses; the engine
+   blesses no such number, and a future display of one needs its own amendment.
+7. **This says nothing about 8.11.** Converting one interval-level total at a
+   day-weighted average of the months' average **rates**, marked
+   `estimatedConversion`, averages exchange-rate evidence — not the financial
+   amount, and not across months. 8.11 is unchanged, and `estimatedConversion`
+   is presentation metadata that has never been a reconciliation status.
+8. **`SpanResult` carries no issues.** Every issue key belongs to a layer that
+   can trigger it: `missing_month_end` and `suggested_income_missing` to the
+   constituent months, `possible_missing_interest` to a residual a span does not
+   compute, the `mtd_*` keys to the current month. `unclassified < 0` is already
+   expressed by the `unresolved` status over exact totals.
+9. **A null leg is supported by its own month.** 8.1's support condition is a
+   month predicate, and it stays one: a cash account of that currency must
+   participate in the month the flow is dated in. An account opened two months
+   later does not retroactively support it, and the leg is never assigned to an
+   account to make it supported.
+10. **An unattributable null leg suppresses its candidate.** The span exists to
+    bridge missing balance-endpoint evidence, not to repair a source-model
+    defect. So no span is produced for that currency over that interval — not an
+    `unavailable` one, which the status set does not allow, and not an
+    `unresolved` one, which would blame the arithmetic for something else.
+    `E_C` is untouched and no wider, non-consecutive pair is attempted; the
+    constituent month keeps its own blocking issue.
+
+---
+
 ## Ready for Phase 0
 
-No genuine blockers remain. The blueprint was frozen as v2.1.2 and Phase 0 began from it; it is frozen as v2.1.10 after the corrections in 30.6, 30.7, 30.8, 30.9, 30.10, 30.11, 30.12 and 30.13, none of which changed a phase already delivered.
+No genuine blockers remain. The blueprint was frozen as v2.1.2 and Phase 0 began from it; it is frozen as v2.1.11 after the corrections in 30.6, 30.7, 30.8, 30.9, 30.10, 30.11, 30.12, 30.13 and 30.14, none of which changed a phase already delivered.
 
 ---
 
 ## Freeze check
 
-- The seven v2.1.1 defects (30.4), the four v2.1.2 corrections (30.5), the v2.1.3 onboarding-range correction (30.6), the v2.1.4 savings-golden correction (30.7) the v2.1.5 pre-Phase-3 clarifications (30.8), the v2.1.6 second pass (30.9), the v2.1.7 pre-deployment clarification (30.10), the v2.1.8 issue-catalogue correction (30.11), the v2.1.9 result-shape correction (30.12) and the v2.1.10 MTD clarification (30.13) were corrected and propagated to the schema, algorithms, tests, phases and acceptance criteria; no accounting identity changed except in wording or representation (30.2), and the personal savings rate is an additional derived figure layered on the unchanged tracked identity.
+- The seven v2.1.1 defects (30.4), the four v2.1.2 corrections (30.5), the v2.1.3 onboarding-range correction (30.6), the v2.1.4 savings-golden correction (30.7) the v2.1.5 pre-Phase-3 clarifications (30.8), the v2.1.6 second pass (30.9), the v2.1.7 pre-deployment clarification (30.10), the v2.1.8 issue-catalogue correction (30.11), the v2.1.9 result-shape correction (30.12), the v2.1.10 MTD clarification (30.13) and the v2.1.11 span correction (30.14) were corrected and propagated to the schema, algorithms, tests, phases and acceptance criteria; no accounting identity changed except in wording or representation (30.2), and the personal savings rate is an additional derived figure layered on the unchanged tracked identity.
 - The default Monte Carlo configuration validates: the explicit class matrix in 13.9 is symmetric with unit diagonal, its smallest eigenvalue is ≈ +0.0265 and its Cholesky factorization succeeds, so it passes the same PSD validator as custom matrices; a dedicated golden test asserts this.
 - No contradictory month-to-date rules remain: every section now states the latest-common-date rule, with unavailability only when no common snapshot date exists.
 - Required schema nullability is explicit: every column in 6.2 is `NOT NULL` unless written `NULL`, liability-payment parts are exact non-null non-negative `NUMERIC(24,8)`, every closed set is a PostgreSQL enum, and NULL/enum rejection tests are generated per table.
@@ -2586,5 +2672,6 @@ No genuine blockers remain. The blueprint was frozen as v2.1.2 and Phase 0 began
 - Every issue predicate in 8.5 is satisfiable: the `unexplained_inflow` variants are selected on the sign of `TrackedTotalSpending`, not on a comparison the trigger already decides (8.5, 30.11).
 - No result field obliges an engine to invent a figure: the role sums are exact source-flow sums in every status, and `cashDelta` is the complete included-set change or absent (8.2, 8.9, 30.12).
 - The current month is stated once rather than three times: one global evidence date `D`, `provisional` ranked in the status order, bucket-local failure after `D`, no totals without `D`, and a closed MTD issue set (8.4, 8.5, 8.6, 8.9, 30.13).
-- No remaining blocker was found. The blueprint is frozen as v2.1.10.
+- A span anchors on complete month ends that are intrinsic to a date, carries only statuses and fields a rule can reach, and never averages an interval across its months (8.7, 30.14).
+- No remaining blocker was found. The blueprint is frozen as v2.1.11.
 

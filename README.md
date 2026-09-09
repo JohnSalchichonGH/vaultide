@@ -26,7 +26,7 @@ editor are not implemented. Phase 3 is neither accepted nor frozen.
 
 The authoritative specification is
 [`docs/implementation-blueprint.md`](docs/implementation-blueprint.md) (frozen,
-v2.1.10). Implementation-level choices are recorded in [`docs/adr/`](docs/adr/):
+v2.1.11). Implementation-level choices are recorded in [`docs/adr/`](docs/adr/):
 [Phase 0](docs/adr/0001-phase-0-implementation-decisions.md),
 [Phase 1](docs/adr/0002-phase-1-implementation-decisions.md),
 [pre-Phase-2 gates](docs/adr/0003-pre-phase-2-security-and-cost-gates.md),
