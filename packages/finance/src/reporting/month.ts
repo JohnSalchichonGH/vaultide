@@ -18,6 +18,7 @@ import {
   type ContributionQuality,
   type MissingContributionInput,
   type ReportingContribution,
+  type UntrackedReportingContribution,
 } from './contributions';
 
 /**
@@ -85,8 +86,8 @@ export function untrackedContributions(
   currency: CurrencyCode,
   from: PlainDate,
   to: PlainDate,
-): ReportingContribution[] {
-  const contributions: ReportingContribution[] = [];
+): UntrackedReportingContribution[] {
+  const contributions: UntrackedReportingContribution[] = [];
   for (const expense of expenses) {
     if (expense.currency !== currency) continue;
     if (expense.incurredOn < from || expense.incurredOn > to) continue;

@@ -18,6 +18,7 @@ import type {
   MissingContributionInput,
   ReportingContribution,
   ReportingField,
+  UntrackedReportingContribution,
 } from './contributions';
 
 /**
@@ -114,6 +115,85 @@ function convertContribution(
 }
 
 /**
+ * Convert every contribution, group the results by the figure they feed, and
+ * hand back a lookup over the primitive sums.
+ *
+ * A field nobody contributed to sums to an exact zero, which is an answer and
+ * not an absence: the caller decides whether that field exists to be asked
+ * about at all.
+ */
+function convertedFields(
+  contributions: readonly ReportingContribution[],
+  missing: readonly MissingContributionInput[],
+  reporting: CurrencyCode,
+  fx: FxTable,
+): (name: ReportingField) => ReportingAmount {
+  const byField = new Map<ReportingField, ReportingAmount[]>();
+  const push = (field: ReportingField, amount: ReportingAmount): void => {
+    const list = byField.get(field);
+    if (list === undefined) byField.set(field, [amount]);
+    else list.push(amount);
+  };
+
+  for (const contribution of contributions) {
+    push(contribution.field, convertContribution(contribution, reporting, fx));
+  }
+
+  for (const gap of missing) {
+    const item: MissingReportingContribution = {
+      currency: gap.currency,
+      reason: gap.reason,
+      ...(gap.detail === undefined ? {} : { detail: gap.detail }),
+    };
+    push(gap.field, missingAmount(reporting, item));
+  }
+
+  return (name) => sumAmountsOf(byField.get(name) ?? [], reporting);
+}
+
+/**
+ * What a month can still say when it has **no tracked interval at all** (8.6,
+ * 30.15 item 3, 30.16 item 6).
+ *
+ * Two figures and no more. Neither settlement carries a cash role, so neither
+ * was ever scoped and neither needed an interval to be summed over; every other
+ * figure in 12.3 and 12.5 is defined over one and cannot be stated without it.
+ *
+ * A separate result rather than a `ReportingCashFlow` full of zeroes, because a
+ * zero is an answer. `TrackedTotalSpending = 0` says the month tracked no
+ * spending; a month with no interval has not said that and must not appear to.
+ * There is nothing here to read as zero.
+ */
+export interface SourceOnlyReportingFigures {
+  readonly reportingCurrency: CurrencyCode;
+  readonly additionalSpending: ReportingAmount;
+  readonly thirdPartyPaid: ReportingAmount;
+}
+
+export interface SourceOnlyReportingInput {
+  readonly reportingCurrency: CurrencyCode;
+  readonly fx: FxTable;
+  /**
+   * Untracked settlements only, and the type says so: no tracked contribution
+   * can be passed in, and no averaged one either, so no residual rate is
+   * reachable from here.
+   */
+  readonly contributions: readonly UntrackedReportingContribution[];
+}
+
+/** The two settlements, converted at their own dates and summed. Nothing else. */
+export function reportSourceOnly(
+  input: SourceOnlyReportingInput,
+): SourceOnlyReportingFigures {
+  const field = convertedFields(input.contributions, [], input.reportingCurrency, input.fx);
+  return {
+    reportingCurrency: input.reportingCurrency,
+    additionalSpending: field('additionalSpending'),
+    thirdPartyPaid: field('thirdPartyPaid'),
+  };
+}
+
+/**
  * The reporting-currency month.
  *
  * Contributions are grouped by the figure they feed, converted, and summed;
@@ -123,29 +203,7 @@ function convertContribution(
  */
 export function reportCashFlow(input: ReportingCashFlowInput): ReportingCashFlow {
   const reporting = input.reportingCurrency;
-
-  const byField = new Map<ReportingField, ReportingAmount[]>();
-  const push = (field: ReportingField, amount: ReportingAmount): void => {
-    const list = byField.get(field);
-    if (list === undefined) byField.set(field, [amount]);
-    else list.push(amount);
-  };
-
-  for (const contribution of input.contributions) {
-    push(contribution.field, convertContribution(contribution, reporting, input.fx));
-  }
-
-  for (const gap of input.missing) {
-    const item: MissingReportingContribution = {
-      currency: gap.currency,
-      reason: gap.reason,
-      ...(gap.detail === undefined ? {} : { detail: gap.detail }),
-    };
-    push(gap.field, missingAmount(reporting, item));
-  }
-
-  const field = (name: ReportingField): ReportingAmount =>
-    sumAmountsOf(byField.get(name) ?? [], reporting);
+  const field = convertedFields(input.contributions, input.missing, reporting, input.fx);
 
   const externalIncome = field('externalIncome');
   const knownConsumption = field('knownConsumption');
@@ -212,12 +270,18 @@ export function reportCashFlow(input: ReportingCashFlowInput): ReportingCashFlow
  * the ratio of the totals, and presenting one would be the misleading
  * percentage 12.5 refuses.
  *
- * No reason is invented for it. A zero denominator is `divide_by_zero`; an
- * incomplete aggregate is `not_applicable` — the rate does not apply when its
- * inputs are not whole — with a detail saying which side. Which contribution
- * actually failed, and in which currency, is on `personalSavings.missing` and
- * `externalIncome.missing`, so nothing is hidden behind one enum value and no
- * single missing item is promoted to speak for the rest.
+ * A zero denominator is `divide_by_zero`, which is its own fact and not a
+ * missing input.
+ *
+ * An incomplete input is `not_applicable`: the repository's generic fallback for
+ * a derived result whose prerequisite aggregate is incomplete — the same use as
+ * `networth`'s `contribution.unavailableReason ?? 'not_applicable'` — and not a
+ * claim that the savings concept does not apply here. It says only that no more
+ * specific reason belongs to the quotient itself. The authoritative causes stay
+ * where they were observed, on `personalSavings.missing` and
+ * `externalIncome.missing`, each naming its own currency and reason; the
+ * `detail` here names the side, so a reader knows which list to open. Promoting
+ * one missing item onto the rate would let it speak for all the others.
  */
 function rateOf(
   personalSavings: ReportingAmount,

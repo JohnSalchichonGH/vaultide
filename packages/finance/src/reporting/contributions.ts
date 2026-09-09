@@ -38,6 +38,15 @@ export type ReportingField =
   | 'thirdPartyPaid';
 
 /**
+ * The two figures a record with no cash role can feed (7.4).
+ *
+ * Named as a type because it is the whole of what a month with no tracked
+ * interval can say: neither settlement was ever scoped, so neither needed the
+ * interval, and no other figure can be reached from them.
+ */
+export type UntrackedReportingField = 'additionalSpending' | 'thirdPartyPaid';
+
+/**
  * How one contribution converts.
  *
  * `dated` is a source row at its own financial date (10.3). `average` is the
@@ -63,6 +72,20 @@ export interface ReportingContribution {
    */
   readonly quality?: ContributionQuality;
   readonly sourceId?: string;
+}
+
+/**
+ * An untracked settlement, narrowed so the compiler knows two things about it:
+ * which figures it can feed, and that it converts at its own date.
+ *
+ * That is not decoration. The source-only path is defined as the one a month
+ * with no interval may still take, and this type is what makes "no tracked
+ * figure, and no average rate" a fact about the shape rather than a promise in
+ * a comment.
+ */
+export interface UntrackedReportingContribution extends ReportingContribution {
+  readonly field: UntrackedReportingField;
+  readonly basis: { readonly kind: 'dated'; readonly on: PlainDate };
 }
 
 /**
@@ -149,11 +172,11 @@ export function residualContribution(
  * (30.15 item 3), and converts at its own date like any other dated row.
  */
 export function untrackedContribution(
-  field: 'additionalSpending' | 'thirdPartyPaid',
+  field: UntrackedReportingField,
   amount: Decimal,
   currency: CurrencyCode,
   on: PlainDate,
   sourceId: string,
-): ReportingContribution {
+): UntrackedReportingContribution {
   return { field, amount: money(amount, currency), basis: { kind: 'dated', on }, sourceId };
 }

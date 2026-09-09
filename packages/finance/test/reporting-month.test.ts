@@ -265,6 +265,21 @@ describe('a bucket whose residual is not a spending figure', () => {
     expect(result.unclassified.availability).toBe('unavailable');
     expect(result.unclassified.missing[0]?.detail).toBe('reconciliation_unavailable');
     expect(result.trackedSavingsFromIncome.availability).toBe('partial');
+
+    // The spending side has no rows of its own here, so its known part is an
+    // exact zero — a stated operand, not an absent one. What it adds up with is
+    // missing, so the totals are partial at that zero rather than blank: the
+    // month is known to have spent at least nothing, and the residual is why it
+    // cannot say more (30.16 item 7).
+    expect(result.knownConsumption.availability).toBe('available');
+    expect(value(result.knownConsumption)).toBe('0');
+    for (const figure of [result.consumption, result.trackedTotalSpending, result.totalSpending]) {
+      expect(figure.availability).toBe('partial');
+      expect(value(figure)).toBe('0');
+      expect(figure.missing[0]?.detail).toBe('reconciliation_unavailable');
+    }
+    // A missing residual never becomes a zero on the way through.
+    expect(result.unclassified.statedCount).toBe(0);
   });
 });
 

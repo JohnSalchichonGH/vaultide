@@ -108,16 +108,44 @@ function mergeMissing(
 }
 
 /**
- * The one availability rule, applied wherever a figure is built or combined.
+ * The rule for a **primitive** figure, summed from its own contributions.
  *
  * Nothing missing is available — including a figure with no contributions at
  * all, whose exact sum is zero. That is an answer: no such record exists. Some
  * missing and something stated is partial. Some missing and nothing stated is
- * unavailable.
+ * unavailable: a primitive with no convertible row of its own has no value to
+ * offer, only the reason it has none.
  */
-function availabilityOf(statedCount: number, missingCount: number): ReportingAvailability {
+function summedAvailability(statedCount: number, missingCount: number): ReportingAvailability {
   if (missingCount === 0) return 'available';
   return statedCount === 0 ? 'unavailable' : 'partial';
+}
+
+/**
+ * The rule for a **formula** over figures that have already been evaluated.
+ *
+ * Here the question is about operands, not rows. An operand that says
+ * `available` is a stated financial value even when it is an exact zero summed
+ * from no contributions — "no such record exists" is knowledge — so a formula
+ * with one known operand and one missing one knows something and is partial.
+ *
+ * Counting contributions instead would call that result unavailable and throw
+ * away the half that was known. That is the difference between saying total
+ * spending is at least the additional spending and could not be completed, and
+ * saying nothing about it can be said at all.
+ *
+ * Nothing missing is available; something missing with any operand still
+ * standing is partial; something missing with every operand unavailable is
+ * unavailable.
+ */
+function composedAvailability(
+  a: ReportingAmount,
+  b: ReportingAmount,
+  missingCount: number,
+): ReportingAvailability {
+  if (missingCount === 0) return 'available';
+  const stated = a.availability !== 'unavailable' || b.availability !== 'unavailable';
+  return stated ? 'partial' : 'unavailable';
 }
 
 /** An exact zero in the reporting currency: no activity, and nothing missing. */
@@ -159,25 +187,55 @@ export function missingAmount(
   };
 }
 
-function combine(
+/**
+ * Everything two aggregates know between them, apart from the value and the
+ * availability: missing dependencies union, contribution counts add, the worse
+ * quality wins, the provenances merge.
+ *
+ * `statedCount` keeps meaning exactly what it has always meant — how many
+ * primitive monetary contributions are inside `value` — and is never nudged to
+ * steer an availability. How many rows a figure is made of and whether a
+ * formula's operand is stated are two different questions, which is why the two
+ * rules above are two functions.
+ */
+function mergeEvidence(
   a: ReportingAmount,
   b: ReportingAmount,
-  value: Money,
-): ReportingAmount {
-  const missing = mergeMissing(a.missing, b.missing);
-  const statedCount = a.statedCount + b.statedCount;
+): Omit<ReportingAmount, 'value' | 'availability'> {
   const quality = worseQuality(a.quality, b.quality);
   return {
-    value,
-    availability: availabilityOf(statedCount, missing.length),
-    missing,
-    statedCount,
+    missing: mergeMissing(a.missing, b.missing),
+    statedCount: a.statedCount + b.statedCount,
     ...(quality === undefined ? {} : { quality }),
     provenance: mergeProvenance(a.provenance, b.provenance),
   };
 }
 
-/** `a + b`, carrying both sides' missing dependencies and provenance. */
+/** One step of a 12.5 formula, over two figures that were already evaluated. */
+function combine(
+  a: ReportingAmount,
+  b: ReportingAmount,
+  value: Money,
+): ReportingAmount {
+  const evidence = mergeEvidence(a, b);
+  return {
+    value,
+    availability: composedAvailability(a, b, evidence.missing.length),
+    ...evidence,
+  };
+}
+
+/** One more contribution inside a primitive figure's own sum. */
+function addContribution(a: ReportingAmount, b: ReportingAmount): ReportingAmount {
+  const evidence = mergeEvidence(a, b);
+  return {
+    value: add(a.value, b.value),
+    availability: summedAvailability(evidence.statedCount, evidence.missing.length),
+    ...evidence,
+  };
+}
+
+/** `a + b` as a 12.5 formula, carrying both sides' missing dependencies. */
 export function addAmounts(a: ReportingAmount, b: ReportingAmount): ReportingAmount {
   return combine(a, b, add(a.value, b.value));
 }
@@ -192,10 +250,18 @@ export function subtractAmounts(a: ReportingAmount, b: ReportingAmount): Reporti
   return combine(a, b, sub(a.value, b.value));
 }
 
-/** Sum a list, left to right, so the same inputs give the same string. */
+/**
+ * Sum one primitive figure's contributions, left to right, so the same inputs
+ * give the same string.
+ *
+ * Deliberately not `addAmounts`: the seed is an empty sum, not a stated operand.
+ * A figure whose only contribution could not be converted is therefore
+ * unavailable rather than partial at zero — it has nothing of its own to state,
+ * where a formula built on it still has whatever its other operands said.
+ */
 export function sumAmountsOf(
   parts: readonly ReportingAmount[],
   reporting: CurrencyCode,
 ): ReportingAmount {
-  return parts.reduce(addAmounts, emptyAmount(reporting));
+  return parts.reduce(addContribution, emptyAmount(reporting));
 }

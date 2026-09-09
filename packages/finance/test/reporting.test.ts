@@ -5,9 +5,19 @@ import { createFxTable, type FxRateRecord } from '../src/fx/index';
 import { money, currencyCode, type CurrencyCode } from '../src/money/index';
 import { isUnavailable } from '../src/unavailable';
 import {
+  addAmounts,
+  emptyAmount,
+  missingAmount,
   reportCashFlow,
+  reportSourceOnly,
   residualContribution,
+  statedAmount,
+  subtractAmounts,
+  sumAmountsOf,
   untrackedContribution,
+  EXACT_PROVENANCE,
+  type MissingReportingContribution,
+  type ReportingAmount,
   type ReportingContribution,
   type ReportingCashFlow,
   type MissingContributionInput,
@@ -547,6 +557,264 @@ describe('two buckets meeting in one figure', () => {
     expect(result.additionalSpending.missing[0]?.currency).toBe('GBP');
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* The algebra of a 12.5 formula                                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Availability, over operands rather than over rows (v2.1.13 30.16 item 7).
+ *
+ * These are stated directly on the aggregates instead of through a fixture,
+ * because the rule belongs to the arithmetic and not to any one month. The
+ * distinction they pin: an operand that says `available` is a stated financial
+ * value — "no such record exists" is knowledge — even when it is an exact zero
+ * summed from no contributions at all, and a formula with one known operand and
+ * one missing one still knows something.
+ */
+describe('composing two already-evaluated figures', () => {
+  const gap = (currency = USD): MissingReportingContribution => ({
+    currency,
+    reason: 'fx_missing',
+  });
+
+  /** An exact zero: nothing to sum, nothing missing, no contributions in it. */
+  const availableZero = (): ReportingAmount => emptyAmount(EUR);
+  const unavailable = (currency = USD): ReportingAmount => missingAmount(EUR, gap(currency));
+
+  it('Z1 — an available zero plus an unavailable operand is partial at zero', () => {
+    // `TrackedTotalSpending` known to be zero, `AdditionalSpending` unconvertible.
+    const total = addAmounts(availableZero(), unavailable());
+
+    expect(total.availability).toBe('partial');
+    expect(total.value.amount.toString()).toBe('0');
+    expect(total.missing).toHaveLength(1);
+    // The zero really did come from nothing, and was not padded to look stated.
+    expect(total.statedCount).toBe(0);
+  });
+
+  it('Z2 — the same in a subtraction, so a savings formula degrades the same way', () => {
+    const savings = subtractAmounts(availableZero(), unavailable());
+
+    expect(savings.availability).toBe('partial');
+    expect(savings.value.amount.toString()).toBe('0');
+    expect(savings.statedCount).toBe(0);
+  });
+
+  it('Z3 — a contribution that is genuinely zero counts the same as any other', () => {
+    const zeroRow = statedAmount(money(new Decimal('0'), EUR), EXACT_PROVENANCE);
+    const summed = sumAmountsOf([zeroRow, unavailable()], EUR);
+
+    expect(summed.availability).toBe('partial');
+    expect(summed.value.amount.toString()).toBe('0');
+    expect(summed.statedCount).toBe(1);
+    expect(addAmounts(summed, availableZero()).availability).toBe('partial');
+  });
+
+  it('keeps a partial operand partial when something else is missing', () => {
+    const partial = sumAmountsOf(
+      [statedAmount(money(new Decimal('40'), EUR), EXACT_PROVENANCE), unavailable()],
+      EUR,
+    );
+    const combined = addAmounts(partial, unavailable(GBP));
+
+    expect(combined.availability).toBe('partial');
+    expect(combined.value.amount.toString()).toBe('40');
+    // One entry per currency and reason, in a fixed order (30.16 item 10).
+    expect(combined.missing.map((m) => m.currency)).toEqual(['GBP', 'USD']);
+  });
+
+  it('is unavailable only when every operand is', () => {
+    const combined = addAmounts(unavailable(), unavailable(GBP));
+
+    expect(combined.availability).toBe('unavailable');
+    expect(combined.value.amount.toString()).toBe('0');
+    expect(combined.statedCount).toBe(0);
+  });
+
+  it('is available when neither side is missing anything, at exactly zero', () => {
+    const combined = addAmounts(availableZero(), availableZero());
+
+    expect(combined.availability).toBe('available');
+    expect(combined.value.amount.toString()).toBe('0');
+    expect(combined.missing).toEqual([]);
+  });
+
+  it('leaves a primitive with no convertible row unavailable, not partial at zero', () => {
+    // The other half of the rule, and the reason there are two of them: a sum
+    // of contributions has no operands, only rows, and a figure whose only row
+    // could not be converted has nothing of its own to state.
+    expect(sumAmountsOf([unavailable()], EUR).availability).toBe('unavailable');
+    expect(sumAmountsOf([], EUR).availability).toBe('available');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* A month with nothing in it, and a month with no interval at all            */
+/* -------------------------------------------------------------------------- */
+
+describe('an empty interval and no interval are different answers', () => {
+  it('a valid interval with no activity states an exact zero everywhere', () => {
+    // Balances that agree, no income, no costs, a residual of exactly zero.
+    const result = flow([residualContribution(new Decimal('0'), EUR, SEPTEMBER, 'reliable')]);
+
+    for (const figure of [
+      result.externalIncome,
+      result.knownConsumption,
+      result.propertyOperatingCosts,
+      result.interestAndFees,
+      result.transactionCosts,
+      result.externalOutflows,
+      result.unclassified,
+      result.additionalSpending,
+      result.thirdPartyPaid,
+      result.consumption,
+      result.trackedTotalSpending,
+      result.trackedSavingsFromIncome,
+      result.personalSavings,
+      result.totalSpending,
+    ]) {
+      expect(figure.availability).toBe('available');
+      expect(figure.value.amount.toString()).toBe('0');
+      expect(figure.missing).toEqual([]);
+    }
+    // A measured zero income is a denominator, and it is zero.
+    expect(isUnavailable(result.savingsRate)).toBe(true);
+    if (!isUnavailable(result.savingsRate)) throw new Error('expected no rate');
+    expect(result.savingsRate.reason).toBe('divide_by_zero');
+  });
+
+  it('no interval states two figures and has no others to state', () => {
+    const result = reportSourceOnly({
+      reportingCurrency: EUR,
+      fx: table(),
+      contributions: [
+        untrackedContribution('additionalSpending', new Decimal('50'), EUR, plainDate('2026-09-08'), 'e1'),
+        untrackedContribution('thirdPartyPaid', new Decimal('80'), EUR, plainDate('2026-09-09'), 'e2'),
+      ],
+    });
+
+    expect(amount(result.additionalSpending)).toBe('50');
+    expect(result.additionalSpending.availability).toBe('available');
+    expect(amount(result.thirdPartyPaid)).toBe('80');
+    // There is no total spending here to be equal to the additional spending,
+    // and no savings to be its negation. Only these two keys exist.
+    expect(Object.keys(result).sort()).toEqual([
+      'additionalSpending',
+      'reportingCurrency',
+      'thirdPartyPaid',
+    ]);
+  });
+
+  it('reports a source-only figure as unavailable when its own rate is missing', () => {
+    const result = reportSourceOnly({
+      reportingCurrency: EUR,
+      fx: table(noGbp),
+      contributions: [
+        untrackedContribution('additionalSpending', new Decimal('50'), GBP, plainDate('2026-09-08'), 'e1'),
+        untrackedContribution('thirdPartyPaid', new Decimal('80'), EUR, plainDate('2026-09-09'), 'e2'),
+      ],
+    });
+
+    expect(result.additionalSpending.availability).toBe('unavailable');
+    expect(result.additionalSpending.missing[0]?.currency).toBe('GBP');
+    expect(result.thirdPartyPaid.availability).toBe('available');
+    expect(amount(result.thirdPartyPaid)).toBe('80');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* What the savings rate says when it cannot be taken                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `not_applicable` on the rate is the repository's generic fallback for a
+ * derived result whose prerequisite aggregate is incomplete — the same use as
+ * `networth`'s `?? 'not_applicable'` — and never a claim that the savings
+ * concept does not apply. These tests pin what a caller can still find out: the
+ * authoritative cause, with its currency and its own reason, is on the input
+ * aggregate it was observed on.
+ */
+describe('the rate names the side, and the inputs name the cause', () => {
+  it('an unconvertible cost leaves its reason on the numerator', () => {
+    const result = flow(
+      [
+        dated('externalIncome', '100', USD, '2026-09-01'),
+        dated('transactionCosts', '40', GBP, '2026-09-02'),
+      ],
+      { rows: noGbp },
+    );
+
+    expect(isUnavailable(result.savingsRate)).toBe(true);
+    if (!isUnavailable(result.savingsRate)) throw new Error('expected no rate');
+    expect(result.savingsRate.reason).toBe('not_applicable');
+    expect(result.savingsRate.detail).toBe('personal savings could not be stated in full');
+
+    // Which is where a caller looks next, and finds the real reason.
+    expect(result.personalSavings.availability).toBe('partial');
+    expect(result.personalSavings.missing).toEqual([
+      { currency: 'GBP', reason: 'fx_missing', detail: 'no stored rates for GBP' },
+    ]);
+    expect(result.transactionCosts.missing[0]?.reason).toBe('fx_missing');
+    // The denominator was fine, and says so.
+    expect(result.externalIncome.availability).toBe('available');
+    expect(result.externalIncome.missing).toEqual([]);
+  });
+
+  it('an unconvertible income leaves its reason on the denominator too', () => {
+    const result = flow(
+      [
+        dated('externalIncome', '100', USD, '2026-09-01'),
+        dated('externalIncome', '40', GBP, '2026-09-02'),
+      ],
+      { rows: noGbp },
+    );
+
+    expect(isUnavailable(result.savingsRate)).toBe(true);
+    if (!isUnavailable(result.savingsRate)) throw new Error('expected no rate');
+    expect(result.savingsRate.reason).toBe('not_applicable');
+
+    expect(result.externalIncome.availability).toBe('partial');
+    expect(result.externalIncome.missing[0]).toEqual({
+      currency: 'GBP',
+      reason: 'fx_missing',
+      detail: 'no stored rates for GBP',
+    });
+    // 12.5 derives the savings from the income, so the same gap is on both. The
+    // rate names the numerator because that is the operand it read first; the
+    // cause is on the aggregate where it happened, not promoted onto the ratio.
+    expect(result.personalSavings.missing).toEqual(result.externalIncome.missing);
+  });
+
+  it('a missing reconciliation dependency reaches the rate the same way', () => {
+    const result = flow([dated('externalIncome', '100', USD, '2026-09-01')], {
+      missing: [
+        { field: 'unclassified', currency: USD, reason: 'no_valuation', detail: 'reconciliation_unavailable' },
+      ],
+    });
+
+    expect(isUnavailable(result.savingsRate)).toBe(true);
+    if (!isUnavailable(result.savingsRate)) throw new Error('expected no rate');
+    expect(result.savingsRate.reason).toBe('not_applicable');
+    expect(result.personalSavings.missing).toEqual([
+      { currency: 'USD', reason: 'no_valuation', detail: 'reconciliation_unavailable' },
+    ]);
+  });
+
+  it('a complete but zero denominator is its own reason, not the fallback', () => {
+    const result = flow([dated('knownConsumption', '50', USD, '2026-09-15')]);
+
+    expect(result.externalIncome.availability).toBe('available');
+    expect(amount(result.externalIncome)).toBe('0');
+    expect(isUnavailable(result.savingsRate)).toBe(true);
+    if (!isUnavailable(result.savingsRate)) throw new Error('expected no rate');
+    expect(result.savingsRate.reason).toBe('divide_by_zero');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The reporting cost partition                                               */
+/* -------------------------------------------------------------------------- */
 
 describe('the reporting cost partition holds exactly', () => {
   it('sums the five spending buckets back to tracked total spending', () => {

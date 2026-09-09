@@ -47,6 +47,40 @@ const ratesArb = fc
     })),
   );
 
+/**
+ * Rates whose reciprocal terminates in base 10.
+ *
+ * A USD amount reaches EUR by `amount × (1 / rate)` (10.1: stored rows are
+ * `EUR -> quote`), so the conversion is exact only when `1 / rate` is a finite
+ * decimal — which it is exactly when the rate is of the form 2^a · 5^b · 10^k.
+ * Each of these divides into 1 exactly: 5, 4, 2.5, 2, 1.25, 1, 0.8, 0.625, 0.5,
+ * 0.4, 0.25, 0.2, 0.125, 0.1.
+ */
+const TERMINATING_RATES = [
+  '0.2', '0.25', '0.4', '0.5', '0.8', '1', '1.25', '1.6', '2', '2.5', '4', '5', '8', '10',
+] as const;
+
+/**
+ * One terminating rate held constant across the month.
+ *
+ * Constant so the monthly average is that same rate exactly — the mean of five
+ * equal terminating values is one division that also terminates — which puts the
+ * residual on the same exact footing as the dated rows. That makes every figure
+ * a finite decimal of at most twenty or so significant digits, well inside the
+ * forty the engine works at, so an algebraic identity between two of them holds
+ * with no tolerance at all.
+ */
+const constantRatesArb = fc
+  .constantFrom(...TERMINATING_RATES)
+  .map((value): FxRateRecord[] =>
+    DAYS.map((day) => ({
+      quote: USD,
+      rateDate: plainDate(day),
+      rate: new Decimal(value),
+      source: 'ECB',
+    })),
+  );
+
 const dayArb = fc.constantFrom(...DAYS);
 
 const costFields = [
@@ -76,6 +110,16 @@ const inputArb = fc.record({
   additional: amountArb,
   thirdParty: amountArb,
   rates: ratesArb,
+  counted: fc.boolean(),
+});
+
+/** The same generator, on rates every conversion can represent exactly. */
+const exactInputArb = fc.record({
+  contributions: fc.array(contributionArb, { maxLength: 8 }),
+  residual: fc.option(fc.tuple(amountArb, fc.boolean()), { nil: undefined }),
+  additional: amountArb,
+  thirdParty: amountArb,
+  rates: constantRatesArb,
   counted: fc.boolean(),
 });
 
@@ -179,36 +223,45 @@ describe('property: the cost partition survives conversion', () => {
 
 describe('property: the setting moves the savings and not the spending', () => {
   /**
-   * Compared at the storage scale, and that is not a softened assertion.
+   * Exact, over rates on which every conversion is representable.
    *
-   * A reporting figure is a division, and a converted residual is usually a
-   * non-terminating one held to forty significant digits. Subtracting the
-   * additional spending changes the magnitude, so the result is re-rounded to
-   * forty significant digits from a different exponent and the two paths can
-   * differ in their last fractional digit — around 10⁻³⁴ of a unit. That is
-   * arithmetic, not a defect: no rearrangement across a magnitude change is
-   * exact at fixed significant digits.
+   * The identity being asserted — that turning the setting off adds back exactly
+   * the additional spending — is a rearrangement across a change of magnitude,
+   * and no such rearrangement is exact at a fixed number of significant digits.
+   * The honest way to state it is therefore to generate conditions in which the
+   * conversions themselves terminate, and then to demand equality with no
+   * tolerance whatever.
    *
-   * Every figure is still exact in itself; it is the algebraic identity between
-   * two of them that is only exact to working precision. Eight decimal places is
-   * the scale these amounts are stored and shown at (6.1, 7.2), so a real error
-   * — a wrong term, a double subtraction — is orders of magnitude larger and
-   * still caught here.
+   * The alternative — comparing at eight decimal places — would have quietly
+   * cited the wrong contract: `NUMERIC(24,8)` is the scale money is *persisted*
+   * at, and 5.3 persists none of these figures. What a non-terminating rate
+   * actually does to the same statement is pinned separately below.
    */
   it('differs by the reporting additional spending, and leaves total spending alone', () => {
     fc.assert(
-      fc.property(inputArb, (generated) => {
+      fc.property(exactInputArb, (generated) => {
         const counted = run(generated, { counted: true });
         const trackedOnly = run(generated, { counted: false });
 
         const difference = trackedOnly.personalSavings.value.amount.minus(
           counted.personalSavings.value.amount,
         );
-        expect(difference.toDecimalPlaces(8).toString()).toBe(
-          counted.additionalSpending.value.amount.toDecimalPlaces(8).toString(),
-        );
+        expect(difference.equals(counted.additionalSpending.value.amount)).toBe(true);
         // Total spending consumes the same components either way, with no
-        // subtraction and no change of magnitude, so it is exactly equal.
+        // subtraction and no change of magnitude, so it is exactly equal — and
+        // that one holds on any rates at all.
+        expect(
+          counted.totalSpending.value.amount.equals(trackedOnly.totalSpending.value.amount),
+        ).toBe(true);
+      }),
+    );
+  });
+
+  it('leaves total spending alone on any rates, terminating or not', () => {
+    fc.assert(
+      fc.property(inputArb, (generated) => {
+        const counted = run(generated, { counted: true });
+        const trackedOnly = run(generated, { counted: false });
         expect(
           counted.totalSpending.value.amount.equals(trackedOnly.totalSpending.value.amount),
         ).toBe(true);
@@ -308,6 +361,78 @@ describe('property: the rate exists exactly when both aggregates do', () => {
           expect(isUnavailable(rate)).toBe(true);
         }
       }),
+    );
+  });
+});
+
+describe('a rate that does not terminate', () => {
+  /**
+   * The distinction the property above must not blur: finite-precision algebra
+   * is not financial rounding.
+   *
+   * 8451 USD at an average rate of 1.3 is 6500.769230…, non-terminating, held to
+   * forty significant digits. Subtracting 3500 pushes the value past 10 000, so
+   * the sum needs a forty-first digit it does not have and loses the last one.
+   * The difference between the two settings is then 3499.999…9 rather than 3500
+   * — off by 10⁻³⁴ of a euro, and entirely a consequence of working at a fixed
+   * number of significant digits.
+   *
+   * Production rounds nothing on the way: every digit it computed is still
+   * there, and would still be there in the serialized string. A rounding rule
+   * would have produced 3500.00000000 and hidden both facts.
+   */
+  const nonTerminating = (): Generated => ({
+    contributions: [],
+    residual: [new Decimal('8451'), true],
+    additional: new Decimal('3500'),
+    thirdParty: new Decimal('0'),
+    rates: DAYS.map((day) => ({
+      quote: USD,
+      rateDate: plainDate(day),
+      rate: new Decimal('1.3'),
+      source: 'ECB',
+    })),
+    counted: true,
+  });
+
+  it('keeps all forty significant digits, and rounds at no scale', () => {
+    const counted = run(nonTerminating(), { counted: true });
+    const trackedOnly = run(nonTerminating(), { counted: false });
+
+    expect(trackedOnly.personalSavings.value.amount.toString()).toBe(
+      '-6500.769230769230769230769230769230769231',
+    );
+    expect(counted.personalSavings.value.amount.toString()).toBe(
+      '-10000.76923076923076923076923076923076923',
+    );
+    // Thirty-six decimal places, not eight, and not two.
+    expect(
+      trackedOnly.personalSavings.value.amount.toString().split('.')[1]?.length,
+    ).toBe(36);
+  });
+
+  it('is exact to the working precision, and says so rather than rounding', () => {
+    const counted = run(nonTerminating(), { counted: true });
+    const trackedOnly = run(nonTerminating(), { counted: false });
+
+    const difference = trackedOnly.personalSavings.value.amount.minus(
+      counted.personalSavings.value.amount,
+    );
+    expect(difference.toString()).toBe('3499.999999999999999999999999999999999999');
+    expect(difference.equals(new Decimal('3500'))).toBe(false);
+    // A ten-thousandth of a trillionth of a trillionth of a euro: the identity
+    // is intact, the arithmetic is finite, and neither is quietly corrected.
+    expect(difference.minus(3500).abs().lessThan(new Decimal('1e-30'))).toBe(true);
+  });
+
+  it('is deterministic: the same rows give the same digits every time', () => {
+    const first = run(nonTerminating());
+    const second = run(nonTerminating());
+    expect(second.personalSavings.value.amount.toString()).toBe(
+      first.personalSavings.value.amount.toString(),
+    );
+    expect(second.unclassified.value.amount.toString()).toBe(
+      first.unclassified.value.amount.toString(),
     );
   });
 });
