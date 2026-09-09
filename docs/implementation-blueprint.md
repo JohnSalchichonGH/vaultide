@@ -1088,9 +1088,9 @@ TotalSpending            = TrackedTotalSpending + AdditionalSpending    // Spend
 
 Allocation identity (cash-role flows only): `CashSavings = TrackedSavingsFromIncome + External inflows + Adjustments − External outflows`, where "External outflows" here means the `external_outflow` expense entries paid from tracked cash; the non-cash pair created by an externally paid distribution (+d Investment income, −d External outflows) cancels outside this identity. Identically, `CashSavings = ΔCash + Contributions + Principal repaid + Asset purchases (all, incl. excluded other assets) + Capital improvements − Withdrawals − Loan proceeds − Asset sales` (all at dated rates; ΔCash at closing rates leaves the cash FX residual as a line). Both follow from the 8.2 identity (`ΣI − ΣK − U = Δ + ΣNout − ΣNin`) with `K` split into its buckets. `PersonalSavings = CashSavings − counted AdditionalSpending − External inflows − Adjustments + External outflows`, and the "where it went" view shows the line "Spent from outside tracked accounts −X" when additional spending is counted. User-facing labels: "Saved from income (tracked accounts)", "Personal savings", "Savings rate", "Where it went".
 
-**Scope of the tracked inputs.** Every quantity above that is derived from tracked cash classifies exactly the flows 8.1 already scoped into the bucket being enriched — the same currency, the same interval, the same explicit attribution, participation, `first_balance` exclusion and null-leg support, and for the current month the legs of `[start(M), D]` and nothing dated after `D`. `ExternalIncome` is a classification of that bucket’s `ΣI` and the cost buckets partition its `ΣK`; rescanning the month’s rows independently would put back a flow 8.1 excluded — an income attributed to a `first_balance` account, say — and break both identities at once. `AdditionalSpending` and paid-by-others are not reconciliation-role quantities and stay independent source-row sums over the same calendar or as-of interval, because `untracked_self` and `third_party` never enter `I`/`Nin`/`Nout`/`K`.
+**Scope of the tracked inputs.** Every quantity above that is derived from tracked cash classifies exactly the flows 8.1 already scoped into the bucket being enriched — the same currency, the same interval, the same explicit attribution, participation, `first_balance` exclusion and null-leg support, and for the current month the legs of `[start(M), D]` and nothing dated after `D`. `ExternalIncome` is a classification of that bucket’s `ΣI` and the cost buckets partition its `ΣK`; rescanning the month’s rows independently would put back a flow 8.1 excluded — an income attributed to a `first_balance` account, say — and break both identities at once. `AdditionalSpending` and paid-by-others are not reconciliation-role quantities and stay independent source-row sums, because `untracked_self` and `third_party` never enter `I`/`Nin`/`Nout`/`K` — but independent is not unbounded, and they take their interval from the figure they are shown beside. For a completed month that is `[start(M), end(M)]`. For a current month **with** a `D` it is `[start(M), D]`: a figure labelled "through `D`" states one interval, so an untracked or third-party expense dated after `D` stays a visible source record and enters no month-to-date figure, no `TotalSpending` through `D`, no `PersonalSavings` through `D` and no `SavingsRate` through `D`. Pairing tracked arithmetic through `D` with an expense total through today would put two intervals inside one number. For a current month with **no** `D` there is no reconciliation interval at all (8.6), so nothing month-to-date exists to label; the two sums remain independently computable over `[start(M), today]` and are shown as their own current-month facts — "additional spending through today", "paid by others through today" — never described as through-`D` values, and never used to build a `TotalSpending`, `PersonalSavings` or `SavingsRate` that stays `Unavailable` (30.15).
 
-**Availability.** These figures are derived from reconciliation and inherit its status; none of them is ever computed by reading a missing or negative residual as zero. For a bucket whose status is `unavailable`, `Consumption`, `TrackedSavingsFromIncome`, `PersonalSavings`, `SavingsRate` and `TotalSpending` are `Unavailable` with that bucket’s reason. For an `unresolved` bucket, a negative unclassified is not negative consumption: the same five are `Unavailable` until the discrepancy is resolved — `TotalSpending` among them, because a `TrackedTotalSpending` computed from a negative residual is arithmetic evidence and not a spending figure (R6) — while the page still shows 8.4’s lower bound ("spending ≥ known") and the unexplained-inflow amount. An `estimated` bucket computes them and propagates `estimated` with its reason; the current month computes them through the MTD date `D` and labels them provisional through `D`, and without a `D` there is no interval at all, so the same five are `Unavailable` (8.6). `AdditionalSpending` and paid-by-others remain computable in every case, because neither enters the tracked identity. Across currencies the reporting-currency figures use the `Partial` machinery of 7.6: a valid bucket’s contribution is preserved and the aggregate is marked partial with the missing buckets’ reasons, never completed with a zero. `SavingsRate` is the one exception, because it is a quotient and not a sum: the aggregate rate is an exact unrounded ratio when both aggregates are complete, every rate they need exists and `ExternalIncome ≠ 0`, and in every other case it is `Unavailable` with a reason — **never `Partial`**, since a ratio of partial aggregates is not the user’s savings rate. A rate over a single complete native bucket is an exact scalar and remains available when it is labelled with its currency (30.15).
+**Availability.** These figures are derived from reconciliation and inherit its status; none of them is ever computed by reading a missing or negative residual as zero. For a bucket whose status is `unavailable`, `Consumption`, `TrackedSavingsFromIncome`, `PersonalSavings`, `SavingsRate` and `TotalSpending` are `Unavailable` with that bucket’s reason. For an `unresolved` bucket, a negative unclassified is not negative consumption: the same five are `Unavailable` until the discrepancy is resolved — `TotalSpending` among them, because a `TrackedTotalSpending` computed from a negative residual is arithmetic evidence and not a spending figure (R6) — while the page still shows 8.4’s lower bound ("spending ≥ known") and the unexplained-inflow amount. An `estimated` bucket computes them and propagates `estimated` with its reason; the current month computes them through the MTD date `D` and labels them provisional through `D`, and without a `D` there is no interval at all, so the same five are `Unavailable` (8.6). `AdditionalSpending` and paid-by-others remain computable in every case, because neither enters the tracked identity — each over the interval the paragraph above gives it, which is not always the interval a tracked figure beside it used. Across currencies the reporting-currency figures use the `Partial` machinery of 7.6: a valid bucket’s contribution is preserved and the aggregate is marked partial with the missing buckets’ reasons, never completed with a zero. `SavingsRate` is the one exception, because it is a quotient and not a sum: the aggregate rate is an exact unrounded ratio when both aggregates are complete, every rate they need exists and `ExternalIncome ≠ 0`, and in every other case it is `Unavailable` with a reason — **never `Partial`**, since a ratio of partial aggregates is not the user’s savings rate. A rate over a single complete native bucket is an exact scalar and remains available when it is labelled with its currency (30.15).
 
 ### 12.6 Completeness and freshness for a completed month M
 
@@ -2705,9 +2705,37 @@ below is what an engine must do.
    to an account the month excluded as `first_balance` is therefore not quietly
    restored here. `ExternalIncome` is a classification of the bucket’s `ΣI` and the
    cost buckets partition its `ΣK`, so both remain identities rather than
-   independent totals over a different row set. `AdditionalSpending` and
-   paid-by-others are unaffected: neither carries a cash role, so both stay
-   independent source-row sums over the same interval.
+   independent totals over a different row set.
+
+   `AdditionalSpending` and paid-by-others carry no cash role, so both stay
+   independent source-row sums — but they take their interval from the figure
+   they stand beside, because a displayed number states one interval or it states
+   nothing. A completed month uses `[start(M), end(M)]`. A current month with a
+   `D` uses `[start(M), D]`, so an expense dated after `D` remains a visible
+   source record and enters no figure labelled "through `D`". A current month
+   with no `D` has no reconciliation interval to inherit, so the two sums are
+   computed over `[start(M), today]` and presented as their own facts —
+   "additional spending through today", "paid by others through today" — never as
+   month-to-date values, and never as material for a `TotalSpending`,
+   `PersonalSavings` or `SavingsRate`, all of which stay `Unavailable` (item 1).
+
+   Three current-month cases, each with one answer. Today is 10 September. **(A)**
+   `D` = 6 Sep and an `untracked_self` expense of 50 on 5 Sep: `AdditionalSpending`
+   through `D` is 50, and it reduces `PersonalSavings` through `D` when the setting
+   counts it. **(B)** `D` = 6 Sep and the same expense on 8 Sep: the record exists
+   and the month's expense list may show it, but `AdditionalSpending` through `D`
+   is 0 and the expense touches no through-`D` total, savings figure or rate.
+   **(C)** no `D`, an `untracked_self` expense of 50 on 8 Sep and a `third_party`
+   expense of 80 on 9 Sep: additional spending through today is 50 and paid by
+   others through today is 80, while `TotalSpending`, `PersonalSavings` and
+   `SavingsRate` are `Unavailable` and there is no month-to-date bucket at all.
+
+   This changes no result shape. 8.6's and 8.9's no-`D` month-to-date result is
+   untouched — `asOf` null, status `unavailable`, reason `mtd_no_common_date`, no
+   buckets and no totals — and these two source-only figures are composed
+   *alongside* it by the read model, never fitted inside it. They are facts about
+   records the user entered, not reconciliation totals, and nothing about them
+   reopens the month-to-date engine.
 
 4. **`large_unclassified` has one window and one median.** For a completed month
    `M` and native-currency bucket `C`: evaluate only when `C` has a computed
@@ -2776,7 +2804,7 @@ below is what an engine must do.
 
 8. **An approximate monthly average still supports the advisory.** When 10.2
    returns an available monthly average marked `approximate`, the candidate may
-   still qualify — the fallback is observed FX evidence, the ±5 % band is a
+   still qualify — the fallback is observed FX evidence, the 5 % headroom is
    heuristic by design, the issue is advisory, and the user confirms or edits the
    transfer it prefills. The candidate must carry that the comparison rate was
    approximate so the interface can say so. A genuinely `Unavailable` lookup still
