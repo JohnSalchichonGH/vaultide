@@ -10,5 +10,6 @@ export * from './span-service';
 export * from './savings-service';
 export * from './range-loader';
 export * from './reporting-service';
+export * from './rolling-service';
 export * from './service';
 export * from './types';

@@ -478,3 +478,38 @@ export interface MonthToDateSourceOnlyReportingDto extends SourceOnlyReportingFi
 export type MonthToDateReportingCashFlowDto =
   | MonthToDateTrackedReportingDto
   | MonthToDateSourceOnlyReportingDto;
+
+/* -------------------------------------------------------------------------- */
+/* Rolling tracked spending (15.2, 15.5, v2.1.12 30.15 item 5)                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One rolling average and the number of qualifying months it is over.
+ *
+ * The count is the coverage signal 30.15 specifies: a three-month window that
+ * holds one observation says `count: 1` rather than pretending to three. There
+ * is no status on an average — a month either qualified or it did not, and the
+ * ones that did are complete by definition.
+ */
+export interface RollingAverageDto {
+  readonly value: MoneyDto;
+  /** `1 … N`. */
+  readonly count: number;
+}
+
+/**
+ * One completed display month's 3-, 6- and 12-month rolling tracked spending
+ * in the reporting currency.
+ *
+ * `null` means no month in that calendar window qualified; an average of zero
+ * over months that did is `{ value: 0, count: n }`. The two are never the same
+ * answer.
+ */
+export interface RollingTrackedSpendingPointDto {
+  /** `YYYY-MM`. */
+  readonly month: string;
+  readonly reportingCurrency: string;
+  readonly rolling3: RollingAverageDto | null;
+  readonly rolling6: RollingAverageDto | null;
+  readonly rolling12: RollingAverageDto | null;
+}
