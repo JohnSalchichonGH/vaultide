@@ -77,7 +77,7 @@ export interface RoleLeg {
  * distribution linked to an investment is a `dividend` or `interest` that never
  * reaches tracked cash and carries the +d/−d pair instead (7.4).
  */
-export function incomeRole(kind: IncomeKind, settlement: IncomeSettlement): FlowRole {
+export function incomeRole(_kind: IncomeKind, settlement: IncomeSettlement): FlowRole {
   if (settlement !== 'tracked_cash') return 'none';
   return 'I';
 }
