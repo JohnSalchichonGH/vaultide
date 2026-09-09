@@ -15,8 +15,8 @@ net-worth metrics — total (everything you track) and financial (the headline).
 value nobody has recorded is shown as unknown, never as zero, and a total that
 could not include something says so and says what.
 
-**Phase 3 has reached slice 9, on the server only.** Income, expenses and
-transfers with their linked fee; recurring sources with their occurrences,
+**Phase 3 server-side implementation has reached slice 10a.** Income, expenses
+and transfers with their linked fee; recurring sources with their occurrences,
 terms, acceptances and skips, and how complete a past month's recurring record
 is; completed-month reconciliation with its issues and per-account residuals —
 the engine that infers what a finished month spent from its own statement
@@ -30,11 +30,27 @@ with what was saved from income, personal savings and the savings rate, plus
 the spending paid from outside tracked accounts and the spending someone else
 paid, which are reported beside the rest and never inside it.
 
+The same month is now also said in the currency you think in. Every known flow
+converts at its own financial date and the inferred remainder at its interval's
+average rate — the calendar month for a finished month, and only the evidence up
+to the shared date `D` for the month so far, so a rate published after `D`
+cannot move a figure labelled as running to it. Each figure carries its own
+availability, so a rate missing for one memo does not blank out the savings
+rate: available, partial, or unavailable with the reason and the currency it
+came from — a missing month-end statement, an unusable opening, an unresolved
+month or an absent rate each named as itself. A month with no shared date has no
+tracked interval at all and says so, rather than reporting zeros it never
+measured. A currency in which you only recorded spending you settled yourself or
+somebody else paid needs no account and gets no reconciliation bucket, and its
+rows still reach the figures they belong to. Completed months can be read as a
+series, one result each, which is what the rolling averages will be built from.
+
 None of it has an interface yet. There is no monthly editor, no spending page,
-no income page and no bulk-history editor; the reporting-currency view of
-cash flow and savings, the rolling spending averages, the last two
-reconciliation advisories and the month's completeness report are all still
-unwritten; and no Phase 3 journey has been accepted end to end. Phase 3 is
+no income page and no bulk-history editor; the rolling three-, six- and
+twelve-month spending averages, the large-unclassified and
+possible-missing-conversion advisories, the month's completeness report and the
+propagated-uncertainty projection property are all still unwritten; and no
+Phase 3 journey has been accepted end to end. Phase 3 is in progress, and is
 neither accepted nor frozen.
 
 The authoritative specification is
@@ -59,14 +75,16 @@ packages/finance    pure engines — money, dates, FX lookup and conversion,
                     and freshness, total and financial net worth, flow roles,
                     recurring occurrences and terms, completed-month,
                     month-to-date and multi-month-span reconciliation, native
-                    spending decomposition and savings
+                    spending decomposition and savings, reporting-currency cash
+                    flow and savings
 packages/validation Zod primitives and inputs shared by client, server, database
 packages/db         Drizzle schema, migrations, RLS policies, repositories, seed
 packages/application use cases: Better Auth, sessions, mailer, settings, FX service,
                     positions, valuations, quick update, net-worth queries,
                     income, expenses, transfers, recurring templates and
                     suggestions, completed-month, month-to-date and span
-                    reconciliation reads, native savings reads
+                    reconciliation reads, native savings reads,
+                    reporting-currency cash-flow reads
 packages/config     tsconfig, ESLint (incl. the money-coercion rule), boundaries
 e2e                 Playwright: smoke, the auth and settings flow, and the
                     accounts, balances and net-worth journey
