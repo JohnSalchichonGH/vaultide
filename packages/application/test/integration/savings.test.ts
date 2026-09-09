@@ -606,6 +606,9 @@ describe('boundaries', () => {
     }
 
     expect(await countRoundTrips()).toBe(small);
+    // The completed-month window plus the user's setting, and nothing per
+    // account, flow, category or currency.
+    expect(small).toBe(8);
   });
 });
 
