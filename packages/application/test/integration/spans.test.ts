@@ -175,10 +175,9 @@ describe('accounts inside the interval', () => {
 
     const spans = await getSpans(readDeps(), DEC_1);
     expect(spans).toHaveLength(1);
-    const opened = spans[0]?.accounts.find((x) => x.positionId === b);
-    expect(opened?.openingState).toBe('opened_zero');
-    expect(opened?.opening.amount).toBe('0');
-    // −400 on BBVA and +300 on the new account.
+    // −400 on BBVA and +300 on the new account, which is what pins the new
+    // account's opening at zero: reading its November balance as the opening,
+    // or dropping it for having no opening evidence, would give −400.
     expect(spans[0]?.totals.cashDelta.amount).toBe('-100');
     expect(spans[0]?.trackedTotalSpending.amount).toBe('100');
   });
@@ -282,9 +281,7 @@ describe('the read itself', () => {
     const spans = await getSpans(readDeps(), DEC_1);
     const keys = Object.keys(spans[0] ?? {}).sort();
     expect(keys).toEqual([
-      'accounts',
       'currency',
-      'explanation',
       'from',
       'months',
       'status',
@@ -292,6 +289,13 @@ describe('the read itself', () => {
       'totals',
       'trackedTotalSpending',
       'unclassified',
+    ]);
+    expect(Object.keys(spans[0]?.totals ?? {}).sort()).toEqual([
+      'cashDelta',
+      'externalInflows',
+      'knownTrackedExpenses',
+      'nonExpenseOutflows',
+      'nonIncomeInflows',
     ]);
   });
 

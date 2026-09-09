@@ -87,14 +87,6 @@ function spanDto(span: SpanResult): SpanDto {
     to: span.to,
     months: span.months.map((month) => (month as string).slice(0, 7)),
     status: span.status,
-    accounts: span.accounts.map((account) => ({
-      positionId: account.positionId,
-      name: account.name,
-      openingState: account.openingState,
-      opening: amount(account.opening),
-      closingState: account.closingState,
-      closing: amount(account.closing),
-    })),
     totals: {
       externalInflows: amount(span.totals.externalInflows),
       nonIncomeInflows: amount(span.totals.nonIncomeInflows),
@@ -104,7 +96,6 @@ function spanDto(span: SpanResult): SpanDto {
     },
     trackedTotalSpending: amount(span.trackedTotalSpending),
     unclassified: amount(span.unclassified),
-    explanation: span.explanation,
   };
 }
 

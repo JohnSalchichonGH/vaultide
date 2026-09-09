@@ -175,16 +175,6 @@ export interface MonthToDateDto {
 /** 8.7: a span is `reliable` or `unresolved`, and nothing else can be one. */
 export type SpanStatusDto = 'reliable' | 'unresolved';
 
-export interface SpanAccountDto {
-  readonly positionId: string;
-  readonly name: string;
-  /** No `closed_zero`: an account closed by `end(M0)` does not participate. */
-  readonly openingState: 'month_end' | 'opened_zero' | 'dormant_zero';
-  readonly opening: MoneyDto;
-  readonly closingState: 'month_end' | 'closed_zero' | 'dormant_zero';
-  readonly closing: MoneyDto;
-}
-
 /** Every figure a span reports. All five are exact; none is ever absent. */
 export interface SpanTotalsDto {
   readonly externalInflows: MoneyDto;
@@ -205,12 +195,14 @@ export interface SpanTotalsDto {
  * R21 states that a span is never averaged or attributed to a single month. The
  * interval total and `months` are what an interface shows.
  *
- * And no `additionalSpending` or `thirdPartyPaid`. A month's bucket reports
- * both, because a month is where 7.4 places them; 8.7 does not list either for a
- * span, and beside `trackedTotalSpending` — which contains neither — they would
- * invite a sum that means nothing. `accounts` and `explanation` remain because
- * they add no quantity: the first is how `totals.cashDelta` was reached, the
- * second the same derivation in words.
+ * And no `additionalSpending`, `thirdPartyPaid`, `accounts` or `explanation`.
+ * A month's bucket reports the first two, because a month is where 7.4 places
+ * them; 8.7 lists none of the four for a span. The spending figures are not in
+ * the identity, so beside `trackedTotalSpending` they invite a sum that means
+ * nothing; the account states are the calculation graph behind
+ * `totals.cashDelta`; and the explanation is prose a read model can write from
+ * the exact figures when it needs to, rather than English frozen into the API
+ * before anything asks for it.
  */
 export interface SpanDto {
   readonly currency: string;
@@ -221,9 +213,7 @@ export interface SpanDto {
   /** The months covered, as `YYYY-MM`, in order. */
   readonly months: readonly string[];
   readonly status: SpanStatusDto;
-  readonly accounts: readonly SpanAccountDto[];
   readonly totals: SpanTotalsDto;
   readonly trackedTotalSpending: MoneyDto;
   readonly unclassified: MoneyDto;
-  readonly explanation: readonly string[];
 }

@@ -1,7 +1,14 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { Decimal } from '../../src/decimal';
-import { endOfMonthKey, monthKey, plainDate, type MonthKey } from '../../src/dates/plain-date';
+import {
+  addMonths,
+  endOfMonthKey,
+  monthKey,
+  plainDate,
+  startOfMonthKey,
+  type MonthKey,
+} from '../../src/dates/plain-date';
 import { currencyCode } from '../../src/money/types';
 import { monthEnd, position } from '../helpers/records';
 import type { ExpenseFlow, IncomeFlow, TransferFlow } from '../../src/flows/types';
@@ -134,6 +141,36 @@ function inputOf(generated: Generated, over: Partial<SpanInput> = {}): SpanInput
   };
 }
 
+/**
+ * The month-end balances the generated evidence itself records at `end(M)`.
+ *
+ * Re-derived from the fixture rather than read back off the result. The engine
+ * does not return per-account states, and it should not have to: a test that
+ * checked the identity using the engine's own working would only be checking
+ * that it can add up its own numbers. Every generated account has a null
+ * opening and closing date, so all of them participate in every interval and
+ * every endpoint is a month-end balance.
+ */
+function balancesAt(generated: Generated, month: MonthKey): Decimal[] {
+  const end = endOfMonthKey(month);
+  return generated.accounts.map((account) => {
+    const at = account.valuations.find((v) => v.valuedOn === end);
+    expect(at).toBeDefined();
+    return at?.amount ?? new Decimal(0);
+  });
+}
+
+/**
+ * The anchors of a span, recovered from the two dates it reports.
+ *
+ * The opening anchor is the month end before `from`, not before `to` — on a
+ * span longer than two months those are different months.
+ */
+function anchorsOf(span: { from: string; to: string }): [MonthKey, MonthKey] {
+  const first = monthKey(plainDate(span.from));
+  return [monthKey(addMonths(startOfMonthKey(first), -1)), monthKey(plainDate(span.to))];
+}
+
 /** Does every account that existed then have a month-end balance at `end(M)`? */
 function isAnchor(generated: Generated, month: MonthKey): boolean {
   const end = endOfMonthKey(month);
@@ -147,14 +184,15 @@ describe('property: the identity is exact over any interval', () => {
     fc.assert(
       fc.property(historyArb, (generated) => {
         for (const span of findSpans(inputOf(generated))) {
-          const opening = span.accounts.reduce(
-            (sum, a) => sum.plus(a.opening),
-            new Decimal(0),
-          );
-          const closing = span.accounts.reduce(
-            (sum, a) => sum.plus(a.closing),
-            new Decimal(0),
-          );
+          const [openingAnchor, closingAnchor] = anchorsOf(span);
+          const openingBalances = balancesAt(generated, openingAnchor);
+          const closingBalances = balancesAt(generated, closingAnchor);
+          // A span always reconciles someone: an interval with no participating
+          // account is not a span (30.14 item 3).
+          expect(openingBalances.length).toBeGreaterThan(0);
+
+          const opening = openingBalances.reduce((sum, a) => sum.plus(a), new Decimal(0));
+          const closing = closingBalances.reduce((sum, a) => sum.plus(a), new Decimal(0));
 
           expect(closing.minus(opening).equals(span.totals.cashDelta)).toBe(true);
           expect(
@@ -264,11 +302,16 @@ describe('property: discovery is deterministic and maximal', () => {
     );
   });
 
-  it('contains at least one included account in every span', () => {
+  it('reports a month list that matches the two dates it spans', () => {
     fc.assert(
       fc.property(historyArb, (generated) => {
         for (const span of findSpans(inputOf(generated))) {
-          expect(span.accounts.length).toBeGreaterThan(0);
+          const [openingAnchor, closingAnchor] = anchorsOf(span);
+          expect(span.months[0]).toBe(monthKey(plainDate(span.from)));
+          expect(span.months[span.months.length - 1]).toBe(closingAnchor);
+          // 8.7's own bound: at least two months, or it is not a span.
+          expect(span.months.length).toBeGreaterThanOrEqual(2);
+          expect(openingAnchor < (span.months[0] as MonthKey)).toBe(true);
         }
       }),
     );

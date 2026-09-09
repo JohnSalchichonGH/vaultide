@@ -300,13 +300,14 @@ describe('E — an account opened inside the span', () => {
       }),
     );
     expect(spans).toHaveLength(1);
-    const opened = spans[0]?.accounts.find((a) => a.positionId === B);
-    expect(opened?.openingState).toBe('opened_zero');
-    expect(opened?.opening.toString()).toBe('0');
-    expect(opened?.closing.toString()).toBe('300');
-    // −400 on BBVA and +300 on the new account.
+    // −400 on BBVA and +300 on the new account, which is the arithmetic that
+    // pins the opening at zero: had the engine opened the new account at its
+    // only balance, or left it out for having no opening evidence, the change
+    // would read −400.
     expect(spans[0]?.totals.cashDelta.toString()).toBe('-100');
     expect(spans[0]?.trackedTotalSpending.toString()).toBe('100');
+    expect(spans[0]?.unclassified.toString()).toBe('100');
+    expect(spans[0]?.status).toBe('reliable');
   });
 });
 
@@ -324,10 +325,12 @@ describe('F — an account closed inside the span', () => {
       }),
     );
     expect(spans).toHaveLength(1);
-    const closed = spans[0]?.accounts.find((a) => a.positionId === B);
-    expect(closed?.closingState).toBe('closed_zero');
-    expect(closed?.closing.toString()).toBe('0');
+    // The closed account contributes exactly −80: it opened at 80 and closes at
+    // zero without a later statement. Carrying its last balance forward instead
+    // would leave the change at zero.
     expect(spans[0]?.totals.cashDelta.toString()).toBe('-80');
+    expect(spans[0]?.trackedTotalSpending.toString()).toBe('80');
+    expect(spans[0]?.unclassified.toString()).toBe('80');
   });
 });
 
@@ -351,11 +354,16 @@ describe('G — an account opened and closed inside the span', () => {
       }),
     );
     expect(spans).toHaveLength(1);
-    const brief = spans[0]?.accounts.find((a) => a.positionId === B);
-    expect(brief?.openingState).toBe('opened_zero');
-    expect(brief?.closingState).toBe('closed_zero');
-    // Its expense is attributed and counted.
+    // Zero to zero: the brief account contributes nothing to the cash change,
+    // so the whole interval's change is BBVA's, which is none.
+    expect(spans[0]?.totals.cashDelta.toString()).toBe('0');
+    // Its expense is still attributed and counted — the account is in scope for
+    // the interval even though its endpoints cancel. Excluding it would drop
+    // this leg and leave the known expenses at zero.
     expect(spans[0]?.totals.knownTrackedExpenses.toString()).toBe('25');
+    expect(spans[0]?.trackedTotalSpending.toString()).toBe('0');
+    expect(spans[0]?.unclassified.toString()).toBe('-25');
+    expect(spans[0]?.status).toBe('unresolved');
   });
 });
 
@@ -392,10 +400,9 @@ describe('I and J — structural zeros at an anchor', () => {
         ],
       }),
     );
+    // The dormant account is zero at both ends, so it neither blocks the
+    // anchors nor moves the change: −100 is BBVA's alone.
     expect(spans).toHaveLength(1);
-    const dormant = spans[0]?.accounts.find((a) => a.positionId === B);
-    expect(dormant?.openingState).toBe('dormant_zero');
-    expect(dormant?.closingState).toBe('dormant_zero');
     expect(spans[0]?.totals.cashDelta.toString()).toBe('-100');
   });
 
@@ -411,9 +418,12 @@ describe('I and J — structural zeros at an anchor', () => {
         ],
       }),
     );
+    // Closed before the interval began, so it does not participate at all —
+    // and the span existing is what proves it. A participating account closed
+    // by the opening anchor would need `closed_zero` as an opening state, which
+    // no participating account can have, and the candidate would be suppressed.
     expect(spans).toHaveLength(1);
-    // Closed before the interval began, so it does not participate at all.
-    expect(spans[0]?.accounts.map((a) => a.positionId)).toEqual([A]);
+    expect(spans[0]?.totals.cashDelta.toString()).toBe('-100');
   });
 });
 
@@ -431,8 +441,9 @@ describe('K — the first account opens after an empty anchor', () => {
     );
     expect(spans).toHaveLength(1);
     expect(spans[0]?.from).toBe('2026-09-01');
-    expect(spans[0]?.accounts[0]?.openingState).toBe('opened_zero');
-    // 400 arrived and nothing says from where.
+    // 400 arrived and nothing says from where. The figure is also what pins the
+    // opening at zero: reading the account's first balance as its opening would
+    // make the change nothing at all.
     expect(spans[0]?.totals.cashDelta.toString()).toBe('400');
     expect(spans[0]?.trackedTotalSpending.toString()).toBe('-400');
     expect(spans[0]?.status).toBe('unresolved');
@@ -611,7 +622,8 @@ describe('O, P and Q — flows with no account named', () => {
     );
     expect(spans).toHaveLength(1);
     expect(spans[0]?.totals.externalInflows.toString()).toBe('100');
-    expect(spans[0]?.accounts[0]?.closingState).toBe('closed_zero');
+    // It closes inside the interval, so it closes at zero: 0 − 1,000.
+    expect(spans[0]?.totals.cashDelta.toString()).toBe('-1000');
   });
 
   it('P — an account that only ever closes leaves no gap to span', () => {
@@ -810,8 +822,10 @@ describe('Y — a month-relative first_balance inside a span', () => {
       }),
     );
     expect(spans).toHaveLength(1);
-    const opened = spans[0]?.accounts.find((a) => a.positionId === B);
-    expect(opened?.openingState).toBe('opened_zero');
+    // −300 on BBVA and +300 on the account opened in October, which cancel. An
+    // engine that excluded the later account the way a month excludes a
+    // `first_balance` one would report −300 instead.
+    expect(spans[0]?.totals.cashDelta.toString()).toBe('0');
     expect(JSON.stringify(spans[0])).not.toContain('first_balance');
   });
 });
@@ -830,9 +844,7 @@ describe('AA — no averaged or per-month field survives anywhere', () => {
     );
     const keys = Object.keys(spans[0] ?? {}).sort();
     expect(keys).toEqual([
-      'accounts',
       'currency',
-      'explanation',
       'from',
       'months',
       'status',
@@ -840,6 +852,13 @@ describe('AA — no averaged or per-month field survives anywhere', () => {
       'totals',
       'trackedTotalSpending',
       'unclassified',
+    ]);
+    expect(Object.keys(spans[0]?.totals ?? {}).sort()).toEqual([
+      'cashDelta',
+      'externalInflows',
+      'knownTrackedExpenses',
+      'nonExpenseOutflows',
+      'nonIncomeInflows',
     ]);
   });
 });
@@ -999,8 +1018,8 @@ describe('W — the requested window bounds the answer, never the search', () =>
     expect(spans).toHaveLength(1);
     expect(spans[0]?.from).toBe(plainDate('2026-03-01'));
     expect(spans[0]?.to).toBe(plainDate('2026-06-30'));
-    expect(spans[0]?.accounts[0]?.openingState).toBe('opened_zero');
-    expect(spans[0]?.accounts[0]?.opening.toString()).toBe('0');
+    // Opening at zero, which the change is what proves: had the June balance
+    // been read as the opening too, the change would be nothing.
     expect(spans[0]?.totals.cashDelta.toString()).toBe('400');
     expect(spans[0]?.unclassified.toString()).toBe('100');
   });
@@ -1048,6 +1067,76 @@ describe('W — the requested window bounds the answer, never the search', () =>
       const expected = whole.filter((span) => span.to >= plainDate(`${month}-01`));
       expect(JSON.stringify(windowed)).toBe(JSON.stringify(expected));
     }
+  });
+});
+
+describe('X — the leading span of an account with a known opening date', () => {
+  /**
+   * Accepted behaviour, and deliberately not suppressed.
+   *
+   * An account with a recorded opening date did not exist before it, so the
+   * month end before it is a legitimate empty anchor and the stretch from the
+   * account's first day to its first statement reconciles exactly: zero before
+   * existence is structural, not an assumption. This is not the month-relative
+   * `first_balance` case, which is an account that existed at the anchor and
+   * simply was not measured there.
+   *
+   * When nothing recorded explains the growth to that first statement — no
+   * income, no transfer in, no other tracked role — the residual is genuinely
+   * unresolved, and the span says so rather than hiding.
+   */
+  it('reconciles from zero and reports the unexplained growth as unresolved', () => {
+    const spans = findSpans(
+      input({
+        cashAccounts: [
+          withEnds(A, 'BBVA', [['2026-08-31', '1000']], { openedOn: '2026-01-15' }),
+        ],
+      }),
+    );
+
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.from).toBe(plainDate('2026-01-01'));
+    expect(spans[0]?.to).toBe(plainDate('2026-08-31'));
+    expect(spans[0]?.totals.cashDelta.toString()).toBe('1000');
+    expect(spans[0]?.totals.externalInflows.toString()).toBe('0');
+    expect(spans[0]?.trackedTotalSpending.toString()).toBe('-1000');
+    expect(spans[0]?.unclassified.toString()).toBe('-1000');
+    expect(spans[0]?.status).toBe('unresolved');
+  });
+
+  it('resolves once a recorded inflow explains the growth', () => {
+    // The same interval with the money accounted for. Nothing about the leading
+    // span is a penalty for being first; it reconciles like any other.
+    const spans = findSpans(
+      input({
+        cashAccounts: [
+          withEnds(A, 'BBVA', [['2026-08-31', '1000']], { openedOn: '2026-01-15' }),
+        ],
+        income: [
+          income({ receivedOn: plainDate('2026-03-20'), netAmount: new Decimal('1000') }),
+        ],
+      }),
+    );
+
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.totals.externalInflows.toString()).toBe('1000');
+    expect(spans[0]?.trackedTotalSpending.toString()).toBe('0');
+    expect(spans[0]?.unclassified.toString()).toBe('0');
+    expect(spans[0]?.status).toBe('reliable');
+  });
+
+  it('gives no such span to an account whose opening date is unknown', () => {
+    // The contrast that keeps the rule honest, at the same fixture. A null
+    // opening date means the account may always have existed: it owes evidence
+    // at the earlier month ends, leaves them incomplete, and must never be
+    // treated as though it had not existed.
+    const spans = findSpans(
+      input({
+        cashAccounts: [withEnds(A, 'BBVA', [['2026-08-31', '1000']])],
+      }),
+    );
+
+    expect(spans).toEqual([]);
   });
 });
 
@@ -1099,8 +1188,7 @@ describe('determinism', () => {
     expect(forward.map((s) => s.unclassified.toString())).toEqual(
       reversed.map((s) => s.unclassified.toString()),
     );
-    expect(forward[0]?.accounts.map((a) => a.positionId)).toEqual(
-      reversed[0]?.accounts.map((a) => a.positionId),
-    );
+    // Every figure, not just that one.
+    expect(JSON.stringify(forward)).toBe(JSON.stringify(reversed));
   });
 });

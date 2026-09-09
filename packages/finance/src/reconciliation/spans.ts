@@ -48,7 +48,15 @@ import type { BucketTotals, CashAccountInput } from './types';
 /** 8.7: a span is `reliable` or `unresolved`, and nothing else can be one. */
 export type SpanStatus = 'reliable' | 'unresolved';
 
-export interface SpanAccountState {
+/**
+ * One account's endpoints over the interval.
+ *
+ * Internal on purpose. The engine needs exact per-account states to derive
+ * `cashDelta = Σ(closing − opening)`, and nothing else does: 8.7's result is the
+ * bucket's figures, not the graph they were computed from. Exporting this
+ * because a result once carried it would be exporting a type with no consumer.
+ */
+interface SpanAccountState {
   readonly positionId: string;
   readonly name: string;
   /**
@@ -72,14 +80,15 @@ export interface SpanAccountState {
  * residual, no per-month figure, no `unavailable` branch and no `estimated`
  * status. Each of those absences is a rule, not an omission (30.14).
  *
- * It is also smaller than the engine first made it. 8.7 enumerates what a span
- * reports, and `untracked_self` and `third_party` spending are not in that list.
- * They are real figures — a month's bucket states both — but they belong to a
- * month, and beside a span's identity they are a trap: neither is part of
- * `trackedTotalSpending`, so a reader who adds them to it gets a number that
- * means nothing. `accounts` and `explanation` stay because they introduce no
- * quantity of their own: the first is how `totals.cashDelta` was reached, the
- * second is that derivation in words.
+ * It is exactly what 8.7 enumerates, and four fields the engine once added have
+ * been taken back out. `additionalSpending` and `thirdPartyPaid` because
+ * neither is part of the identity, so beside `trackedTotalSpending` they invite
+ * a sum that means nothing. `accounts` and `explanation` because being a useful
+ * intermediate is not a reason to be public: the first is the calculation graph
+ * behind `totals.cashDelta`, the second is English prose about it, and freezing
+ * either into the Phase 3 finance API before a read model asks for it would
+ * commit to a shape no rule requires. Both are still computed — the first is
+ * how `cashDelta` exists at all — they are simply not returned.
  */
 export interface SpanResult {
   readonly currency: CurrencyCode;
@@ -89,7 +98,6 @@ export interface SpanResult {
   readonly to: PlainDate;
   /** The months the interval covers, in order. */
   readonly months: readonly MonthKey[];
-  readonly accounts: readonly SpanAccountState[];
   /**
    * The four role sums plus `cashDelta`, all exact. Unlike a month's totals
    * these are never absent: a `SpanResult` exists only when the complete
@@ -102,11 +110,6 @@ export interface SpanResult {
   readonly trackedTotalSpending: Decimal;
   readonly unclassified: Decimal;
   readonly status: SpanStatus;
-  /**
-   * How the figures above were reached, in words. Carries no quantity the
-   * fields above do not already state.
-   */
-  readonly explanation: readonly string[];
 }
 
 export interface SpanInput {
@@ -411,7 +414,6 @@ function reconcileCandidate(
     from,
     to,
     months,
-    accounts: states,
     totals: { ...sums, cashDelta },
     trackedTotalSpending,
     unclassified,
@@ -419,12 +421,6 @@ function reconcileCandidate(
     // negative zero would be "negative" and a month that reconciles exactly
     // would be called unresolved.
     status: unclassified.lessThan(0) ? 'unresolved' : 'reliable',
-    explanation: [
-      `Combined ${currency} reconciliation ${from} – ${to} (${String(months.length)} months).`,
-      `Cash change = ${cashDelta.toString()} across ${String(states.length)} account(s).`,
-      `Tracked total spending = ${sums.externalInflows.toString()} in + ${sums.nonIncomeInflows.toString()} moved in − ${sums.nonExpenseOutflows.toString()} moved out − ${cashDelta.toString()} change = ${trackedTotalSpending.toString()}.`,
-      `Unclassified = ${trackedTotalSpending.toString()} − ${sums.knownTrackedExpenses.toString()} known = ${unclassified.toString()}.`,
-    ],
   };
 }
 
