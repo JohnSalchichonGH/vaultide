@@ -386,9 +386,24 @@ export type ReportingSavingsRateDto =
   | { readonly kind: 'ratio'; readonly value: string }
   | { readonly kind: 'unavailable'; readonly reason: string; readonly detail?: string };
 
-/** The fifteen figures 12.5 states, in the reporting currency. */
-export interface ReportingCashFlowFiguresDto {
+/**
+ * The two figures that need no tracked interval (7.4, 30.15 item 3).
+ *
+ * `untracked_self` and `third_party` carry no cash role, so neither was ever
+ * scoped and neither is summed over a reconciled interval. They are their own
+ * type because they are exactly what survives when there is no interval at all,
+ * and because a reader can then reach them without asking whether one exists.
+ */
+export interface SourceOnlyReportingFiguresDto {
   readonly reportingCurrency: string;
+  /** `untracked_self` over the interval the figures beside it used. */
+  readonly additionalSpending: ReportingAmountDto;
+  /** `third_party` over the same interval. In no total at all. */
+  readonly thirdPartyPaid: ReportingAmountDto;
+}
+
+/** The fifteen figures 12.5 states, in the reporting currency. */
+export interface ReportingCashFlowFiguresDto extends SourceOnlyReportingFiguresDto {
   readonly externalIncome: ReportingAmountDto;
   readonly knownConsumption: ReportingAmountDto;
   readonly propertyOperatingCosts: ReportingAmountDto;
@@ -398,8 +413,6 @@ export interface ReportingCashFlowFiguresDto {
   readonly unclassified: ReportingAmountDto;
   readonly consumption: ReportingAmountDto;
   readonly trackedTotalSpending: ReportingAmountDto;
-  readonly additionalSpending: ReportingAmountDto;
-  readonly thirdPartyPaid: ReportingAmountDto;
   readonly trackedSavingsFromIncome: ReportingAmountDto;
   readonly personalSavings: ReportingAmountDto;
   readonly totalSpending: ReportingAmountDto;
@@ -416,20 +429,52 @@ export interface MonthReportingCashFlowDto extends ReportingCashFlowFiguresDto {
   readonly monthStatus: ReconciliationStatusDto;
 }
 
-/**
- * The current month, reported through `D`.
- *
- * `asOf` is `null` exactly when no common date exists, and then there is no
- * tracked interval at all — `hasTrackedInterval` says so, every tracked figure
- * is unavailable, and only the two untracked settlements are reported, over
- * `[start(M), today]`. `sourceOnlyThrough` names whichever cut-off those two
- * actually used (30.16 items 3 and 6).
- */
-export interface MonthToDateReportingCashFlowDto extends ReportingCashFlowFiguresDto {
+/** The current month with a `D`, so every figure 12.5 states exists. */
+export interface MonthToDateTrackedReportingDto extends ReportingCashFlowFiguresDto {
+  readonly kind: 'tracked_interval';
   /** `YYYY-MM`. */
   readonly month: string;
-  readonly asOf: string | null;
+  /** `D`, the common date the tracked figures are stated through (8.6). */
+  readonly asOf: string;
   readonly monthStatus: ReconciliationStatusDto;
+  /** `D` as well: the two settlements used the same cut-off their neighbours did. */
   readonly sourceOnlyThrough: string;
-  readonly hasTrackedInterval: boolean;
 }
+
+/**
+ * The current month with **no** `D`, and therefore no tracked interval (8.6).
+ *
+ * There is no cash-flow object here at all. Not one whose fields are
+ * unavailable, and certainly not one whose fields are zero: a zero is an answer,
+ * and a month with no interval has answered nothing about income, consumption,
+ * spending or savings. `TotalSpending` is not `AdditionalSpending`, because the
+ * formula that says so needs the interval that does not exist.
+ *
+ * The two settlements are still real — they were never scoped and never needed
+ * one — so they are reported over `[start(M), today]`, which is what
+ * `sourceOnlyThrough` names (30.15 item 3, 30.16 item 6).
+ */
+export interface MonthToDateSourceOnlyReportingDto extends SourceOnlyReportingFiguresDto {
+  readonly kind: 'no_tracked_interval';
+  /** `YYYY-MM`. */
+  readonly month: string;
+  readonly asOf: null;
+  /** 8.6's own reason, carried from the reconciliation engine unchanged. */
+  readonly reason: 'mtd_no_common_date';
+  readonly monthStatus: 'unavailable';
+  /** `today`: the two settlements run to the end of the month so far. */
+  readonly sourceOnlyThrough: string;
+}
+
+/**
+ * The current month, reported through `D` when there is one.
+ *
+ * A discriminated union and not a flag beside a full result, for the same reason
+ * `SavingsDerivedDto` is one: there must be no shape in which a tracked figure
+ * can be read without first establishing that a tracked interval exists. The two
+ * source-only figures sit in both variants at the same path, because those are
+ * the two that never depended on it.
+ */
+export type MonthToDateReportingCashFlowDto =
+  | MonthToDateTrackedReportingDto
+  | MonthToDateSourceOnlyReportingDto;

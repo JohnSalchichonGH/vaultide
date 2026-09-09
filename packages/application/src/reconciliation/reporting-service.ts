@@ -8,6 +8,7 @@ import {
   reconcileCompletedMonth,
   reconcileMonthToDate,
   reportCashFlow,
+  reportSourceOnly,
   startOfMonthKey,
   untrackedContributions,
   type CurrencyCode,
@@ -19,6 +20,7 @@ import {
   type ReportingAmount,
   type ReportingCashFlow,
   type ReportingContribution,
+  type SourceOnlyReportingFigures,
   type UnavailableReason,
 } from '@vaultide/finance';
 import type { FxService } from '../fx/service';
@@ -38,6 +40,8 @@ import type {
   MonthReportingCashFlowDto,
   MonthToDateReportingCashFlowDto,
   ReportingAmountDto,
+  ReportingCashFlowFiguresDto,
+  SourceOnlyReportingFiguresDto,
 } from './types';
 
 /**
@@ -78,7 +82,16 @@ const amountDto = (
   provenance: { ...amount.provenance },
 });
 
-function cashFlowDto(flow: ReportingCashFlow): Omit<MonthReportingCashFlowDto, 'month' | 'monthStatus'> {
+/** The two figures that needed no interval, whether or not there was one. */
+function sourceOnlyDto(figures: SourceOnlyReportingFigures): SourceOnlyReportingFiguresDto {
+  return {
+    reportingCurrency: figures.reportingCurrency,
+    additionalSpending: amountDto(figures.additionalSpending),
+    thirdPartyPaid: amountDto(figures.thirdPartyPaid),
+  };
+}
+
+function cashFlowDto(flow: ReportingCashFlow): ReportingCashFlowFiguresDto {
   const rate = flow.savingsRate;
   return {
     reportingCurrency: flow.reportingCurrency,
@@ -272,10 +285,17 @@ export async function getMonthReportingCashFlow(
 /**
  * The current month's cash flow, through `D`.
  *
- * With no `D` there is no month-to-date interval (8.6), so there are no tracked
- * figures at all — and the two untracked settlements, which never needed the
- * interval, are reported through today instead with `sourceOnlyThrough` saying
- * which cut-off was used (30.15 item 3, 30.16 item 6).
+ * With no `D` there is no month-to-date interval (8.6), and therefore no tracked
+ * arithmetic to do: the result is the other variant of the union, carrying the
+ * engine's own reason and the two untracked settlements only. Those two never
+ * needed the interval — they carry no cash role and were never scoped — so they
+ * run through today, and `sourceOnlyThrough` says so (30.15 item 3, 30.16 item
+ * 6).
+ *
+ * Nothing tracked is built in that case, not even a zero. Feeding an empty
+ * contribution list to `reportCashFlow` would produce fifteen exact zeroes,
+ * `TotalSpending` equal to `AdditionalSpending` and a negative `PersonalSavings`
+ * — every one of them an assertion the month is in no position to make.
  */
 export async function getMonthToDateReportingCashFlow(
   deps: ReportingDependencies,
@@ -289,32 +309,42 @@ export async function getMonthToDateReportingCashFlow(
   const today = plainDate(ctx.today);
   const month = monthKey(today);
   const from = startOfMonthKey(month);
+  const key = (month as string).slice(0, 7);
   const result = reconcileMonthToDate(data.input);
-  const asOf = result.asOf;
-  const through = asOf ?? today;
   const reporting = settings.reportingCurrency as CurrencyCode;
 
-  const built =
-    asOf === null
-      ? {
-          // No interval, so no bucket and no tracked contribution: only the two
-          // settlements, over the month so far.
-          contributions: [...currenciesOf(data.input)].flatMap((currency) =>
+  if (result.asOf === null) {
+    const currencies = currenciesOf(data.input);
+    const fx = await loadRates(deps, currencies, reporting, from, today, today);
+    return {
+      kind: 'no_tracked_interval',
+      month: key,
+      asOf: null,
+      reason: result.reason,
+      monthStatus: result.status,
+      sourceOnlyThrough: today,
+      ...sourceOnlyDto(
+        reportSourceOnly({
+          reportingCurrency: reporting,
+          fx,
+          contributions: [...currencies].flatMap((currency) =>
             untrackedContributions(data.input.expenses, currency as CurrencyCode, from, today),
           ),
-          missing: [] as MissingContributionInput[],
-          currencies: currenciesOf(data.input),
-        }
-      : buildMonth(data.input, result.buckets, month, from, asOf);
+        }),
+      ),
+    };
+  }
 
-  const fx = await loadRates(deps, built.currencies, reporting, from, through, today);
+  const asOf = result.asOf;
+  const built = buildMonth(data.input, result.buckets, month, from, asOf);
+  const fx = await loadRates(deps, built.currencies, reporting, from, asOf, today);
 
   return {
-    month: (month as string).slice(0, 7),
+    kind: 'tracked_interval',
+    month: key,
     asOf,
     monthStatus: result.status,
-    sourceOnlyThrough: through,
-    hasTrackedInterval: asOf !== null,
+    sourceOnlyThrough: asOf,
     ...cashFlowDto(
       reportCashFlow({
         reportingCurrency: reporting,

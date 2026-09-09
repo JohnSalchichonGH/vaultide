@@ -16,6 +16,10 @@ import {
   getMonthReportingCashFlow,
   getMonthToDateReportingCashFlow,
 } from '../../src/reconciliation/reporting-service';
+import type {
+  MonthToDateReportingCashFlowDto,
+  MonthToDateTrackedReportingDto,
+} from '../../src/reconciliation/types';
 
 /**
  * Reporting-currency cash flow against a real database (21.3, 12.5, 8.11,
@@ -41,6 +45,20 @@ const SEPTEMBER = parseMonth('2026-09');
 const deps = () => harness.services.flows;
 const readDeps = () => ({ db: harness.db, fx: harness.services.fx });
 type ReadDeps = ReturnType<typeof readDeps>;
+
+/**
+ * Narrow to the variant that has 12.5's figures in it.
+ *
+ * Every tracked assertion below goes through this, which is the point: the
+ * compiler will not let a test read `totalSpending` off a month that has no
+ * interval to have spent anything in.
+ */
+function trackedMtd(result: MonthToDateReportingCashFlowDto): MonthToDateTrackedReportingDto {
+  if (result.kind !== 'tracked_interval') {
+    throw new Error(`expected a tracked interval, got ${result.kind}`);
+  }
+  return result;
+}
 
 const categoryOf = (kind: string): string => {
   const found = categories.find((category) => category.kind === kind);
@@ -396,10 +414,10 @@ describe('the current month reports through D', () => {
     await seedThroughD();
     await seedRates('100.0');
 
-    const result = await getMonthToDateReportingCashFlow(readDeps(), SEPT_10);
+    const result = trackedMtd(await getMonthToDateReportingCashFlow(readDeps(), SEPT_10));
 
     expect(result.asOf).toBe('2026-09-06');
-    expect(result.hasTrackedInterval).toBe(true);
+    expect(result.sourceOnlyThrough).toBe('2026-09-06');
     // ΣI 100, ΣK 50, Δ 30 → tracked 70, unclassified 20, all at 2.0.
     expect(result.externalIncome.value.amount).toBe('50');
     expect(result.knownConsumption.value.amount).toBe('25');
@@ -413,12 +431,12 @@ describe('the current month reports through D', () => {
   it('is unchanged when only the rates after D change', async () => {
     await seedThroughD();
     await seedRates('100.0');
-    const before = await getMonthToDateReportingCashFlow(readDeps(), SEPT_10);
+    const before = trackedMtd(await getMonthToDateReportingCashFlow(readDeps(), SEPT_10));
 
     await harness.asOwner("DELETE FROM fx_rates WHERE rate_date > '2026-09-06'");
     await rate('USD', '2026-09-08', '0.001');
     await rate('USD', '2026-09-09', '0.002');
-    const after = await getMonthToDateReportingCashFlow(readDeps(), SEPT_10);
+    const after = trackedMtd(await getMonthToDateReportingCashFlow(readDeps(), SEPT_10));
 
     // The proof that the deployed `today` behaviour is gone from this path.
     expect(after.unclassified.value.amount).toBe(before.unclassified.value.amount);
@@ -426,7 +444,45 @@ describe('the current month reports through D', () => {
     expect(after.asOf).toBe('2026-09-06');
   });
 
-  it('keeps the two settlements through today when there is no common date', async () => {
+  it('states exact zeros for an interval in which nothing happened', async () => {
+    // A valid `D` with no flows at all. Every 12.5 formula genuinely evaluates
+    // to zero here, and each figure says so — which is what the no-`D` case
+    // below must not be mistaken for.
+    const a = await makeAccount('BBVA');
+    await statement(a, '2026-08-31', '1000.00');
+    await snapshot(a, '2026-09-06', '1000.00');
+
+    const result = trackedMtd(await getMonthToDateReportingCashFlow(readDeps(), SEPT_10));
+
+    expect(result.asOf).toBe('2026-09-06');
+    for (const figure of [
+      result.externalIncome,
+      result.knownConsumption,
+      result.propertyOperatingCosts,
+      result.interestAndFees,
+      result.transactionCosts,
+      result.externalOutflows,
+      result.unclassified,
+      result.consumption,
+      result.trackedTotalSpending,
+      result.trackedSavingsFromIncome,
+      result.personalSavings,
+      result.totalSpending,
+    ]) {
+      expect(figure.availability).toBe('available');
+      expect(figure.value.amount).toBe('0');
+      expect(figure.missing).toEqual([]);
+    }
+    // Zero income is a measured zero, so the rate has a denominator and it is
+    // zero — a different thing from having no denominator at all.
+    expect(result.savingsRate).toEqual({
+      kind: 'unavailable',
+      reason: 'divide_by_zero',
+      detail: 'External income is zero.',
+    });
+  });
+
+  it('keeps the two settlements and states no tracked figure when there is no common date', async () => {
     const a = await makeAccount('BBVA');
     const b = await makeAccount('Savings');
     await statement(a, '2026-08-31', '1000.00');
@@ -439,20 +495,98 @@ describe('the current month reports through D', () => {
 
     const result = await getMonthToDateReportingCashFlow(readDeps(), SEPT_10);
 
+    expect(result.kind).toBe('no_tracked_interval');
     expect(result.asOf).toBeNull();
-    expect(result.hasTrackedInterval).toBe(false);
+    expect(result.monthStatus).toBe('unavailable');
     expect(result.sourceOnlyThrough).toBe('2026-09-10');
-    // The two settlements survive, through today.
+    // The two settlements survive, through today. They never needed an interval.
     expect(result.additionalSpending.value.amount).toBe('50');
+    expect(result.additionalSpending.availability).toBe('available');
     expect(result.thirdPartyPaid.value.amount).toBe('80');
-    // And nothing tracked was invented from them.
-    // Nothing tracked was invented from records with no interval to sit in:
-    // the residual is absent, so the spending figures are zero-with-nothing-in
-    // them rather than a total built out of the untracked rows.
-    expect(result.trackedTotalSpending.value.amount).toBe('0');
-    expect(result.consumption.value.amount).toBe('0');
-    expect(result.totalSpending.value.amount).toBe('50');
-    expect(result.savingsRate.kind).toBe('unavailable');
+    expect(result.thirdPartyPaid.availability).toBe('available');
+
+    if (result.kind !== 'no_tracked_interval') throw new Error('expected no interval');
+    expect(result.reason).toBe('mtd_no_common_date');
+
+    // There is no tracked cash flow to read, at zero or at anything else. Not
+    // `TotalSpending = AdditionalSpending`, not a negative `PersonalSavings`,
+    // and not a rate that divides by an income nobody measured.
+    const serialized = JSON.stringify(result);
+    for (const absent of [
+      'externalIncome',
+      'knownConsumption',
+      'propertyOperatingCosts',
+      'interestAndFees',
+      'transactionCosts',
+      'externalOutflows',
+      'unclassified',
+      'consumption',
+      'trackedTotalSpending',
+      'trackedSavingsFromIncome',
+      'personalSavings',
+      'totalSpending',
+      'savingsRate',
+      'countsAdditionalSpending',
+    ]) {
+      expect(serialized).not.toContain(absent);
+    }
+    expect(Object.keys(result).sort()).toEqual([
+      'additionalSpending',
+      'asOf',
+      'kind',
+      'month',
+      'monthStatus',
+      'reason',
+      'reportingCurrency',
+      'sourceOnlyThrough',
+      'thirdPartyPaid',
+    ]);
+
+    // A tracked figure is not merely absent at runtime: it does not typecheck.
+    // If the union ever collapses back into one shape, `tsc` fails here on an
+    // unused directive rather than in production.
+    // @ts-expect-error -- no tracked figure exists without a tracked interval
+    expect(result.totalSpending).toBeUndefined();
+  });
+
+  it('converts those settlements at their own dates, never at a month average', async () => {
+    const a = await makeAccount('BBVA');
+    const b = await makeAccount('Savings');
+    await statement(a, '2026-08-31', '1000.00');
+    await statement(b, '2026-08-31', '500.00');
+    await snapshot(a, '2026-09-06', '900.00');
+    await snapshot(b, '2026-09-03', '480.00');
+    await expense(SEPT_10, {
+      kind: 'food', incurredOn: '2026-09-08', amount: '100.00',
+      settlement: 'untracked_self', currency: 'USD',
+    });
+    await expense(SEPT_10, {
+      kind: 'food', incurredOn: '2026-09-09', amount: '40.00',
+      settlement: 'third_party', currency: 'USD',
+    });
+
+    // Early rates far from the two the rows actually sit on: a month average
+    // would be (10+10+10+10+10+2+4)/7 = 8, so 100 USD would come out at 12.5
+    // instead of 50. Nothing here may take an average — there is no interval to
+    // average over, and the residual that needs one was never built.
+    await forgetRates();
+    for (const day of ['2026-09-01', '2026-09-02', '2026-09-03', '2026-09-04', '2026-09-05']) {
+      await rate('USD', day, '10.0');
+    }
+    await rate('USD', '2026-09-08', '2.0');
+    await rate('USD', '2026-09-09', '4.0');
+    const providerCalls = harness.fxProvider.calls.length;
+
+    const result = await getMonthToDateReportingCashFlow(readDeps(), SEPT_10);
+
+    expect(result.kind).toBe('no_tracked_interval');
+    expect(result.additionalSpending.value.amount).toBe('50');
+    expect(result.additionalSpending.provenance.estimatedConversion).toBe(false);
+    expect(result.additionalSpending.provenance.exact).toBe(true);
+    expect(result.thirdPartyPaid.value.amount).toBe('10');
+    expect(result.thirdPartyPaid.provenance.estimatedConversion).toBe(false);
+    // Stored rows only: no provider was asked to fill a gap.
+    expect(harness.fxProvider.calls.length).toBe(providerCalls);
   });
 });
 
@@ -490,6 +624,75 @@ describe('the completed series', () => {
         to: parseMonth('2026-09'),
       }),
     ).rejects.toThrow();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Working precision                                                          */
+/* -------------------------------------------------------------------------- */
+
+describe('a conversion that does not terminate', () => {
+  it('serializes the whole decimal, rounded nowhere', async () => {
+    // 100, 50 and a residual of 20, all USD, all at a rate of exactly 3. Every
+    // figure below is a third of something and none of them terminates.
+    const usd = await makeAccount('Dollars', 'USD');
+    await statement(usd, '2026-08-31', '0.00');
+    await statement(usd, '2026-09-30', '30.00');
+    await income(OCT_1, {
+      receivedOn: '2026-09-02', netAmount: '100.00', cashPositionId: usd, currency: 'USD',
+    });
+    await expense(OCT_1, {
+      kind: 'food', incurredOn: '2026-09-03', amount: '50.00',
+      cashPositionId: usd, currency: 'USD',
+    });
+    await forgetRates();
+    for (const day of ['2026-09-01', '2026-09-10', '2026-09-15', '2026-09-20', '2026-09-30']) {
+      await rate('USD', day, '3.0');
+    }
+
+    const result = await getMonthReportingCashFlow(readDeps(), OCT_1, SEPTEMBER);
+
+    // Forty significant digits, serialized whole. Not 6.66666667, and not 6.67:
+    // `NUMERIC(24,8)` is the scale these figures would be *stored* at, and 5.3
+    // stores none of them. Rounding belongs at the display boundary (7.3), which
+    // is somewhere else entirely.
+    expect(result.externalIncome.value.amount).toBe(
+      '33.33333333333333333333333333333333333333',
+    );
+    expect(result.knownConsumption.value.amount).toBe(
+      '16.66666666666666666666666666666666666667',
+    );
+    expect(result.unclassified.value.amount).toBe(
+      '6.666666666666666666666666666666666666666',
+    );
+    expect(result.trackedTotalSpending.value.amount).toBe(
+      '23.33333333333333333333333333333333333334',
+    );
+    // And the working precision is visible where it should be: income minus
+    // consumption is 10 in exact arithmetic, and 9.99…9 at forty significant
+    // digits, because the subtraction changes the magnitude. That is arithmetic
+    // at finite precision, not a rounding rule — a rounding rule would have
+    // produced 10.00000000 and hidden the difference.
+    expect(result.trackedSavingsFromIncome.value.amount).toBe(
+      '9.99999999999999999999999999999999999999',
+    );
+  });
+
+  it('is deterministic: the same rows give the same digits every time', async () => {
+    const usd = await makeAccount('Dollars', 'USD');
+    await statement(usd, '2026-08-31', '0.00');
+    await statement(usd, '2026-09-30', '30.00');
+    await income(OCT_1, {
+      receivedOn: '2026-09-02', netAmount: '100.00', cashPositionId: usd, currency: 'USD',
+    });
+    await forgetRates();
+    for (const day of ['2026-09-01', '2026-09-10', '2026-09-15', '2026-09-20', '2026-09-30']) {
+      await rate('USD', day, '3.0');
+    }
+
+    const first = await getMonthReportingCashFlow(readDeps(), OCT_1, SEPTEMBER);
+    const second = await getMonthReportingCashFlow(readDeps(), OCT_1, SEPTEMBER);
+    expect(second).toEqual(first);
   });
 });
 
