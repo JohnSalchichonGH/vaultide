@@ -62,7 +62,11 @@ function issueDto(
   issue: Issue,
   data: CompletedMonthData,
   names: ReadonlyMap<string, string>,
+  bucketCurrency: string,
 ): ReconciliationIssueDto {
+  // Only the two `mtd_*` keys omit a currency, and the completed engine raises
+  // neither; the bucket's own currency is the right fallback either way.
+  const currency = issue.currency ?? bucketCurrency;
   // 30.9 item 4: the term of an occurrence is the greatest `effective_from ≤
   // occurrence_date`, and `loadTermsForRange` carries the latest term from
   // before the window for exactly this — a salary set two years ago is still
@@ -75,15 +79,15 @@ function issueDto(
   return {
     key: issue.key,
     class: issue.class,
-    currency: issue.currency,
+    currency,
     positionId: issue.positionId ?? null,
     positionName: issue.positionId === undefined ? null : (names.get(issue.positionId) ?? null),
-    amount: issue.amount === undefined ? null : moneyDto(issue.amount.toString(), issue.currency),
+    amount: issue.amount === undefined ? null : moneyDto(issue.amount.toString(), currency),
     variant: issue.variant ?? null,
     templateId: issue.templateId ?? null,
     templateName: issue.templateName ?? null,
     occurrenceDate: issue.occurrenceDate ?? null,
-    expectedAmount: term === undefined ? null : moneyDto(term.amount.toString(), issue.currency),
+    expectedAmount: term === undefined ? null : moneyDto(term.amount.toString(), currency),
   };
 }
 
@@ -127,7 +131,7 @@ function bucketDto(
     },
     additionalSpending: amount(bucket.additionalSpending),
     thirdPartyPaid: amount(bucket.thirdPartyPaid),
-    issues: bucket.issues.map((issue) => issueDto(issue, data, names)),
+    issues: bucket.issues.map((issue) => issueDto(issue, data, names, bucket.currency)),
     explanation: bucket.explanation,
   };
 }

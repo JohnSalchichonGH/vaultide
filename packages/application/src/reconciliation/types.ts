@@ -24,7 +24,8 @@ export type IssueClassDto = 'blocking' | 'advisory' | 'info';
 export interface ReconciliationIssueDto {
   readonly key: string;
   readonly class: IssueClassDto;
-  readonly currency: string;
+  /** `null` only for the two `mtd_*` keys, which are about the month's evidence date. */
+  readonly currency: string | null;
   readonly positionId: string | null;
   readonly positionName: string | null;
   readonly amount: MoneyDto | null;
@@ -39,6 +40,8 @@ export interface ReconciliationIssueDto {
    * template had no term in force on that date; unknown, not zero.
    */
   readonly expectedAmount: MoneyDto | null;
+  /** `mtd_newer_balances`: the accounts whose newer evidence could not move `D`. */
+  readonly positionIds?: readonly string[] | null;
 }
 
 export interface ReconciliationAccountDto {
@@ -107,4 +110,60 @@ export interface MonthReconciliationDto {
   readonly month: string;
   readonly status: ReconciliationStatusDto;
   readonly buckets: readonly ReconciliationBucketDto[];
+}
+
+/* -------------------------------------------------------------------------- */
+/* Month to date (8.6, 8.9, v2.1.10 30.13)                                    */
+/* -------------------------------------------------------------------------- */
+
+/** How an account's value at the as-of date is known. */
+export type MtdValueStateDto = 'snapshot' | 'closed_zero' | 'dormant_zero' | 'absent';
+
+export interface MtdAccountDto {
+  readonly positionId: string;
+  readonly name: string;
+  readonly openState: string;
+  readonly opening: MoneyDto | null;
+  readonly asOfState: MtdValueStateDto;
+  readonly asOfAmount: MoneyDto | null;
+  readonly included: boolean;
+  readonly excludedFirstBalance: boolean;
+  readonly dormant: boolean;
+  /** It owed an exact snapshot at the as-of date for the month to reach it. */
+  readonly snapshotRequired: boolean;
+  /** Exact evidence after the as-of date that could not move it (30.13 item 11). */
+  readonly newerBalanceOn: string | null;
+}
+
+export interface MtdBucketDto {
+  readonly currency: string;
+  /** 8.6: only `provisional`, `unresolved` or `unavailable`. */
+  readonly status: ReconciliationStatusDto;
+  /** Why this one bucket could not be reconciled through the shared date. */
+  readonly reason: 'missing_opening' | null;
+  readonly accounts: readonly MtdAccountDto[];
+  readonly totals: ReconciliationTotalsDto;
+  readonly additionalSpending: MoneyDto;
+  readonly thirdPartyPaid: MoneyDto;
+  readonly issues: readonly ReconciliationIssueDto[];
+  readonly explanation: readonly string[];
+}
+
+/**
+ * The current month's month-to-date result.
+ *
+ * `asOf` is `null` exactly when no common evidence date exists, and then
+ * `buckets` is `null` too — there is no interval, so there is no total of any
+ * kind to report, and 30.13 item 5 forbids inventing one over some other
+ * cut-off. The interface shows the reason instead.
+ */
+export interface MonthToDateDto {
+  /** `YYYY-MM`. */
+  readonly month: string;
+  readonly asOf: string | null;
+  readonly status: ReconciliationStatusDto;
+  readonly reason: 'mtd_no_common_date' | null;
+  readonly buckets: readonly MtdBucketDto[] | null;
+  readonly accountsWithNewerBalances: readonly string[];
+  readonly issues: readonly ReconciliationIssueDto[];
 }

@@ -14,7 +14,15 @@ import {
   participatesIn,
 } from '../positions/cash-state';
 import { latestOnOrBefore } from '../positions/valuation';
-import { expenseLeg, incomeLeg, transferLegs, type RoleLeg } from '../flows/roles';
+import type { RoleLeg } from '../flows/roles';
+import {
+  legsInRange,
+  legsInScope,
+  roleSums,
+  scopeAccountIds,
+  signedEffect,
+  sumAmounts as sum,
+} from './scope';
 import { missingIncomeOccurrences } from './completeness';
 import { detectIssues } from './issues';
 import {
@@ -60,11 +68,6 @@ import {
  * cross-currency transfer hits two buckets that each reconcile on their own.
  * Nothing here is stored (5.3).
  */
-
-/** Money sums accumulate in a fixed order so the same inputs give the same string (ADR 0004 §1). */
-function sum(values: readonly Decimal[]): Decimal {
-  return values.reduce((total, value) => total.plus(value), new Decimal(0));
-}
 
 const SETTLED_STATES: readonly string[] = ['month_end', 'opened_zero', 'closed_zero', 'dormant_zero'];
 
@@ -140,38 +143,6 @@ function accountMonthOf(account: CashAccountInput, month: MonthKey): AccountMont
     openingAmount: opening.amount,
     closingAmount: closing.amount,
   };
-}
-
-/** Every leg of every flow dated in M, whatever its currency or attribution. */
-function legsInMonth(input: CompletedMonthInput): RoleLeg[] {
-  const from = startOfMonthKey(input.month);
-  const to = endOfMonthKey(input.month);
-  const within = (on: string): boolean => on >= from && on <= to;
-
-  const legs: RoleLeg[] = [];
-  for (const income of input.income) {
-    if (!within(income.receivedOn)) continue;
-    const leg = incomeLeg(income);
-    if (leg !== undefined) legs.push(leg);
-  }
-  for (const expense of input.expenses) {
-    if (!within(expense.incurredOn)) continue;
-    const leg = expenseLeg(expense);
-    if (leg !== undefined) legs.push(leg);
-  }
-  for (const transfer of input.transfers) {
-    if (!within(transfer.occurredOn)) continue;
-    legs.push(...transferLegs(transfer));
-  }
-  for (const leg of input.preClassifiedLegs ?? []) {
-    if (within(leg.on)) legs.push(leg);
-  }
-  return legs;
-}
-
-/** The signed effect of a leg on the cash it touches: inflows add, outflows take away. */
-function signedEffect(leg: RoleLeg): Decimal {
-  return leg.role === 'I' || leg.role === 'Nin' ? leg.amount : leg.amount.negated();
 }
 
 function reconcileBucket(
@@ -255,17 +226,7 @@ function reconcileBucket(
    * `flows ← ... attributed to included accounts, plus null-leg flows` read
    * literally rather than a rule invented here.
    */
-  const scopeIds = new Set(
-    states.filter((state) => !state.excludedFirstBalance).map((state) => state.positionId),
-  );
-  const scopeLegs = legs.filter(
-    (leg) =>
-      leg.currency === currency &&
-      (leg.cashPositionId === null || scopeIds.has(leg.cashPositionId)),
-  );
-
-  const totalOf = (role: RoleLeg['role']): Decimal =>
-    sum(scopeLegs.filter((leg) => leg.role === role).map((leg) => leg.amount));
+  const scopeLegs = legsInScope(legs, currency, scopeAccountIds(states));
 
   /**
    * The four role sums over that scope, and nothing else.
@@ -280,12 +241,7 @@ function reconcileBucket(
    * the change over the **complete** included set or nothing at all (30.12),
    * and `trackedTotalSpending` and `unclassified` follow from it.
    */
-  const roleSums = (): BucketTotals => ({
-    externalInflows: totalOf('I'),
-    nonIncomeInflows: totalOf('Nin'),
-    nonExpenseOutflows: totalOf('Nout'),
-    knownTrackedExpenses: totalOf('K'),
-  });
+  const sumsOfRoles = (): BucketTotals => roleSums(scopeLegs);
 
   // 8.3: a currency whose only presence is a null-leg flow has nothing to
   // reconcile against. There is no included set, so there is no cash change —
@@ -296,7 +252,7 @@ function reconcileBucket(
       currency,
       status: 'unavailable',
       accounts: [],
-      totals: roleSums(),
+      totals: sumsOfRoles(),
       additionalSpending,
       thirdPartyPaid,
       issues: detectIssues({
@@ -326,7 +282,7 @@ function reconcileBucket(
       // computed, and the change over the accounts that happen to have
       // endpoints is a different quantity — one that would be indistinguishable
       // in the result from the Δ of the identity. The role sums stay exact.
-      totals: roleSums(),
+      totals: sumsOfRoles(),
       additionalSpending,
       thirdPartyPaid,
       issues: detectIssues({
@@ -360,7 +316,7 @@ function reconcileBucket(
     included.map((entry) => entry.closingAmount.minus(entry.openingAmount)),
   );
 
-  const sums = roleSums();
+  const sums = sumsOfRoles();
   const { externalInflows, nonIncomeInflows, nonExpenseOutflows, knownTrackedExpenses } = sums;
 
   const trackedTotalSpending = externalInflows
@@ -432,7 +388,7 @@ export function reconcileCompletedMonth(input: CompletedMonthInput): MonthReconc
     throw new MonthNotCompletedError(input.month);
   }
 
-  const legs = legsInMonth(input);
+  const legs = legsInRange(input, startOfMonthKey(input.month), endOfMonthKey(input.month));
 
   // 8.3: the currencies to reconcile are those with a participating cash
   // position, plus those a null-leg flow names — the second is how a flow with

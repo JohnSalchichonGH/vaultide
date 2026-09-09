@@ -72,7 +72,7 @@ export interface CompletedMonthData {
   readonly terms: readonly RecurringTemplateTermRow[];
 }
 
-function toIncomeFlow(row: IncomeEntryRow): IncomeFlow {
+export function toIncomeFlow(row: IncomeEntryRow): IncomeFlow {
   return {
     id: row.id,
     kind: row.kind,
@@ -86,7 +86,7 @@ function toIncomeFlow(row: IncomeEntryRow): IncomeFlow {
   };
 }
 
-function toExpenseFlow(row: ExpenseEntryRow, kindOf: ReadonlyMap<string, string>): ExpenseFlow {
+export function toExpenseFlow(row: ExpenseEntryRow, kindOf: ReadonlyMap<string, string>): ExpenseFlow {
   const kind = kindOf.get(row.categoryId);
   /* v8 ignore next 2 -- `category_id` is NOT NULL with a composite FK to the
      user's own categories, so a row without one cannot exist. */
@@ -106,7 +106,7 @@ function toExpenseFlow(row: ExpenseEntryRow, kindOf: ReadonlyMap<string, string>
   };
 }
 
-function toTransferFlow(row: TransferRow): TransferFlow {
+export function toTransferFlow(row: TransferRow): TransferFlow {
   return {
     id: row.id,
     kind: row.kind,

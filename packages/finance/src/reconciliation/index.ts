@@ -7,3 +7,5 @@ export * from './types';
 export * from './completeness';
 export * from './issues';
 export * from './month';
+export * from './mtd';
+export * from './scope';

@@ -4,5 +4,7 @@
  * never stored (5.3).
  */
 export * from './loader';
+export * from './mtd-loader';
+export * from './mtd-service';
 export * from './service';
 export * from './types';

@@ -52,14 +52,21 @@ export function worstStatus(
 }
 
 /**
- * The 8.5 issue keys this engine can raise.
+ * The 8.5 issue keys the Phase 3 reconciliation engines can raise.
  *
- * Deliberately only the completed-month Phase 3 ones. The `mtd_*` keys belong
- * to 8.6, `suggested_payment_missing` and `stale_*` to later phases, and
- * `possible_missing_conversion` and `large_unclassified` need machinery this
- * slice does not have (a monthly average rate and a trailing median of reliable
- * months). A key is never invented or renamed: the catalogue is the contract
- * the interface and the dismissal state in `month_reviews` are written against.
+ * One catalogue for both months, because `month_reviews.dismissed_issues`
+ * stores keys and a key means one thing wherever it is raised. Which of them a
+ * given engine may raise is a separate question that 8.5 and 8.6 answer:
+ * `missing_month_end` is completed-month only, the two `mtd_*` keys are
+ * current-month only, and `possible_missing_interest` and
+ * `suggested_income_missing` are completed-month only under v2.1.10 30.13
+ * item 10.
+ *
+ * Still absent, and deliberately: `suggested_payment_missing` and `stale_*`
+ * belong to later phases, and `possible_missing_conversion` and
+ * `large_unclassified` need machinery no slice has yet (a monthly average rate
+ * and a trailing median of reliable months). A key is never invented or
+ * renamed.
  */
 export type IssueKey =
   | 'missing_month_end'
@@ -67,7 +74,9 @@ export type IssueKey =
   | 'flow_without_cash_account'
   | 'unexplained_inflow'
   | 'possible_missing_interest'
-  | 'suggested_income_missing';
+  | 'suggested_income_missing'
+  | 'mtd_no_common_date'
+  | 'mtd_newer_balances';
 
 /** 8.5's "Class" column. `info` is neither blocking nor advisory. */
 export type IssueClass = 'blocking' | 'advisory' | 'info';
@@ -79,12 +88,21 @@ export const ISSUE_CLASS: Readonly<Record<IssueKey, IssueClass>> = {
   unexplained_inflow: 'blocking',
   possible_missing_interest: 'advisory',
   suggested_income_missing: 'advisory',
+  // 8.5: "blocking for MTD only", and v2.1.10 30.13 item 5 makes it global —
+  // the whole month-to-date result is unavailable, with no totals at all.
+  mtd_no_common_date: 'blocking',
+  mtd_newer_balances: 'advisory',
 };
 
 export interface Issue {
   readonly key: IssueKey;
   readonly class: IssueClass;
-  readonly currency: CurrencyCode;
+  /**
+   * The bucket this is about. Absent only for the two `mtd_*` keys, which are
+   * facts about the month's evidence date rather than about one currency
+   * (30.13 items 3 and 5).
+   */
+  readonly currency?: CurrencyCode;
   /** The account the issue is about, when it is about one. */
   readonly positionId?: string;
   /** The amount the issue is about (the unexplained inflow, the residual). */
@@ -99,6 +117,8 @@ export interface Issue {
   readonly templateId?: string;
   readonly templateName?: string;
   readonly occurrenceDate?: PlainDate;
+  /** `mtd_newer_balances`: the accounts whose newer evidence could not move `D`. */
+  readonly positionIds?: readonly string[];
 }
 
 /** One account's contribution to a bucket (8.9). */
