@@ -128,7 +128,10 @@ function assertDateRules(ctx: RequestContext, valuedOn: string, precision: 'exac
 /** Only cash may go negative (6.2: "negative allowed only for cash"). */
 function assertSign(position: PositionRow, amount: string): void {
   if (position.kind === 'cash') return;
-  if (new Decimal(amount).isNegative()) {
+  // Strictly below zero. A balance of "-0.00" is zero and is allowed on any
+  // position; `isNegative()` reads the sign bit and would have rejected it with
+  // a message about negative values that the user could not act on.
+  if (new Decimal(amount).lessThan(0)) {
     throw new ValidationError('A value cannot be negative.', {
       amount: ['This value cannot be negative.'],
     });

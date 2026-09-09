@@ -91,6 +91,14 @@ describe('Money arithmetic', () => {
 });
 
 describe('allocate', () => {
+  it('accepts a zero weight, including one written "-0"', () => {
+    // Zero is a legitimate weight: that part simply receives nothing. It is
+    // rejected only if it is strictly below zero, and decimal.js reads the sign
+    // bit, so "-0" would otherwise have been refused as negative.
+    const parts = allocate(eur('100'), ['1', '-0', '0'], 2);
+    expect(parts.map((part) => serialize(part).amount)).toEqual(['100', '0', '0']);
+  });
+
   it('splits with largest remainder so the parts sum exactly', () => {
     const parts = allocate(eur('100'), [1, 1, 1], 2);
     expect(parts.map((part) => serialize(part).amount)).toEqual(['33.34', '33.33', '33.33']);

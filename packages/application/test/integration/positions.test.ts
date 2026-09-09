@@ -777,6 +777,25 @@ describe('other assets and the two net-worth metrics (R18, M15)', () => {
     });
     expect(overdraft.amount).toBe('-120.00000000');
   });
+
+  it('accepts a zero written with a minus sign, on a non-cash position', async () => {
+    // "Only cash may go negative" means strictly below zero. decimal.js reads
+    // the sign bit, so "-0.00" was refused as negative with a message the user
+    // could do nothing about.
+    const jar = await createOtherAsset(deps(), SEPT_6, {
+      name: 'Empty coin jar',
+      currency: 'EUR',
+      assetType: 'collectible',
+      includeInFinancialNetWorth: false,
+    });
+    const recorded = await recordValuation(deps(), SEPT_6, {
+      positionId: jar.id,
+      valuedOn: '2026-09-01',
+      amount: '-0.00',
+      datePrecision: 'exact',
+    });
+    expect(recorded.amount).toBe('0.00000000');
+  });
 });
 
 describe('multi-currency totals and the FX engine (10.3, 10.4, 10.5)', () => {

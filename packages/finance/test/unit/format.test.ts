@@ -91,6 +91,20 @@ describe('exact money formatting (7.1.1)', () => {
     expect(assembleExact('-729.01', options)).toBe('-$729.01');
   });
 
+  it('gives zero no sign at all, on either path', () => {
+    // The Intl path asks for `signDisplay: 'exceptZero'`, and the exact
+    // assembler has to agree: a change of nothing is "$0.00", never "+$0.00"
+    // and never "-$0.00". decimal.js calls zero positive and "-0.00" negative,
+    // which is what made the two paths disagree.
+    const options = LOCALES[0] as FormatOptions;
+    for (const amount of ['0', '0.00', '-0.00', '0.001']) {
+      expect(formatMoney(amount, { ...options, alwaysSign: true })).toBe('$0.00');
+      expect(assembleExact(roundDecimalString(amount, 2), { ...options, alwaysSign: true })).toBe(
+        '$0.00',
+      );
+    }
+  });
+
   it('rounds to the currency minor units half-up before formatting', () => {
     const options = LOCALES[0] as FormatOptions;
     expect(formatMoney('2.345', options)).toBe('$2.35');

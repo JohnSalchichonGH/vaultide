@@ -166,7 +166,15 @@ export function assembleExact(rounded: string, options: FormatOptions): string {
   }
   if (!numberWritten) out += number;
 
-  const sign = negative ? '-' : options.alwaysSign === true && D(rounded).isPositive() ? '+' : '';
+  // Zero carries no sign in either direction. The Intl path above asks for
+  // `signDisplay: 'exceptZero'`, and this assembler has to agree with it or the
+  // same amount is formatted two ways depending on which path ran: a change of
+  // nothing would read "+$0.00" here and "$0.00" there. `isPositive()` is what
+  // made it disagree — decimal.js reads the sign bit, so zero is positive and
+  // "-0.00" is negative.
+  const value = D(rounded);
+  const sign =
+    value.lessThan(0) ? '-' : options.alwaysSign === true && value.greaterThan(0) ? '+' : '';
   return sign + out;
 }
 

@@ -18,7 +18,10 @@ export function allocate(
   if (weights.length === 0) throw new RangeError('allocate requires at least one weight.');
 
   const decimalWeights = weights.map((w) => D(w));
-  if (decimalWeights.some((w) => w.isNegative())) {
+  // `lessThan(0)`, not `isNegative()`: a weight of "-0" is zero, and a zero
+  // weight is allowed — it simply receives nothing. decimal.js reads the sign
+  // bit, so it would have called that weight negative and refused the call.
+  if (decimalWeights.some((w) => w.lessThan(0))) {
     throw new RangeError('allocate requires non-negative weights.');
   }
 
