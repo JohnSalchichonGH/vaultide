@@ -14,6 +14,7 @@ import {
   type CompletenessTemplate,
 } from '../src/reconciliation/index';
 import * as golden from './golden/basic-eur-september/fixture';
+import { classifyBucketInterval } from '../src/savings/index';
 
 /**
  * Completed-month reconciliation (blueprint 8.1–8.5, 8.10).
@@ -672,7 +673,10 @@ describe('roles, inside the identity', () => {
     expect(bucket?.thirdPartyPaid.toString()).toBe('80');
   });
 
-  it('makes external_inflow and adjustment Nin rather than income', () => {
+  it('counts external_inflow and adjustment in the inflow that explains the cash', () => {
+    // 7.4 gives both the `I` role: they are cash arriving from outside the
+    // tracked system, and the identity cannot balance without them. Keeping
+    // them out of the savings rate is 12.5's job, not this one's.
     const bucket = reconcileCompletedMonth(
       input({
         cashAccounts: [oneAccount('300')],
@@ -682,9 +686,43 @@ describe('roles, inside the identity', () => {
         ],
       }),
     ).buckets[0];
-    expect(bucket?.totals.externalInflows.toString()).toBe('0');
-    expect(bucket?.totals.nonIncomeInflows.toString()).toBe('300');
+    expect(bucket?.totals.externalInflows.toString()).toBe('300');
+    expect(bucket?.totals.nonIncomeInflows.toString()).toBe('0');
     expect(bucket?.totals.trackedTotalSpending?.toString()).toBe('0');
+  });
+
+  it('reports the whole inflow while 12.5 counts only the part that is income', () => {
+    // The fixture that keeps the two classifications apart: 600 of cash arrived
+    // and the month reconciles to nothing unexplained, while only the salary is
+    // income for the savings rate.
+    const monthInput = input({
+      cashAccounts: [oneAccount('600')],
+      income: [
+        income({ kind: 'employment', netAmount: new Decimal('100') }),
+        income({ kind: 'external_inflow', netAmount: new Decimal('200') }),
+        income({ kind: 'adjustment', netAmount: new Decimal('300') }),
+      ],
+    });
+    const bucket = reconcileCompletedMonth(monthInput).buckets[0];
+
+    expect(bucket?.totals.externalInflows.toString()).toBe('600');
+    expect(bucket?.totals.nonIncomeInflows.toString()).toBe('0');
+    expect(bucket?.totals.nonExpenseOutflows.toString()).toBe('0');
+    expect(bucket?.totals.knownTrackedExpenses.toString()).toBe('0');
+    // 600 in, 600 of cash growth: nothing is unexplained.
+    expect(bucket?.totals.trackedTotalSpending?.toString()).toBe('0');
+    expect(bucket?.totals.unclassified?.toString()).toBe('0');
+    expect(bucket?.status).toBe('reliable');
+
+    const classified = classifyBucketInterval(
+      monthInput,
+      monthInput.expenses,
+      currencyCode('EUR'),
+      bucket?.accounts ?? [],
+      plainDate('2026-09-01'),
+      plainDate('2026-09-30'),
+    );
+    expect(classified.externalIncome.toString()).toBe('100');
   });
 
   it('ignores income that never reached tracked cash', () => {

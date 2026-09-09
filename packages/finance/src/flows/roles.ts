@@ -53,18 +53,33 @@ export interface RoleLeg {
 /**
  * Income (7.4).
  *
- * Ordinary tracked income is the external inflow `I`. `external_inflow` and
- * `adjustment` are tracked cash arriving that is *not* income — money moved in
- * from outside the tracked system, or an explicit correction accepted against
- * an unexplained inflow — so they are `Nin`: they must not inflate
- * `ExternalIncome` or the savings rate (12.5), but they do have to explain the
- * cash, which is the whole reason `adjustment` exists.
+ * Every income record settled in tracked cash is the external inflow `I`, and
+ * 7.4's matrix says so for all nine kinds — `external_inflow` and `adjustment`
+ * included, on their own rows. Anything not settled in tracked cash has no cash
+ * role at all.
  *
- * Anything not settled in tracked cash has no cash role at all.
+ * The tempting mistake, which this function made until it was corrected, is to
+ * give `external_inflow` and `adjustment` the `Nin` role because neither is
+ * income. That confuses two different classifications. `I` is a **cash** fact:
+ * money arrived from outside the tracked system, and the identity needs it to
+ * explain the balance — which is the whole reason `adjustment` exists. Whether
+ * that arrival counts as *income* is a **12.5** question, answered separately by
+ * `isExternalIncomeKind`, which excludes exactly those two so they cannot
+ * inflate the savings rate. `Nin` means something else again: cash that moved in
+ * without arriving from outside at all — a transfer's destination leg, a
+ * withdrawal, loan proceeds, a sale.
+ *
+ * Both roles enter 8.2 with the same sign, so the split is invisible in the
+ * identity and visible in the two role sums 8.9 reports, and in what 12.5 is
+ * then allowed to call income.
+ *
+ * `kind` stays in the signature because Phase 4 needs it: an external
+ * distribution linked to an investment is a `dividend` or `interest` that never
+ * reaches tracked cash and carries the +d/−d pair instead (7.4).
  */
 export function incomeRole(kind: IncomeKind, settlement: IncomeSettlement): FlowRole {
   if (settlement !== 'tracked_cash') return 'none';
-  return kind === 'external_inflow' || kind === 'adjustment' ? 'Nin' : 'I';
+  return 'I';
 }
 
 /**

@@ -10,7 +10,8 @@ import { createExpenseEntry } from '../../src/flows/expenses';
 import { createIncomeEntry } from '../../src/flows/income';
 import { createCashTransfer } from '../../src/flows/transfers';
 import { readSettings, setCountAdditionalSpending } from '../../src/settings/service';
-import { parseMonth } from '../../src/reconciliation/service';
+import { getMonthReconciliation, parseMonth } from '../../src/reconciliation/service';
+import { createTemplate } from '../../src/recurring/templates';
 import { getMonthSavings, getMonthToDateSavings } from '../../src/reconciliation/savings-service';
 import type { NativeSavingsDto } from '../../src/reconciliation/types';
 
@@ -193,9 +194,18 @@ describe('income kinds map to ExternalIncome exactly as 12.5 says', () => {
     await income(OCT_1, { kind: 'adjustment', receivedOn: '2026-09-27', netAmount: '120.00', cashPositionId: a });
 
     const bucket = eur((await getMonthSavings(readDeps(), OCT_1, SEPTEMBER)).buckets);
+    // 12.5 counts only the salary.
     expect(bucket.source.externalIncome.amount).toBe('200');
-    // They are `Nin`, so they explain the 500 of cash growth and the month
-    // still reconciles.
+
+    // 7.4 gives all three the `I` role: every one of them is cash that arrived
+    // from outside, and the 500 of growth is fully explained. The two
+    // classifications are deliberately different, and this is where that shows.
+    const reconciled = await getMonthReconciliation(readDeps(), OCT_1, SEPTEMBER);
+    const totals = reconciled.buckets.find((b) => b.currency === 'EUR')?.totals;
+    expect(totals?.externalInflows.amount).toBe('500');
+    expect(totals?.nonIncomeInflows.amount).toBe('0');
+    expect(totals?.trackedTotalSpending?.amount).toBe('0');
+    expect(totals?.unclassified?.amount).toBe('0');
     expect(bucket.derived.kind).toBe('available');
   });
 
@@ -586,31 +596,70 @@ describe('boundaries', () => {
     await expect(getMonthSavings(readDeps(), SEPT_10, SEPTEMBER)).rejects.toThrow();
   });
 
-  it('reads the month in a fixed number of round trips', async () => {
-    const a = await makeAccount('BBVA');
-    await statement(a, '2026-08-31', '1000.00');
-    await statement(a, '2026-09-30', '900.00');
+  /**
+   * The read contract, which is a constant bound rather than a single number.
+   *
+   * Eight reads when the month has no recurring template — `loadTermsForRange`
+   * returns without a query when there is nothing to look terms up for — and
+   * nine when it has any, because the terms of every template are fetched in
+   * one batched query. Never one query per template, and never anything that
+   * grows with accounts, valuations, flows, categories or currencies.
+   */
+  describe('the read count is bounded by a constant', () => {
+    beforeEach(async () => {
+      const a = await makeAccount('BBVA');
+      await statement(a, '2026-08-31', '1000.00');
+      await statement(a, '2026-09-30', '900.00');
+    });
 
-    const small = await countRoundTrips();
+    it('takes eight reads when no recurring template covers the month', async () => {
+      expect(await countRoundTrips()).toBe(8);
+    });
 
-    const b = await makeAccount('Savings');
-    await statement(b, '2026-08-31', '500.00');
-    await statement(b, '2026-09-30', '500.00');
-    for (let index = 0; index < 10; index += 1) {
-      await expense(OCT_1, {
-        kind: 'food',
-        incurredOn: '2026-09-05',
-        amount: '1.00',
-        settlement: 'untracked_self',
-      });
-    }
+    it('takes nine with one template, and nine with five', async () => {
+      await makeTemplate('Salary 1');
+      expect(await countRoundTrips()).toBe(9);
 
-    expect(await countRoundTrips()).toBe(small);
-    // The completed-month window plus the user's setting, and nothing per
-    // account, flow, category or currency.
-    expect(small).toBe(8);
+      for (const name of ['Salary 2', 'Salary 3', 'Salary 4', 'Salary 5']) {
+        await makeTemplate(name);
+      }
+      // One batched terms query for all five, never one apiece.
+      expect(await countRoundTrips()).toBe(9);
+    });
+
+    it('does not grow with accounts, valuations or flows', async () => {
+      const before = await countRoundTrips();
+
+      const b = await makeAccount('Savings');
+      await statement(b, '2026-08-31', '500.00');
+      await statement(b, '2026-09-30', '500.00');
+      for (let index = 0; index < 10; index += 1) {
+        await expense(OCT_1, {
+          kind: 'food',
+          incurredOn: '2026-09-05',
+          amount: '1.00',
+          settlement: 'untracked_self',
+        });
+      }
+
+      expect(await countRoundTrips()).toBe(before);
+    });
   });
 });
+
+/** A monthly income template whose September occurrence needs a term lookup. */
+async function makeTemplate(name: string): Promise<void> {
+  await createTemplate(deps(), OCT_1, {
+    kind: 'income',
+    name,
+    incomeKind: 'employment',
+    currency: 'EUR',
+    frequency: 'monthly',
+    dayOfMonth: 25,
+    startDate: '2026-01-25',
+    amount: '100.00',
+  });
+}
 
 /** How many transactions one savings read opens. */
 async function countRoundTrips(): Promise<number> {

@@ -58,6 +58,18 @@ export interface ReconciledBucketFigures {
  * that knows part of `ΣK` is mortgage interest adds it to `interestAndFees`
  * while building this one object, so no portion of `ΣK` can be owned twice
  * (30.15 item 10).
+ *
+ * **The breakdown is the caller's complete classification** of every portion of
+ * this bucket's `ΣK` it knows to lie outside consumption. Whatever is not
+ * classified is consumption, because consumption is the remainder — which means
+ * the engine can catch a caller claiming *more* than `ΣK` and can never catch
+ * one claiming *less*. An omitted classification is indistinguishable from
+ * genuine consumption when only totals arrive, and that is inherent to the
+ * remainder design rather than a gap in it. So an adapter is responsible for
+ * building the whole breakdown from its own source model before calling: Phase
+ * 3's exhaustive category-kind classifier does that for every row it can store,
+ * and a pure fixture supplying pre-classified legs must supply their
+ * classification too, since a leg with no source record classifies to nothing.
  */
 export interface SavingsInput {
   readonly currency: CurrencyCode;
@@ -222,9 +234,7 @@ export function reconcileSavings(input: SavingsInput): SavingsResult {
   const personalSavings = trackedSavingsFromIncome.minus(counted);
   const totalSpending = trackedTotalSpending.plus(input.additionalSpending);
 
-  // Compared against zero explicitly: decimal.js reads the sign bit, so a
-  // negative zero would be "not zero" under a naive `isZero` alternative and a
-  // zero income would divide anyway.
+  // 12.5 says the rate is unavailable at zero income, and only the rate.
   const savingsRate: Decimal | Unavailable = input.externalIncome.equals(0)
     ? unavailable('divide_by_zero', 'External income is zero.')
     : personalSavings.dividedBy(input.externalIncome);

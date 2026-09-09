@@ -102,8 +102,12 @@ export function costBucket(kind: CategoryKind): CostBucket {
  * by name: both are tracked cash arriving that is not income — money moved in
  * from outside the tracked system, or a correction accepted against an
  * unexplained inflow — and counting either would inflate the savings rate with
- * money nobody earned. Reconciliation already gives them the `Nin` role for the
- * same reason, so in practice they never arrive here as `I`.
+ * money nobody earned.
+ *
+ * They do reach here. 7.4 gives every tracked-cash income row the `I` role,
+ * including those two, because the identity needs them to explain the balance.
+ * So the cash role and the income classification are deliberately different
+ * questions, and this function is where the second one is answered.
  */
 export function isExternalIncomeKind(kind: IncomeKind): boolean {
   switch (kind) {
@@ -160,10 +164,9 @@ export function classifyScopedFacts(facts: readonly FlowFact[]): ScopedClassific
 
   for (const fact of facts) {
     if (fact.kind === 'income' && fact.leg.role === 'I') {
-      /* v8 ignore next -- `incomeRole` already gives `external_inflow` and
-         `adjustment` the `Nin` role, so an `I` leg's kind is always one of
-         12.5's seven. The check stays because the two rules are stated in
-         different sections and this is what would catch them diverging. */
+      // The filter that does the work. Every tracked-cash income row is `I`
+      // (7.4), so `external_inflow` and `adjustment` arrive here and are turned
+      // away: the cash they explain is real, the income is not.
       if (isExternalIncomeKind(fact.income.kind)) income.push(fact.leg.amount);
       continue;
     }

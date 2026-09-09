@@ -18,6 +18,7 @@ import {
   type IncomeFlow,
   type TransferFlow,
 } from '../src/flows/index';
+import { isExternalIncomeKind } from '../src/savings/index';
 
 /**
  * The role matrix of 7.4, pinned exhaustively.
@@ -63,11 +64,22 @@ describe('income roles', () => {
     }
   });
 
-  it('makes external_inflow and adjustment Nin, never I', () => {
-    // They explain tracked cash without being income: counting them as I would
-    // inflate ExternalIncome and the savings rate (12.5).
-    expect(incomeRole('external_inflow', 'tracked_cash')).toBe('Nin');
-    expect(incomeRole('adjustment', 'tracked_cash')).toBe('Nin');
+  it('makes external_inflow and adjustment I as well, like every tracked-cash kind', () => {
+    // 7.4 gives both their own row with the cash role `I`. They are cash that
+    // arrived from outside the tracked system, and the identity needs them to
+    // explain the balance — which is the whole reason `adjustment` exists.
+    // Whether an arrival is *income* is 12.5's separate question, answered by
+    // `isExternalIncomeKind`, which turns exactly these two away.
+    expect(incomeRole('external_inflow', 'tracked_cash')).toBe('I');
+    expect(incomeRole('adjustment', 'tracked_cash')).toBe('I');
+    expect(isExternalIncomeKind('external_inflow')).toBe(false);
+    expect(isExternalIncomeKind('adjustment')).toBe(false);
+  });
+
+  it('gives every tracked-cash income kind the same cash role', () => {
+    for (const kind of INCOME_KINDS) {
+      expect(incomeRole(kind, 'tracked_cash'), kind).toBe('I');
+    }
   });
 
   it('gives income that never reached tracked cash no cash role', () => {

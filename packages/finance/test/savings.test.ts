@@ -222,11 +222,41 @@ describe('classification of an income kind', () => {
       ],
     });
     const result = savingsOf(input);
-    // Only the salary is income; the other two are `Nin` and explain the cash.
+    // All three are `I` and all three explain the cash (7.4); only the salary
+    // is income (12.5). The two classifications are deliberately different.
     expect(result.source.externalIncome.toString()).toBe('200');
     const bucket = reconcileCompletedMonth(input).buckets[0];
-    expect(bucket?.totals.externalInflows.toString()).toBe('200');
-    expect(bucket?.totals.nonIncomeInflows.toString()).toBe('300');
+    expect(bucket?.totals.externalInflows.toString()).toBe('500');
+    expect(bucket?.totals.nonIncomeInflows.toString()).toBe('0');
+  });
+
+  it('turns both away from ExternalIncome while the bucket counts all of them', () => {
+    // 100 + 200 + 300 of cash arrives and the month reconciles exactly; the
+    // savings rate sees 100.
+    const input = completedInput({
+      cashAccounts: [
+        account(A, 'BBVA', [monthEnd(A, '2026-08-31', '0'), monthEnd(A, '2026-09-30', '600')]),
+      ],
+      income: [
+        income({ kind: 'employment', netAmount: new Decimal('100') }),
+        income({ kind: 'external_inflow', netAmount: new Decimal('200') }),
+        income({ kind: 'adjustment', netAmount: new Decimal('300') }),
+      ],
+    });
+
+    const bucket = reconcileCompletedMonth(input).buckets[0];
+    expect(bucket?.totals.externalInflows.toString()).toBe('600');
+    expect(bucket?.totals.nonIncomeInflows.toString()).toBe('0');
+    expect(bucket?.totals.trackedTotalSpending?.toString()).toBe('0');
+    expect(bucket?.totals.unclassified?.toString()).toBe('0');
+    expect(bucket?.status).toBe('reliable');
+
+    const result = savingsOf(input);
+    expect(result.source.externalIncome.toString()).toBe('100');
+    if (result.derived.kind !== 'available') throw new Error('expected available');
+    // Consumption is nothing, so the whole 100 of income was saved.
+    expect(result.derived.consumption.toString()).toBe('0');
+    expect(result.derived.trackedSavingsFromIncome.toString()).toBe('100');
   });
 
   it('leaves ordinary income settled external out of ExternalIncome and out of the cash roles', () => {
