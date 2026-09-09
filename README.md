@@ -5,16 +5,24 @@ flows you know; Vaultide infers spending by cash reconciliation, keeps records i
 their native currency with historical FX, separates capital flows from investment
 performance, explains what changed your net worth, and projects it forward.
 
-**Implemented through Phase 2 — accounts, balances and net worth. Phase 2 is
-frozen and production-verified; Phase 3 has not started.** You can create an
-account, verify your email address, sign in (optionally with a second factor),
-and choose your base and reporting currencies, timezone and locale. Then: cash
-accounts and other assets in any supported currency, balances dated to the day
-and never into the future, statement month-end balances once a month has ended,
-quick update, and both net-worth metrics — total (everything you track) and
-financial (the headline). A value nobody has recorded is shown as unknown, never
-as zero, and a total that could not include something says so and says what. No
-spending, income or transfers yet — those arrive with Phase 3.
+**Phases 0–2 are frozen and production-verified; Phase 3 is in progress.** What
+you can use today is Phase 2: create an account, verify your email address, sign
+in (optionally with a second factor), and choose your base and reporting
+currencies, timezone and locale. Then: cash accounts and other assets in any
+supported currency, balances dated to the day and never into the future,
+statement month-end balances once a month has ended, quick update, and both
+net-worth metrics — total (everything you track) and financial (the headline). A
+value nobody has recorded is shown as unknown, never as zero, and a total that
+could not include something says so and says what.
+
+**Phase 3 has reached slice 6, on the server only.** Income, expenses and
+transfers with their linked fee; recurring sources with their occurrences,
+terms, acceptances and skips; and completed-month reconciliation — the engine
+that infers what a finished month spent from its own statement balances and
+records, per native currency, and says when it cannot. None of it has an
+interface yet: there is no income, spending or monthly page, and month-to-date,
+multi-month spans, the savings and consumption analytics and the bulk-history
+editor are not implemented. Phase 3 is neither accepted nor frozen.
 
 The authoritative specification is
 [`docs/implementation-blueprint.md`](docs/implementation-blueprint.md) (frozen,
@@ -22,8 +30,10 @@ v2.1.9). Implementation-level choices are recorded in [`docs/adr/`](docs/adr/):
 [Phase 0](docs/adr/0001-phase-0-implementation-decisions.md),
 [Phase 1](docs/adr/0002-phase-1-implementation-decisions.md),
 [pre-Phase-2 gates](docs/adr/0003-pre-phase-2-security-and-cost-gates.md),
-[Phase 2](docs/adr/0004-phase-2-implementation-decisions.md). Each phase's
-evidence is in `docs/phase-N-acceptance.md`.
+[Phase 2](docs/adr/0004-phase-2-implementation-decisions.md),
+[Phase 3](docs/adr/0005-phase-3-implementation-decisions.md) (written against
+v2.1.6, and deliberately left at that baseline). Each accepted phase's evidence
+is in `docs/phase-N-acceptance.md`.
 
 ## Layout
 
@@ -33,11 +43,15 @@ apps/web            Next.js App Router: auth pages, settings, onboarding, shell,
                     /api/auth, /api/cron/fx-refresh, /api/health
 packages/finance    pure engines — money, dates, FX lookup and conversion,
                     Unavailable/Partial, sign, numeric backends, position values
-                    and freshness, total and financial net worth
+                    and freshness, total and financial net worth, flow roles,
+                    recurring occurrences and terms, completed-month
+                    reconciliation
 packages/validation Zod primitives and inputs shared by client, server, database
 packages/db         Drizzle schema, migrations, RLS policies, repositories, seed
 packages/application use cases: Better Auth, sessions, mailer, settings, FX service,
-                    positions, valuations, quick update, net-worth queries
+                    positions, valuations, quick update, net-worth queries,
+                    income, expenses, transfers, recurring templates and
+                    suggestions, completed-month reconciliation reads
 packages/config     tsconfig, ESLint (incl. the money-coercion rule), boundaries
 e2e                 Playwright: smoke, the auth and settings flow, and the
                     accounts, balances and net-worth journey
