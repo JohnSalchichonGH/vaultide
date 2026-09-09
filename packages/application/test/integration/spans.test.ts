@@ -10,6 +10,7 @@ import { createExpenseEntry } from '../../src/flows/expenses';
 import { createIncomeEntry } from '../../src/flows/income';
 import { createCashTransfer } from '../../src/flows/transfers';
 import { getSpans } from '../../src/reconciliation/span-service';
+import { monthKey, plainDate } from '@vaultide/finance';
 
 /**
  * Multi-month reconciliation spans against a real database (blueprint 21.3, 8.7).
@@ -282,13 +283,11 @@ describe('the read itself', () => {
     const keys = Object.keys(spans[0] ?? {}).sort();
     expect(keys).toEqual([
       'accounts',
-      'additionalSpending',
       'currency',
       'explanation',
       'from',
       'months',
       'status',
-      'thirdPartyPaid',
       'to',
       'totals',
       'trackedTotalSpending',
@@ -303,6 +302,107 @@ describe('the read itself', () => {
 
     expect(await getSpans(readDeps(), DEC_1)).toHaveLength(1);
     expect(await getSpans(readDeps(), on('2026-12-01', USER_B))).toEqual([]);
+  });
+
+  /**
+   * The requested window and the reads it implies (8.7, ADR 0004 §3).
+   *
+   * A window says which spans to report, never how much evidence to consult.
+   * Both halves have to hold together against a real database: discovery has to
+   * see an anchor older than the window, and the flow reads have to reach back
+   * to whatever it found — a correct interval with half its flows missing would
+   * be worse than no span at all, because it would look like an answer.
+   */
+  describe('W — a requested window selects spans, it does not truncate history', () => {
+    it('W1 — returns a span whose anchor and flows both precede the window', async () => {
+      const a = await makeAccount('BBVA');
+      await statement(a, '2026-08-31', '1000.00');
+      await statement(a, '2026-11-30', '700.00');
+      // September is before the requested window on both counts: the anchor it
+      // follows is August, and this expense is dated inside it.
+      await createExpenseEntry(deps(), on('2026-09-15'), {
+        categoryId,
+        incurredOn: '2026-09-15',
+        amount: '100.00',
+        currency: 'EUR',
+        settlement: 'tracked_cash',
+        cashPositionId: a,
+      });
+
+      const spans = await getSpans(readDeps(), DEC_1, {
+        from: monthKey(plainDate('2026-10-01')),
+      });
+
+      expect(spans).toHaveLength(1);
+      expect(spans[0]?.from).toBe('2026-09-01');
+      expect(spans[0]?.to).toBe('2026-11-30');
+      expect(spans[0]?.months).toEqual(['2026-09', '2026-10', '2026-11']);
+      expect(spans[0]?.totals.knownTrackedExpenses.amount).toBe('100');
+      expect(spans[0]?.totals.cashDelta.amount).toBe('-300');
+      expect(spans[0]?.unclassified.amount).toBe('200');
+    });
+
+    it('W3 — leaves out a span that ended before the window began', async () => {
+      const a = await makeAccount('BBVA');
+      for (const [on_, amount] of [
+        ['2026-01-31', '1000.00'],
+        ['2026-05-31', '900.00'],
+        ['2026-08-31', '800.00'],
+        ['2026-11-30', '700.00'],
+      ] as const) {
+        await statement(a, on_, amount);
+      }
+
+      const whole = await getSpans(readDeps(), DEC_1, {
+        from: monthKey(plainDate('2026-01-01')),
+      });
+      expect(whole.map((span) => span.from)).toEqual([
+        '2026-02-01',
+        '2026-06-01',
+        '2026-09-01',
+      ]);
+
+      const windowed = await getSpans(readDeps(), DEC_1, {
+        from: monthKey(plainDate('2026-09-01')),
+      });
+      expect(windowed.map((span) => span.from)).toEqual(['2026-09-01']);
+    });
+
+    it('W2 — reaches back years when that is where the anchor is', async () => {
+      const a = await makeAccount('BBVA');
+      await statement(a, '2023-04-30', '5000.00');
+      await statement(a, '2026-11-30', '4000.00');
+      await createIncomeEntry(deps(), on('2023-07-11'), {
+        kind: 'employment',
+        receivedOn: '2023-07-11',
+        netAmount: '250.00',
+        currency: 'EUR',
+        settlement: 'tracked_cash',
+        cashPositionId: a,
+      });
+
+      // More than three years before the requested window, and past any
+      // lookback a single-stage read could have been given.
+      const spans = await getSpans(readDeps(), DEC_1, {
+        from: monthKey(plainDate('2026-11-01')),
+      });
+
+      expect(spans).toHaveLength(1);
+      expect(spans[0]?.from).toBe('2023-05-01');
+      expect(spans[0]?.months).toHaveLength(43);
+      expect(spans[0]?.totals.externalInflows.amount).toBe('250');
+      expect(spans[0]?.totals.cashDelta.amount).toBe('-1000');
+    });
+
+    it('still reads that history in the same five round trips', async () => {
+      const a = await makeAccount('BBVA');
+      await statement(a, '2023-04-30', '5000.00');
+      await statement(a, '2026-11-30', '4000.00');
+
+      expect(
+        await countRoundTrips({ from: monthKey(plainDate('2026-11-01')) }),
+      ).toBe(5);
+    });
   });
 
   it('reads the history in a fixed number of round trips', async () => {
@@ -332,7 +432,7 @@ describe('the read itself', () => {
 });
 
 /** How many transactions one span read opens. */
-async function countRoundTrips(): Promise<number> {
+async function countRoundTrips(query: Parameters<typeof getSpans>[2] = {}): Promise<number> {
   let transactions = 0;
   const counting = new Proxy(harness.db, {
     get(target, property, receiver) {
@@ -345,6 +445,6 @@ async function countRoundTrips(): Promise<number> {
     },
   });
 
-  await getSpans({ db: counting }, DEC_1);
+  await getSpans({ db: counting }, DEC_1, query);
   return transactions;
 }

@@ -8,6 +8,7 @@ import {
 import {
   addMonths,
   endOfMonthKey,
+  findSpanIntervals,
   findSpans,
   monthKey,
   plainDate,
@@ -15,6 +16,7 @@ import {
   type CashAccountInput,
   type Decimal,
   type MonthKey,
+  type PlainDate,
   type SpanInput,
   type SpanResult,
 } from '@vaultide/finance';
@@ -32,19 +34,20 @@ import type { SpanDto } from './types';
  * Multi-month reconciliation spans, read from the database (blueprint 8.7, 23.2).
  *
  * Five bulk reads, and the count does not grow with the number of accounts,
- * months or flows: positions with their valuations, the income, expenses and
- * transfers of the history being examined, and the categories that give an
- * expense its accounting kind.
+ * months or flows. They go in two stages, because how far back the flows must
+ * be read is not knowable until the intervals are:
  *
- * Two loading rules matter here more than anywhere else:
+ *  1. Positions with their valuations, and the categories that give an expense
+ *     its accounting kind. **No lower bound on valuations** (ADR 0004 §3): an
+ *     anchor is a property of the whole history, and a loader that refused to
+ *     look before the caller's window would report a gap that is not there.
+ *  2. The income, expenses and transfers of the intervals stage one found —
+ *     from the earliest discovered `from`, which may be years before the month
+ *     the caller asked about and is exactly as far back as it needs to be.
  *
- *  - **No lower bound on valuations** (ADR 0004 §3). A span's opening anchor can
- *    lie before the window a caller asked about, and a loader that refused to
- *    look earlier would report a gap that is not there. `loadFinancialWindow`
- *    already reads every valuation up to its upper bound.
- *  - **Flows are read from the anchor search's own start**, not from the
- *    caller's window, for the same reason: a span discovered earlier than the
- *    requested first month still needs its own flows.
+ * The alternative, one stage with a fixed lookback, has no safe constant: a
+ * depth long enough for one history silently truncates the next, and the symptom
+ * is not an error but a span that quietly does not exist.
  *
  * No recurring data is loaded: a span has no completeness report (30.14 item 8).
  * Nothing is stored — 8.7 says spans are recomputed on read.
@@ -53,16 +56,24 @@ import type { SpanDto } from './types';
 export type SpanDependencies = MonthDataDependencies;
 
 /**
- * How far back discovery looks when the caller names no earlier bound.
+ * How much history a request reports on when the caller names no bound.
  *
- * Not a cap on a span's length: a span found inside this history may cover any
- * number of months. It bounds only how much history one request reads, and a
- * caller that wants everything passes `from`.
+ * A presentation default and nothing more. It does not bound discovery — a
+ * returned span may open long before it, and is reported whole when it does —
+ * and it is not a cap on a span's length. It decides only which spans are old
+ * enough to leave out.
  */
 const DEFAULT_HISTORY_MONTHS = 24;
 
 export interface SpanQuery {
-  /** Earliest month to look at. Defaults to two years back. */
+  /**
+   * Earliest month to report on. Defaults to two years back.
+   *
+   * The engine's rule applies unchanged: this selects among the spans the
+   * evidence supports and never changes what they are. A span overlapping this
+   * month comes back in full, opening anchor included, however far back that
+   * anchor lies.
+   */
   readonly from?: MonthKey | undefined;
 }
 
@@ -93,8 +104,6 @@ function spanDto(span: SpanResult): SpanDto {
     },
     trackedTotalSpending: amount(span.trackedTotalSpending),
     unclassified: amount(span.unclassified),
-    additionalSpending: amount(span.additionalSpending),
-    thirdPartyPaid: amount(span.thirdPartyPaid),
     explanation: span.explanation,
   };
 }
@@ -118,13 +127,8 @@ export async function getSpans(
   const lastCompleted = monthKey(addMonths(startOfMonthKey(currentMonth), -1));
   const to = endOfMonthKey(lastCompleted);
 
-  if (to < startOfMonthKey(from)) return [];
-
-  const [window, income, expenses, transfers, categories] = await Promise.all([
+  const [window, categories] = await Promise.all([
     loadFinancialWindow(deps.db, ctx.userId, to),
-    listIncomeEntries(deps.db, ctx.userId, startOfMonthKey(from), to),
-    listExpenseEntries(deps.db, ctx.userId, startOfMonthKey(from), to),
-    listTransfers(deps.db, ctx.userId, startOfMonthKey(from), to),
     listCategoryRecords(deps.db, ctx.userId, { includeArchived: true }),
   ]);
 
@@ -144,10 +148,27 @@ export async function getSpans(
       accountType: row.accountType ?? 'checking',
     }));
 
+  const today = plainDate(ctx.today);
+  const intervals = findSpanIntervals({ today, cashAccounts, from });
+
+  // Exactly as far back as the answer needs, and no guess involved. With no
+  // interval there is nothing to read flows for, so the bound collapses to the
+  // last completed month: still three reads, over one month of rows.
+  const flowsFrom = intervals.reduce<PlainDate>(
+    (earliest, interval) => (interval.from < earliest ? interval.from : earliest),
+    startOfMonthKey(lastCompleted),
+  );
+
+  const [income, expenses, transfers] = await Promise.all([
+    listIncomeEntries(deps.db, ctx.userId, flowsFrom, to),
+    listExpenseEntries(deps.db, ctx.userId, flowsFrom, to),
+    listTransfers(deps.db, ctx.userId, flowsFrom, to),
+  ]);
+
   const kindOf = new Map(categories.map((category) => [category.id, category.kind]));
 
   const input: SpanInput = {
-    today: plainDate(ctx.today),
+    today,
     cashAccounts,
     income: income.map(toIncomeFlow),
     expenses: expenses.map((row) => toExpenseFlow(row, kindOf)),

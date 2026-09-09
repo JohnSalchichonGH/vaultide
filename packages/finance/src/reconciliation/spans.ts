@@ -51,8 +51,14 @@ export type SpanStatus = 'reliable' | 'unresolved';
 export interface SpanAccountState {
   readonly positionId: string;
   readonly name: string;
-  /** How the interval's opening value is known. */
-  readonly openingState: 'month_end' | 'opened_zero' | 'closed_zero' | 'dormant_zero';
+  /**
+   * How the interval's opening value is known.
+   *
+   * No `closed_zero`: an account that had already closed at `end(M0)` closed on
+   * or before the day before `start(M0+1)`, so it does not participate in the
+   * interval at all and is not listed here.
+   */
+  readonly openingState: 'month_end' | 'opened_zero' | 'dormant_zero';
   readonly opening: Decimal;
   /** How the interval's closing value is known. */
   readonly closingState: 'month_end' | 'closed_zero' | 'dormant_zero';
@@ -65,6 +71,15 @@ export interface SpanAccountState {
  * Deliberately smaller than a month's result: no `issues`, no per-account
  * residual, no per-month figure, no `unavailable` branch and no `estimated`
  * status. Each of those absences is a rule, not an omission (30.14).
+ *
+ * It is also smaller than the engine first made it. 8.7 enumerates what a span
+ * reports, and `untracked_self` and `third_party` spending are not in that list.
+ * They are real figures — a month's bucket states both — but they belong to a
+ * month, and beside a span's identity they are a trap: neither is part of
+ * `trackedTotalSpending`, so a reader who adds them to it gets a number that
+ * means nothing. `accounts` and `explanation` stay because they introduce no
+ * quantity of their own: the first is how `totals.cashDelta` was reached, the
+ * second is that derivation in words.
  */
 export interface SpanResult {
   readonly currency: CurrencyCode;
@@ -87,10 +102,10 @@ export interface SpanResult {
   readonly trackedTotalSpending: Decimal;
   readonly unclassified: Decimal;
   readonly status: SpanStatus;
-  /** `untracked_self` in this currency and interval. Never in the identity (7.4). */
-  readonly additionalSpending: Decimal;
-  /** `third_party` in this currency and interval. In no total at all. */
-  readonly thirdPartyPaid: Decimal;
+  /**
+   * How the figures above were reached, in words. Carries no quantity the
+   * fields above do not already state.
+   */
   readonly explanation: readonly string[];
 }
 
@@ -104,11 +119,48 @@ export interface SpanInput {
   /** As on the other engines: legs from records a later phase owns (7.4). */
   readonly preClassifiedLegs?: readonly RoleLeg[] | undefined;
   /**
-   * The earliest month discovery looks at. Anchors before it are still read —
-   * a span's opening anchor may lie earlier than the window a caller asked
-   * about, and refusing to look would invent a gap that is not there.
+   * The earliest month the caller wants **returned**. It is not permission to
+   * forget earlier evidence.
+   *
+   * Discovery ignores it entirely: the anchor set is intrinsic (8.7), so it is
+   * built over the whole history and `from` filters the result afterwards. A
+   * span is returned when its interval overlaps `[start(from), end(M_last)]`,
+   * and it is returned **whole** — the opening anchor of a span covering the
+   * window's first month may lie years earlier, and clipping the interval back
+   * to `from` would report endpoints that are not complete month ends and a
+   * `cashDelta` measured over a change nobody observed.
+   *
+   * Absent means every span the evidence supports.
    */
   readonly from?: MonthKey | undefined;
+}
+
+/**
+ * What discovery alone can decide: which intervals exist, and over what.
+ *
+ * Separated from `SpanInput` because anchors depend only on positions and their
+ * valuations. A caller that reads from a database can settle the intervals
+ * first and then load exactly the flows they need (23.2), instead of guessing a
+ * history depth and hoping it reached far enough back.
+ */
+export interface SpanDiscoveryInput {
+  readonly today: PlainDate;
+  readonly cashAccounts: readonly CashAccountInput[];
+  readonly from?: MonthKey | undefined;
+}
+
+/** One discovered interval, before any flow has been looked at. */
+export interface SpanInterval {
+  readonly currency: CurrencyCode;
+  /** The complete month end the interval opens from: `end(M0)`. */
+  readonly openingAnchor: MonthKey;
+  /** The complete month end it closes on: `end(M1)`. */
+  readonly closingAnchor: MonthKey;
+  /** First day of the month after the opening anchor. */
+  readonly from: PlainDate;
+  /** Last day of the closing anchor's month. */
+  readonly to: PlainDate;
+  readonly months: readonly MonthKey[];
 }
 
 /** The value an account is known to have at a month end, or nothing (8.7). */
@@ -175,16 +227,33 @@ function monthsBetween(first: MonthKey, last: MonthKey): MonthKey[] {
   return months;
 }
 
-/** The earliest month any evidence mentions, so discovery starts somewhere real. */
-function earliestMonth(input: SpanInput): MonthKey | undefined {
+/**
+ * The month end discovery starts scanning from.
+ *
+ * One month before the earliest evidence of any kind, and deliberately one
+ * month rather than none: the month end immediately before the user's first
+ * account is **vacuously complete** — nothing existed then to owe a value — and
+ * it is the anchor that lets an account opened later open a span at exactly
+ * zero (30.14 item 3). Starting at the first evidence month instead would throw
+ * that anchor away, and with it every span covering the beginning of a history,
+ * however complete the balances after it.
+ *
+ * Starting earlier still would change nothing, which is what makes this the
+ * whole of the rule rather than an arbitrary depth: vacuous month ends run
+ * consecutively, and consecutive anchors one month apart never form a span
+ * (`M1 ≥ M0 + 2`). Only the last vacuous end before the first account can pair
+ * with anything.
+ */
+function discoveryStart(accounts: readonly CashAccountInput[]): MonthKey | undefined {
   const dates: PlainDate[] = [];
-  for (const account of input.cashAccounts) {
+  for (const account of accounts) {
     for (const valuation of account.valuations) dates.push(valuation.valuedOn);
     const openedOn = account.position.openedOn;
     if (openedOn !== null) dates.push(openedOn);
   }
   if (dates.length === 0) return undefined;
-  return monthKey(dates.reduce((first, on) => (on < first ? on : first)));
+  const earliest = monthKey(dates.reduce((first, on) => (on < first ? on : first)));
+  return monthKey(addMonths(startOfMonthKey(earliest), -1));
 }
 
 /**
@@ -215,7 +284,7 @@ function accountOverInterval(
 ): SpanAccountState | undefined {
   const { openedOn, closedOn } = account.position;
 
-  const opening: { state: SpanAccountState['openingState']; amount: Decimal } | undefined =
+  const opening: AnchorValue | { state: 'opened_zero'; amount: Decimal } =
     openedOn !== null && openedOn >= from
       ? // It did not exist at the opening anchor, so it opened at zero and owed
         // that anchor nothing (30.14 item 3).
@@ -223,6 +292,12 @@ function accountOverInterval(
       : valueAtMonthEnd(account, openingAnchor);
   /* v8 ignore start -- unreachable from a complete anchor; see above. */
   if (opening === undefined) return undefined;
+  /* v8 ignore stop */
+  // A participating account has not closed on or before `end(M0)`: participation
+  // requires `closedOn >= start(M0+1)`, which is the day after. So the opening
+  // state is never `closed_zero`, and the type says so.
+  /* v8 ignore start -- ruled out by participation; see above. */
+  if (opening.state === 'closed_zero') return undefined;
   /* v8 ignore stop */
 
   const closing: { state: SpanAccountState['closingState']; amount: Decimal } | undefined =
@@ -271,14 +346,10 @@ function everyNullLegSupported(
 
 function reconcileCandidate(
   input: SpanInput,
-  currency: CurrencyCode,
+  interval: SpanInterval,
   accounts: readonly CashAccountInput[],
-  openingAnchor: MonthKey,
-  closingAnchor: MonthKey,
 ): SpanResult | undefined {
-  const first = monthKey(addMonths(startOfMonthKey(openingAnchor), 1));
-  const from = startOfMonthKey(first);
-  const to = endOfMonthKey(closingAnchor);
+  const { currency, openingAnchor, closingAnchor, from, to, months } = interval;
 
   const participating = accounts.filter((account) =>
     participatesInInterval(account, from, to),
@@ -335,18 +406,6 @@ function reconcileCandidate(
     .minus(cashDelta);
   const unclassified = trackedTotalSpending.minus(sums.knownTrackedExpenses);
 
-  const inInterval = (on: PlainDate): boolean => on >= from && on <= to;
-  const settlementTotal = (settlement: ExpenseFlow['settlement']): Decimal =>
-    sumAmounts(
-      input.expenses
-        .filter(
-          (e) => e.currency === currency && e.settlement === settlement && inInterval(e.incurredOn),
-        )
-        .map((e) => e.amount),
-    );
-
-  const months = monthsBetween(first, closingAnchor);
-
   return {
     currency,
     from,
@@ -360,8 +419,6 @@ function reconcileCandidate(
     // negative zero would be "negative" and a month that reconciles exactly
     // would be called unresolved.
     status: unclassified.lessThan(0) ? 'unresolved' : 'reliable',
-    additionalSpending: settlementTotal('untracked_self'),
-    thirdPartyPaid: settlementTotal('third_party'),
     explanation: [
       `Combined ${currency} reconciliation ${from} – ${to} (${String(months.length)} months).`,
       `Cash change = ${cashDelta.toString()} across ${String(states.length)} account(s).`,
@@ -371,33 +428,50 @@ function reconcileCandidate(
   };
 }
 
+/** The cash accounts of one currency, in the order discovery considers them. */
+function bucketAccounts(
+  cash: readonly CashAccountInput[],
+  currency: CurrencyCode,
+): CashAccountInput[] {
+  return cash.filter((account) => account.position.currency === currency);
+}
+
 /**
- * Every span the evidence supports, per native currency (8.7).
+ * Every interval the balance evidence supports, per native currency (8.7).
  *
  * Discovery is per bucket and shares nothing across currencies: two currencies
  * may have entirely different anchors over the same calendar history, and no
- * rate is consulted for any of it.
+ * rate is consulted for any of it. It reads positions and valuations only — no
+ * flow can create, move or destroy an anchor — which is what lets a caller
+ * settle the intervals before deciding how far back to read flows.
+ *
+ * A requested window narrows the **result** and never the search. The anchor
+ * set is intrinsic, so it is built over the whole history; a span then survives
+ * if it overlaps the window, and survives whole.
  */
-export function findSpans(input: SpanInput): SpanResult[] {
+export function findSpanIntervals(input: SpanDiscoveryInput): SpanInterval[] {
   const cash = input.cashAccounts.filter((account) => account.position.kind === 'cash');
-  const earliest = input.from ?? earliestMonth(input);
-  if (earliest === undefined) return [];
+  const start = discoveryStart(cash);
+  if (start === undefined) return [];
 
   // 30.14 item 4: both anchors are completed month ends. The current month is
-  // 8.6's, and a span never reaches into it.
+  // 8.6's, and a span never reaches into it. No guard is needed for a history
+  // that has not reached one yet: `monthsBetween` of an inverted range is
+  // empty, so there are no anchors and therefore no pairs.
   const lastCompleted = monthKey(addMonths(startOfMonthKey(monthKey(input.today)), -1));
-  if (lastCompleted < earliest) return [];
 
+  const windowStart = input.from === undefined ? undefined : startOfMonthKey(input.from);
   const currencies = [...new Set(cash.map((account) => account.position.currency))].sort();
-  const spans: SpanResult[] = [];
+  const intervals: SpanInterval[] = [];
 
   for (const code of currencies) {
     const currency = currencyCode(code);
-    const accounts = cash.filter((account) => account.position.currency === currency);
+    const accounts = bucketAccounts(cash, currency);
 
-    // The fixed, intrinsic anchor set. Built once, before any pair is
-    // considered, so no candidate can change what it contains.
-    const anchors = monthsBetween(earliest, lastCompleted).filter((month) =>
+    // The fixed, intrinsic anchor set. Built once, over the whole history and
+    // before any pair is considered, so neither a candidate nor a caller's
+    // window can change what it contains.
+    const anchors = monthsBetween(start, lastCompleted).filter((month) =>
       isCompleteAnchor(accounts, month),
     );
 
@@ -408,11 +482,45 @@ export function findSpans(input: SpanInput): SpanResult[] {
       const closingAnchor = anchors[index + 1] as MonthKey;
       if (monthsBetween(openingAnchor, closingAnchor).length < 3) continue;
 
-      const span = reconcileCandidate(input, currency, accounts, openingAnchor, closingAnchor);
-      /* v8 ignore next -- the suppression paths inside `reconcileCandidate` are
-         unreachable while a candidate exists; see the notes there. */
-      if (span !== undefined) spans.push(span);
+      const first = monthKey(addMonths(startOfMonthKey(openingAnchor), 1));
+      const to = endOfMonthKey(closingAnchor);
+
+      // Overlap, not containment, and never a clip. A span that reaches into
+      // the window is the answer to "what happened from `from` onwards", even
+      // when most of it happened earlier; one that ended before the window
+      // began answers a question nobody asked. The other side needs no test:
+      // every interval ends at or before `end(M_last)`, and so does the window.
+      if (windowStart !== undefined && to < windowStart) continue;
+
+      intervals.push({
+        currency,
+        openingAnchor,
+        closingAnchor,
+        from: startOfMonthKey(first),
+        to,
+        months: monthsBetween(first, closingAnchor),
+      });
     }
+  }
+
+  return intervals;
+}
+
+/**
+ * Every span the evidence supports, per native currency (8.7).
+ *
+ * Discovery first, then one reconciliation per interval — the same order a
+ * database-backed caller follows, so both see the same intervals.
+ */
+export function findSpans(input: SpanInput): SpanResult[] {
+  const cash = input.cashAccounts.filter((account) => account.position.kind === 'cash');
+  const spans: SpanResult[] = [];
+
+  for (const interval of findSpanIntervals(input)) {
+    const span = reconcileCandidate(input, interval, bucketAccounts(cash, interval.currency));
+    /* v8 ignore next -- the suppression paths inside `reconcileCandidate` are
+       unreachable while a candidate exists; see the notes there. */
+    if (span !== undefined) spans.push(span);
   }
 
   return spans;

@@ -533,6 +533,11 @@ describe('O, P and Q — flows with no account named', () => {
   it('is supported by an account with an explicit opening date too', () => {
     // The support predicate reads `opened_on` as well as `closed_on`, and an
     // account opened before the month supports a leg inside it.
+    //
+    // Two spans come back, not one: an account with a recorded opening date did
+    // not exist before it, so `end(Dec 2025)` is a vacuous anchor and the
+    // stretch from the account's first day to its first balance reconciles too
+    // (W5). The leg under test is dated October, and belongs to the later span.
     const spans = findSpans(
       input({
         cashAccounts: [
@@ -544,8 +549,15 @@ describe('O, P and Q — flows with no account named', () => {
         income: [income({ cashPositionId: null, receivedOn: plainDate('2026-10-04') })],
       }),
     );
-    expect(spans).toHaveLength(1);
-    expect(spans[0]?.totals.externalInflows.toString()).toBe('100');
+    expect(spans.map((span) => span.from)).toEqual([
+      plainDate('2026-01-01'),
+      plainDate('2026-09-01'),
+    ]);
+    const october = spans.find((span) => span.from === plainDate('2026-09-01'));
+    expect(october?.totals.externalInflows.toString()).toBe('100');
+    // The opening stretch saw no flow at all, and says so rather than borrowing
+    // the later one.
+    expect(spans[0]?.totals.externalInflows.toString()).toBe('0');
   });
 
   it('supports a null leg in every month a candidate span covers', () => {
@@ -819,13 +831,11 @@ describe('AA — no averaged or per-month field survives anywhere', () => {
     const keys = Object.keys(spans[0] ?? {}).sort();
     expect(keys).toEqual([
       'accounts',
-      'additionalSpending',
       'currency',
       'explanation',
       'from',
       'months',
       'status',
-      'thirdPartyPaid',
       'to',
       'totals',
       'trackedTotalSpending',
@@ -834,8 +844,14 @@ describe('AA — no averaged or per-month field survives anywhere', () => {
   });
 });
 
-describe('untracked spending beside the identity', () => {
-  it('is reported for the interval and enters no total', () => {
+describe('untracked spending is not a span figure', () => {
+  /**
+   * A month's bucket states both settlements; 8.7's span does not, and this
+   * fixture is what stops one creeping back. Neither figure is part of the
+   * identity, so beside `trackedTotalSpending` they only invite a sum that
+   * means nothing.
+   */
+  it('leaves both settlements out of the result and out of every total', () => {
     const spans = findSpans(
       input({
         cashAccounts: [
@@ -850,9 +866,188 @@ describe('untracked spending beside the identity', () => {
         ],
       }),
     );
-    expect(spans[0]?.additionalSpending.toString()).toBe('50');
-    expect(spans[0]?.thirdPartyPaid.toString()).toBe('80');
+    expect(spans).toHaveLength(1);
     expect(spans[0]?.totals.knownTrackedExpenses.toString()).toBe('0');
+    expect(spans[0]?.trackedTotalSpending.toString()).toBe('0');
+    expect(spans[0]?.unclassified.toString()).toBe('0');
+    const serialised = JSON.stringify(spans[0]);
+    expect(serialised).not.toContain('additionalSpending');
+    expect(serialised).not.toContain('thirdPartyPaid');
+  });
+});
+
+describe('W — the requested window bounds the answer, never the search', () => {
+  /**
+   * `from` is the earliest month a caller wants **returned**. It is not
+   * permission to forget earlier evidence, and it is not a clip: a span's
+   * opening anchor is a complete month end wherever it happens to fall, and
+   * moving `to`/`from` inwards would report an interval whose endpoints nobody
+   * measured.
+   */
+
+  it('W1 — finds a span whose opening anchor lies before the requested window', () => {
+    // August is the anchor, the caller asks from October, and the answer is
+    // still the September–November span with September's spending inside it.
+    const cashAccounts = [
+      withEnds(A, 'BBVA', [
+        ['2026-08-31', '1000'],
+        ['2026-11-30', '700'],
+      ]),
+    ];
+    const expenses = [
+      expense({ incurredOn: plainDate('2026-09-15'), amount: new Decimal('100') }),
+    ];
+
+    const spans = findSpans(
+      input({ cashAccounts, expenses, from: monthKey(plainDate('2026-10-01')) }),
+    );
+
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.from).toBe(plainDate('2026-09-01'));
+    expect(spans[0]?.to).toBe(plainDate('2026-11-30'));
+    expect(spans[0]?.months).toEqual(['2026-09-01', '2026-10-01', '2026-11-01']);
+    expect(spans[0]?.totals.knownTrackedExpenses.toString()).toBe('100');
+    expect(spans[0]?.totals.cashDelta.toString()).toBe('-300');
+    expect(spans[0]?.unclassified.toString()).toBe('200');
+  });
+
+  it('W2 — looks back as far as the evidence goes, with no fixed depth', () => {
+    // The anchor is more than three years before the requested window: any
+    // lookback constant, however generous, would eventually be too short.
+    const spans = findSpans(
+      input({
+        cashAccounts: [
+          withEnds(A, 'BBVA', [
+            ['2023-04-30', '5000'],
+            ['2026-11-30', '4000'],
+          ]),
+        ],
+        from: monthKey(plainDate('2026-11-01')),
+      }),
+    );
+
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.from).toBe(plainDate('2023-05-01'));
+    expect(spans[0]?.months).toHaveLength(43);
+    expect(spans[0]?.totals.cashDelta.toString()).toBe('-1000');
+  });
+
+  it('W3 — excludes a span that ended before the window began', () => {
+    // Two spans exist: February–May and September–November. A window opening
+    // in September keeps the second and drops the first entirely.
+    const cashAccounts = [
+      withEnds(A, 'BBVA', [
+        ['2026-01-31', '1000'],
+        ['2026-05-31', '900'],
+        ['2026-08-31', '800'],
+        ['2026-11-30', '700'],
+      ]),
+    ];
+
+    expect(findSpans(input({ cashAccounts })).map((span) => span.from)).toEqual([
+      plainDate('2026-02-01'),
+      plainDate('2026-06-01'),
+      plainDate('2026-09-01'),
+    ]);
+
+    const windowed = findSpans(
+      input({ cashAccounts, from: monthKey(plainDate('2026-09-01')) }),
+    );
+    expect(windowed.map((span) => span.from)).toEqual([plainDate('2026-09-01')]);
+  });
+
+  it('W4 — returns an overlapping span whole, never clipped to the window', () => {
+    // The window opens in November; the span runs September to November. All
+    // three months, both endpoints and every total are the unwindowed answer.
+    const cashAccounts = [
+      withEnds(A, 'BBVA', [
+        ['2026-08-31', '1000'],
+        ['2026-11-30', '700'],
+      ]),
+    ];
+    const expenses = [
+      expense({ incurredOn: plainDate('2026-09-15'), amount: new Decimal('100') }),
+      expense({ incurredOn: plainDate('2026-11-15'), amount: new Decimal('50') }),
+    ];
+
+    const whole = findSpans(input({ cashAccounts, expenses }));
+    const windowed = findSpans(
+      input({ cashAccounts, expenses, from: monthKey(plainDate('2026-11-01')) }),
+    );
+
+    expect(windowed).toHaveLength(1);
+    expect(windowed[0]?.months).toEqual(['2026-09-01', '2026-10-01', '2026-11-01']);
+    expect(JSON.stringify(windowed)).toBe(JSON.stringify(whole));
+  });
+
+  it('W5 — opens a span at the vacuous month end before the first account', () => {
+    // The account opens in March and is first measured in June. The March–June
+    // stretch is reconcilable because February owed nothing: no account of this
+    // currency existed then, so `end(Feb)` is a complete anchor and the account
+    // opens at exactly zero.
+    const spans = findSpans(
+      input({
+        cashAccounts: [
+          account(A, 'BBVA', [monthEnd(A, '2026-06-30', '400')], { openedOn: '2026-03-10' }),
+        ],
+        income: [
+          income({ receivedOn: plainDate('2026-04-10'), netAmount: new Decimal('500') }),
+        ],
+      }),
+    );
+
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.from).toBe(plainDate('2026-03-01'));
+    expect(spans[0]?.to).toBe(plainDate('2026-06-30'));
+    expect(spans[0]?.accounts[0]?.openingState).toBe('opened_zero');
+    expect(spans[0]?.accounts[0]?.opening.toString()).toBe('0');
+    expect(spans[0]?.totals.cashDelta.toString()).toBe('400');
+    expect(spans[0]?.unclassified.toString()).toBe('100');
+  });
+
+  it('W5 — but an account with no recorded opening date gets no such anchor', () => {
+    // The contrast that keeps W5 honest. "We do not know when this account
+    // opened" is not "it did not exist": an account with a null opening date
+    // existed at every month end, owes a value at each of them, and so leaves
+    // every end before its first balance **incomplete**. Treating the two the
+    // same would invent a change from zero that nobody measured.
+    const spans = findSpans(
+      input({
+        cashAccounts: [account(A, 'BBVA', [monthEnd(A, '2026-06-30', '400')])],
+        income: [
+          income({ receivedOn: plainDate('2026-04-10'), netAmount: new Decimal('500') }),
+        ],
+      }),
+    );
+
+    expect(spans).toEqual([]);
+  });
+
+  it('W6 — a window only ever selects from the answer it would give without one', () => {
+    // The invariant behind W1 to W4: `from` cannot create a span, cannot change
+    // one, and cannot reorder them. It can only leave some out.
+    const cashAccounts = [
+      withEnds(A, 'BBVA', [
+        ['2026-01-31', '1000'],
+        ['2026-05-31', '900'],
+        ['2026-08-31', '800'],
+        ['2026-11-30', '700'],
+      ]),
+      account(B, 'Dollars', [monthEnd(B, '2026-02-28', '50'), monthEnd(B, '2026-11-30', '20')], {
+        currency: 'USD',
+      }),
+    ];
+
+    const whole = findSpans(input({ cashAccounts }));
+    expect(whole).toHaveLength(4);
+
+    for (const month of ['2026-01', '2026-03', '2026-06', '2026-09', '2026-12'] as const) {
+      const windowed = findSpans(
+        input({ cashAccounts, from: monthKey(plainDate(`${month}-01`)) }),
+      );
+      const expected = whole.filter((span) => span.to >= plainDate(`${month}-01`));
+      expect(JSON.stringify(windowed)).toBe(JSON.stringify(expected));
+    }
   });
 });
 
