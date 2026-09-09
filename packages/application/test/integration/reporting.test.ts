@@ -3,7 +3,7 @@ import { sql, withoutUser } from '@vaultide/db';
 import { createHarness, type Harness } from '../helpers/harness';
 import { testContext, type RequestContext } from '../../src/context';
 import { provisionUser } from '../../src/users/provisioning';
-import { createCashAccount } from '../../src/positions/service';
+import { createCashAccount, removePosition } from '../../src/positions/service';
 import { recordValuation } from '../../src/positions/valuations';
 import { listCategories } from '../../src/users/categories';
 import { createExpenseEntry } from '../../src/flows/expenses';
@@ -17,8 +17,10 @@ import {
   getMonthToDateReportingCashFlow,
 } from '../../src/reconciliation/reporting-service';
 import type {
+  MissingReportingContributionDto,
   MonthToDateReportingCashFlowDto,
   MonthToDateTrackedReportingDto,
+  ReportingCashFlowFiguresDto,
 } from '../../src/reconciliation/types';
 
 /**
@@ -58,6 +60,39 @@ function trackedMtd(result: MonthToDateReportingCashFlowDto): MonthToDateTracked
     throw new Error(`expected a tracked interval, got ${result.kind}`);
   }
   return result;
+}
+
+/**
+ * The two causes that must never collapse into one another (8.5, 8.6).
+ *
+ * Written out once and compared as whole objects, so a test that expects one of
+ * them fails if the other's words appear instead.
+ */
+const MISSING_MONTH_END: MissingReportingContributionDto = {
+  currency: 'USD',
+  reason: 'missing_month_end',
+  detail: 'reconciliation_unavailable',
+};
+const MISSING_OPENING: MissingReportingContributionDto = {
+  currency: 'USD',
+  reason: 'missing_opening',
+  detail: 'reconciliation_unavailable',
+};
+
+/**
+ * The savings rate stays generically unavailable only because the cause it
+ * cannot state is on the aggregate it was observed on (12.5, 30.15 item 2).
+ */
+function expectRateDefersTo(
+  result: ReportingCashFlowFiguresDto,
+  cause: MissingReportingContributionDto,
+): void {
+  expect(result.personalSavings.missing).toContainEqual(cause);
+  expect(result.savingsRate).toEqual({
+    kind: 'unavailable',
+    reason: 'not_applicable',
+    detail: 'personal savings could not be stated in full',
+  });
 }
 
 const categoryOf = (kind: string): string => {
@@ -294,6 +329,10 @@ describe('a foreign bucket converts component by component', () => {
 
     expect(result.thirdPartyPaid.availability).toBe('unavailable');
     expect(result.thirdPartyPaid.missing[0]?.currency).toBe('GBP');
+    // A conversion that had no rate, and not a reconciliation that failed.
+    expect(result.thirdPartyPaid.missing[0]?.reason).toBe('fx_missing');
+    expect(result.thirdPartyPaid.missing).not.toContainEqual(MISSING_MONTH_END);
+    expect(result.thirdPartyPaid.missing).not.toContainEqual(MISSING_OPENING);
     // The memo is in no total, so nothing else moved.
     expect(result.trackedTotalSpending.availability).toBe('available');
     expect(result.personalSavings.availability).toBe('available');
@@ -442,6 +481,34 @@ describe('the current month reports through D', () => {
     expect(after.unclassified.value.amount).toBe(before.unclassified.value.amount);
     expect(after.trackedTotalSpending.value.amount).toBe(before.trackedTotalSpending.value.amount);
     expect(after.asOf).toBe('2026-09-06');
+  });
+
+  it('names an unusable opening as such, and not as a missing valuation', async () => {
+    const eur = await makeAccount('BBVA');
+    await statement(eur, '2026-08-31', '1000.00');
+    await snapshot(eur, '2026-09-06', '900.00');
+    await expense(SEPT_10, {
+      kind: 'food', incurredOn: '2026-09-03', amount: '100.00', cashPositionId: eur,
+    });
+    // A dollar account whose earliest balance is an ordinary August snapshot: it
+    // existed before September, so it is not `first_balance`, and that balance
+    // is not August's statement, so its opening is `carried` and unusable.
+    const usd = await makeAccount('Dollars', 'USD');
+    await snapshot(usd, '2026-08-20', '400.00');
+    await snapshot(usd, '2026-09-06', '500.00');
+
+    const result = trackedMtd(await getMonthToDateReportingCashFlow(readDeps(), SEPT_10));
+
+    expect(result.asOf).toBe('2026-09-06');
+    // The euro side is stated in full; only the dollar residual is missing.
+    expect(result.trackedTotalSpending.availability).toBe('partial');
+    expect(result.trackedTotalSpending.value.amount).toBe('100');
+    expect(result.trackedTotalSpending.missing).toEqual([MISSING_OPENING]);
+    // The month-to-date engine's own reason, not the completed engine's, and not
+    // a claim that no valuation exists.
+    expect(result.unclassified.missing).not.toContainEqual(MISSING_MONTH_END);
+    expect(result.unclassified.missing[0]?.reason).not.toBe('no_valuation');
+    expectRateDefersTo(result, MISSING_OPENING);
   });
 
   it('states exact zeros for an interval in which nothing happened', async () => {
@@ -624,6 +691,134 @@ describe('the completed series', () => {
         to: parseMonth('2026-09'),
       }),
     ).rejects.toThrow();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The cause a broken bucket gives                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What a reporting figure says about a residual it could not state (8.5, 12.5).
+ *
+ * The reason is the bucket's own. `no_valuation` means one thing in this
+ * repository — nothing has ever been recorded about a position's value — and
+ * none of the cases below is that, so none of them may borrow it.
+ */
+describe('a bucket that could not be reconciled says why', () => {
+  /** A euro month that reconciles exactly: 40 of known spending, nothing else. */
+  const validEuro = async (): Promise<string> => {
+    const eur = await makeAccount('BBVA');
+    await statement(eur, '2026-08-31', '1000.00');
+    await statement(eur, '2026-09-30', '960.00');
+    await expense(OCT_1, {
+      kind: 'food', incurredOn: '2026-09-12', amount: '40.00', cashPositionId: eur,
+    });
+    return eur;
+  };
+
+  it('R1 — a missing month-end statement, named as one', async () => {
+    await validEuro();
+    // A dollar account with an August statement and nothing for September: its
+    // closing is `carried`, so the bucket has no usable endpoint.
+    const usd = await makeAccount('Dollars', 'USD');
+    await statement(usd, '2026-08-31', '500.00');
+
+    const result = await getMonthReportingCashFlow(readDeps(), OCT_1, SEPTEMBER);
+
+    expect(result.trackedTotalSpending.availability).toBe('partial');
+    // The euro side survives intact.
+    expect(result.trackedTotalSpending.value.amount).toBe('40');
+    expect(result.trackedTotalSpending.missing).toEqual([MISSING_MONTH_END]);
+    expect(result.unclassified.missing).not.toContainEqual(MISSING_OPENING);
+    expectRateDefersTo(result, MISSING_MONTH_END);
+  });
+
+  it('R4 — a bucket that contradicts itself still says unresolved', async () => {
+    const eur = await makeAccount('BBVA');
+    await statement(eur, '2026-08-31', '1000.00');
+    // Cash grew by 1000 and only 100 of income explains it.
+    await statement(eur, '2026-09-30', '2000.00');
+    await income(OCT_1, { receivedOn: '2026-09-05', netAmount: '100.00', cashPositionId: eur });
+
+    const result = await getMonthReportingCashFlow(readDeps(), OCT_1, SEPTEMBER);
+
+    expect(result.monthStatus).toBe('unresolved');
+    const unresolved = {
+      currency: 'EUR', reason: 'not_applicable', detail: 'unresolved',
+    } satisfies MissingReportingContributionDto;
+    expect(result.unclassified.missing).toEqual([unresolved]);
+    expectRateDefersTo(result, unresolved);
+  });
+
+  it('R5 — a flow with no account to reconcile against, named as one', async () => {
+    await validEuro();
+    // A dollar expense recorded without naming an account — which the write path
+    // allows only while a dollar account exists — and then that account, which
+    // had no balances of its own, deleted. 8.3's read-side case.
+    const usd = await makeAccount('Dollars', 'USD');
+    await expense(OCT_1, {
+      kind: 'food', incurredOn: '2026-09-12', amount: '7.00',
+      currency: 'USD', cashPositionId: null,
+    });
+    await removePosition(harness.services.positions, OCT_1, usd);
+    await forgetRates();
+    await rate('USD', '2026-09-12', '2.0');
+
+    const result = await getMonthReportingCashFlow(readDeps(), OCT_1, SEPTEMBER);
+
+    const flowWithout = {
+      currency: 'USD', reason: 'not_applicable', detail: 'flow_without_cash_account',
+    } satisfies MissingReportingContributionDto;
+    expect(result.unclassified.missing).toEqual([flowWithout]);
+    // The flow itself is real and still counted: 40 EUR plus 7 USD at 2.0.
+    expect(result.knownConsumption.value.amount).toBe('43.5');
+    expectRateDefersTo(result, flowWithout);
+  });
+
+  it('R6 — a bucket whose every account is excluded, named as one', async () => {
+    // The account existed before September but its first balance lands in it, so
+    // 8.1 excludes it and nothing is left to reconcile.
+    const eur = await makeAccount('BBVA');
+    await statement(eur, '2026-09-30', '960.00');
+    await expense(OCT_1, {
+      kind: 'food', incurredOn: '2026-09-12', amount: '40.00', cashPositionId: eur,
+    });
+
+    const result = await getMonthReportingCashFlow(readDeps(), OCT_1, SEPTEMBER);
+
+    expect(result.monthStatus).toBe('unavailable');
+    const excluded = {
+      currency: 'EUR', reason: 'not_applicable', detail: 'first_balance',
+    } satisfies MissingReportingContributionDto;
+    expect(result.unclassified.missing).toEqual([excluded]);
+    expectRateDefersTo(result, excluded);
+  });
+
+  it('takes the most specific cause when one bucket has two', async () => {
+    // One account with no September statement, one whose first balance lands in
+    // September: the bucket raises `missing_month_end` and `first_balance`.
+    const unusable = await makeAccount('Unusable');
+    await statement(unusable, '2026-08-31', '1000.00');
+    const excluded = await makeAccount('Excluded');
+    await statement(excluded, '2026-09-30', '500.00');
+
+    const result = await getMonthReportingCashFlow(readDeps(), OCT_1, SEPTEMBER);
+
+    expect(result.unclassified.missing).toEqual([
+      { currency: 'EUR', reason: 'missing_month_end', detail: 'reconciliation_unavailable' },
+    ]);
+  });
+
+  it('emits no_valuation for none of them', async () => {
+    // The one word this mapping may never borrow, over every case above.
+    await validEuro();
+    const usd = await makeAccount('Dollars', 'USD');
+    await statement(usd, '2026-08-31', '500.00');
+
+    const result = await getMonthReportingCashFlow(readDeps(), OCT_1, SEPTEMBER);
+
+    expect(JSON.stringify(result)).not.toContain('no_valuation');
   });
 });
 

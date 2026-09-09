@@ -11,11 +11,14 @@ import {
   reportSourceOnly,
   startOfMonthKey,
   untrackedContributions,
+  type BucketResult,
   type CurrencyCode,
-  type Decimal,
   type FxTable,
+  type Issue,
+  type IssueKey,
   type MissingContributionInput,
   type MonthKey,
+  type MtdBucketResult,
   type PlainDate,
   type ReportingAmount,
   type ReportingCashFlow,
@@ -116,17 +119,67 @@ function cashFlowDto(flow: ReportingCashFlow): ReportingCashFlowFiguresDto {
   };
 }
 
-/** Why a bucket's residual is not a spending figure, in that bucket's own words. */
+/** One reconciled bucket, from either engine, with the causes each one records. */
+type NativeBucket = BucketResult | MtdBucketResult;
+
+/** 12.5's token for a bucket that never reached the identity, as Slice 9 named it. */
+const RECONCILIATION_UNAVAILABLE = 'reconciliation_unavailable';
+
+const raises = (bucket: NativeBucket, key: IssueKey): boolean =>
+  bucket.issues.some((issue: Issue) => issue.key === key);
+
+/**
+ * Why a bucket's residual is not a spending figure, in that bucket's own words.
+ *
+ * The cause is read off the bucket, never inferred from its status alone. Both
+ * engines already know it: the month-to-date one carries a dedicated
+ * `missing_opening`, the completed one names its evidence failure
+ * `missing_month_end` in 8.5's catalogue, and 7.6's vocabulary happens to have a
+ * member for each. Passing the status and letting this layer guess would throw
+ * away an answer that had already been worked out.
+ *
+ * `no_valuation` is never emitted from here, whatever the cause. It means one
+ * thing in this repository — nothing has ever been recorded about a position's
+ * value, which is what `positions/valuation` says when it returns it and what
+ * net worth reports when it propagates it — and a missing statement, an
+ * unusable opening, a flow with no account and an excluded account are four
+ * other things. Where 7.6 has no member for the cause, the generic
+ * derived-result fallback carries the native key in `detail` instead of
+ * borrowing a reason that already means something else.
+ *
+ * `detail` keeps 12.5's category token wherever the bucket simply never reached
+ * the identity, so a reader that only knows Slice 9's two words still
+ * understands it.
+ */
 function residualGap(
-  status: string,
+  bucket: NativeBucket,
 ): { reason: UnavailableReason; detail: string } | undefined {
-  if (status === 'unresolved') {
+  // An unresolved bucket computed an identity that contradicts itself, which is
+  // an answer rather than an evidence failure, and is settled before any of the
+  // causes below (30.12).
+  if (bucket.status === 'unresolved') {
     return { reason: 'not_applicable', detail: 'unresolved' };
   }
-  if (status === 'unavailable') {
-    return { reason: 'no_valuation', detail: 'reconciliation_unavailable' };
+  if (bucket.status !== 'unavailable') return undefined;
+
+  // Fixed precedence, decided by looking each key up rather than by reading
+  // whichever issue the engine happened to raise first, so the order of
+  // `issues` cannot change the answer.
+  if ('reason' in bucket && bucket.reason === 'missing_opening') {
+    return { reason: 'missing_opening', detail: RECONCILIATION_UNAVAILABLE };
   }
-  return undefined;
+  if (raises(bucket, 'missing_month_end')) {
+    return { reason: 'missing_month_end', detail: RECONCILIATION_UNAVAILABLE };
+  }
+  if (raises(bucket, 'flow_without_cash_account')) {
+    return { reason: 'not_applicable', detail: 'flow_without_cash_account' };
+  }
+  if (raises(bucket, 'first_balance')) {
+    return { reason: 'not_applicable', detail: 'first_balance' };
+  }
+  // No cause the engines can currently produce is missing from the list above,
+  // so this makes no claim rather than inventing one.
+  return { reason: 'not_applicable', detail: RECONCILIATION_UNAVAILABLE };
 }
 
 interface BuiltMonth {
@@ -146,12 +199,10 @@ interface BuiltMonth {
  */
 function buildMonth(
   input: CompletedMonthData['input'] | MonthToDateData['input'],
-  buckets: readonly {
-    readonly currency: CurrencyCode;
-    readonly status: string;
-    readonly accounts: readonly { readonly positionId: string; readonly excludedFirstBalance: boolean }[];
-    readonly totals: { readonly unclassified?: Decimal | undefined };
-  }[],
+  // The engines' own result types, not a structural subset of them: the subset
+  // this used to take had no `issues` and no `reason` in it, so the causes those
+  // carry were dropped before anything could read them.
+  buckets: readonly NativeBucket[],
   month: MonthKey,
   from: PlainDate,
   to: PlainDate,
@@ -162,7 +213,7 @@ function buildMonth(
 
   for (const bucket of buckets) {
     currencies.add(bucket.currency);
-    const gap = residualGap(bucket.status);
+    const gap = residualGap(bucket);
     const built = bucketContributions({
       records: input,
       expenses: input.expenses,
@@ -171,7 +222,7 @@ function buildMonth(
       month,
       from,
       to,
-      status: bucket.status as Parameters<typeof bucketContributions>[0]['status'],
+      status: bucket.status,
       unclassified: bucket.totals.unclassified,
       ...(gap === undefined ? {} : { residualReason: gap.reason, residualDetail: gap.detail }),
     });

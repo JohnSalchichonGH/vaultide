@@ -83,6 +83,23 @@ const completed = (over: Partial<CompletedMonthInput> = {}): CompletedMonthInput
   ...over,
 });
 
+/**
+ * The reason a caller names for a residual it cannot state.
+ *
+ * Deliberately this fixture's own label rather than the application's mapping.
+ * Which native cause becomes which reporting reason is decided in the reporting
+ * service and tested there, against the real engines and the real service; what
+ * these fixtures test is that `bucketContributions` carries whatever the caller
+ * named, verbatim, into the missing dependency. Restating the mapping here would
+ * make it pass whether or not production still agreed with it.
+ */
+const fixtureGap = (
+  status: string,
+): { reason: 'not_applicable'; detail: string } | undefined =>
+  status === 'unresolved' || status === 'unavailable'
+    ? { reason: 'not_applicable', detail: `fixture:${status}` }
+    : undefined;
+
 /** Reconcile, classify and report one completed EUR month. */
 function report(input: CompletedMonthInput, countAdditionalSpending = true): ReportingCashFlow {
   const result = reconcileCompletedMonth(input);
@@ -90,12 +107,7 @@ function report(input: CompletedMonthInput, countAdditionalSpending = true): Rep
   const missing = [];
 
   for (const bucket of result.buckets) {
-    const gap =
-      bucket.status === 'unresolved'
-        ? { reason: 'not_applicable' as const, detail: 'unresolved' }
-        : bucket.status === 'unavailable'
-          ? { reason: 'no_valuation' as const, detail: 'reconciliation_unavailable' }
-          : undefined;
+    const gap = fixtureGap(bucket.status);
     const built = bucketContributions({
       records: input,
       expenses: input.expenses,
@@ -248,7 +260,7 @@ describe('a bucket whose residual is not a spending figure', () => {
     expect(result.knownConsumption.availability).toBe('available');
     expect(value(result.additionalSpending)).toBe('50');
     expect(result.unclassified.availability).toBe('unavailable');
-    expect(result.unclassified.missing[0]?.detail).toBe('unresolved');
+    expect(result.unclassified.missing[0]?.detail).toBe('fixture:unresolved');
     expect(result.consumption.availability).toBe('partial');
     expect(isUnavailable(result.savingsRate)).toBe(true);
   });
@@ -263,7 +275,7 @@ describe('a bucket whose residual is not a spending figure', () => {
 
     expect(value(result.externalIncome)).toBe('2100');
     expect(result.unclassified.availability).toBe('unavailable');
-    expect(result.unclassified.missing[0]?.detail).toBe('reconciliation_unavailable');
+    expect(result.unclassified.missing[0]?.detail).toBe('fixture:unavailable');
     expect(result.trackedSavingsFromIncome.availability).toBe('partial');
 
     // The spending side has no rows of its own here, so its known part is an
@@ -276,7 +288,7 @@ describe('a bucket whose residual is not a spending figure', () => {
     for (const figure of [result.consumption, result.trackedTotalSpending, result.totalSpending]) {
       expect(figure.availability).toBe('partial');
       expect(value(figure)).toBe('0');
-      expect(figure.missing[0]?.detail).toBe('reconciliation_unavailable');
+      expect(figure.missing[0]?.detail).toBe('fixture:unavailable');
     }
     // A missing residual never becomes a zero on the way through.
     expect(result.unclassified.statedCount).toBe(0);
@@ -357,13 +369,13 @@ describe('the edges of the classifier', () => {
       missing: [
         { field: 'unclassified', currency: GBP, reason: 'not_applicable' },
         { field: 'unclassified', currency: GBP, reason: 'fx_missing' },
-        { field: 'unclassified', currency: EUR, reason: 'no_valuation' },
+        { field: 'unclassified', currency: EUR, reason: 'missing_month_end' },
       ],
       countAdditionalSpending: true,
     });
 
     expect(result.unclassified.missing.map((m) => `${m.currency}/${m.reason}`)).toEqual([
-      'EUR/no_valuation',
+      'EUR/missing_month_end',
       'GBP/fx_missing',
       'GBP/not_applicable',
     ]);
