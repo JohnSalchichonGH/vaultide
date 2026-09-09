@@ -1,6 +1,6 @@
-# Vaultide — Personal Finance Platform Implementation Blueprint (frozen, v2.1.7)
+# Vaultide — Personal Finance Platform Implementation Blueprint (frozen, v2.1.8)
 
-**Status:** Planning deliverable (no code written). Produced 2026-09-06 against the supplied product specification; revised after an adversarial model review, a product-owner review (v2), a targeted consistency pass (v2.1), a defect-fix freeze pass (v2.1.1), four final corrections (v2.1.2) and two narrow post-Phase-2 consistency corrections (v2.1.3, the onboarding step allocation; v2.1.4, one arithmetic slip in the Phase 3 savings golden — neither changed product behaviour, schema, accounting or security semantics), and a pre-Phase-3 clarification pass (v2.1.5, which settles the recurring-occurrence, template-deletion, month-to-date, dormancy, savings-availability and bulk-history questions Phase 3 raised before a line of Phase 3 code was written; it changes the Phase 3 schema and scope and no phase already delivered), extended once more before migration 0006 (v2.1.6, which settles how a recurring template materializes settlement, tightens the occurrence invariant to both-or-neither, and bounds occurrence generation by the template’s own dates), and clarified once more before that migration was deployed (v2.1.7, which bounds early materialization to the next unresolved occurrence and separates a template’s schedule from its archive state). This version supersedes every earlier version in full; v2.1.2 was the frozen input to Phase 0, and Phases 0–2 were built and frozen against it.
+**Status:** Planning deliverable (no code written). Produced 2026-09-06 against the supplied product specification; revised after an adversarial model review, a product-owner review (v2), a targeted consistency pass (v2.1), a defect-fix freeze pass (v2.1.1), four final corrections (v2.1.2) and two narrow post-Phase-2 consistency corrections (v2.1.3, the onboarding step allocation; v2.1.4, one arithmetic slip in the Phase 3 savings golden — neither changed product behaviour, schema, accounting or security semantics), and a pre-Phase-3 clarification pass (v2.1.5, which settles the recurring-occurrence, template-deletion, month-to-date, dormancy, savings-availability and bulk-history questions Phase 3 raised before a line of Phase 3 code was written; it changes the Phase 3 schema and scope and no phase already delivered), extended once more before migration 0006 (v2.1.6, which settles how a recurring template materializes settlement, tightens the occurrence invariant to both-or-neither, and bounds occurrence generation by the template’s own dates), clarified once more before that migration was deployed (v2.1.7, which bounds early materialization to the next unresolved occurrence and separates a template’s schedule from its archive state), and corrected once more when the completed-month engine proved one issue predicate impossible (v2.1.8, which reselects the two `unexplained_inflow` variants on the sign of `TrackedTotalSpending`; it changes no identity, no schema and no phase already delivered). This version supersedes every earlier version in full; v2.1.2 was the frozen input to Phase 0, and Phases 0–2 were built and frozen against it.
 **Audience:** The Claude Code session(s) that will implement the application phase by phase, and the product owner.
 **Product name:** **Vaultide**. The repository root is `vaultide/`, workspace packages are published under the `@vaultide/*` namespace, and "Vaultide" is the product-facing name in app metadata, authentication and email branding, and hosting/monitoring project names. Historical local prototype paths quoted in Section 1.3 keep their real on-disk names.
 
@@ -243,6 +243,7 @@ The rules below supersede the corresponding spec text. Everything else in the sp
 - **Product-owner review (v1.1 → v2):** the sixteen corrections now embodied in R17–R31, M5, M14–M18 and U9–U10: no future-dated actuals; two net-worth metrics; capital improvements as capex; opening investment basis; monthly model with multi-month spans instead of per-account spans/windows; explicit per-month "confirm unchanged"; multi-currency scenario funding; tracked vs additional spending; explicit liability signs; global FX refresh; dedicated backup role; fiat-only currencies; one coherent Monte Carlo correlation behavior; concrete custom goals; exact display formatting; version wording.
 - **Final consistency pass (v2 → v2.1):** month-end balances only after the month has ended (`today > end(M)`); month-to-date spending only on a common snapshot date; one savings definition with no double counting (F16, 12.5); expense settlement split into self-paid and third-party (R24); `opening_net_invested_basis` naming and labels (R20, 9.3); no inferred vacancy (F18); a single base-currency reserve target without per-currency shares (13.4); properties always in financial net worth in scenarios; no time-dependent database CHECKs (M5); hardened RLS expression (17.4); one-time role bootstrap (22.2); currency minor units 0..8; Monte Carlo factor model with an idiosyncratic component (13.9).
 - **Freeze pass (v2.1 → v2.1.1):** month-to-date uses the *latest common* snapshot date and is unavailable only when no common date exists (8.6); one Monte Carlo correlation schema and an explicit default class matrix verified positive semi-definite (13.2, 13.9); explicit semantics for `income_entries.settlement = external` and a schema rule limiting `reinvested` to investment distributions (7.4, 12.5); explicit `recurring_template_skips` table replacing skip facts in JSON (6.2); a systematic nullability pass with PostgreSQL enums for every closed set (6.1–6.2); an orientation-independent `convertWithSpread` helper for scenario conversions (13.4); stale "lifetime"/"date backstop" wording removed.
+- **Issue-catalogue correction (v2.1.7 → v2.1.8):** the two `unexplained_inflow` variants were split on `ΣK` against `TrackedTotalSpending`, a predicate the issue’s own trigger makes impossible to satisfy on the variant-A side (30.11). Variant A is now selected by a **negative** `TrackedTotalSpending` — cash grew more than the recorded flows explain — and variant B by a non-negative one. No identity, algorithm or amount changed; the forgotten-salary example in 8.10 is variant A and its unexplained inflow is still €1,702.
 - **Pre-deployment clarification (v2.1.6 → v2.1.7):** two semantics the implementation could not settle for itself (30.10): "received today" may materialize only the **earliest unresolved future occurrence** of a template, which bounds early acceptance by the schedule rather than by an invented number of days; and `archived_at` is current-state metadata rather than a historical schedule boundary, so a template archived today cannot erase an occurrence a past month was expecting.
 - **Pre-Phase-3 clarification, second pass (v2.1.5 → v2.1.6):** recurring templates materialize tracked-cash flows only in Phase 3, so accepting a suggestion never has to guess a settlement; the occurrence invariant tightened from an implication to both-or-neither; occurrence generation bounded by `start_date` and `end_date` without moving the anchor; term selection keyed to `occurrence_date`; `settlement = external` restricted in Phase 3 to the ordinary income kinds 7.4 actually covers; and one deferred note about a Phase 9 foreign key (30.9).
 - **Pre-Phase-3 clarification (v2.1.4 → v2.1.5):** the questions the Phase 3 implementation map raised, answered before implementation (30.8): the bulk editor’s known-expense-total column deferred to Phase 7 for want of a source representation; an explicit `occurrence_date` giving a recurring occurrence a durable identity distinct from the flow’s financial date; that identity carried structurally on `transfers` too; materialized flows keeping their template identity (`NO ACTION`, archive rather than delete); race-safe accept/skip; fixed-anchor short-month recurrence; frozen recurrence identity once history exists; the month-to-date snapshot-required account set; dormancy clearing; and savings availability propagation.
@@ -618,7 +619,7 @@ reconcileMonth(user, M):                     // M completed
 | Status | Condition | Meaning shown to user |
 |---|---|---|
 | `unavailable` | Any participating, non-excluded account has `carried`/`missing` at either end; or no included account; or a null-leg flow has no account | "Spending can't be inferred for September: month-end balance missing for BBVA." Net worth still shows (stale-labelled). Actions: enter the month-end balance; confirm unchanged. |
-| `unresolved` | Computed but `unclassified < 0` (native currency, tolerance exactly 0), or open blocking issues | "Cash grew €102 more than your records explain." Total spending shown as "≥ €411 (known)". |
+| `unresolved` | Computed but `unclassified < 0` (native currency, tolerance exactly 0), or open blocking issues | The wording follows the issue’s variant (8.5): with a negative tracked total, "Cash grew €102 more than your records explain."; with a non-negative one, "Known expenses exceed the cash that left." Total spending shown as "≥ €411 (known)". |
 | `estimated` | Computed, `unclassified ≥ 0`, at least one excluded `first_balance` account | "Estimated — Savings started being tracked this month; its earlier movements are not included." |
 | `reliable` | All participating accounts included, `unclassified ≥ 0`, no blocking issues | Plain number. |
 | `provisional` | Current month only (8.6), through the latest date `D` in the month on which every participating non-dormant cash account has a snapshot; if no such date exists the current month's spending is `unavailable` with the `mtd_no_common_date` issue | "Month-to-date is through 6 Sep (provisional)"; when some accounts have newer individual balances: "Some accounts have newer individual balances; update all accounts to move the MTD date forward."; without any common date: "Update all cash accounts to the same date to calculate month-to-date spending." |
@@ -634,7 +635,7 @@ Month status = worst across buckets (`unavailable > unresolved > estimated > rel
 | `mtd_newer_balances` | current month: MTD is valid through `D`, but at least one account has a snapshot dated after `D` | advisory (MTD stays valid through `D`) | Update all cash accounts today to move the MTD date forward |
 | `first_balance` | pre-existing account first tracked in M | info | Enter an earlier month-end balance (bulk editor) if known |
 | `flow_without_cash_account` | null-leg flow in a currency with no participating cash account | blocking | Choose the cash account; add the account |
-| `unexplained_inflow` | `unclassified < 0`. Variant A when `ΣK ≤ total` ("cash grew more than your records explain"); variant B when `ΣK > total` ("known expenses exceed the cash that left; an inflow may be missing, or an expense was paid from outside tracked cash") | blocking | Add income; Add withdrawal/loan proceeds/asset sale; Add transfer from another currency; Correct a balance; Mark an expense as paid from an untracked source; Accept as adjustment (creates `income_entries.kind = adjustment`) |
+| `unexplained_inflow` | `unclassified < 0`. Variant A when `total < 0` ("cash grew more than your records explain"); variant B when `total ≥ 0` ("known expenses exceed the cash that left; an inflow may be missing, or an expense was paid from outside tracked cash"). The trigger already implies `ΣK > total`, so that comparison cannot separate the two (30.11); the sign of the tracked total does, with exactly zero on variant B’s side because a tracked total of zero is not cash growth. The amount reported is `−unclassified`, in both variants | blocking | Add income; Add withdrawal/loan proceeds/asset sale; Add transfer from another currency; Correct a balance; Mark an expense as paid from an untracked source; Accept as adjustment (creates `income_entries.kind = adjustment`) |
 | `possible_missing_conversion` | bucket C1 has `unexplained_inflow` X and bucket C2 has a spending spike ≥ X converted within ±5 % at the month's average rate | advisory | Link as cross-currency transfer (prefilled) |
 | `possible_missing_interest` | per-account residual on a savings/brokerage_cash account is positive and < 0.5 % of its balance | advisory | Record interest income (prefilled) |
 | `suggested_income_missing` | active income template with an occurrence scheduled in M for which no flow carries that `(template_id, occurrence_date)` and no `recurring_template_skips` row exists | advisory | Accept suggestion (date ≤ today); Skip this occurrence (writes a `recurring_template_skips` row; rental templates ask for a reason) |
@@ -710,7 +711,7 @@ interface BucketResult {
 `Δ = (7,880 − 8,055) + (8,740 − 8,509) = −175 + 231 = 56`. `ΣI = 2,100`. `ΣNin = 200`. `ΣNout = 200 + 1,000 + 235 = 1,435`. `ΣK = 300 + 111 = 411` (neither untracked expense is in K).
 `TrackedTotal = 2,100 + 200 − 1,435 − 56 = 809`. `Unclassified = 809 − 411 = 398`. Status `reliable`. Additional spending: 50. Total spending: 859. Paid by others (informational): 80, excluded from every total and from projection baselines.
 Per-account residuals: BBVA `−175 − (2,100 − 200 − 1,000 − 346 − 300) = −429`; Savings `231 − 200 = +31` → advisory `possible_missing_interest`. `398 = 429 − 31` ✓.
-If the €31 interest is recorded: `ΣI = 2,131`, `Total = 840`, `Unclassified = 429`. If the salary is forgotten: `Total = −1,291` → `unresolved`, `unexplained_inflow: 1,702`.
+If the €31 interest is recorded: `ΣI = 2,131`, `Total = 840`, `Unclassified = 429`. If the salary is forgotten: `Total = −1,291` → `unresolved`, `unexplained_inflow: 1,702`, **variant A** (the tracked total is negative, so cash grew more than the records explain — which is exactly the missing salary).
 
 **Golden test `reconciliation/span-sep-oct`.** Same accounts; September month-end balances missing; October month-end balances: BBVA 7,700.00, Savings 8,900.00. Flows in Sep + Oct: two salaries (2,100 each), two transfers to Savings (200 each), two contributions (1,000 each), two mortgage payments (346 = 111 + 235 each), insurance 300 (Sep), car repair 450 (Oct).
 September: `unavailable` (`missing_month_end`). October: `unavailable` (opening missing). Span 1 Sep – 31 Oct: `Δ = (7,700 − 8,055) + (8,900 − 8,509) = 36`; `ΣI = 4,200`; `ΣNin = 400`; `ΣNout = 400 + 2,000 + 470 = 2,870`; `ΣK = 300 + 450 + 222 = 972`; `Total = 4,200 + 400 − 2,870 − 36 = 1,694`; `Unclassified = 722`. Presented as "combined Sep–Oct"; both monthly cells stay empty in the Spending series.
@@ -2369,15 +2370,69 @@ Accepted and skipped rows are source facts and stay readable either way.
 
 ---
 
+### 30.11 v2.1.8 completed-reconciliation issue correction
+
+One predicate in the 8.5 issue catalogue was impossible to satisfy. It is
+corrected here, before the completed-month engine reaches production. Nothing
+else moves: no accounting identity, no schema, no status rule, no amount, and no
+phase already delivered.
+
+**The defect.** 8.5 raised `unexplained_inflow` when `unclassified < 0`, and
+split it into variant A when `ΣK ≤ total` and variant B when `ΣK > total`. But
+8.2 defines
+
+```
+Unclassified = TrackedTotalSpending − ΣK
+```
+
+so `unclassified < 0` *is* `ΣK > total`. The trigger and variant B's condition
+are the same statement, and variant A's condition is the trigger's negation:
+under the only circumstances the issue is raised at all, `ΣK ≤ total` can never
+hold. Every unexplained inflow was therefore variant B, including 8.10's own
+forgotten-salary example — whose natural reading, and the message 8.4 shows for
+`unresolved`, is variant A's "cash grew more than your records explain".
+
+**The correction.** The two variants are selected on the sign of the tracked
+total, which is the quantity that actually distinguishes the two situations:
+
+| Variant | Condition | What happened | Message |
+|---|---|---|---|
+| A | `unclassified < 0` **and** `total < 0` | Tracked cash grew by more than the recorded flow set explains | "Cash grew €X more than your records explain." |
+| B | `unclassified < 0` **and** `total ≥ 0` | Spending was inferred as non-negative, yet the explicitly known tracked expenses exceed it | "Known expenses exceed the cash that left; an inflow may be missing, or an expense was paid from outside tracked cash." |
+
+The reported amount is `−unclassified` in both, and there is **no epsilon**: the
+tolerance stays exactly zero, as 8.4 requires. Zero belongs to variant B —
+`total = 0` says the month's flows explain the cash exactly, which is not cash
+growth, even though `ΣK > 0` still leaves known expenses the cash cannot account
+for. Since `unclassified < 0` already implies `ΣK > total`, variant B is the
+strictly weaker statement and needs no further condition of its own.
+
+The issue key is unchanged. `unexplained_inflow` is one key with two readings,
+and it stays one key: `month_reviews.dismissed_issues` stores keys, so splitting
+it would silently un-dismiss issues somebody had already dealt with, and the two
+messages are a presentation difference rather than two different problems.
+
+**8.10 restated.** The forgotten-salary variant of the golden has
+`total = −1,291`, `ΣK = 411` and `unclassified = −1,702`. Under v2.1.8 it is
+**variant A** with an unexplained inflow of **€1,702** — the number is the one
+8.10 always gave, and only the reading is corrected.
+
+**Boundaries, for the tests.** `total = −0.01`, `ΣK = 0` → `unclassified =
+−0.01` → variant A. `total = 0`, `ΣK = 0.01` → `unclassified = −0.01` → variant
+B. `total = 0`, `ΣK = 0` → `unclassified = 0` → no issue at all. `total = 100`,
+`ΣK = 120` → `unclassified = −20` → variant B.
+
+---
+
 ## Ready for Phase 0
 
-No genuine blockers remain. The blueprint was frozen as v2.1.2 and Phase 0 began from it; it is frozen as v2.1.7 after the corrections in 30.6, 30.7, 30.8, 30.9 and 30.10, none of which changed a phase already delivered.
+No genuine blockers remain. The blueprint was frozen as v2.1.2 and Phase 0 began from it; it is frozen as v2.1.8 after the corrections in 30.6, 30.7, 30.8, 30.9, 30.10 and 30.11, none of which changed a phase already delivered.
 
 ---
 
 ## Freeze check
 
-- The seven v2.1.1 defects (30.4), the four v2.1.2 corrections (30.5), the v2.1.3 onboarding-range correction (30.6), the v2.1.4 savings-golden correction (30.7) the v2.1.5 pre-Phase-3 clarifications (30.8), the v2.1.6 second pass (30.9) and the v2.1.7 pre-deployment clarification (30.10) were corrected and propagated to the schema, algorithms, tests, phases and acceptance criteria; no accounting identity changed except in wording or representation (30.2), and the personal savings rate is an additional derived figure layered on the unchanged tracked identity.
+- The seven v2.1.1 defects (30.4), the four v2.1.2 corrections (30.5), the v2.1.3 onboarding-range correction (30.6), the v2.1.4 savings-golden correction (30.7) the v2.1.5 pre-Phase-3 clarifications (30.8), the v2.1.6 second pass (30.9), the v2.1.7 pre-deployment clarification (30.10) and the v2.1.8 issue-catalogue correction (30.11) were corrected and propagated to the schema, algorithms, tests, phases and acceptance criteria; no accounting identity changed except in wording or representation (30.2), and the personal savings rate is an additional derived figure layered on the unchanged tracked identity.
 - The default Monte Carlo configuration validates: the explicit class matrix in 13.9 is symmetric with unit diagonal, its smallest eigenvalue is ≈ +0.0265 and its Cholesky factorization succeeds, so it passes the same PSD validator as custom matrices; a dedicated golden test asserts this.
 - No contradictory month-to-date rules remain: every section now states the latest-common-date rule, with unavailability only when no common snapshot date exists.
 - Required schema nullability is explicit: every column in 6.2 is `NOT NULL` unless written `NULL`, liability-payment parts are exact non-null non-negative `NUMERIC(24,8)`, every closed set is a PostgreSQL enum, and NULL/enum rejection tests are generated per table.
@@ -2386,5 +2441,6 @@ No genuine blockers remain. The blueprint was frozen as v2.1.2 and Phase 0 began
 - Recurring occurrences have a durable identity (`occurrence_date`) distinct from the financial date, an occurrence cannot be both accepted and skipped, accepted history keeps its template identity, and no template edit can rewrite which occurrences the past contained (6.2, 6.3, 20.3, 30.8).
 - A materialized flow carries a template and an occurrence together or neither, a template materializes tracked cash only in Phase 3, and occurrence generation never precedes `start_date` or outlives `end_date` (6.2, 30.9).
 - Early materialization is bounded by the schedule rather than by a horizon, and a template’s archive state cannot rewrite what a past month expected (6.2, 12.6, 15.3, 23.2, 30.10).
-- No remaining blocker was found. The blueprint is frozen as v2.1.7.
+- Every issue predicate in 8.5 is satisfiable: the `unexplained_inflow` variants are selected on the sign of `TrackedTotalSpending`, not on a comparison the trigger already decides (8.5, 30.11).
+- No remaining blocker was found. The blueprint is frozen as v2.1.8.
 
