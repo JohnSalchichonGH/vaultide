@@ -1,6 +1,6 @@
-# Vaultide — Personal Finance Platform Implementation Blueprint (frozen, v2.1.11)
+# Vaultide — Personal Finance Platform Implementation Blueprint (frozen, v2.1.12)
 
-**Status:** Planning deliverable (no code written). Produced 2026-09-06 against the supplied product specification; revised after an adversarial model review, a product-owner review (v2), a targeted consistency pass (v2.1), a defect-fix freeze pass (v2.1.1), four final corrections (v2.1.2) and two narrow post-Phase-2 consistency corrections (v2.1.3, the onboarding step allocation; v2.1.4, one arithmetic slip in the Phase 3 savings golden — neither changed product behaviour, schema, accounting or security semantics), and a pre-Phase-3 clarification pass (v2.1.5, which settles the recurring-occurrence, template-deletion, month-to-date, dormancy, savings-availability and bulk-history questions Phase 3 raised before a line of Phase 3 code was written; it changes the Phase 3 schema and scope and no phase already delivered), extended once more before migration 0006 (v2.1.6, which settles how a recurring template materializes settlement, tightens the occurrence invariant to both-or-neither, and bounds occurrence generation by the template’s own dates), clarified once more before that migration was deployed (v2.1.7, which bounds early materialization to the next unresolved occurrence and separates a template’s schedule from its archive state), corrected once more when the completed-month engine proved one issue predicate impossible (v2.1.8, which reselects the two `unexplained_inflow` variants on the sign of `TrackedTotalSpending`), corrected again where the same engine had to invent a meaning the result shape demanded (v2.1.9, which makes `cashDelta` absent rather than partial when the complete included-account change cannot be computed), clarified once more before the month-to-date engine was written (v2.1.10, which settles the MTD evidence date, status precedence and result shape that 8.4/8.5/8.6 stated three different ways), and corrected once more before the span engine was written (v2.1.11, which makes a complete month end an intrinsic property of a date, removes a span status and a span field that could never carry a defined value, and states what a span does with a flow it cannot attribute). None changed an identity, the schema, or a phase already delivered. This version supersedes every earlier version in full; v2.1.2 was the frozen input to Phase 0, and Phases 0–2 were built and frozen against it.
+**Status:** Planning deliverable (no code written). Produced 2026-09-06 against the supplied product specification; revised after an adversarial model review, a product-owner review (v2), a targeted consistency pass (v2.1), a defect-fix freeze pass (v2.1.1), four final corrections (v2.1.2) and two narrow post-Phase-2 consistency corrections (v2.1.3, the onboarding step allocation; v2.1.4, one arithmetic slip in the Phase 3 savings golden — neither changed product behaviour, schema, accounting or security semantics), and a pre-Phase-3 clarification pass (v2.1.5, which settles the recurring-occurrence, template-deletion, month-to-date, dormancy, savings-availability and bulk-history questions Phase 3 raised before a line of Phase 3 code was written; it changes the Phase 3 schema and scope and no phase already delivered), extended once more before migration 0006 (v2.1.6, which settles how a recurring template materializes settlement, tightens the occurrence invariant to both-or-neither, and bounds occurrence generation by the template’s own dates), clarified once more before that migration was deployed (v2.1.7, which bounds early materialization to the next unresolved occurrence and separates a template’s schedule from its archive state), corrected once more when the completed-month engine proved one issue predicate impossible (v2.1.8, which reselects the two `unexplained_inflow` variants on the sign of `TrackedTotalSpending`), corrected again where the same engine had to invent a meaning the result shape demanded (v2.1.9, which makes `cashDelta` absent rather than partial when the complete included-account change cannot be computed), clarified once more before the month-to-date engine was written (v2.1.10, which settles the MTD evidence date, status precedence and result shape that 8.4/8.5/8.6 stated three different ways), and corrected once more before the span engine was written (v2.1.11, which makes a complete month end an intrinsic property of a date, removes a span status and a span field that could never carry a defined value, and states what a span does with a flow it cannot attribute), and settled once more before the savings engine was written (v2.1.12, which says when a total spending figure exists at all, stops a savings rate from ever being partial, ties 12.5’s tracked inputs to 8.1’s flow scope, and gives the two remaining 8.5 advisories and the Phase-3 rolling window a single meaning). None changed an identity, the schema, or a phase already delivered. This version supersedes every earlier version in full; v2.1.2 was the frozen input to Phase 0, and Phases 0–2 were built and frozen against it.
 **Audience:** The Claude Code session(s) that will implement the application phase by phase, and the product owner.
 **Product name:** **Vaultide**. The repository root is `vaultide/`, workspace packages are published under the `@vaultide/*` namespace, and "Vaultide" is the product-facing name in app metadata, authentication and email branding, and hosting/monitoring project names. Historical local prototype paths quoted in Section 1.3 keep their real on-disk names.
 
@@ -243,6 +243,7 @@ The rules below supersede the corresponding spec text. Everything else in the sp
 - **Product-owner review (v1.1 → v2):** the sixteen corrections now embodied in R17–R31, M5, M14–M18 and U9–U10: no future-dated actuals; two net-worth metrics; capital improvements as capex; opening investment basis; monthly model with multi-month spans instead of per-account spans/windows; explicit per-month "confirm unchanged"; multi-currency scenario funding; tracked vs additional spending; explicit liability signs; global FX refresh; dedicated backup role; fiat-only currencies; one coherent Monte Carlo correlation behavior; concrete custom goals; exact display formatting; version wording.
 - **Final consistency pass (v2 → v2.1):** month-end balances only after the month has ended (`today > end(M)`); month-to-date spending only on a common snapshot date; one savings definition with no double counting (F16, 12.5); expense settlement split into self-paid and third-party (R24); `opening_net_invested_basis` naming and labels (R20, 9.3); no inferred vacancy (F18); a single base-currency reserve target without per-currency shares (13.4); properties always in financial net worth in scenarios; no time-dependent database CHECKs (M5); hardened RLS expression (17.4); one-time role bootstrap (22.2); currency minor units 0..8; Monte Carlo factor model with an idiosyncratic component (13.9).
 - **Freeze pass (v2.1 → v2.1.1):** month-to-date uses the *latest common* snapshot date and is unavailable only when no common date exists (8.6); one Monte Carlo correlation schema and an explicit default class matrix verified positive semi-definite (13.2, 13.9); explicit semantics for `income_entries.settlement = external` and a schema rule limiting `reinvested` to investment distributions (7.4, 12.5); explicit `recurring_template_skips` table replacing skip facts in JSON (6.2); a systematic nullability pass with PostgreSQL enums for every closed set (6.1–6.2); an orientation-independent `convertWithSpread` helper for scenario conversions (13.4); stale "lifetime"/"date backstop" wording removed.
+- **Cash-flow and savings correction (v2.1.11 → v2.1.12):** 12.5 listed four figures as unavailable and left `TotalSpending` out of the list, so an unresolved month could produce a negative "total spending" or one below its own known expenses; it also offered a savings rate two shapes, `Unavailable` **or** partial, where a ratio of partial aggregates is not the user’s rate; and it never said that 12.5’s tracked inputs classify 8.1’s own scoped flows rather than a second scan of the month. 8.5’s two remaining advisories and the Phase-3 rolling window each had more than one financially observable reading. 30.15 settles all of them: `TotalSpending` follows tracked spending, an aggregate savings rate is never partial, `large_unclassified` reads six calendar months of `reliable` history with a minimum of three, `possible_missing_conversion` is the missing transfer’s own algebraic signature with the band `X2 ≤ U2 ≤ 1.05 × X2`, and rolling tracked spending averages complete reliable observations over `N` calendar months.
 - **Span correction (v2.1.10 → v2.1.11):** 8.7 described its own anchors two ways and carried two members no rule could reach (30.14). A complete month end is now an intrinsic property of a date and a currency, so the endpoint set is fixed before candidate pairs are considered and maximality means what it says; `estimated` leaves the span status set, because a complete opening anchor makes a span-level `first_balance` impossible; `perMonthAverageInformational` leaves the shape, because it was defined nowhere and R21 says a span is never averaged; and an unattributable null leg suppresses its candidate rather than being absorbed into a status the shape does not have.
 - **MTD clarification (v2.1.9 → v2.1.10):** eleven questions the month-to-date engine could not answer from 8.4, 8.5 and 8.6 together (30.13): where `provisional` sits in the status order and whether a negative unclassified overrides it; that `D` is one global date while arithmetic failures after it are bucket-local; that no `D` means no MTD totals at all rather than totals over an invented cut-off; that an empty inclusion set does not satisfy the evidence predicate by vacuous truth; that `first_balance` is a month-level exclusion during the search; which issues apply to the current month; and the exact account set behind `mtd_newer_balances`. No identity, schema or delivered phase changes.
 - **Result-shape correction (v2.1.8 → v2.1.9):** 8.3 returns an `unavailable` bucket before `Δ` is computed, while 8.9 required a `cashDelta` on every bucket, so an implementation had to invent a partial sum over whichever accounts happened to have endpoints — a figure indistinguishable, in the result, from the `Δ` of the identity (30.12). `cashDelta` is now optional and absent in exactly that case. The four role sums are unaffected: they are source-flow sums over the 8.1 scope and stay exact in every status.
@@ -641,11 +642,11 @@ Month status = worst across buckets (`unavailable > unresolved > provisional > e
 | `first_balance` | pre-existing account first tracked in M | info | Enter an earlier month-end balance (bulk editor) if known |
 | `flow_without_cash_account` | null-leg flow in a currency with no participating cash account | blocking | Choose the cash account; add the account |
 | `unexplained_inflow` | `unclassified < 0`. Variant A when `total < 0` ("cash grew more than your records explain"); variant B when `total ≥ 0` ("known expenses exceed the cash that left; an inflow may be missing, or an expense was paid from outside tracked cash"). The trigger already implies `ΣK > total`, so that comparison cannot separate the two (30.11); the sign of the tracked total does, with exactly zero on variant B’s side because a tracked total of zero is not cash growth. The amount reported is `−unclassified`, in both variants | blocking | Add income; Add withdrawal/loan proceeds/asset sale; Add transfer from another currency; Correct a balance; Mark an expense as paid from an untracked source; Accept as adjustment (creates `income_entries.kind = adjustment`) |
-| `possible_missing_conversion` | bucket C1 has `unexplained_inflow` X and bucket C2 has a spending spike ≥ X converted within ±5 % at the month's average rate | advisory | Link as cross-currency transfer (prefilled) |
+| `possible_missing_conversion` | a missing cross-currency transfer’s own signature (30.15): bucket C1 has `unexplained_inflow` `X = −unclassified`, and another native bucket C2 of the same month has a computed **positive** `unclassified` `U2` — the spending spike — with `X2 ≤ U2 ≤ 1.05 × X2`, where `X2` is `X` converted C1 → C2 at the month’s average rate. C1 is the destination and C2 the source; every qualifying C2 is one candidate under a single advisory. Completed months only | advisory | Link as cross-currency transfer (prefilled) |
 | `possible_missing_interest` | per-account residual on a savings/brokerage_cash account is positive and < 0.5 % of its balance | advisory | Record interest income (prefilled) |
 | `suggested_income_missing` | active income template with an occurrence scheduled in M for which no flow carries that `(template_id, occurrence_date)` and no `recurring_template_skips` row exists | advisory | Accept suggestion (date ≤ today); Skip this occurrence (writes a `recurring_template_skips` row; rental templates ask for a reason) |
 | `suggested_payment_missing` | liability with terms and no payment in M | advisory | Accept suggested payment; Skip |
-| `large_unclassified` | unclassified > 2 × trailing-6-month median of reliable months | advisory | Add known expenses |
+| `large_unclassified` | `unclassified > 2 ×` the median `unclassified` of the `reliable` months among the six calendar months `M−6 … M−1`, in the same native currency and with at least three such months (30.15) | advisory | Add known expenses |
 | `stale_investment` / `stale_property` | age > threshold | advisory (completeness only) | Update valuation; Keep |
 
 Dismissing an advisory issue writes its key to `month_reviews.dismissed_issues`. Blocking issues are resolved by data or left open (`unresolved`).
@@ -1087,7 +1088,9 @@ TotalSpending            = TrackedTotalSpending + AdditionalSpending    // Spend
 
 Allocation identity (cash-role flows only): `CashSavings = TrackedSavingsFromIncome + External inflows + Adjustments − External outflows`, where "External outflows" here means the `external_outflow` expense entries paid from tracked cash; the non-cash pair created by an externally paid distribution (+d Investment income, −d External outflows) cancels outside this identity. Identically, `CashSavings = ΔCash + Contributions + Principal repaid + Asset purchases (all, incl. excluded other assets) + Capital improvements − Withdrawals − Loan proceeds − Asset sales` (all at dated rates; ΔCash at closing rates leaves the cash FX residual as a line). Both follow from the 8.2 identity (`ΣI − ΣK − U = Δ + ΣNout − ΣNin`) with `K` split into its buckets. `PersonalSavings = CashSavings − counted AdditionalSpending − External inflows − Adjustments + External outflows`, and the "where it went" view shows the line "Spent from outside tracked accounts −X" when additional spending is counted. User-facing labels: "Saved from income (tracked accounts)", "Personal savings", "Savings rate", "Where it went".
 
-**Availability.** These figures are derived from reconciliation and inherit its status; none of them is ever computed by reading a missing or negative residual as zero. For a bucket whose status is `unavailable`, `Consumption`, `TrackedSavingsFromIncome`, `PersonalSavings` and `SavingsRate` are `Unavailable` with that bucket’s reason. For an `unresolved` bucket, a negative unclassified is not negative consumption: the same four are `Unavailable` until the discrepancy is resolved, while the page still shows 8.4’s lower bound ("spending ≥ known") and the unexplained-inflow amount. An `estimated` bucket computes them and propagates `estimated` with its reason; the current month computes them through the MTD date `D` and labels them provisional through `D`. `AdditionalSpending` and paid-by-others remain computable in every case, because neither enters the tracked identity. Across currencies the reporting-currency figures use the `Partial` machinery of 7.6: a valid bucket’s contribution is preserved and the aggregate is marked partial with the missing buckets’ reasons, never completed with a zero. `SavingsRate` is an exact scalar only when numerator and denominator are both complete and every rate it needs exists; otherwise it is `Unavailable` or partial with a reason rather than a misleading percentage — as it also is when `ExternalIncome = 0`.
+**Scope of the tracked inputs.** Every quantity above that is derived from tracked cash classifies exactly the flows 8.1 already scoped into the bucket being enriched — the same currency, the same interval, the same explicit attribution, participation, `first_balance` exclusion and null-leg support, and for the current month the legs of `[start(M), D]` and nothing dated after `D`. `ExternalIncome` is a classification of that bucket’s `ΣI` and the cost buckets partition its `ΣK`; rescanning the month’s rows independently would put back a flow 8.1 excluded — an income attributed to a `first_balance` account, say — and break both identities at once. `AdditionalSpending` and paid-by-others are not reconciliation-role quantities and stay independent source-row sums over the same calendar or as-of interval, because `untracked_self` and `third_party` never enter `I`/`Nin`/`Nout`/`K`.
+
+**Availability.** These figures are derived from reconciliation and inherit its status; none of them is ever computed by reading a missing or negative residual as zero. For a bucket whose status is `unavailable`, `Consumption`, `TrackedSavingsFromIncome`, `PersonalSavings`, `SavingsRate` and `TotalSpending` are `Unavailable` with that bucket’s reason. For an `unresolved` bucket, a negative unclassified is not negative consumption: the same five are `Unavailable` until the discrepancy is resolved — `TotalSpending` among them, because a `TrackedTotalSpending` computed from a negative residual is arithmetic evidence and not a spending figure (R6) — while the page still shows 8.4’s lower bound ("spending ≥ known") and the unexplained-inflow amount. An `estimated` bucket computes them and propagates `estimated` with its reason; the current month computes them through the MTD date `D` and labels them provisional through `D`, and without a `D` there is no interval at all, so the same five are `Unavailable` (8.6). `AdditionalSpending` and paid-by-others remain computable in every case, because neither enters the tracked identity. Across currencies the reporting-currency figures use the `Partial` machinery of 7.6: a valid bucket’s contribution is preserved and the aggregate is marked partial with the missing buckets’ reasons, never completed with a zero. `SavingsRate` is the one exception, because it is a quotient and not a sum: the aggregate rate is an exact unrounded ratio when both aggregates are complete, every rate they need exists and `ExternalIncome ≠ 0`, and in every other case it is `Unavailable` with a reason — **never `Partial`**, since a ratio of partial aggregates is not the user’s savings rate. A rate over a single complete native bucket is an exact scalar and remains available when it is labelled with its currency (30.15).
 
 ### 12.6 Completeness and freshness for a completed month M
 
@@ -1334,7 +1337,7 @@ Routes: `/dashboard`, `/monthly/[yyyy-mm]`, `/monthly/[yyyy-mm]/history` (bulk e
 | Account detail | One account | balance timeline (month-end and intra-month snapshots distinguished), monthly changes, edit history | Add/edit/delete valuation, close | Line + table | — | Carried spans dotted | Timeline table scrolls |
 | Other assets (tab) | Vehicles etc. | value, **included in financial net worth** flag, age, cost basis | Add/revalue/improve/sell; toggle inclusion | table | "Track something else you own" | Age | list |
 | Income | Income overview | net/gross by month, by source, annual totals, progression | Add source, add entry, edit terms | Bars by month, source composition, base vs bonus | "Add a salary or other income source" | Months with due-but-missing template flagged | bars scroll |
-| Spending | Tracked + additional | per month: tracked spending (consumption, known/unclassified, costs), **additional spending** (paid by me outside tracked accounts), **total spending** (tracked + additional), **paid by others** (informational, outside totals); statuses; spans; saved from income and savings rate (12.5); rolling 3/6/12 (tracked, reliable months only); categories; largest known | Add known expense with how it was paid (tracked account / by me outside tracked accounts / by someone else), open month | Stacked bars (known/unclassified) with status hatching; span bars across gaps; additional spending as a separate series; paid-by-others as a muted memo series; category bars; table | "Enter two month-end balances to see inferred spending" | Unavailable months as gaps with reason and span links; provisional current month hatched or "update all accounts" note | bars scroll |
+| Spending | Tracked + additional | per month: tracked spending (consumption, known/unclassified, costs), **additional spending** (paid by me outside tracked accounts), **total spending** (tracked + additional), **paid by others** (informational, outside totals); statuses; spans; saved from income and savings rate (12.5); rolling 3/6/12 (tracked spending only, over the N calendar months ending at M, counting a month only when it is `reliable` and its reporting-currency total is complete — 30.15); categories; largest known | Add known expense with how it was paid (tracked account / by me outside tracked accounts / by someone else), open month | Stacked bars (known/unclassified) with status hatching; span bars across gaps; additional spending as a separate series; paid-by-others as a muted memo series; category bars; table | "Enter two month-end balances to see inferred spending" | Unavailable months as gaps with reason and span links; provisional current month hatched or "update all accounts" note | bars scroll |
 | Investments | Portfolio | value, current net invested (basis-known vs since-tracking rows marked), gain, gain since tracking, XIRR / return on net invested, allocation, performance by month | Add account/investment (with optional opening net invested basis), record flows/valuations | Value vs net invested area, performance bars, allocation | "Add an investment" | Stale badge; performance gaps | cards + chart |
 | Investment detail | One investment | value history, flows, performance, FX decomposition, dividends, fees, opening net invested basis, contributions/withdrawals since tracking, metrics with availability reasons | Record flow/valuation/dividend/fee, edit basis, close | Value & net invested lines, monthly performance bars, FX/native stacked | — | — | — |
 | Real Estate | Portfolio | total value, debt, equity per property, yields | Add property | Equity bars | "Add a property" | Age badge; "includes estimated value added" marker | list |
@@ -1382,7 +1385,7 @@ Top: financial net worth in R (large, tabular numerals) with "Total incl. other 
 | Area | Calculations | Charts | Tables | Ranges | Data dependency |
 |---|---|---|---|---|---|
 | Wealth | total and financial NW series, liquid assets, composition by kind and currency, debt series, drivers decomposition per period (both metrics) | NW area (metric toggle); composition stacked area; drivers waterfall and stacked bars | Period decomposition table with reconciliation row | 3M · 6M · YTD · 1Y · 3Y · 5Y · All | Stale positions shaded; partial months marked; current month excluded from period decompositions |
-| Cash flow | income, tracked spending, consumption, known/unclassified, additional spending, total spending, paid by others (memo), saved from income (tracked accounts), personal savings and savings rate (12.5; additional spending counted per the user setting, labelled either way), rolling 3/6/12 averages (reliable months only) | income vs spending bars; savings-rate line; rolling averages | Monthly table with status column and span rows | same | Unavailable months excluded from averages; spans shown but never averaged |
+| Cash flow | income, tracked spending, consumption, known/unclassified, additional spending, total spending, paid by others (memo), saved from income (tracked accounts), personal savings and savings rate (12.5; additional spending counted per the user setting, labelled either way), rolling 3/6/12 averages (reliable months only) | income vs spending bars; savings-rate line; rolling averages | Monthly table with status column and span rows | same | Only `reliable` months whose reporting-currency total is complete contribute to averages (30.15); spans shown but never averaged |
 | Investments | contributions vs value, performance per month, gain vs current net invested (basis marked where known) and gain since tracking, XIRR, native vs FX, allocation | value vs net invested area; performance bars; native/FX stacked; allocation | Per-investment metrics with availability reasons and basis marker | same | Performance gaps for carried months |
 | Real estate | equity, value change over confirmed spans, appreciation net of improvements, yields, amortization, cash flow, total return; occupancy only from explicit facts (received / skipped-vacant / unknown) | equity area; interest/principal stacked; cash-flow bars | Per-property metrics | same | Spans; estimated value-add marked; unknown rent months shown as unknown |
 | Income | gross/net progression (base vs bonus), annual totals, source composition | step lines; annual bars; composition | Source table | same | — |
@@ -2650,11 +2653,172 @@ completed-month nor month-to-date semantics move.
     `E_C` is untouched and no wider, non-consecutive pair is attempted; the
     constituent month keeps its own blocking issue.
 
+### 30.15 v2.1.12 — cash-flow and savings availability corrections
+
+12.5 stated when a savings figure is unavailable but left `TotalSpending` out of
+the list, offered a savings rate two different shapes, and left two 8.5
+advisories and the Phase-3 rolling window without a single meaning. None of this
+touches an identity, the schema, spans, or a phase already delivered; each item
+below is what an engine must do.
+
+1. **A total spending figure exists only when tracked spending is a spending
+   figure.** `TotalSpending = TrackedTotalSpending + AdditionalSpending` is exact
+   in a `reliable` bucket, computed and marked `estimated` in an `estimated` one,
+   and computed through `D` and labelled provisional in the current month. It is
+   `Unavailable` in an `unresolved` bucket, `Unavailable` whenever
+   `TrackedTotalSpending` is absent, and `Unavailable` in a current month with no
+   `D`. There is no zero fallback in any of those cases.
+
+   In an `unresolved` bucket a negative `unclassified` cannot be read as negative
+   spending (R6), and the arithmetic sum is not a smaller answer but a wrong one.
+   With `TrackedTotalSpending = −1,291`, `ΣK = 411`, `unclassified = −1,702` and
+   `AdditionalSpending = 50`, no figure of `−1,241` is produced; with
+   `TrackedTotalSpending = 100`, `ΣK = 500`, `unclassified = −400` and
+   `AdditionalSpending = 50`, no figure of `150` is produced either, because the
+   known expenses alone already establish a lower bound of 500. What the bucket
+   keeps is what it measured: `TrackedTotalSpending` as arithmetic evidence,
+   `knownTrackedExpenses`, the unexplained-inflow amount, and 8.4’s "spending ≥
+   known" presentation, which needs no stored lower-bound field because the known
+   total is exact in every status (30.12). `AdditionalSpending` stays
+   independently exact throughout.
+
+2. **An aggregate savings rate is never `Partial`.** The reporting-currency
+   `SavingsRate` exists only when the aggregate `PersonalSavings` is complete, the
+   aggregate `ExternalIncome` is complete, every conversion both aggregates need
+   exists, and `ExternalIncome ≠ 0`; then it is the exact unrounded ratio.
+   Otherwise it is `Unavailable` with a reason. Neither a quotient of two partial
+   aggregates nor a complete known part over an incomplete total may be presented
+   as the user’s savings rate: 7.6’s `Partial` is defined for aggregations over a
+   list and remains in force for every additive money figure, but a ratio of
+   partial sums is not the ratio of the totals. A rate computed over one complete
+   native bucket is an exact scalar rather than a partial aggregate, and stays
+   available when it is labelled with its currency — a missing USD bucket should
+   not hide what is known about EUR.
+
+3. **12.5’s tracked inputs use 8.1’s flow scope, not a second scan.** Every
+   tracked-cash quantity in 12.5 classifies exactly the legs the reconciliation
+   bucket already scoped: same currency, same interval, same explicit attribution,
+   participation, `first_balance` exclusion and null-leg support; for the current
+   month, `[start(M), D]` with nothing dated after `D` reaching `ExternalIncome`,
+   the cost decomposition, `TrackedSavingsFromIncome`, `TotalSpending`,
+   `PersonalSavings` or `SavingsRate`. A tracked income or `K` expense attributed
+   to an account the month excluded as `first_balance` is therefore not quietly
+   restored here. `ExternalIncome` is a classification of the bucket’s `ΣI` and the
+   cost buckets partition its `ΣK`, so both remain identities rather than
+   independent totals over a different row set. `AdditionalSpending` and
+   paid-by-others are unaffected: neither carries a cash role, so both stay
+   independent source-row sums over the same interval.
+
+4. **`large_unclassified` has one window and one median.** For a completed month
+   `M` and native-currency bucket `C`: evaluate only when `C` has a computed
+   `unclassified ≥ 0`, which admits a `reliable` or `estimated` bucket and
+   excludes `unavailable`, `unresolved` and the provisional current month. The
+   baseline is the six **calendar** months `M−6 … M−1` — never a search further
+   back for six observations — from which only buckets of `C` whose status is
+   exactly `reliable` contribute; `estimated`, `unresolved`, `unavailable`,
+   provisional months and spans do not. The asymmetry is deliberate and worth
+   naming: an `estimated` current month may be compared against a baseline that
+   admits no `estimated` month, because the trigger needs a computed number while
+   the baseline must be trustworthy. Fewer than **three** contributing months and
+   there is no advisory. The median is taken over the exact `unclassified`
+   `Decimal`s — the middle value for an odd count, the exact arithmetic mean of the
+   two middle values for an even one, with no rounding — and the trigger is
+   strictly `unclassified_M > 2 × median`. A median of exactly zero is not a
+   special case: with three contributing months, any positive `unclassified`
+   clears it, and no absolute floor is invented to soften that. Native currency
+   only, no FX, no comparison of one currency’s history against another’s, and
+   completed months only.
+
+5. **Phase-3 rolling windows are `TrackedTotalSpending`, over calendar months.**
+   Phase 3 rolls that one series; 15.5’s full cash-flow surface is Phase 8. For
+   `N ∈ {3, 6, 12}` and a completed display month `M` the window is exactly the
+   `N` calendar months `M−(N−1) … M`. A month that does not qualify consumes its
+   calendar position and is not replaced by reaching further back — a three-month
+   average must not silently become a nine-month lookback. A month qualifies only
+   when its overall month status (8.4’s worst across buckets) is `reliable`, which
+   excludes `estimated`, `unresolved`, `unavailable`, the provisional current month
+   and span-reconstructed months; "reliable months only" is authoritative and
+   15.5’s looser "unavailable months excluded" is corrected accordingly.
+   Reliability alone is not enough for a reporting-currency observation: if the
+   month’s reporting-currency `TrackedTotalSpending` is `Partial` or `Unavailable`
+   because a native bucket could not be converted, that month contributes no
+   observation, since averaging a partial monetary series states a number nobody
+   measured. That is a series-eligibility rule and does not change the month’s
+   native reconciliation status. The average is the arithmetic mean of the
+   surviving observations, unweighted and unrounded; with none it is absent, with
+   one or more it is computed, and the contributing observation count travels with
+   it so a three-month window holding one observation can say so. No minimum count
+   is imposed. `is_one_off` does not alter this series — that exclusion belongs to
+   13.6’s projection baseline. Spans never contribute and are never divided across
+   their months, and month-to-date never contributes (8.6).
+
+6. **`possible_missing_conversion` is the missing transfer’s own algebraic
+   signature.** An unrecorded cross-currency transfer leaves cash in the
+   destination currency with no `Nin` recorded, so its `unclassified` goes
+   negative and it raises `unexplained_inflow` with amount `X = −unclassified`;
+   and it removes cash from the source currency with no `Nout` recorded, so that
+   bucket’s `unclassified` — the "spending spike", which 7.4 and 12.3 both call
+   inferred spending — goes positive. So, for completed months only: take a bucket
+   C1 with `unexplained_inflow X > 0` as the candidate destination, and every
+   other native bucket C2 of the same month with a computed `U2 = unclassified > 0`
+   as a candidate source. An `unavailable` or `unresolved` C2 cannot qualify,
+   having no positive computed residual; `reliable` and `estimated` may. Convert
+   `X` from C1 to C2 at `M`’s monthly-average rate to obtain `X2`; if that lookup
+   is `Unavailable`, C2 is not a candidate.
+
+7. **The band keeps both halves of the original phrase.** The match is
+   `X2 ≤ U2 ≤ 1.05 × X2`, comparing exact `Decimal`s with no display rounding —
+   a floor at `X2` and 5 % of headroom above it, not a symmetric ±5 % band. `U2`
+   below `X2` does not qualify however close it is. This is the ordinary shape of
+   a real conversion: the source outflow is at least the destination inflow valued
+   at the market monthly average, with spread and friction accounting for the
+   difference.
+
+8. **An approximate monthly average still supports the advisory.** When 10.2
+   returns an available monthly average marked `approximate`, the candidate may
+   still qualify — the fallback is observed FX evidence, the ±5 % band is a
+   heuristic by design, the issue is advisory, and the user confirms or edits the
+   transfer it prefills. The candidate must carry that the comparison rate was
+   approximate so the interface can say so. A genuinely `Unavailable` lookup still
+   removes that candidate.
+
+9. **Several source currencies are ordered candidates under one advisory.**
+   `month_reviews.dismissed_issues` stores issue **keys**, so three possible source
+   currencies must not become three indistinguishable
+   `possible_missing_conversion` objects for the same destination bucket. One
+   advisory is emitted for the unexplained-inflow bucket, carrying every
+   qualifying C2 once, ordered by source currency code ascending. A candidate
+   carries what a later action needs: source and destination currencies, the source
+   amount `U2`, the destination amount `X`, the converted comparison amount `X2`,
+   the rate it used and whether that rate was approximate. Prefilling a transfer
+   uses the two native residuals `U2` and `X`, never `X2` — the monthly average is
+   evidence for the suggestion, not a claim about the bank’s rate — and no cash
+   account is chosen automatically when more than one exists. The issue key stays
+   `possible_missing_conversion`; no per-pair key such as
+   `possible_missing_conversion_USD_EUR` is created, because dismissal is
+   deliberately key-based and the keys are stable. Where several destination
+   buckets independently carry unexplained inflows, each may hold its own advisory
+   with its own candidate list.
+
+10. **The cost buckets partition `ΣK`; they never add to it.** For a bucket whose
+    spending arithmetic is valid,
+    `KnownConsumption + PropertyOperatingCosts + InterestAndFees + TransactionCosts
+    + ExternalOutflows = ΣK`, and `Consumption = KnownConsumption + Unclassified`,
+    so `Consumption + PropertyOperatingCosts + InterestAndFees + TransactionCosts +
+    ExternalOutflows = TrackedTotalSpending`. This already follows from 12.5, and is
+    stated because a later phase will supply cost classifications from sources that
+    are not expense rows — a mortgage payment’s interest, for one. Such a fact
+    **classifies a portion of `ΣK`**; adding it on top would create money and break
+    the identity. An engine given classifications exceeding the known tracked
+    expense total must fail rather than invent the difference, and the consumption
+    part is what remains of `ΣK` after the other four buckets, not an independent
+    sum.
+
 ---
 
 ## Ready for Phase 0
 
-No genuine blockers remain. The blueprint was frozen as v2.1.2 and Phase 0 began from it; it is frozen as v2.1.11 after the corrections in 30.6, 30.7, 30.8, 30.9, 30.10, 30.11, 30.12, 30.13 and 30.14, none of which changed a phase already delivered.
+No genuine blockers remain. The blueprint was frozen as v2.1.2 and Phase 0 began from it; it is frozen as v2.1.12 after the corrections in 30.6, 30.7, 30.8, 30.9, 30.10, 30.11, 30.12, 30.13, 30.14 and 30.15, none of which changed a phase already delivered.
 
 ---
 
@@ -2673,5 +2837,7 @@ No genuine blockers remain. The blueprint was frozen as v2.1.2 and Phase 0 began
 - No result field obliges an engine to invent a figure: the role sums are exact source-flow sums in every status, and `cashDelta` is the complete included-set change or absent (8.2, 8.9, 30.12).
 - The current month is stated once rather than three times: one global evidence date `D`, `provisional` ranked in the status order, bucket-local failure after `D`, no totals without `D`, and a closed MTD issue set (8.4, 8.5, 8.6, 8.9, 30.13).
 - A span anchors on complete month ends that are intrinsic to a date, carries only statuses and fields a rule can reach, and never averages an interval across its months (8.7, 30.14).
-- No remaining blocker was found. The blueprint is frozen as v2.1.11.
+- Every 12.5 figure says when it does not exist: `TotalSpending` follows tracked spending rather than a negative residual, an aggregate savings rate is unavailable rather than partial, and 12.5’s tracked inputs classify 8.1’s own scoped flows (12.5, 30.15).
+- The two remaining 8.5 advisories have one meaning each, and the Phase-3 rolling window has one window: six calendar months of `reliable` history for `large_unclassified`, the missing transfer’s own signature for `possible_missing_conversion`, and `N` calendar months of complete reliable observations for rolling tracked spending (8.5, 15.2, 15.5, 30.15).
+- No remaining blocker was found. The blueprint is frozen as v2.1.12.
 
