@@ -49,8 +49,32 @@ try {
       byName[role]?.rolcreaterole === false && byName[role]?.rolcreatedb === false);
   }
   // The property the whole tenant-isolation model rests on (17.4, R27).
-  check('app_user cannot bypass row level security', byName['app_user']?.rolbypassrls === false);
-  check('app_owner cannot bypass row level security', byName['app_owner']?.rolbypassrls === false);
+  //
+  // `app_user` owns no table, so the BYPASSRLS attribute is its only route past
+  // a policy: without it, row level security genuinely constrains every query
+  // the runtime makes. That is the invariant that matters, and the integration
+  // suite proves the behaviour itself against a throwaway database.
+  check(
+    'app_user cannot bypass row level security',
+    byName['app_user']?.rolbypassrls === false,
+  );
+  // `app_owner` is a different case and this line says only what it checks.
+  //
+  // It owns every table, and PostgreSQL lets a table owner past row security
+  // unless the table sets FORCE ROW LEVEL SECURITY, which Vaultide does not.
+  // So app_owner *is* able to read across tenants, and asserting "app_owner
+  // cannot bypass row level security" would have claimed something untrue: the
+  // attribute is absent, the effective bypass is not.
+  //
+  // That is expected rather than a defect. app_owner exists to run migrations
+  // over the direct endpoint from CI (22.2) and is never held by the runtime;
+  // the credential that serves requests is app_user. What the attribute check
+  // is worth is narrower and still worth having: nobody has quietly granted the
+  // migration role a bypass it would keep even after the tables changed hands.
+  check(
+    'app_owner does not hold the BYPASSRLS attribute (it still bypasses as table owner)',
+    byName['app_owner']?.rolbypassrls === false,
+  );
   check('app_backup can bypass row level security', byName['app_backup']?.rolbypassrls === true);
 
   console.log('');
@@ -168,6 +192,21 @@ try {
     'every user-owned table is listed here',
     unlistedOwned.length === 0,
     unlistedOwned.length === 0 ? `${String(owned.length)} tables` : unlistedOwned.join(', '),
+  );
+
+  // The premise of the app_owner note above: no user-owned table forces row
+  // security on its owner. If a later phase ever adds FORCE ROW LEVEL SECURITY
+  // this flips, and the wording above should be revisited rather than left to
+  // drift into being wrong in the other direction.
+  const forced = await owner.query(
+    `SELECT c.relname FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relforcerowsecurity`,
+  );
+  check(
+    'no table forces row security on its owner',
+    forced.rows.length === 0,
+    forced.rows.length === 0 ? 'owner bypass is by ownership, as designed' : forced.rows.map((r) => r.relname).join(', '),
   );
 
   // 6.1: every closed set is a PostgreSQL enum type, never text + CHECK. The
