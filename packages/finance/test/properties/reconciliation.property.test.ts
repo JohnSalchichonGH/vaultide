@@ -10,6 +10,8 @@ import {
   type CashAccountInput,
   type CompletedMonthInput,
 } from '../../src/reconciliation/index';
+import { classifyScopedFacts } from '../../src/savings/index';
+import { factsInRange, factsInScope, scopeAccountIds } from '../../src/reconciliation/scope';
 
 /**
  * Invariants of completed-month reconciliation (blueprint 8.2, 8.8).
@@ -146,6 +148,81 @@ function bucketOf(input: CompletedMonthInput) {
   if (bucket === undefined) throw new Error('expected one EUR bucket');
   return bucket;
 }
+
+describe('property 6: a known tracked expense moves what is known, not the total', () => {
+  /**
+   * 21.2 property 6, the tracked half. The untracked half — that an
+   * `untracked_self` or `third_party` expense changes none of the three — is
+   * proved separately below.
+   *
+   * A `K` expense touches no balance and no other role, so the identity's
+   * inputs `ΣI`, `ΣNin`, `ΣNout` and `Δ` are all unchanged and the tracked
+   * total cannot move; only the split between what is known and what is not.
+   * The generator adds the expense **inside** the starting unclassified amount,
+   * so the month has an answer to give and stays `reliable`.
+   */
+  it('leaves the tracked total, adds to the known, and reduces the unclassified', () => {
+    fc.assert(
+      fc.property(monthArb, dayArb, fc.integer({ min: 0, max: 100 }), (generated, on, share) => {
+        const before = bucketOf(inputOf(generated));
+        // Only a bucket that reconciled has an unclassified amount to spend.
+        fc.pre(before.status === 'reliable');
+        const room = before.totals.unclassified;
+        expect(room).toBeDefined();
+        if (room === undefined) return;
+
+        // `0 ≤ E ≤ unclassified`, so the month cannot tip into `unresolved`.
+        const amount = room.times(share).dividedBy(100);
+        const added: ExpenseFlow = {
+          id: 'property-6-expense',
+          categoryKind: 'food',
+          incurredOn: plainDate(on),
+          amount,
+          currency: EUR,
+          settlement: 'tracked_cash',
+          cashPositionId: generated.accounts[0]?.position.id ?? null,
+        };
+
+        const input = inputOf(generated, { expenses: [...generated.expenses, added] });
+        const after = bucketOf(input);
+
+        expect(after.totals.trackedTotalSpending?.toString()).toBe(
+          before.totals.trackedTotalSpending?.toString(),
+        );
+        expect(
+          after.totals.knownTrackedExpenses
+            .minus(before.totals.knownTrackedExpenses)
+            .equals(amount),
+        ).toBe(true);
+        expect(room.minus(after.totals.unclassified ?? new Decimal(0)).equals(amount)).toBe(true);
+        expect(after.status).toBe('reliable');
+
+        // And 12.5 routes it exactly once, into the bucket its kind names.
+        const scoped = factsInScope(
+          factsInRange(input, plainDate('2026-09-01'), plainDate('2026-09-30')),
+          EUR,
+          scopeAccountIds(after.accounts),
+        );
+        const classified = classifyScopedFacts(scoped);
+        const beforeScoped = classifyScopedFacts(
+          factsInScope(
+            factsInRange(inputOf(generated), plainDate('2026-09-01'), plainDate('2026-09-30')),
+            EUR,
+            scopeAccountIds(before.accounts),
+          ),
+        );
+        // `food` is consumption, so no non-consumption bucket may move at all.
+        const nonConsumption = (c: ReturnType<typeof classifyScopedFacts>): string =>
+          c.nonConsumptionCosts.propertyOperatingCosts
+            .plus(c.nonConsumptionCosts.interestAndFees)
+            .plus(c.nonConsumptionCosts.transactionCosts)
+            .plus(c.nonConsumptionCosts.externalOutflows)
+            .toString();
+        expect(nonConsumption(classified)).toBe(nonConsumption(beforeScoped));
+      }),
+    );
+  });
+});
 
 describe('property: the reconciliation identity is exact', () => {
   it('holds for any records, with no rounding and no tolerance', () => {
