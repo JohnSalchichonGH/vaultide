@@ -160,10 +160,16 @@ describe('property P2: an ineligible month’s value is never read', () => {
         const target = eligible[0] as number;
         const before = windowOf(pointFor(series, month), size);
         const current = (series[target] as RollingTrackedSpendingObservation).trackedTotalSpending.value.amount;
-        // Move one survivor by exactly `count`, which moves the mean by exactly 1.
+        // Raise one survivor by `count`. In exact arithmetic the mean rises by
+        // exactly 1; at forty significant digits two non-terminating quotients
+        // need not differ by exactly 1, so what is asserted is the exact fact
+        // that survives rounding: the mean strictly rises, and the count does
+        // not move.
         const moved = withAmount(series, target, current.plus(before?.count ?? 0).toString());
         const after = windowOf(pointFor(moved, month), size);
-        expect(after?.value.amount.minus(before?.value.amount ?? 0).toString()).toBe('1');
+        if (before === null || after === null) throw new Error('expected a present average');
+        expect(after.value.amount.greaterThan(before.value.amount)).toBe(true);
+        expect(after.count).toBe(before.count);
       }),
       { numRuns: 200 },
     );
