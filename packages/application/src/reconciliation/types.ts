@@ -540,3 +540,67 @@ export interface RollingTrackedSpendingPointDto {
   readonly rolling6: RollingAverageDto | null;
   readonly rolling12: RollingAverageDto | null;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Completed-month completeness (12.6, v2.1.15 30.18)                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 12.6's four states, ranked `stale` > `incomplete` > `partial` > `sufficient`
+ * (30.18 item 2).
+ *
+ * A separate axis from `ReconciliationStatusDto`, from reporting availability
+ * and from FX provenance: this `partial` is not a reporting `Partial`, and none
+ * of the three is read or changed by it.
+ */
+export type CompletenessStateDto = 'stale' | 'incomplete' | 'partial' | 'sufficient';
+
+/**
+ * One required cash item: a participating, non-dormant cash account (12.6,
+ * 30.18 item 6). Satisfied by a statement balance or by closing inside M, and
+ * the closing state that decided it is carried beside the verdict.
+ */
+export type CashAccountRequirementDto = {
+  readonly positionId: string;
+  readonly name: string;
+  readonly currency: string;
+} & (
+  | { readonly satisfied: true; readonly closeState: 'month_end' | 'closed_zero' }
+  | { readonly satisfied: false; readonly closeState: 'carried' | 'missing' }
+);
+
+/**
+ * One required recurring item: an occurrence a template's schedule placed in M,
+ * satisfied by a flow or a skip carrying its `(template_id, occurrence_date)`.
+ * No amount: a term takes no part in whether an occurrence is accounted for.
+ */
+export interface RecurringOccurrenceRequirementDto {
+  readonly templateId: string;
+  readonly templateName: string;
+  readonly templateKind: 'income' | 'expense' | 'contribution';
+  readonly currency: string;
+  readonly occurrenceDate: string;
+  readonly satisfied: boolean;
+}
+
+/**
+ * A completed month's completeness.
+ *
+ * `satisfied` and `required` are the result (30.18 item 4). `ratio` is their
+ * unrounded quotient as a decimal string, derived and never authoritative, and
+ * `null` when nothing is required — never `"0"` and never `"1"` then. A
+ * percentage is made where it is shown, from the counts.
+ *
+ * Every required item is listed, satisfied or not, so the counts explain
+ * themselves item by item.
+ */
+export interface MonthCompletenessDto {
+  /** `YYYY-MM`. */
+  readonly month: string;
+  readonly state: CompletenessStateDto;
+  readonly satisfied: number;
+  readonly required: number;
+  readonly ratio: string | null;
+  readonly cashAccounts: readonly CashAccountRequirementDto[];
+  readonly recurringOccurrences: readonly RecurringOccurrenceRequirementDto[];
+}

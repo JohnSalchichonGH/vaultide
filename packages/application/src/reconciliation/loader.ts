@@ -29,6 +29,7 @@ import {
   type ExpenseFlow,
   type IncomeFlow,
   type MonthKey,
+  type PositionWithValuations,
   type TransferFlow,
 } from '@vaultide/finance';
 import { toValuationRecord, toPositionRecord } from '../positions/mapping';
@@ -70,6 +71,19 @@ export interface CompletedMonthData {
   readonly categories: readonly CategoryRecord[];
   readonly templates: readonly RecurringTemplateRow[];
   readonly terms: readonly RecurringTemplateTermRow[];
+}
+
+/**
+ * One month as `loadCompletedMonth` reads it: the rows above, plus every
+ * position of every kind with its valuations.
+ *
+ * Reconciliation reads cash accounts alone. 12.6's `stale` rule reads a
+ * valuation of *any* position (v2.1.15 30.18 item 3), and the window this loader
+ * already made holds every one of them, so they are handed on rather than read
+ * a second time.
+ */
+export interface LoadedCompletedMonth extends CompletedMonthData {
+  readonly positionsWithValuations: readonly PositionWithValuations[];
 }
 
 export function toIncomeFlow(row: IncomeEntryRow): IncomeFlow {
@@ -141,7 +155,7 @@ export async function loadCompletedMonth(
   userId: string,
   month: MonthKey,
   today: string,
-): Promise<CompletedMonthData> {
+): Promise<LoadedCompletedMonth> {
   const from = startOfMonthKey(month);
   const to = endOfMonthKey(month);
 
@@ -204,5 +218,9 @@ export async function loadCompletedMonth(
     categories,
     templates,
     terms,
+    positionsWithValuations: window.positions.map((row) => ({
+      position: toPositionRecord(row),
+      valuations: valuationsByPosition.get(row.id) ?? [],
+    })),
   };
 }

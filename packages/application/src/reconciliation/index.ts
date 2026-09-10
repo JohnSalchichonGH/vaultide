@@ -3,6 +3,7 @@
  * write: the figures are derived from the source rows on every request and
  * never stored (5.3).
  */
+export * from './completeness-service';
 export * from './loader';
 export * from './mtd-loader';
 export * from './mtd-service';
