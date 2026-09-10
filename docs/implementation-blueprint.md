@@ -1,6 +1,6 @@
-# Vaultide — Personal Finance Platform Implementation Blueprint (frozen, v2.1.14)
+# Vaultide — Personal Finance Platform Implementation Blueprint (frozen, v2.1.15)
 
-**Status:** Planning deliverable (no code written). Produced 2026-09-06 against the supplied product specification; revised after an adversarial model review, a product-owner review (v2), a targeted consistency pass (v2.1), a defect-fix freeze pass (v2.1.1), four final corrections (v2.1.2) and two narrow post-Phase-2 consistency corrections (v2.1.3, the onboarding step allocation; v2.1.4, one arithmetic slip in the Phase 3 savings golden — neither changed product behaviour, schema, accounting or security semantics), and a pre-Phase-3 clarification pass (v2.1.5, which settles the recurring-occurrence, template-deletion, month-to-date, dormancy, savings-availability and bulk-history questions Phase 3 raised before a line of Phase 3 code was written; it changes the Phase 3 schema and scope and no phase already delivered), extended once more before migration 0006 (v2.1.6, which settles how a recurring template materializes settlement, tightens the occurrence invariant to both-or-neither, and bounds occurrence generation by the template’s own dates), clarified once more before that migration was deployed (v2.1.7, which bounds early materialization to the next unresolved occurrence and separates a template’s schedule from its archive state), corrected once more when the completed-month engine proved one issue predicate impossible (v2.1.8, which reselects the two `unexplained_inflow` variants on the sign of `TrackedTotalSpending`), corrected again where the same engine had to invent a meaning the result shape demanded (v2.1.9, which makes `cashDelta` absent rather than partial when the complete included-account change cannot be computed), clarified once more before the month-to-date engine was written (v2.1.10, which settles the MTD evidence date, status precedence and result shape that 8.4/8.5/8.6 stated three different ways), and corrected once more before the span engine was written (v2.1.11, which makes a complete month end an intrinsic property of a date, removes a span status and a span field that could never carry a defined value, and states what a span does with a flow it cannot attribute), and settled once more before the savings engine was written (v2.1.12, which says when a total spending figure exists at all, stops a savings rate from ever being partial, ties 12.5’s tracked inputs to 8.1’s flow scope, and gives the two remaining 8.5 advisories and the Phase-3 rolling window a single meaning), and clarified once more before the reporting-currency engine was written (v2.1.13, the reporting-FX availability clarification, which stops a month-to-date figure from converting with evidence its own reconciliation never saw, keeps a cash-flow figure from being converted as one composite, and makes reporting partiality a question about each figure’s own dependencies), and corrected once more before the missing-conversion advisory was written (v2.1.14, the completed monthly-average reachability correction, which removes a completed-month rate fallback that the ten-day dated lookup could never reach and lets a month with no rate observation say so). None changed an identity, the schema, or a phase already delivered. This version supersedes every earlier version in full; v2.1.2 was the frozen input to Phase 0, and Phases 0–2 were built and frozen against it.
+**Status:** Planning deliverable (no code written). Produced 2026-09-06 against the supplied product specification; revised after an adversarial model review, a product-owner review (v2), a targeted consistency pass (v2.1), a defect-fix freeze pass (v2.1.1), four final corrections (v2.1.2) and two narrow post-Phase-2 consistency corrections (v2.1.3, the onboarding step allocation; v2.1.4, one arithmetic slip in the Phase 3 savings golden — neither changed product behaviour, schema, accounting or security semantics), and a pre-Phase-3 clarification pass (v2.1.5, which settles the recurring-occurrence, template-deletion, month-to-date, dormancy, savings-availability and bulk-history questions Phase 3 raised before a line of Phase 3 code was written; it changes the Phase 3 schema and scope and no phase already delivered), extended once more before migration 0006 (v2.1.6, which settles how a recurring template materializes settlement, tightens the occurrence invariant to both-or-neither, and bounds occurrence generation by the template’s own dates), clarified once more before that migration was deployed (v2.1.7, which bounds early materialization to the next unresolved occurrence and separates a template’s schedule from its archive state), corrected once more when the completed-month engine proved one issue predicate impossible (v2.1.8, which reselects the two `unexplained_inflow` variants on the sign of `TrackedTotalSpending`), corrected again where the same engine had to invent a meaning the result shape demanded (v2.1.9, which makes `cashDelta` absent rather than partial when the complete included-account change cannot be computed), clarified once more before the month-to-date engine was written (v2.1.10, which settles the MTD evidence date, status precedence and result shape that 8.4/8.5/8.6 stated three different ways), and corrected once more before the span engine was written (v2.1.11, which makes a complete month end an intrinsic property of a date, removes a span status and a span field that could never carry a defined value, and states what a span does with a flow it cannot attribute), and settled once more before the savings engine was written (v2.1.12, which says when a total spending figure exists at all, stops a savings rate from ever being partial, ties 12.5’s tracked inputs to 8.1’s flow scope, and gives the two remaining 8.5 advisories and the Phase-3 rolling window a single meaning), and clarified once more before the reporting-currency engine was written (v2.1.13, the reporting-FX availability clarification, which stops a month-to-date figure from converting with evidence its own reconciliation never saw, keeps a cash-flow figure from being converted as one composite, and makes reporting partiality a question about each figure’s own dependencies), and corrected once more before the missing-conversion advisory was written (v2.1.14, the completed monthly-average reachability correction, which removes a completed-month rate fallback that the ten-day dated lookup could never reach and lets a month with no rate observation say so), and clarified once more before the completed-month completeness engine was written (v2.1.15, the completed-month completeness clarification, which ranks `stale` above the other three completeness states, defines it by whether any valuation is dated inside the month, makes the ratio not applicable rather than 0 % or 100 % when nothing is required, and says which phase counts which 12.6 row). None changed an identity, the schema, or a phase already delivered. This version supersedes every earlier version in full; v2.1.2 was the frozen input to Phase 0, and Phases 0–2 were built and frozen against it.
 **Audience:** The Claude Code session(s) that will implement the application phase by phase, and the product owner.
 **Product name:** **Vaultide**. The repository root is `vaultide/`, workspace packages are published under the `@vaultide/*` namespace, and "Vaultide" is the product-facing name in app metadata, authentication and email branding, and hosting/monitoring project names. Historical local prototype paths quoted in Section 1.3 keep their real on-disk names.
 
@@ -243,6 +243,7 @@ The rules below supersede the corresponding spec text. Everything else in the sp
 - **Product-owner review (v1.1 → v2):** the sixteen corrections now embodied in R17–R31, M5, M14–M18 and U9–U10: no future-dated actuals; two net-worth metrics; capital improvements as capex; opening investment basis; monthly model with multi-month spans instead of per-account spans/windows; explicit per-month "confirm unchanged"; multi-currency scenario funding; tracked vs additional spending; explicit liability signs; global FX refresh; dedicated backup role; fiat-only currencies; one coherent Monte Carlo correlation behavior; concrete custom goals; exact display formatting; version wording.
 - **Final consistency pass (v2 → v2.1):** month-end balances only after the month has ended (`today > end(M)`); month-to-date spending only on a common snapshot date; one savings definition with no double counting (F16, 12.5); expense settlement split into self-paid and third-party (R24); `opening_net_invested_basis` naming and labels (R20, 9.3); no inferred vacancy (F18); a single base-currency reserve target without per-currency shares (13.4); properties always in financial net worth in scenarios; no time-dependent database CHECKs (M5); hardened RLS expression (17.4); one-time role bootstrap (22.2); currency minor units 0..8; Monte Carlo factor model with an idiosyncratic component (13.9).
 - **Freeze pass (v2.1 → v2.1.1):** month-to-date uses the *latest common* snapshot date and is unavailable only when no common date exists (8.6); one Monte Carlo correlation schema and an explicit default class matrix verified positive semi-definite (13.2, 13.9); explicit semantics for `income_entries.settlement = external` and a schema rule limiting `reinvested` to investment distributions (7.4, 12.5); explicit `recurring_template_skips` table replacing skip facts in JSON (6.2); a systematic nullability pass with PostgreSQL enums for every closed set (6.1–6.2); an orientation-independent `convertWithSpread` helper for scenario conversions (13.4); stale "lifetime"/"date backstop" wording removed.
+- **Completed-month completeness clarification (v2.1.14 → v2.1.15):** 12.6 listed four completeness states whose conditions overlap. `incomplete`, `partial` and `sufficient` already classify every month, so `stale` could exist only by outranking one of them, and the text never said which. It also left "no valuation at all in any position" without an interval, and `satisfied / required` without a meaning when nothing is required (30.18). The order is now `stale` > `incomplete` > `partial` > `sufficient`; `stale` means that no valuation of any position is dated inside M; the two counts are the authoritative result, and the ratio is not applicable when `required = 0`. The roadmap says which phase counts which row, and 12.6 stays the one end-state definition. No identity, schema or delivered phase changes.
 - **Completed monthly-average reachability correction (v2.1.13 → v2.1.14):** 10.2, F15 and 30.16 item 2 still said a completed month with no stored rate observation falls back to `rateOn(end(M))` marked `approximate`, and 30.15 items 8 and 9 let an approximate completed average support a `possible_missing_conversion` candidate. That rate cannot exist: `rateOn` looks back at most ten days and every month has at least twenty-eight, so the whole lookback lies inside a month already known to hold no observation (30.17). A completed month now averages from one observation upwards and is `Unavailable` with none; the current month through `D` keeps its sparse-data fallback; the future advisory loses the approximate-completed branch it could never take, and its candidate no longer carries a flag that could never be set. No implementation changed.
 - **Reporting-FX availability clarification (v2.1.12 → v2.1.13):** three things the reporting-currency engine could not settle from 8.11, 10.2, 10.3 and 12.5 together (30.16). 10.2’s monthly-average fallback named `rateOn(end(M))` for a current month whose end has not happened, so the rule it was written for could only ever fail — and a month-to-date figure is through `D`, not through the month, so its residual must convert on evidence dated no later than `D`. 10.3’s generic "monthly analytics series" row could be read as converting a whole cash-flow aggregate at one month-end rate, which 8.11 contradicts field by field. And 12.5 marked reporting partiality per **bucket** while 30.15 item 2 scoped the savings rate to the conversions its own aggregates need; the two disagree whenever one contribution fails inside an otherwise-valid bucket, so partiality is now per figure over that figure’s own dependencies.
 - **Cash-flow and savings correction (v2.1.11 → v2.1.12):** 12.5 listed four figures as unavailable and left `TotalSpending` out of the list, so an unresolved month could produce a negative "total spending" or one below its own known expenses; it also offered a savings rate two shapes, `Unavailable` **or** partial, where a ratio of partial aggregates is not the user’s rate; and it never said that 12.5’s tracked inputs classify 8.1’s own scoped flows rather than a second scan of the month. 8.5’s two remaining advisories and the Phase-3 rolling window each had more than one financially observable reading. 30.15 settles all of them: `TotalSpending` follows tracked spending, an aggregate savings rate is never partial, `large_unclassified` reads six calendar months of `reliable` history with a minimum of three, `possible_missing_conversion` is the missing transfer’s own algebraic signature with the band `X2 ≤ U2 ≤ 1.05 × X2`, and rolling tracked spending averages complete reliable observations over `N` calendar months.
@@ -619,7 +620,7 @@ reconcileMonth(user, M):                     // M completed
     issues ← detectIssues(...)                                        // 8.5
     residuals ← per included account: (close_a − open_a) − Σ attributed flows of a   // diagnostics
     emit BucketResult { C, accounts[], totals { I, Nin, Nout, K }, Δ, total, unclassified, status, issues, residuals, explanation[] }
-  emit MonthReconciliation { M, buckets[], monthStatus = worst(bucket statuses), completeness (12.5) }
+  emit MonthReconciliation { M, buckets[], monthStatus = worst(bucket statuses), completeness (12.6) }
 ```
 
 ### 8.4 Status classification
@@ -1114,7 +1115,16 @@ Three things are being tracked at once here and they must not be collapsed into 
 | Each occurrence scheduled in M by a template whose `start_date`/`end_date` cover M | a flow carries that `(template_id, occurrence_date)`, or a `recurring_template_skips` row does. Whether the template is **currently archived is irrelevant here**: archiving is present-tense state, so filtering on it would let an action taken today erase an occurrence a past month was expecting (30.10) |
 | Each property | never required; counted as stale if age > `stale_property_months` |
 
-`completeness = satisfied / required`. State: `incomplete` if any cash item is unsatisfied; `partial` if cash is complete but other items are missing; `sufficient` if all items are satisfied; `stale` if the month has no valuation at all in any position. Completeness is defined for completed months only; the current month shows "in progress: N of M accounts updated this month; closes on <end(M)>".
+`satisfied` and `required` are integer counts of the items above, and **the two counts are the authoritative result**. `completeness = satisfied / required` is derived from them when `required > 0`; when `required = 0` it is **not applicable** (null), never 0 % and never 100 %. A percentage is a display derivation of the counts and never their only representation (30.18).
+
+State, decided in this precedence order, `stale` > `incomplete` > `partial` > `sufficient` (30.18):
+
+1. `stale` if the month has no valuation at all in any position: no valuation of any position, whatever its kind, `date_precision` or `source`, has `valued_on` in `[start(M), end(M)]`, inclusive. A valuation dated before M and carried into it does not count. A user with no positions has no valuation in M, so that month is `stale` as well;
+2. otherwise `incomplete` if any required cash item is unsatisfied;
+3. otherwise `partial` if any other required item is unsatisfied;
+4. otherwise `sufficient`. This includes `required = 0`, because then no requirement is unsatisfied.
+
+The table is the end-state definition. A phase counts the rows whose domain it has built, and each later phase adds its rows to the same model (25, 30.18). Completeness is defined for completed months only; the current month shows "in progress: N of M accounts updated this month; closes on <end(M)>".
 
 ### 12.7 Worked example (golden test `decomposition/september-basic`)
 
@@ -1877,8 +1887,8 @@ Each phase is a usable vertical slice, sized so a Claude Code session can comple
 - **Objective:** inferred spending with honest statuses, maintainable in minutes; the current month as month-to-date.
 - **Functionality:** income sources (templates + terms) and entries, including ordinary income received outside tracked accounts as `settlement = external`, for the five ordinary kinds only (informational; outside `ExternalIncome`, `TrackedSavingsFromIncome` and `PersonalSavings` per 7.4 — `reinvested` stays Phase 4, `dividend` and `interest` stay tracked-cash until Phase 4 gives an external distribution its investment link, and `external_inflow` and `adjustment` are always tracked-cash because both exist to explain tracked cash); templates materialize tracked-cash flows only (6.2), so accepting a suggestion never guesses a settlement; categories UI; known expenses with how they were paid (tracked account / by me outside tracked accounts / by someone else); cash↔cash transfers (incl. cross-currency with a linked fee entry); monthly editor sections Overview, Income, Known expenses, Accounts (completed vs current month behavior), Reconciliation; suggestions (accept when dated ≤ today / upcoming / this month only / from now on / skip, with a reason for rental income); issues with one-click actions; month review state (completed months only); Spending page with tracked spending, additional spending, total spending, paid-by-others (informational), spans, saved from income and savings rate (12.5); Income page v1; bulk history editor v1 (completed months: position month-end balances and income-template net amounts; the known-expense-total column is Phase 7, 15.3).
 - **Schema:** `recurring_templates`, `recurring_template_terms`, `recurring_template_skips`, `income_entries`, `expense_entries` (with `transfer_id`), `transfers` (`cash_transfer` only; its `template_id` and `occurrence_date` exist for the later contribution workflow and must both be NULL in Phase 3), `month_reviews`. Materialized flows carry `(template_id, occurrence_date)` under a partial unique index, with a `NO ACTION` template FK so accepted history keeps its template identity (6.2, 6.3).
-- **Finance:** reconciliation engine (Section 8) complete: monthly statuses, MTD provisional on a common snapshot date only, spans, issues, residual diagnostics, explanations; spending analytics (rolling averages over reliable months only); saved from income and savings rate per 12.5.
-- **Backend:** flow services with domain rules, suggestion generation (pure), accept/skip services, bulk save transaction, reconciliation and span query services.
+- **Finance:** reconciliation engine (Section 8) complete: monthly statuses, MTD provisional on a common snapshot date only, spans, issues, residual diagnostics, explanations; spending analytics (rolling averages over reliable months only); saved from income and savings rate per 12.5; the 12.6 completed-month completeness model over the requirements Phase 3 can hold (cash accounts and recurring occurrences), with 12.6's state order and counts (30.18).
+- **Backend:** flow services with domain rules, suggestion generation (pure), accept/skip services, bulk save transaction, reconciliation, span and completed-month completeness query services.
 - **Frontend:** monthly editor (15.3 sections 1–4, 8) with autosave and client-side preview; Spending page; Income pages; bulk grid with paste.
 - **Testing:** 8.10 goldens; every status and issue; property tests 6, 7, 14, 17; fixed-anchor recurrence across short months and leap years; early materialization reaching only the next unresolved future occurrence; savings availability propagation for `unavailable`, `unresolved`, `estimated` and partial multi-currency months; integration: suggestions idempotent, accept twice → conflict, concurrent accept and skip serialized, a referenced template refusing hard deletion; E2E monthly close, current-month MTD, skipped month → span, historical correction.
 - **Acceptance:** the `simple-user` fixture reproduces its goldens; skipping September yields September and October `unavailable` and a "combined Sep–Oct" span that is absent from monthly averages; a quick update of all accounts on the 6th yields a provisional MTD figure through the 6th; updating only one account on the 8th keeps MTD through the 6th with the newer-balances note; accounts that never share a snapshot date give the no-common-date message; skipping a suggestion writes a `recurring_template_skips` row and suppresses it; no month-end balance can be entered until 1 Oct; forgetting the salary yields `unresolved` with "unexplained inflow" and the accept action creates a visible adjustment record; a self-paid untracked expense appears as additional spending and a partner-paid dinner under paid-by-others, neither changing tracked spending; the golden month's savings rate is 58.24 % counting the €50 additional spending (60.58 % tracked-only when the setting is off), with interest counted once and total spending €890; a cross-currency transfer with a fee leaves both buckets reconciled with the fee counted once; "confirm unchanged" is per month and never automatic for a non-zero account; a normal completed month for the fixture user takes < 3 minutes.
@@ -1889,7 +1899,7 @@ Each phase is a usable vertical slice, sized so a Claude Code session can comple
 - **Objective:** investments with performance that separates flows, distributions, fees and FX, and honest cumulative metrics.
 - **Functionality:** investment accounts; investments with asset class and optional **opening net invested basis**; valuations; contributions/withdrawals/switches; dividends/interest (income entries with settlement); fees (expense entries with settlement); Investments page and detail (current net invested with basis marker, gain, gain since tracking, XIRR, FX/native split, availability reasons); monthly editor Investments section; dashboard adds investments and liquid assets.
 - **Schema:** `investment_accounts`, `investments` (with `opening_net_invested_basis`); transfer kinds `contribution`, `withdrawal`, `investment_switch`.
-- **Finance:** Section 9 complete.
+- **Finance:** Section 9 complete; 12.6's investment row joins the completeness model Phase 3 built (30.18).
 - **Testing:** 9.3 and 9.4 goldens; XIRR known values; property tests 2, 5, 15; `investor` fixture; E2E investment update with a basis.
 - **Acceptance:** the opening-basis example shows current net invested €34,359, gain €8,941 (26.0 %) and gain since tracking €430, with no "lifetime" or "total invested" label anywhere; without a basis it shows net invested since tracking €42,870 and gain €430; the USD fund example shows native +300 USD, FX +€430, contribution €900 and total +€1,609; a month without a valuation shows performance "—" with a reason; a reinvested dividend changes nothing; an external fee appears in costs once; XIRR is offered only after 12 months and never from the undated basis.
 - **Dependencies:** Phase 3.
@@ -1899,7 +1909,7 @@ Each phase is a usable vertical slice, sized so a Claude Code session can comple
 - **Objective:** debts with terms, schedules, payments (incl. untracked and cross-currency), derived balances and confirmations.
 - **Functionality:** liabilities; terms history; payments with interest/principal split, settlement and optional cash leg; suggested payment (after its scheduled day); confirm actual balance with adjustment; loan proceeds; Debts page and detail; monthly editor Debts section; dashboard adds debt.
 - **Schema:** `liabilities`, `liability_terms`, `liability_payments`; transfer kind `loan_proceeds`.
-- **Finance:** 11.3 schedule with `amortizeMonth`, derived balances, adjustments, payoff; net worth with liabilities (sign −1).
+- **Finance:** 11.3 schedule with `amortizeMonth`, derived balances, adjustments, payoff; net worth with liabilities (sign −1); 12.6's two liability rows join the completeness model (30.18).
 - **Testing:** 11.3 golden; property tests 3, 4, 10, 16; `property-owner` fixture's mortgage part; E2E mortgage month.
 - **Acceptance:** 100k/3 %/300 months shows €474.21 with the golden rows and exactly 300 rows; accepting the suggestion writes a payment and reconciliation counts €250 interest as expense and €224.21 principal as non-expense; confirming a balance €12 higher than derived shows a +€12 debt adjustment; a rate change recomputes the payment; a USD loan paid from EUR cash reconciles in the EUR bucket with a pro-rata split; a third-party payment reduces the debt with no cash leg.
 - **Dependencies:** Phase 3.
@@ -1909,7 +1919,7 @@ Each phase is a usable vertical slice, sized so a Claude Code session can comple
 - **Objective:** properties with acquisition, valuations, rent, costs, improvements, linked mortgages and metrics.
 - **Functionality:** property create (existing or purchase flow), revaluation with age, rent (templates), operating costs, **capital improvements** (expense entries with optional value-add estimate), sale flow; Real Estate page and detail; monthly editor Properties section; dashboard adds property equity.
 - **Schema:** `properties`; transfer kinds `financed_purchase`, `asset_purchase`, `asset_sale`; category kinds `property_operating`, `acquisition_cost`, `disposal_cost`, `capital_improvement` in use.
-- **Finance:** 11.2 metrics; property revaluation bucket; `carried_estimated` values.
+- **Finance:** 11.2 metrics; property revaluation bucket; `carried_estimated` values; 12.6's property row joins the completeness model (30.18).
 - **Testing:** `property-owner` fixture; property tests for purchase/sale neutrality and M17; E2E purchase and improvement flows.
 - **Acceptance:** buying a €200k property with €50k cash, €150k mortgage and €15k costs changes net worth by exactly −€15k; a €20,000 improvement leaves the valuation unchanged, raises cost basis by €20,000 and lowers total net worth by €20,000 until the next valuation; entering a €12,000 value-add estimate shows "includes €12,000 estimated" and is replaced by the next valuation; a revaluation after 8 stale months attributes the value change to that month with the span label; net yield matches the hand computation; a month with no rent entry shows "No rent recorded" and no vacancy rate, and skipping the rent suggestion as vacant records that fact.
 - **Dependencies:** Phase 5.
@@ -1918,7 +1928,7 @@ Each phase is a usable vertical slice, sized so a Claude Code session can comple
 
 - **Objective:** the complete "how did I get here" layer and safe history editing.
 - **Functionality:** wealth-change decompositions for total and financial net worth (drivers + allocation) per month and per range; completeness with missing items; monthly editor complete (all eight sections, current-month behavior, keyboard flow, confirm-all-unchanged); history drawer with restore; bulk editor complete — including the "known tracked expenses (total)" column deferred from Phase 3 (15.3), whose source representation (category, native currency, cash attribution, financial date, durable row identity, and its relationship to ordinary expense rows) this phase must define explicitly before building it; data export; onboarding steps 5–10.
-- **Finance:** Section 12 complete (signed identities, newly tracked/removed, non-financial purchases/sales, capital improvements, FX residuals, completeness).
+- **Finance:** Section 12 complete (signed identities, newly tracked/removed, non-financial purchases/sales, capital improvements, FX residuals, completeness — the 12.6 model that Phases 3–6 built, completed and consumed across every domain, 30.18).
 - **Testing:** 12.7 golden and the excluded-car variant; property tests 1, 8, 18, 20; `multi-currency` and `complex-user` fixtures; export security test; full cascade deletion; **first restore drill** with dump-count verification.
 - **Acceptance:** for every fixture and random data, drivers sum to ΔNW exactly for both metrics; buying the excluded car shows "Purchases of non-financial assets −20,000" only in the financial view; the dashboard shows "August 83 % complete — missing mortgage balance" and "September in progress"; restoring a valuation from history creates a new audit row; export contains every table for the user and nothing else; the restore drill is logged.
 - **Dependencies:** Phases 4, 5, 6.
@@ -3046,9 +3056,84 @@ a rate that has ever been returned, the schema, or a phase already delivered.
 
 ---
 
+### 30.18 v2.1.15 — completed-month completeness clarification
+
+Written before the completed-month completeness engine is implemented. The
+implementation map found three questions that 12.6 answered in more than one
+way, or not at all, and each of them decides something a user sees. The product
+owner ruled on all three; this section records the rulings. Nothing below
+changes an identity, a reconciliation figure or status, the schema, or a phase
+already delivered.
+
+1. **The four states overlapped.** `incomplete`, `partial` and `sufficient`
+   already classify every month: some cash item is unsatisfied, or cash is
+   complete and another item is not, or nothing is unsatisfied. `stale` could
+   therefore exist only by outranking at least one of them, and 12.6 did not say
+   which. All three overlaps occur in Phase 3. An active account with no
+   valuation anywhere in the month is both `incomplete` and `stale`. A month
+   whose only cash account is dormant, whose salary is unresolved and in which
+   nothing was valued is both `partial` and `stale`. An account closed during M
+   whose zero balance is its previous month-end is `closed_zero` without any
+   valuation inside M, so with every occurrence resolved that month is both
+   `sufficient` and `stale`.
+
+2. **Ruling: `stale` > `incomplete` > `partial` > `sufficient`.** `stale` is the
+   override state of the existing four-state model, not a second freshness flag
+   beside it. A month with no valuation evidence inside it is `stale` whatever its
+   requirements say; only a month with such evidence goes on to be judged on its
+   requirements.
+
+3. **The `stale` predicate is about the month's own evidence.** "No valuation at
+   all in any position" means that no valuation of any position, of any kind,
+   `date_precision` or `source`, has `valued_on` in `[start(M), end(M)]`,
+   inclusive. It does **not** mean "no valuation on or before `end(M)`": a
+   balance carried into M from before it is exactly the evidence a stale month
+   lacks. Nor does it need a statement balance. An ordinary snapshot dated
+   inside M, a `confirmed_unchanged` month-end and a revalued Phase 2 other
+   asset each prevent `stale`, because "any position" is deliberately wider than
+   cash. A user with no positions at all has no valuation in M, and the rule
+   applies to them unchanged. The predicate reads evidence `loadFinancialWindow`
+   already holds, and needs no query of its own (23.2).
+
+4. **The counts are the result; the ratio is derived.** `satisfied` and
+   `required` are integer counts, always reported, and they are authoritative.
+   `completeness = satisfied / required` exists when `required > 0` and is **not
+   applicable** (null) when `required = 0`: nothing was expected, so 0 % would
+   claim a failure and 100 % a success, and neither happened. A percentage is a
+   display derivation of the two counts and never their only representation.
+
+5. **A month with nothing required** still follows the order in item 2. It is
+   `stale` when nothing is valued inside M, and otherwise `sufficient`, because
+   no requirement is unsatisfied. In Phase 3 this happens, for example, when
+   every participating cash account is dormant and no occurrence is scheduled.
+
+6. **Which phase counts which row.** 12.6's table stays the one end-state
+   definition, and no phase gets a competing copy of it. Phase 3 builds the model
+   and its completed-month read over the requirements Phase 3 can hold:
+   - every cash account that participates in M under 8.1 and is not dormant. A
+     dormant account is outside the count, not a satisfied item;
+   - every occurrence scheduled in M by a template of a kind Phase 3 can create,
+     income or expense. Each is satisfied by a flow carrying its
+     `(template_id, occurrence_date)` or by a skip for it. Archive state is
+     irrelevant (30.10), and no term or amount is involved.
+
+   The count is global for the month, not one per native-currency bucket.
+   Phases 4, 5 and 6 add the investment, liability and property rows to the same
+   model as those domains arrive, and Phase 7 completes and consumes the full
+   cross-domain model (25).
+
+7. **What does not change.** Completeness is its own axis. It moves no
+   reconciliation status, figure, residual or issue, no reporting availability
+   and no FX provenance, and its `partial` is not the reporting-currency
+   `Partial` of 7.6. A review mark or a dismissed advisory in `month_reviews`
+   satisfies no requirement. Completeness is derived on read and never stored
+   (5.3), and it is defined for completed months only.
+
+---
+
 ## Ready for Phase 0
 
-No genuine blockers remain. The blueprint was frozen as v2.1.2 and Phase 0 began from it; it is frozen as v2.1.14 after the corrections in 30.6, 30.7, 30.8, 30.9, 30.10, 30.11, 30.12, 30.13, 30.14, 30.15, 30.16 and 30.17, none of which changed a phase already delivered.
+No genuine blockers remain. The blueprint was frozen as v2.1.2 and Phase 0 began from it; it is frozen as v2.1.15 after the corrections in 30.6, 30.7, 30.8, 30.9, 30.10, 30.11, 30.12, 30.13, 30.14, 30.15, 30.16, 30.17 and 30.18, none of which changed a phase already delivered.
 
 ---
 
@@ -3072,5 +3157,6 @@ No genuine blockers remain. The blueprint was frozen as v2.1.2 and Phase 0 began
 - A reporting-currency conversion uses evidence its own figure could have seen: a month-to-date residual averages through `D` and falls back to `rateOn(D)`, never to a month end that has not happened and never to a later day (10.2, 8.11, 30.16).
 - Cash flow converts component by component, and a reporting figure is partial only over the contributions its own formula consumes — so a missing rate for a memo figure leaves the savings rate alone (10.3, 12.5, 30.16).
 - A completed month’s average rate exists exactly when the month holds an observation: one is enough, none is `Unavailable`, no rate from outside the month stands in, and only the current month through `D` keeps a sparse-data fallback marked `approximate` (10.2, 8.11, 30.17).
-- No remaining blocker was found. The blueprint is frozen as v2.1.14.
+- A completed month's completeness has one state for every combination of evidence: `stale` (no valuation of any position dated inside M) outranks `incomplete`, `partial` and `sufficient`. The integer counts are authoritative, the ratio is not applicable when nothing is required, and each phase adds its own 12.6 rows to one model (12.6, 25, 30.18).
+- No remaining blocker was found. The blueprint is frozen as v2.1.15.
 
