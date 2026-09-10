@@ -5,6 +5,7 @@
  */
 export * from './types';
 export * from './completeness';
+export * from './diagnostics';
 export * from './issues';
 export * from './month';
 export * from './mtd';

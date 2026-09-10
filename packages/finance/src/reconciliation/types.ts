@@ -63,10 +63,10 @@ export function worstStatus(
  * item 10.
  *
  * Still absent, and deliberately: `suggested_payment_missing` and `stale_*`
- * belong to later phases, and `possible_missing_conversion` and
- * `large_unclassified` need machinery no slice has yet (a monthly average rate
- * and a trailing median of reliable months). A key is never invented or
- * renamed.
+ * belong to later phases, and `possible_missing_conversion` needs a monthly
+ * average rate no slice has settled yet. `large_unclassified` is raised by the
+ * completed-month diagnostic in `diagnostics.ts`, over the six reliable months
+ * before the target (30.15 item 4). A key is never invented or renamed.
  */
 export type IssueKey =
   | 'missing_month_end'
@@ -76,7 +76,8 @@ export type IssueKey =
   | 'possible_missing_interest'
   | 'suggested_income_missing'
   | 'mtd_no_common_date'
-  | 'mtd_newer_balances';
+  | 'mtd_newer_balances'
+  | 'large_unclassified';
 
 /** 8.5's "Class" column. `info` is neither blocking nor advisory. */
 export type IssueClass = 'blocking' | 'advisory' | 'info';
@@ -92,6 +93,7 @@ export const ISSUE_CLASS: Readonly<Record<IssueKey, IssueClass>> = {
   // the whole month-to-date result is unavailable, with no totals at all.
   mtd_no_common_date: 'blocking',
   mtd_newer_balances: 'advisory',
+  large_unclassified: 'advisory',
 };
 
 export interface Issue {
