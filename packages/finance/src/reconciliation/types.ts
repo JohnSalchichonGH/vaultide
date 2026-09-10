@@ -63,10 +63,11 @@ export function worstStatus(
  * item 10.
  *
  * Still absent, and deliberately: `suggested_payment_missing` and `stale_*`
- * belong to later phases, and `possible_missing_conversion` needs a monthly
- * average rate no slice has settled yet. `large_unclassified` is raised by the
- * completed-month diagnostic in `diagnostics.ts`, over the six reliable months
- * before the target (30.15 item 4). A key is never invented or renamed.
+ * belong to later phases. `large_unclassified` is raised by the completed-month
+ * diagnostic in `diagnostics.ts`, over the six reliable months before the
+ * target (30.15 item 4); `possible_missing_conversion` by the one in
+ * `missing-conversion.ts`, from the month's own buckets and its average rate
+ * (30.15 items 6–9, 30.17). A key is never invented or renamed.
  */
 export type IssueKey =
   | 'missing_month_end'
@@ -77,7 +78,8 @@ export type IssueKey =
   | 'suggested_income_missing'
   | 'mtd_no_common_date'
   | 'mtd_newer_balances'
-  | 'large_unclassified';
+  | 'large_unclassified'
+  | 'possible_missing_conversion';
 
 /** 8.5's "Class" column. `info` is neither blocking nor advisory. */
 export type IssueClass = 'blocking' | 'advisory' | 'info';
@@ -94,7 +96,37 @@ export const ISSUE_CLASS: Readonly<Record<IssueKey, IssueClass>> = {
   mtd_no_common_date: 'blocking',
   mtd_newer_balances: 'advisory',
   large_unclassified: 'advisory',
+  possible_missing_conversion: 'advisory',
 };
+
+/**
+ * One qualifying source bucket of a `possible_missing_conversion` advisory
+ * (8.5, 30.15 items 6–9).
+ *
+ * What a later "link as cross-currency transfer" needs and nothing more: the
+ * two native residuals the prefill uses — `U2` leaving the source, `X` arriving
+ * at the destination — and the evidence the suggestion rests on, `X2` and the
+ * month's average rate that produced it. `X2` is evidence, never a prefill: the
+ * monthly average says the two residuals look like one transfer, not what the
+ * bank's rate was. There is no `approximate` here because a completed month's
+ * average is available or absent and never approximate (30.17 item 7).
+ */
+export interface ConversionCandidate {
+  /** `C2`, the bucket whose positive residual is the spending spike. */
+  readonly sourceCurrency: CurrencyCode;
+  /** `C1`, the bucket whose negative residual is the unexplained inflow. */
+  readonly destinationCurrency: CurrencyCode;
+  /** `U2`, in `C2`: the source bucket's own `unclassified`. */
+  readonly sourceAmount: Decimal;
+  /** `X`, in `C1`: `−unclassified` of the destination bucket. */
+  readonly destinationAmount: Decimal;
+  /** `X2`, in `C2`: `X` converted at M's monthly-average cross rate. */
+  readonly comparisonAmount: Decimal;
+  /** The `C1 → C2` rate `X2` was computed with, and its evidence (10.2). */
+  readonly rate: Decimal;
+  readonly rateDate: PlainDate;
+  readonly rateSource: string;
+}
 
 export interface Issue {
   readonly key: IssueKey;
@@ -121,6 +153,12 @@ export interface Issue {
   readonly occurrenceDate?: PlainDate;
   /** `mtd_newer_balances`: the accounts whose newer evidence could not move `D`. */
   readonly positionIds?: readonly string[];
+  /**
+   * `possible_missing_conversion`: every qualifying source bucket, once each,
+   * ordered by source currency code ascending (30.15 item 9). Present on that
+   * key alone, and never empty there — no candidate means no advisory.
+   */
+  readonly candidates?: readonly ConversionCandidate[];
 }
 
 /** One account's contribution to a bucket (8.9). */
