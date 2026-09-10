@@ -1,7 +1,11 @@
 import {
   addMonths,
   bucketObservations,
+  conversionObservations,
   Decimal,
+  endOfMonthKey,
+  isMissingConversionDestination,
+  isMissingConversionSource,
   isMonthCompleted,
   LARGE_UNCLASSIFIED_BASELINE_MONTHS,
   monthKey,
@@ -10,7 +14,9 @@ import {
   startOfMonthKey,
   termForOccurrence,
   withLargeUnclassified,
+  withPossibleMissingConversion,
   type BucketResult,
+  type ConversionCandidate,
   type Issue,
   type LargeUnclassifiedObservation,
   type MonthKey,
@@ -19,10 +25,12 @@ import {
 } from '@vaultide/finance';
 import type { RequestContext } from '../context';
 import { ValidationError } from '../errors';
+import type { FxService } from '../fx/service';
 import { moneyDto } from '../positions/mapping';
 import type { CompletedMonthData, MonthDataDependencies } from './loader';
 import { loadCompletedRange } from './range-loader';
 import type {
+  ConversionCandidateDto,
   MonthReconciliationDto,
   ReconciliationBucketDto,
   ReconciliationIssueDto,
@@ -41,7 +49,14 @@ import type {
  * nothing to invalidate.
  */
 
-export type ReconciliationDependencies = MonthDataDependencies;
+export interface ReconciliationDependencies extends MonthDataDependencies {
+  /**
+   * Read access to stored rates, for the month's average alone (10.2). Never
+   * a provider: a completed month either has rate observations or it does not,
+   * and this read fetches none (30.17).
+   */
+  readonly fx: Pick<FxService, 'loadTable'>;
+}
 
 /** `YYYY-MM` from the client, validated into a month key. */
 const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
@@ -63,6 +78,19 @@ function termsOf(data: CompletedMonthData, templateId: string): TemplateTerm[] {
       amount: new Decimal(term.amount),
       grossAmount: term.grossAmount === null ? null : new Decimal(term.grossAmount),
     }));
+}
+
+function candidateDto(candidate: ConversionCandidate): ConversionCandidateDto {
+  return {
+    sourceCurrency: candidate.sourceCurrency,
+    destinationCurrency: candidate.destinationCurrency,
+    sourceAmount: moneyDto(candidate.sourceAmount.toString(), candidate.sourceCurrency),
+    destinationAmount: moneyDto(candidate.destinationAmount.toString(), candidate.destinationCurrency),
+    comparisonAmount: moneyDto(candidate.comparisonAmount.toString(), candidate.sourceCurrency),
+    rate: candidate.rate.toString(),
+    rateDate: candidate.rateDate,
+    rateSource: candidate.rateSource,
+  };
 }
 
 function issueDto(
@@ -95,7 +123,27 @@ function issueDto(
     templateName: issue.templateName ?? null,
     occurrenceDate: issue.occurrenceDate ?? null,
     expectedAmount: term === undefined ? null : moneyDto(term.amount.toString(), currency),
+    // Present on `possible_missing_conversion` alone, as on the engine's issue.
+    ...(issue.candidates === undefined ? {} : { candidates: issue.candidates.map(candidateDto) }),
   };
+}
+
+/**
+ * The currencies whose November average the advisory would read — or none,
+ * when the month cannot show a missing conversion's signature at all.
+ *
+ * The signature needs a bucket that gained cash it cannot explain and another
+ * that lost cash it cannot explain, in the same month (30.15 item 6). Absent
+ * either, no rate can change the answer and none is read: a single-currency
+ * month, and a multi-currency month whose buckets all reconcile, cost exactly
+ * what they cost before this advisory existed.
+ */
+function conversionQuotes(result: MonthReconciliation): string[] {
+  const observations = conversionObservations(result);
+  const destinations = observations.filter(isMissingConversionDestination);
+  const sources = observations.filter(isMissingConversionSource);
+  if (destinations.length === 0 || sources.length === 0) return [];
+  return [...new Set([...destinations, ...sources].map((observation) => observation.currency))];
 }
 
 function bucketDto(
@@ -156,8 +204,13 @@ function bucketDto(
  * is reconciled in memory by the same engine, the six earlier ones only to
  * become baseline observations; the month's own figures are exactly what a
  * single-month load would have given, because the range loader slices the same
- * rows on the same bounds and keeps the earliest opening evidence intact. The
- * advisory is metadata on top: it moves no status, total or residual.
+ * rows on the same bounds and keeps the earliest opening evidence intact.
+ *
+ * When the month shows a missing conversion's signature, one more read fetches
+ * the stored rates dated inside `M` — the completed month's average draws on
+ * nothing outside it (10.2, 30.17) — and the `possible_missing_conversion`
+ * advisory is judged from them. Both advisories are metadata on top: they move
+ * no status, total or residual.
  */
 export async function getMonthReconciliation(
   deps: ReconciliationDependencies,
@@ -188,7 +241,15 @@ export async function getMonthReconciliation(
     if (historyMonth === month) continue;
     history.push(...bucketObservations(reconcileCompletedMonth(historyInput)));
   }
-  const result: MonthReconciliation = withLargeUnclassified(reconcileCompletedMonth(input), history);
+  const judged: MonthReconciliation = withLargeUnclassified(reconcileCompletedMonth(input), history);
+  const quotes = conversionQuotes(judged);
+  const result: MonthReconciliation =
+    quotes.length === 0
+      ? judged
+      : withPossibleMissingConversion(
+          judged,
+          await deps.fx.loadTable(quotes, startOfMonthKey(month), endOfMonthKey(month), ctx.today),
+        );
   const names = new Map(data.positions.map((row) => [row.id, row.name]));
 
   return {

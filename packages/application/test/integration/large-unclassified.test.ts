@@ -33,7 +33,7 @@ const DEC_1 = on('2026-12-01');
 const NOVEMBER = parseMonth('2026-11');
 
 const deps = () => harness.services.flows;
-const readDeps = () => ({ db: harness.db });
+const readDeps = () => ({ db: harness.db, fx: harness.services.fx });
 type ReadDeps = ReturnType<typeof readDeps>;
 
 const categoryOf = (kind: string): string => {
@@ -118,7 +118,7 @@ async function countRoundTrips<T>(run: (deps: ReadDeps) => Promise<T>): Promise<
       };
     },
   });
-  const result = await run({ db: counting });
+  const result = await run({ db: counting, fx: harness.services.fx });
   return [transactions, result];
 }
 

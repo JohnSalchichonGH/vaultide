@@ -21,6 +21,28 @@ export type ReconciliationStatusDto =
 
 export type IssueClassDto = 'blocking' | 'advisory' | 'info';
 
+/**
+ * One qualifying source of a `possible_missing_conversion` advisory (8.5,
+ * 30.15 item 9).
+ *
+ * `sourceAmount` (`U2`, in the source currency) and `destinationAmount` (`X`,
+ * in the destination currency) are the two native residuals a prefilled
+ * transfer uses. `comparisonAmount` (`X2`, in the source currency) and the
+ * rate are the evidence the suggestion rests on — the month's average, never
+ * a claim about the bank's rate — and are not prefilled. A completed month's
+ * average is never approximate, so no such flag exists here (30.17 item 7).
+ */
+export interface ConversionCandidateDto {
+  readonly sourceCurrency: string;
+  readonly destinationCurrency: string;
+  readonly sourceAmount: MoneyDto;
+  readonly destinationAmount: MoneyDto;
+  readonly comparisonAmount: MoneyDto;
+  readonly rate: string;
+  readonly rateDate: string;
+  readonly rateSource: string;
+}
+
 export interface ReconciliationIssueDto {
   readonly key: string;
   readonly class: IssueClassDto;
@@ -42,6 +64,11 @@ export interface ReconciliationIssueDto {
   readonly expectedAmount: MoneyDto | null;
   /** `mtd_newer_balances`: the accounts whose newer evidence could not move `D`. */
   readonly positionIds?: readonly string[] | null;
+  /**
+   * `possible_missing_conversion`: every qualifying source once, ordered by
+   * source currency code ascending. Present on that key alone, never empty.
+   */
+  readonly candidates?: readonly ConversionCandidateDto[];
 }
 
 export interface ReconciliationAccountDto {

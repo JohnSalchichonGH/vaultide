@@ -51,7 +51,7 @@ function deps() {
 }
 
 function readDeps() {
-  return { db: harness.db };
+  return { db: harness.db, fx: harness.services.fx };
 }
 
 async function createAuthUser(id: string, email: string): Promise<void> {

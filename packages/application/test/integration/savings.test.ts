@@ -47,7 +47,7 @@ function deps() {
 }
 
 function readDeps() {
-  return { db: harness.db };
+  return { db: harness.db, fx: harness.services.fx };
 }
 
 function categoryOf(kind: string): string {
