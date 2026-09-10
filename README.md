@@ -1,118 +1,129 @@
 # Vaultide
 
-A monthly, snapshot-driven personal finance platform. You enter balances and the
-flows you know; Vaultide infers spending by cash reconciliation, keeps records in
-their native currency with historical FX, separates capital flows from investment
-performance, explains what changed your net worth, and projects it forward.
+A monthly, snapshot-driven personal finance platform. You record balances and
+the flows you know; Vaultide infers the rest by cash reconciliation, keeps every
+record in its native currency with historical exchange rates, separates capital
+movements from spending and from investment performance, explains what changed
+your net worth, and — in later phases — projects it forward. It covers cash,
+investments, other assets and liabilities, in as many currencies as you hold.
 
-**Phases 0–2 are frozen and production-verified; Phase 3 is in progress.** What
-you can use today is Phase 2: create an account, verify your email address, sign
-in (optionally with a second factor), and choose your base and reporting
-currencies, timezone and locale. Then: cash accounts and other assets in any
-supported currency, balances dated to the day and never into the future,
-statement month-end balances once a month has ended, quick update, and both
-net-worth metrics — total (everything you track) and financial (the headline). A
-value nobody has recorded is shown as unknown, never as zero, and a total that
-could not include something says so and says what.
-
-**Phase 3 server-side implementation has reached slice 10c.** Income, expenses
-and transfers with their linked fee; recurring sources with their occurrences,
-terms, acceptances and skips, and how complete a past month's recurring record
-is; completed-month reconciliation with its issues and per-account residuals —
-the engine that infers what a finished month spent from its own statement
-balances and records, per native currency, and says when it cannot; the current
-month so far, measured to the one date every account has evidence for;
-multi-month spans, which reconcile a stretch whose interior month ends are
-missing and report it once for the interval rather than spreading it back over
-the months inside; and, in each native currency, what that spending was for —
-consumption against fees, transaction costs and money sent outside — together
-with what was saved from income, personal savings and the savings rate, plus
-the spending paid from outside tracked accounts and the spending someone else
-paid, which are reported beside the rest and never inside it.
-
-The same month is now also said in the currency you think in. Every known flow
-converts at its own financial date and the inferred remainder at its interval's
-average rate — the calendar month for a finished month, and only the evidence up
-to the shared date `D` for the month so far, so a rate published after `D`
-cannot move a figure labelled as running to it. Each figure carries its own
-availability, so a rate missing for one memo does not blank out the savings
-rate: available, partial, or unavailable with the reason and the currency it
-came from — a missing month-end statement, an unusable opening, an unresolved
-month or an absent rate each named as itself. A month with no shared date has no
-tracked interval at all and says so, rather than reporting zeros it never
-measured. A currency in which you only recorded spending you settled yourself or
-somebody else paid needs no account and gets no reconciliation bucket, and its
-rows still reach the figures they belong to. Completed months can be read as a
-series, one result each, and the rolling three-, six- and twelve-month averages
-of tracked spending are built from it: exact calendar windows ending at each
-completed month, counting a month only when it is reliable and its
-reporting-currency tracked spending is complete — an ineligible month keeps its
-calendar slot rather than being replaced by an older one — averaging whatever
-survived, saying how many months that was, and never averaging a span or the
-month in progress.
-
-A finished month can now also say when it has more unexplained spending than it
-usually does. The large-unclassified advisory compares a month's residual, in
-its own currency, with the median residual of the six calendar months before
-it: only months that reconciled as reliable count, at least three of them are
-needed, a month that does not qualify keeps its slot rather than being replaced
-by an older one, and neither a span nor the month in progress is ever part of
-it. It speaks when the residual is strictly more than twice that median. A
-reliable or an estimated month with a computed residual can be judged; the
-advisory sits beside the figures and changes none of them. Dismissing it is not
-wired yet — that is the monthly editor's.
-
-None of it has an interface yet. There is no monthly editor, no spending page,
-no income page and no bulk-history editor; the possible-missing-conversion
-advisory, the month's completeness report and the remaining read models and
-actions are still unwritten; the rest of the Phase 3 end-to-end journeys are
-not yet covered; and no Phase 3 journey has been accepted end to end. Phase 3
-is in progress, and is neither accepted nor frozen.
-
-The authoritative specification is
+The exact financial semantics live in
 [`docs/implementation-blueprint.md`](docs/implementation-blueprint.md) (frozen,
-v2.1.14). Implementation-level choices are recorded in [`docs/adr/`](docs/adr/):
-[Phase 0](docs/adr/0001-phase-0-implementation-decisions.md),
-[Phase 1](docs/adr/0002-phase-1-implementation-decisions.md),
-[pre-Phase-2 gates](docs/adr/0003-pre-phase-2-security-and-cost-gates.md),
-[Phase 2](docs/adr/0004-phase-2-implementation-decisions.md),
-[Phase 3](docs/adr/0005-phase-3-implementation-decisions.md) (written against
-v2.1.6, and deliberately left at that baseline). Each accepted phase's evidence
-is in `docs/phase-N-acceptance.md`.
+v2.1.14). This README describes the product, its current status and how to
+work on the repository; it does not restate the blueprint's rules.
 
-## Layout
+## Status
+
+### User-facing production
+
+Phases 0–2 are accepted, frozen and production-verified. What is usable today:
+
+- account creation, email verification, sign-in, and an optional second factor;
+- settings: base and reporting currencies, timezone and locale;
+- cash accounts and other assets in any supported currency;
+- balances dated to the day, never into the future, and statement month-end
+  balances once a month has ended;
+- quick update;
+- total net worth (everything tracked) and financial net worth (the headline),
+  valued across currencies with historical rates — a value nobody recorded is
+  shown as unknown, never as zero, and a total that could not include something
+  says so.
+
+### Phase 3 backend
+
+Server-side Phase 3 implementation is complete through **slice 10d**. None of it
+has a user interface yet. Implemented behind the application layer:
+
+- income, expenses and transfers, with a transfer's linked fee;
+- recurring templates with their terms, generated occurrences, acceptances and
+  skips, and how complete a past month's recurring record is;
+- completed-month reconciliation per native currency: the inferred spending of a
+  finished month, its status, issues and per-account residuals;
+- month-to-date reconciliation, measured to the one date every account has
+  evidence for;
+- multi-month spans, reconciling a stretch whose interior month ends are missing
+  and reporting it once for the interval;
+- the native spending and savings decomposition: consumption against fees,
+  transaction costs and money sent outside, savings from income, personal
+  savings and the savings rate;
+- the same figures in the reporting currency, each carrying its own
+  availability and the reason for anything it could not include;
+- rolling three-, six- and twelve-month averages of tracked spending over
+  completed months;
+- the large-unclassified advisory: a finished month is flagged when it has far
+  more unexplained spending than its own recent history;
+- the possible-missing-conversion advisory: when one currency gained cash
+  nobody recorded and another lost about as much in the same month, the month
+  suggests the cross-currency transfer that would explain both.
+
+Both advisories sit beside the figures and change none of them. Dismissing an
+advisory is not wired yet; that belongs to the monthly editor.
+
+### Remaining Phase 3
+
+Phase 3 is **in progress**, and is neither accepted nor frozen. Still to do:
+
+- the completed-month completeness report and the remaining read models;
+- the remaining actions, and the review and dismissal workflow;
+- the Monthly editor;
+- the Spending and Income pages;
+- bulk history entry and correction;
+- the remaining end-to-end journeys and hardening;
+- Phase 3 acceptance, deployment and freeze.
+
+## How Vaultide works
+
+- **Monthly snapshots, not transaction bookkeeping.** You enter balances and the
+  flows you know about — income, expenses, transfers, contributions. Vaultide
+  does not import or categorise bank transactions.
+- **Reconciliation infers the rest.** For a finished month, the change in cash
+  balances minus the known flows is the spending nobody recorded. It is shown as
+  unclassified, with a status that says how much to trust it, rather than being
+  hidden or spread over categories.
+- **Native currency is authoritative.** Every record keeps the currency it
+  happened in. Reporting-currency figures are derived with historical rates and
+  say which rate they used; they never replace the native record.
+- **Capital movements are not spending.** Transfers between your own accounts,
+  investment contributions, loan principal and capital improvements are
+  allocations of money, not consumption, and are kept out of the spending
+  figures.
+- **Unknown is never zero.** A balance nobody entered, a rate nobody stored or a
+  month that cannot be reconciled is reported as unavailable with its reason,
+  and any total built on it says what is missing.
+- **Arithmetic is exact.** Money is decimal end to end; rounding happens only
+  when a value is stored or displayed.
+
+The blueprint defines each of these precisely: statuses, issue keys,
+reconciliation identities, rate selection and every edge case.
+
+## Architecture
 
 ```text
-apps/web            Next.js App Router: auth pages, settings, onboarding, shell,
-                    dashboard, accounts and account detail,
-                    /api/auth, /api/cron/fx-refresh, /api/health
-packages/finance    pure engines — money, dates, FX lookup and conversion,
-                    Unavailable/Partial, sign, numeric backends, position values
-                    and freshness, total and financial net worth, flow roles,
-                    recurring occurrences and terms, completed-month,
-                    month-to-date and multi-month-span reconciliation, native
-                    spending decomposition and savings, reporting-currency cash
-                    flow and savings, rolling tracked-spending averages, the
-                    large-unclassified advisory
-packages/validation Zod primitives and inputs shared by client, server, database
-packages/db         Drizzle schema, migrations, RLS policies, repositories, seed
-packages/application use cases: Better Auth, sessions, mailer, settings, FX service,
-                    positions, valuations, quick update, net-worth queries,
-                    income, expenses, transfers, recurring templates and
-                    suggestions, completed-month, month-to-date and span
-                    reconciliation reads, native savings reads,
-                    reporting-currency cash-flow and rolling tracked-spending reads
-packages/config     tsconfig, ESLint (incl. the money-coercion rule), boundaries
-e2e                 Playwright: smoke, the auth and settings flow, and the
-                    accounts, balances and net-worth journey
-scripts/db          role bootstrap, local PostgreSQL, currency reconciliation,
-                    live environment and financial-invariant checks
-scripts/backup      dump → verify → encrypt
+apps/web             Next.js App Router: auth pages, onboarding, settings, shell,
+                     dashboard, accounts and account detail; /api/auth,
+                     /api/cron/fx-refresh, /api/health
+packages/finance     pure engines — money, dates, FX, Unavailable/Partial,
+                     positions and net worth, flow roles, recurrence,
+                     completed-month, month-to-date and span reconciliation,
+                     savings, reporting-currency figures, rolling averages,
+                     the two reconciliation advisories
+packages/validation  Zod primitives and inputs shared by client, server, database
+packages/db          Drizzle schema, migrations, RLS policies, repositories, seed
+packages/application use cases: auth and sessions, mailer, settings, FX service,
+                     positions and valuations, quick update, net-worth reads,
+                     flows, recurring templates and suggestions, and every
+                     reconciliation, savings, reporting and rolling read
+packages/config      tsconfig, ESLint (incl. the money-coercion rule), boundaries
+e2e                  Playwright: smoke, the auth and settings flow, and the
+                     accounts, balances and net-worth journey
+scripts/db           role bootstrap, local PostgreSQL, currency reconciliation,
+                     live environment and financial-invariant checks
+scripts/backup       dump → verify → encrypt
 ```
 
 Module boundaries (blueprint section 19) are enforced by `dependency-cruiser` in
-CI: `finance` is pure, `apps/web` never reaches the database, and only
-`application` sees `db`, `finance` and `validation` together.
+CI: `finance` is pure and performs no IO, `apps/web` never reaches the database,
+and only `application` sees `db`, `finance` and `validation` together.
 
 ## Getting started
 
@@ -154,9 +165,10 @@ DATABASE_URL_DIRECT_OWNER=... pnpm db:seed-currencies
 ```
 
 Roles, and the credential each one belongs to, are described in
-[`docs/ops/secrets.md`](docs/ops/secrets.md).
+[`docs/ops/secrets.md`](docs/ops/secrets.md); the full environment is in
+[`docs/ops/environment-setup.md`](docs/ops/environment-setup.md).
 
-### Checks
+## Verification
 
 ```bash
 pnpm lint                # ESLint + module boundaries
@@ -179,7 +191,7 @@ the production build itself.
 pnpm db:verify-currencies   # does the seed still match the approved ECB -> BDI chain?
 ```
 
-### Backups
+## Backups
 
 ```bash
 DATABASE_URL_BACKUP=... BACKUP_AGE_PUBLIC_KEY=age1... pnpm db:backup
@@ -190,15 +202,33 @@ count against the live database, then encrypts with `age`. A dump that an RLS
 policy filtered can never pass verification. Restoring is documented in
 [`docs/ops/restore.md`](docs/ops/restore.md).
 
-## Principles this codebase holds to
+## Design and engineering docs
+
+- **Semantic authority:** [`docs/implementation-blueprint.md`](docs/implementation-blueprint.md)
+  (frozen, v2.1.14). When the code and the blueprint disagree, the blueprint is
+  corrected or the code is — never silently either.
+- **Implementation decisions:** [`docs/adr/`](docs/adr/) —
+  [Phase 0](docs/adr/0001-phase-0-implementation-decisions.md),
+  [Phase 1](docs/adr/0002-phase-1-implementation-decisions.md),
+  [pre-Phase-2 gates](docs/adr/0003-pre-phase-2-security-and-cost-gates.md),
+  [Phase 2](docs/adr/0004-phase-2-implementation-decisions.md),
+  [Phase 3](docs/adr/0005-phase-3-implementation-decisions.md) (written against
+  blueprint v2.1.6 and deliberately left at that baseline).
+- **Evidence for frozen phases:**
+  [`docs/phase-0-acceptance.md`](docs/phase-0-acceptance.md),
+  [`docs/phase-1-acceptance.md`](docs/phase-1-acceptance.md),
+  [`docs/phase-2-acceptance.md`](docs/phase-2-acceptance.md).
+- **Operations:** [`docs/ops/`](docs/ops/) — environment setup, secrets and
+  roles, restore procedure and restore log.
+
+## Engineering invariants
 
 - **Money is exact.** `NUMERIC(24,8)` in PostgreSQL, `Decimal` at 40 digits in
-  the domain, decimal strings across the wire, and display formatted from those
-  strings. Authoritative financial arithmetic and displayed money never pass
-  through a JavaScript `number`, and a lint rule fails the build if they try.
-  Numeric coercion is permitted in one place only — chart geometry, where the
-  rule is switched off for `components/charts/` because a pixel is not a
-  figure; every number a person reads there still comes from the exact string.
+  the domain, decimal strings across the wire, display formatted from those
+  strings. Financial arithmetic and displayed money never pass through a
+  JavaScript `number`; a lint rule fails the build if they try. The one
+  exception is chart geometry under `components/charts/`, where a pixel is not
+  a figure and every number a person reads still comes from the exact string.
 - **Time is injected.** No engine reads the clock. "Today" is computed once per
   request in the user's timezone, so month boundaries are testable and no record
   can be dated in the future.
@@ -206,16 +236,15 @@ policy filtered can never pass verification. Restoring is documented in
   a reason, never `0`; an aggregate missing a part says so.
 - **Financial writes re-check the session.** Every state-changing financial
   action revalidates the session against the authoritative store before it
-  writes. The signed cookie cache is enough to render a page; it is not enough
-  to authorize a mutation, so a session revoked moments ago cannot spend its
-  remaining cache window changing money.
+  writes. The signed cookie cache can render a page; it cannot authorize a
+  mutation, so a session revoked moments ago cannot spend its remaining cache
+  window changing money.
 - **The database fails closed.** Row-level security denies when no user context
   is set, the runtime role cannot bypass it or run DDL, and only the backup role
   — used by one workflow — can read across tenants.
 - **Jobs cannot see tenants.** The daily exchange-rate refresh runs with no user
-  context at all, so every user-owned table returns nothing to it. It maintains
-  the whole supported currency set from a global table rather than discovering
-  currencies from anybody's data.
+  context, so every user-owned table returns nothing to it; it maintains the
+  supported currency set from a global table rather than from anybody's data.
 - **Crypto is not a currency.** The catalogue holds fiat and official currencies
   the rate provider publishes, and nothing else. A crypto holding will be an
   investment priced in the currency its broker reports.
