@@ -18,6 +18,11 @@ env:
   NODE_VERSION: '22'
   # Supply-chain: pnpm refuses dependencies younger than three days (17.3).
   CI: 'true'
+  # The commit every job checks out, tests and builds. A pull request is tested
+  # at its own head, never at GitHub's synthetic merge commit, so the SHA under
+  # review is the SHA that CI ran and the one that may later fast-forward main;
+  # a push or a manual run tests the event's own commit.
+  CI_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   quality:
@@ -26,6 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ env.CI_SHA }}
           fetch-depth: 0
 
       - name: Scan for secrets
@@ -64,6 +70,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.CI_SHA }}
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -97,6 +105,8 @@ jobs:
       TEST_DATABASE_URL_ADMIN: postgres://vaultide_admin:vaultide_admin@127.0.0.1:5432/postgres
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.CI_SHA }}
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -158,6 +168,8 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.CI_SHA }}
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -178,7 +190,7 @@ jobs:
 
       - name: Build
         env:
-          VAULTIDE_VERSION: ${{ github.sha }}
+          VAULTIDE_VERSION: ${{ env.CI_SHA }}
         run: pnpm run build
 
       - name: Install Playwright browsers
