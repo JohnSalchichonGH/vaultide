@@ -1,12 +1,18 @@
 import {
+  addMonths,
+  bucketObservations,
   Decimal,
   isMonthCompleted,
+  LARGE_UNCLASSIFIED_BASELINE_MONTHS,
   monthKey,
   plainDate,
   reconcileCompletedMonth,
+  startOfMonthKey,
   termForOccurrence,
+  withLargeUnclassified,
   type BucketResult,
   type Issue,
+  type LargeUnclassifiedObservation,
   type MonthKey,
   type MonthReconciliation,
   type TemplateTerm,
@@ -14,7 +20,8 @@ import {
 import type { RequestContext } from '../context';
 import { ValidationError } from '../errors';
 import { moneyDto } from '../positions/mapping';
-import { loadCompletedMonth, type CompletedMonthData, type MonthDataDependencies } from './loader';
+import type { CompletedMonthData, MonthDataDependencies } from './loader';
+import { loadCompletedRange } from './range-loader';
 import type {
   MonthReconciliationDto,
   ReconciliationBucketDto,
@@ -143,6 +150,14 @@ function bucketDto(
  * and the current month's figure is the month-to-date engine's, which is a
  * different question with a different status. Asking for a month that is not
  * over is a client error rather than a silently different answer.
+ *
+ * The read covers `M−6 … M` in one bounded load — the six calendar months the
+ * `large_unclassified` advisory reads (30.15 item 4) and the month itself. Each
+ * is reconciled in memory by the same engine, the six earlier ones only to
+ * become baseline observations; the month's own figures are exactly what a
+ * single-month load would have given, because the range loader slices the same
+ * rows on the same bounds and keeps the earliest opening evidence intact. The
+ * advisory is metadata on top: it moves no status, total or residual.
  */
 export async function getMonthReconciliation(
   deps: ReconciliationDependencies,
@@ -155,8 +170,25 @@ export async function getMonthReconciliation(
     });
   }
 
-  const data = await loadCompletedMonth(deps, ctx.userId, month, ctx.today);
-  const result: MonthReconciliation = reconcileCompletedMonth(data.input);
+  const from = monthKey(addMonths(startOfMonthKey(month), -LARGE_UNCLASSIFIED_BASELINE_MONTHS));
+  const range = await loadCompletedRange(deps, ctx.userId, from, month, ctx.today);
+
+  const input = range.inputs.get(month);
+  if (input === undefined) throw new Error(`no input for ${month}`);
+  const data: CompletedMonthData = {
+    input,
+    positions: range.positions,
+    categories: range.categories,
+    templates: range.templates,
+    terms: range.terms,
+  };
+
+  const history: LargeUnclassifiedObservation[] = [];
+  for (const [historyMonth, historyInput] of range.inputs) {
+    if (historyMonth === month) continue;
+    history.push(...bucketObservations(reconcileCompletedMonth(historyInput)));
+  }
+  const result: MonthReconciliation = withLargeUnclassified(reconcileCompletedMonth(input), history);
   const names = new Map(data.positions.map((row) => [row.id, row.name]));
 
   return {

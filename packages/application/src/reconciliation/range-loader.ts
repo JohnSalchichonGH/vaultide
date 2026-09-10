@@ -25,6 +25,7 @@ import {
   toExpenseFlow,
   toIncomeFlow,
   toTransferFlow,
+  type CompletedMonthData,
   type MonthDataDependencies,
 } from './loader';
 
@@ -44,7 +45,8 @@ import {
  * there.
  */
 
-export interface CompletedRangeData {
+export interface CompletedRangeData
+  extends Pick<CompletedMonthData, 'positions' | 'categories' | 'templates' | 'terms'> {
   readonly months: readonly MonthKey[];
   readonly inputs: ReadonlyMap<MonthKey, CompletedMonthInput>;
 }
@@ -79,7 +81,7 @@ export async function loadCompletedRange(
 
   // The terms of every template in the range, in one batched query — the same
   // conditional read the single-month path makes, and never one per template.
-  await loadTermsForRange(
+  const terms = await loadTermsForRange(
     deps.db,
     userId,
     templates.map((template) => template.id),
@@ -133,5 +135,5 @@ export async function loadCompletedRange(
     });
   }
 
-  return { months, inputs };
+  return { months, inputs, positions: window.positions, categories, templates, terms };
 }
