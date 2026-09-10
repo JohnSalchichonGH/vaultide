@@ -14,5 +14,6 @@ export * from './networth/index';
 export * from './flows/index';
 export * from './recurring/index';
 export * from './reconciliation/index';
+export * from './completeness/index';
 export * from './savings/index';
 export * from './reporting/index';
