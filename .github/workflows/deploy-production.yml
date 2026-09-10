@@ -9,7 +9,6 @@ on:
     workflows: ['CI']
     branches: [main]
     types: [completed]
-  workflow_dispatch:
 
 concurrency:
   group: deploy-production
@@ -20,14 +19,12 @@ jobs:
     name: Migrate, then deploy
     runs-on: ubuntu-latest
     # Only after a green CI run on main.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+    if: github.event.workflow_run.conclusion == 'success'
     environment: production
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
@@ -63,7 +60,7 @@ jobs:
       - name: Verify the new deployment is live and healthy
         env:
           APP_URL: ${{ vars.APP_URL }}
-          RELEASED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          RELEASED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           if [ -z "${APP_URL}" ]; then
             echo "No APP_URL configured; skipping the health check."
