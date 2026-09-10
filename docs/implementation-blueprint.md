@@ -1,6 +1,6 @@
-# Vaultide — Personal Finance Platform Implementation Blueprint (frozen, v2.1.13)
+# Vaultide — Personal Finance Platform Implementation Blueprint (frozen, v2.1.14)
 
-**Status:** Planning deliverable (no code written). Produced 2026-09-06 against the supplied product specification; revised after an adversarial model review, a product-owner review (v2), a targeted consistency pass (v2.1), a defect-fix freeze pass (v2.1.1), four final corrections (v2.1.2) and two narrow post-Phase-2 consistency corrections (v2.1.3, the onboarding step allocation; v2.1.4, one arithmetic slip in the Phase 3 savings golden — neither changed product behaviour, schema, accounting or security semantics), and a pre-Phase-3 clarification pass (v2.1.5, which settles the recurring-occurrence, template-deletion, month-to-date, dormancy, savings-availability and bulk-history questions Phase 3 raised before a line of Phase 3 code was written; it changes the Phase 3 schema and scope and no phase already delivered), extended once more before migration 0006 (v2.1.6, which settles how a recurring template materializes settlement, tightens the occurrence invariant to both-or-neither, and bounds occurrence generation by the template’s own dates), clarified once more before that migration was deployed (v2.1.7, which bounds early materialization to the next unresolved occurrence and separates a template’s schedule from its archive state), corrected once more when the completed-month engine proved one issue predicate impossible (v2.1.8, which reselects the two `unexplained_inflow` variants on the sign of `TrackedTotalSpending`), corrected again where the same engine had to invent a meaning the result shape demanded (v2.1.9, which makes `cashDelta` absent rather than partial when the complete included-account change cannot be computed), clarified once more before the month-to-date engine was written (v2.1.10, which settles the MTD evidence date, status precedence and result shape that 8.4/8.5/8.6 stated three different ways), and corrected once more before the span engine was written (v2.1.11, which makes a complete month end an intrinsic property of a date, removes a span status and a span field that could never carry a defined value, and states what a span does with a flow it cannot attribute), and settled once more before the savings engine was written (v2.1.12, which says when a total spending figure exists at all, stops a savings rate from ever being partial, ties 12.5’s tracked inputs to 8.1’s flow scope, and gives the two remaining 8.5 advisories and the Phase-3 rolling window a single meaning), and clarified once more before the reporting-currency engine was written (v2.1.13, the reporting-FX availability clarification, which stops a month-to-date figure from converting with evidence its own reconciliation never saw, keeps a cash-flow figure from being converted as one composite, and makes reporting partiality a question about each figure’s own dependencies). None changed an identity, the schema, or a phase already delivered. This version supersedes every earlier version in full; v2.1.2 was the frozen input to Phase 0, and Phases 0–2 were built and frozen against it.
+**Status:** Planning deliverable (no code written). Produced 2026-09-06 against the supplied product specification; revised after an adversarial model review, a product-owner review (v2), a targeted consistency pass (v2.1), a defect-fix freeze pass (v2.1.1), four final corrections (v2.1.2) and two narrow post-Phase-2 consistency corrections (v2.1.3, the onboarding step allocation; v2.1.4, one arithmetic slip in the Phase 3 savings golden — neither changed product behaviour, schema, accounting or security semantics), and a pre-Phase-3 clarification pass (v2.1.5, which settles the recurring-occurrence, template-deletion, month-to-date, dormancy, savings-availability and bulk-history questions Phase 3 raised before a line of Phase 3 code was written; it changes the Phase 3 schema and scope and no phase already delivered), extended once more before migration 0006 (v2.1.6, which settles how a recurring template materializes settlement, tightens the occurrence invariant to both-or-neither, and bounds occurrence generation by the template’s own dates), clarified once more before that migration was deployed (v2.1.7, which bounds early materialization to the next unresolved occurrence and separates a template’s schedule from its archive state), corrected once more when the completed-month engine proved one issue predicate impossible (v2.1.8, which reselects the two `unexplained_inflow` variants on the sign of `TrackedTotalSpending`), corrected again where the same engine had to invent a meaning the result shape demanded (v2.1.9, which makes `cashDelta` absent rather than partial when the complete included-account change cannot be computed), clarified once more before the month-to-date engine was written (v2.1.10, which settles the MTD evidence date, status precedence and result shape that 8.4/8.5/8.6 stated three different ways), and corrected once more before the span engine was written (v2.1.11, which makes a complete month end an intrinsic property of a date, removes a span status and a span field that could never carry a defined value, and states what a span does with a flow it cannot attribute), and settled once more before the savings engine was written (v2.1.12, which says when a total spending figure exists at all, stops a savings rate from ever being partial, ties 12.5’s tracked inputs to 8.1’s flow scope, and gives the two remaining 8.5 advisories and the Phase-3 rolling window a single meaning), and clarified once more before the reporting-currency engine was written (v2.1.13, the reporting-FX availability clarification, which stops a month-to-date figure from converting with evidence its own reconciliation never saw, keeps a cash-flow figure from being converted as one composite, and makes reporting partiality a question about each figure’s own dependencies), and corrected once more before the missing-conversion advisory was written (v2.1.14, the completed monthly-average reachability correction, which removes a completed-month rate fallback that the ten-day dated lookup could never reach and lets a month with no rate observation say so). None changed an identity, the schema, or a phase already delivered. This version supersedes every earlier version in full; v2.1.2 was the frozen input to Phase 0, and Phases 0–2 were built and frozen against it.
 **Audience:** The Claude Code session(s) that will implement the application phase by phase, and the product owner.
 **Product name:** **Vaultide**. The repository root is `vaultide/`, workspace packages are published under the `@vaultide/*` namespace, and "Vaultide" is the product-facing name in app metadata, authentication and email branding, and hosting/monitoring project names. Historical local prototype paths quoted in Section 1.3 keep their real on-disk names.
 
@@ -96,7 +96,7 @@ Findings are numbered for cross-reference from the decision log. Severity: **Hig
 | F12 | "Real / today's money" (§76) needs a base. | Low | Inflation index = 1.0 at the scenario start month, compounding monthly by `(1+π)^(1/12)`. |
 | F13 | Annual rates in a monthly engine. | Low | Growth rates convert geometrically; loan interest uses nominal `r/12` (R11). |
 | F14 | When is XIRR "sufficient history" (§27)? | Low | ≥ 365 days of tracked, dated history, a sign change, and convergence; otherwise "return since tracking began" (9.5). |
-| F15 | Monthly average FX rate (§7.6) is undefined. | Low | Arithmetic mean of stored daily rates in the calendar month; fallback to the latest rate ≤ month end, marked approximate. |
+| F15 | Monthly average FX rate (§7.6) is undefined. | Low | Arithmetic mean of the stored daily rates in the calendar month, from one observation upwards; with none, `Unavailable` — there is no completed-month fallback, because the dated lookup’s ten-day window lies inside the month (30.17). The current month through `D` keeps its sparse-data fallback (10.2). |
 | F16 | "Savings rate" (§68) is undefined, and a naive "income − tracked total spending − interest" would count interest twice because the reconciliation total already contains it. | Medium | One savings concept (12.5): `TrackedSavingsFromIncome = ExternalIncome − Consumption − PropertyOperatingCosts − InterestAndFees − TransactionCosts`, each flow counted once; `PersonalSavings = TrackedSavingsFromIncome − AdditionalSpending` when the user counts spending paid from outside tracked accounts (`count_additional_spending`, default on); `SavingsRate = PersonalSavings / ExternalIncome`; `ExternalIncome` = employment, freelance, bonus, rental, other, dividends and interest received in tracked cash, excluding `external_inflow` and `adjustment`. Contributions, principal, asset purchases and capital improvements are allocations of savings; withdrawals and loan proceeds are not income; third-party-paid expenses never count. |
 | F17 | "Passive income" goal (§88) is undefined. | Low | Trailing-12-month rental + dividend + interest income in the reporting currency. |
 | F18 | "Occupancy history where available" (§13). A month without a rent entry may mean vacancy, non-payment, payment outside tracked accounts, or a data gap. | Medium | **Never inferred.** A month with no rent entry shows "No rent recorded". Occupancy is known only from explicit facts: rent received, or the rent suggestion skipped with a reason (`vacant`, `non_payment`, `other`), recorded as a `recurring_template_skips` row (6.2, 11.2). Occupancy-rate analytics beyond these explicit facts are deferred. Scenario `vacancyPct` is an explicit assumption and stays. |
@@ -243,6 +243,7 @@ The rules below supersede the corresponding spec text. Everything else in the sp
 - **Product-owner review (v1.1 → v2):** the sixteen corrections now embodied in R17–R31, M5, M14–M18 and U9–U10: no future-dated actuals; two net-worth metrics; capital improvements as capex; opening investment basis; monthly model with multi-month spans instead of per-account spans/windows; explicit per-month "confirm unchanged"; multi-currency scenario funding; tracked vs additional spending; explicit liability signs; global FX refresh; dedicated backup role; fiat-only currencies; one coherent Monte Carlo correlation behavior; concrete custom goals; exact display formatting; version wording.
 - **Final consistency pass (v2 → v2.1):** month-end balances only after the month has ended (`today > end(M)`); month-to-date spending only on a common snapshot date; one savings definition with no double counting (F16, 12.5); expense settlement split into self-paid and third-party (R24); `opening_net_invested_basis` naming and labels (R20, 9.3); no inferred vacancy (F18); a single base-currency reserve target without per-currency shares (13.4); properties always in financial net worth in scenarios; no time-dependent database CHECKs (M5); hardened RLS expression (17.4); one-time role bootstrap (22.2); currency minor units 0..8; Monte Carlo factor model with an idiosyncratic component (13.9).
 - **Freeze pass (v2.1 → v2.1.1):** month-to-date uses the *latest common* snapshot date and is unavailable only when no common date exists (8.6); one Monte Carlo correlation schema and an explicit default class matrix verified positive semi-definite (13.2, 13.9); explicit semantics for `income_entries.settlement = external` and a schema rule limiting `reinvested` to investment distributions (7.4, 12.5); explicit `recurring_template_skips` table replacing skip facts in JSON (6.2); a systematic nullability pass with PostgreSQL enums for every closed set (6.1–6.2); an orientation-independent `convertWithSpread` helper for scenario conversions (13.4); stale "lifetime"/"date backstop" wording removed.
+- **Completed monthly-average reachability correction (v2.1.13 → v2.1.14):** 10.2, F15 and 30.16 item 2 still said a completed month with no stored rate observation falls back to `rateOn(end(M))` marked `approximate`, and 30.15 items 8 and 9 let an approximate completed average support a `possible_missing_conversion` candidate. That rate cannot exist: `rateOn` looks back at most ten days and every month has at least twenty-eight, so the whole lookback lies inside a month already known to hold no observation (30.17). A completed month now averages from one observation upwards and is `Unavailable` with none; the current month through `D` keeps its sparse-data fallback; the future advisory loses the approximate-completed branch it could never take, and its candidate no longer carries a flag that could never be set. No implementation changed.
 - **Reporting-FX availability clarification (v2.1.12 → v2.1.13):** three things the reporting-currency engine could not settle from 8.11, 10.2, 10.3 and 12.5 together (30.16). 10.2’s monthly-average fallback named `rateOn(end(M))` for a current month whose end has not happened, so the rule it was written for could only ever fail — and a month-to-date figure is through `D`, not through the month, so its residual must convert on evidence dated no later than `D`. 10.3’s generic "monthly analytics series" row could be read as converting a whole cash-flow aggregate at one month-end rate, which 8.11 contradicts field by field. And 12.5 marked reporting partiality per **bucket** while 30.15 item 2 scoped the savings rate to the conversions its own aggregates need; the two disagree whenever one contribution fails inside an otherwise-valid bucket, so partiality is now per figure over that figure’s own dependencies.
 - **Cash-flow and savings correction (v2.1.11 → v2.1.12):** 12.5 listed four figures as unavailable and left `TotalSpending` out of the list, so an unresolved month could produce a negative "total spending" or one below its own known expenses; it also offered a savings rate two shapes, `Unavailable` **or** partial, where a ratio of partial aggregates is not the user’s rate; and it never said that 12.5’s tracked inputs classify 8.1’s own scoped flows rather than a second scan of the month. 8.5’s two remaining advisories and the Phase-3 rolling window each had more than one financially observable reading. 30.15 settles all of them: `TotalSpending` follows tracked spending, an aggregate savings rate is never partial, `large_unclassified` reads six calendar months of `reliable` history with a minimum of three, `possible_missing_conversion` is the missing transfer’s own algebraic signature with the band `X2 ≤ U2 ≤ 1.05 × X2`, and rolling tracked spending averages complete reliable observations over `N` calendar months.
 - **Span correction (v2.1.10 → v2.1.11):** 8.7 described its own anchors two ways and carried two members no rule could reach (30.14). A complete month end is now an intrinsic property of a date and a currency, so the endpoint set is fixed before candidate pairs are considered and maximality means what it says; `estimated` leaves the span status set, because a complete opening anchor makes a span-level `first_balance` impossible; `perMonthAverageInformational` leaves the shape, because it was defined nowhere and R21 says a span is never averaged; and an unattributable null leg suppresses its candidate rather than being absorbed into a status the shape does not have.
@@ -876,7 +877,7 @@ FxService.loadTable(quotes, from, to)        // reads fx_rates into an FxTable f
 | Need | Rule |
 |---|---|
 | Rate on date d | Greatest `rate_date ≤ d` for the preferred source, looking back at most **10 calendar days**; result carries `rateDate` and `exact = (rateDate = d)`. |
-| Monthly average for a **completed** M | Arithmetic mean of stored daily rates with `rate_date ∈ M`; if none, `rateOn(end(M))` marked `approximate`. |
+| Monthly average for a **completed** M | Arithmetic mean of the stored daily rates with `rate_date ∈ M`, from **one** observation upwards, `approximate = false`; with none, `Unavailable('fx_missing')`. There is no fallback outside M: `rateOn(end(M))`’s ten-day lookback lies entirely inside M, so it could only find what the month was already known not to have (30.17). A completed average is therefore never `approximate`. |
 | Monthly average for the **current** month, through `D` | The month-to-date figure is through `D` (8.6), so its rate is too: the arithmetic mean of stored daily rates with `start(M) ≤ rate_date ≤ D`. Fewer than **5** such observations — zero included — falls back to `rateOn(D)` marked `approximate`. Never `end(M)`, which has not happened, and never `today` when it is later than `D`: no evidence dated after `D` may move a figure labelled through `D`, however new another account’s balance is. `rateOn`’s ten-day lookback is measured from `D`, and finding nothing within it is `Unavailable('fx_missing')` rather than a reach forward (30.16). |
 | Span average | Day-weighted average of the constituent completed months’ averages. |
 | Today / "current" | `rateOn(today)`. |
@@ -2812,13 +2813,17 @@ below is what an engine must do.
    at the market monthly average, with spread and friction accounting for the
    difference.
 
-8. **An approximate monthly average still supports the advisory.** When 10.2
-   returns an available monthly average marked `approximate`, the candidate may
-   still qualify — the fallback is observed FX evidence, the 5 % headroom is
-   heuristic by design, the issue is advisory, and the user confirms or edits the
-   transfer it prefills. The candidate must carry that the comparison rate was
-   approximate so the interface can say so. A genuinely `Unavailable` lookup still
-   removes that candidate.
+8. **A completed monthly average is either available or absent; it is never
+   approximate.** *(Corrected in v2.1.14; see 30.17.)* v2.1.12 wrote here that an
+   available monthly average marked `approximate` still supported the advisory
+   and that a candidate had to carry that flag. No such average exists: the
+   advisory is completed-month-only, and 10.2's completed average is the mean of
+   one or more in-month observations or `Unavailable`, with no fallback outside
+   the month. So when the completed monthly-average lookup for M is available it
+   rests on at least one observation inside M and the candidate may be
+   evaluated; when it is `Unavailable`, C2 is not a candidate. The 5 % headroom,
+   the advisory class and the user's confirmation of the prefilled transfer are
+   unchanged.
 
 9. **Several source currencies are ordered candidates under one advisory.**
    `month_reviews.dismissed_issues` stores issue **keys**, so three possible source
@@ -2828,7 +2833,7 @@ below is what an engine must do.
    qualifying C2 once, ordered by source currency code ascending. A candidate
    carries what a later action needs: source and destination currencies, the source
    amount `U2`, the destination amount `X`, the converted comparison amount `X2`,
-   the rate it used and whether that rate was approximate. Prefilling a transfer
+   the rate it used (30.17). Prefilling a transfer
    uses the two native residuals `U2` and `X`, never `X2` — the monthly average is
    evidence for the suggestion, not a claim about the bank’s rate — and no cash
    account is chosen automatically when more than one exists. The issue key stays
@@ -2873,8 +2878,10 @@ which rate a conversion uses, or which figure a failure is allowed to reach.
    which is the other reason it cannot be the one converted.
 
 2. **A completed month's residual uses that month's average.** The arithmetic
-   mean of the stored daily rates dated inside M; with none at all, `rateOn(end(M))`
-   marked `approximate`. Unchanged.
+   mean of the stored daily rates dated inside M, from one observation upwards.
+   v2.1.13 added "with none at all, `rateOn(end(M))` marked `approximate`"; 30.17
+   removes that as unreachable — a completed month with no observation in it is
+   `Unavailable`.
 
 3. **A month-to-date residual uses the average through `D`.** The figure is
    through `D` (8.6), so its rate is drawn from `[start(M), D]` and from nowhere
@@ -2968,11 +2975,80 @@ which rate a conversion uses, or which figure a failure is allowed to reach.
     months, spans, and partial or unavailable reporting observations all remain
     excluded.
 
+### 30.17 v2.1.14 — completed monthly-average reachability correction
+
+Written before `possible_missing_conversion` is implemented, because that
+advisory is the first consumer of a completed month's average rate other than
+the residual conversion. One statement in v2.1.13 described a state the accepted
+lookup rules cannot produce. Nothing below changes an identity, a native figure,
+a rate that has ever been returned, the schema, or a phase already delivered.
+
+1. **What v2.1.13 still said.** F15, 10.2 and 30.16 item 2 gave a completed
+   month with no stored rate observation a fallback: `rateOn(end(M))`, marked
+   `approximate`. 30.15 items 8 and 9 then built on it — an approximate
+   completed average could support a `possible_missing_conversion` candidate,
+   and the candidate had to carry that its rate was approximate.
+
+2. **Why that state is unreachable.** `rateOn(d)` takes the greatest stored
+   `rate_date ≤ d` and refuses anything more than ten calendar days back
+   (10.2). Every month has at least twenty-eight days, so
+   `end(M) − 10 days ≥ start(M)` for every M, and every date `rateOn(end(M))`
+   may reach lies inside M. The completed average falls back only after finding
+   **no** observation dated inside M, so the fallback searches a window already
+   known to be empty and returns `Unavailable`. An available completed average
+   marked `approximate` has never existed and cannot.
+
+3. **One observation is an average.** A completed month with one, two, three or
+   four in-month observations was never "too thin": its minimum has always been
+   one, their arithmetic mean is returned, and it is `approximate = false`. Only
+   the current month through `D` has a five-observation threshold.
+
+4. **None is unavailable.** A completed month with no observation in M yields
+   `Unavailable('fx_missing')`. No rate from before the month, no previous
+   month's close, no nearest rate, no wider lookback and no provider fetch
+   stands in for it; 10.5 applies, and the figure that needed it is partial.
+
+5. **The current month keeps its fallback.** Through `D`, fewer than five
+   observations — zero included — still fall back to `rateOn(D)` marked
+   `approximate` (30.16 items 3–5). That lookback is anchored on `D` and may
+   legitimately reach a rate from the last days of the previous month when `D`
+   is early; it is a sparse-data fallback for a figure still being measured, not
+   a completed average, and it is why `approximate` stays in the rate
+   vocabulary.
+
+6. **`estimatedConversion` is untouched and distinct.** A completed residual
+   converted at its month's average is still `estimatedConversion`, because the
+   amount is presented through an average convention rather than a dated
+   realized rate (8.11, 10.3). That average is not approximate. `exact = false`
+   on a dated weekend or holiday lookup is a third, unrelated marker. Rolling
+   eligibility (30.15 item 5, 30.16 item 11) is unchanged.
+
+7. **`possible_missing_conversion` has no approximate-completed branch.** The
+   advisory is completed-month-only (30.15 item 6). Its comparison rate is the
+   corrected completed average: available — resting on at least one in-month
+   observation — and the candidate is evaluated, or `Unavailable` and C2 is not
+   a candidate. 30.15 item 8 is corrected accordingly, and the candidate no
+   longer carries whether its rate was approximate, since it never can be. The
+   band `X2 ≤ U2 ≤ 1.05 × X2`, the ascending candidate order, the prefill from
+   `U2` and `X` rather than `X2`, the refusal to choose a cash account when more
+   than one exists, and the single stable issue key are unchanged.
+
+8. **Spans.** A span's average is the day-weighted average of its constituent
+   completed months' averages (10.2). With any constituent average
+   `Unavailable`, the span's is `Unavailable`; a span average is therefore never
+   `approximate` either. No span rule changes.
+
+9. **No implementation changed.** The accepted engine already behaves this way:
+   the shared fallback branch is dead for a completed month, one observation is
+   averaged, none is unavailable, and every test that pins an `approximate`
+   average is a current-month case through `D`. This section makes the text say
+   what the code has always done.
+
 ---
 
 ## Ready for Phase 0
 
-No genuine blockers remain. The blueprint was frozen as v2.1.2 and Phase 0 began from it; it is frozen as v2.1.13 after the corrections in 30.6, 30.7, 30.8, 30.9, 30.10, 30.11, 30.12, 30.13, 30.14, 30.15 and 30.16, none of which changed a phase already delivered.
+No genuine blockers remain. The blueprint was frozen as v2.1.2 and Phase 0 began from it; it is frozen as v2.1.14 after the corrections in 30.6, 30.7, 30.8, 30.9, 30.10, 30.11, 30.12, 30.13, 30.14, 30.15, 30.16 and 30.17, none of which changed a phase already delivered.
 
 ---
 
@@ -2995,5 +3071,6 @@ No genuine blockers remain. The blueprint was frozen as v2.1.2 and Phase 0 began
 - The two remaining 8.5 advisories have one meaning each, and the Phase-3 rolling window has one window: six calendar months of `reliable` history for `large_unclassified`, the missing transfer’s own signature for `possible_missing_conversion`, and `N` calendar months of complete reliable observations for rolling tracked spending (8.5, 15.2, 15.5, 30.15).
 - A reporting-currency conversion uses evidence its own figure could have seen: a month-to-date residual averages through `D` and falls back to `rateOn(D)`, never to a month end that has not happened and never to a later day (10.2, 8.11, 30.16).
 - Cash flow converts component by component, and a reporting figure is partial only over the contributions its own formula consumes — so a missing rate for a memo figure leaves the savings rate alone (10.3, 12.5, 30.16).
-- No remaining blocker was found. The blueprint is frozen as v2.1.13.
+- A completed month’s average rate exists exactly when the month holds an observation: one is enough, none is `Unavailable`, no rate from outside the month stands in, and only the current month through `D` keeps a sparse-data fallback marked `approximate` (10.2, 8.11, 30.17).
+- No remaining blocker was found. The blueprint is frozen as v2.1.14.
 
