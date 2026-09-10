@@ -26,6 +26,26 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
+      # A re-run of an older CI run keeps that run's SHA, so a green
+      # `workflow_run` event is not by itself proof that its commit is still the
+      # tip of main. Refuse anything but the current tip before any setup,
+      # migration or deploy step. The tip is resolved from origin, never from
+      # the checkout, which was pinned to the candidate itself.
+      - name: Require the candidate to be the current tip of main
+        env:
+          RELEASED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          current_main="$(git ls-remote --exit-code origin refs/heads/main 2>/dev/null | cut -f1 || true)"
+          if [ -z "${current_main}" ]; then
+            echo "Could not resolve refs/heads/main on origin; refusing to deploy."
+            exit 1
+          fi
+          if [ "${RELEASED_SHA}" != "${current_main}" ]; then
+            echo "CI ran for ${RELEASED_SHA}, but main is now ${current_main}; refusing to deploy a stale release."
+            exit 1
+          fi
+          echo "${RELEASED_SHA} is the current tip of main"
+
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
