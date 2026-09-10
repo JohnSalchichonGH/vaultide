@@ -15,6 +15,7 @@
     "test:live": "node scripts/test-live.mjs",
     "test:e2e": "pnpm --filter @vaultide/e2e run test",
     "build": "pnpm --filter @vaultide/web run build",
+    "verify:prepush": "pnpm run lint && pnpm run typecheck && pnpm run test:unit && pnpm --filter @vaultide/finance exec vitest run --coverage && pnpm run test:integration && pnpm run build",
     "dev": "pnpm --filter @vaultide/web run dev",
     "db:bootstrap": "node scripts/db/bootstrap.mjs",
     "db:migrate": "pnpm --filter @vaultide/db run migrate",
