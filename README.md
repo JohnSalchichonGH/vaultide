@@ -15,7 +15,7 @@ net-worth metrics — total (everything you track) and financial (the headline).
 value nobody has recorded is shown as unknown, never as zero, and a total that
 could not include something says so and says what.
 
-**Phase 3 server-side implementation has reached slice 10a.** Income, expenses
+**Phase 3 server-side implementation has reached slice 10b.** Income, expenses
 and transfers with their linked fee; recurring sources with their occurrences,
 terms, acceptances and skips, and how complete a past month's recurring record
 is; completed-month reconciliation with its issues and per-account residuals —
@@ -43,15 +43,21 @@ tracked interval at all and says so, rather than reporting zeros it never
 measured. A currency in which you only recorded spending you settled yourself or
 somebody else paid needs no account and gets no reconciliation bucket, and its
 rows still reach the figures they belong to. Completed months can be read as a
-series, one result each, which is what the rolling averages will be built from.
+series, one result each, and the rolling three-, six- and twelve-month averages
+of tracked spending are built from it: exact calendar windows ending at each
+completed month, counting a month only when it is reliable and its
+reporting-currency tracked spending is complete — an ineligible month keeps its
+calendar slot rather than being replaced by an older one — averaging whatever
+survived, saying how many months that was, and never averaging a span or the
+month in progress.
 
 None of it has an interface yet. There is no monthly editor, no spending page,
-no income page and no bulk-history editor; the rolling three-, six- and
-twelve-month spending averages, the large-unclassified and
+no income page and no bulk-history editor; the large-unclassified and
 possible-missing-conversion advisories, the month's completeness report and the
-propagated-uncertainty projection property are all still unwritten; and no
-Phase 3 journey has been accepted end to end. Phase 3 is in progress, and is
-neither accepted nor frozen.
+remaining read models and actions are still unwritten; the rest of the Phase 3
+end-to-end journeys are not yet covered; and no Phase 3 journey has been
+accepted end to end. Phase 3 is in progress, and is neither accepted nor
+frozen.
 
 The authoritative specification is
 [`docs/implementation-blueprint.md`](docs/implementation-blueprint.md) (frozen,
@@ -76,7 +82,7 @@ packages/finance    pure engines — money, dates, FX lookup and conversion,
                     recurring occurrences and terms, completed-month,
                     month-to-date and multi-month-span reconciliation, native
                     spending decomposition and savings, reporting-currency cash
-                    flow and savings
+                    flow and savings, rolling tracked-spending averages
 packages/validation Zod primitives and inputs shared by client, server, database
 packages/db         Drizzle schema, migrations, RLS policies, repositories, seed
 packages/application use cases: Better Auth, sessions, mailer, settings, FX service,
@@ -84,7 +90,7 @@ packages/application use cases: Better Auth, sessions, mailer, settings, FX serv
                     income, expenses, transfers, recurring templates and
                     suggestions, completed-month, month-to-date and span
                     reconciliation reads, native savings reads,
-                    reporting-currency cash-flow reads
+                    reporting-currency cash-flow and rolling tracked-spending reads
 packages/config     tsconfig, ESLint (incl. the money-coercion rule), boundaries
 e2e                 Playwright: smoke, the auth and settings flow, and the
                     accounts, balances and net-worth journey
