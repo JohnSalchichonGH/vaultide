@@ -88,9 +88,12 @@ export interface FxTable {
    * is `[start(M), through]`, fewer than five observations fall back to
    * `rateOn(through)`, and nothing later is ever consulted.
    *
-   * Omitted, this is a completed month's average over the whole of `M`, where a
-   * single observation is still an average and only a total absence falls back
-   * — to `rateOn(end(M))`.
+   * Omitted, this is a completed month's average over the whole of `M`: one or
+   * more in-month observations are averaged, and none at all is `Unavailable`.
+   * There is no fallback outside the month — `rateOn(end(M))` looks back ten
+   * days and every month is longer, so it could only find what the month was
+   * already known not to have (v2.1.14 30.17). Only the month-to-date form
+   * above may fall back.
    */
   monthlyAverage(
     quote: CurrencyCode | string,

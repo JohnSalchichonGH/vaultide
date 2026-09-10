@@ -129,7 +129,7 @@ function issueDto(
 }
 
 /**
- * The currencies whose November average the advisory would read — or none,
+ * The currencies whose month's average the advisory would read — or none,
  * when the month cannot show a missing conversion's signature at all.
  *
  * The signature needs a bucket that gained cash it cannot explain and another

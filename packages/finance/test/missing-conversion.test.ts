@@ -88,15 +88,18 @@ const codesOf = (issue: Issue | undefined): string[] =>
 const STATUSES: ReconciliationStatus[] = ['reliable', 'estimated', 'unresolved', 'unavailable', 'provisional'];
 
 describe('eligibility', () => {
-  it('makes a destination of a computed residual below zero, whatever the status says', () => {
+  it('makes a destination of an unresolved bucket with a computed residual below zero, and of nothing else', () => {
     for (const status of STATUSES) {
-      expect(isMissingConversionDestination(observe(EUR, status, '-0.01'))).toBe(true);
+      // A negative residual is `unexplained_inflow`, and that blocking issue is
+      // what makes a completed bucket `unresolved`: any other status beside a
+      // negative residual is a fabricated observation, not a destination.
+      expect(isMissingConversionDestination(observe(EUR, status, '-0.01'))).toBe(status === 'unresolved');
       expect(isMissingConversionDestination(observe(EUR, status, '0'))).toBe(false);
       expect(isMissingConversionDestination(observe(EUR, status, '5'))).toBe(false);
       expect(isMissingConversionDestination(observe(EUR, status))).toBe(false);
     }
     // A negative zero is a bucket that reconciled, not one that gained cash.
-    expect(isMissingConversionDestination(observe(EUR, 'reliable', '-0'))).toBe(false);
+    expect(isMissingConversionDestination(observe(EUR, 'unresolved', '-0'))).toBe(false);
   });
 
   it('makes a source of a reliable or estimated bucket with a residual above zero, and of nothing else', () => {

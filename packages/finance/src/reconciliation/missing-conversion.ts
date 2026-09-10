@@ -27,9 +27,10 @@ import {
  * spending spike — went positive. When `X` valued at the month's average rate
  * lands just under the spike, the two residuals look like one transfer.
  *
- * Destination: a bucket with a computed `unclassified < 0` — exactly the
- * condition the engine raises `unexplained_inflow` on, so `X` is that issue's
- * own amount. Source: every *other* bucket of the same month whose own status
+ * Destination: an `unresolved` bucket with a computed `unclassified < 0` —
+ * the condition the engine raises `unexplained_inflow` on, and that blocking
+ * issue is what makes the bucket `unresolved`, so `X` is that issue's own
+ * amount. Source: every *other* bucket of the same month whose own status
  * is `reliable` or `estimated` and whose computed `unclassified > 0`; an
  * `unavailable` or `unresolved` bucket has no positive computed residual and
  * cannot qualify. `X` is converted C1 → C2 at M's monthly-average cross rate
@@ -70,14 +71,22 @@ export interface MissingConversionObservation {
 type WithResidual = MissingConversionObservation & { readonly unclassified: Decimal };
 
 /**
- * May this bucket be a destination? A computed residual below zero — the
- * engine's own `unexplained_inflow` condition (8.5), compared against zero
- * rather than by sign bit so that a negative zero is a bucket that reconciled.
+ * May this bucket be a destination? `unresolved`, with a computed residual
+ * below zero — the engine's own `unexplained_inflow` condition (8.5), compared
+ * against zero rather than by sign bit so that a negative zero is a bucket that
+ * reconciled. A completed-engine bucket with a negative residual is always
+ * `unresolved`, because that blocking issue is what the status records; the
+ * status test keeps a fabricated observation of any other status from being a
+ * destination.
  */
 export function isMissingConversionDestination(
   observation: MissingConversionObservation,
 ): observation is WithResidual {
-  return observation.unclassified !== undefined && observation.unclassified.lessThan(0);
+  return (
+    observation.status === 'unresolved' &&
+    observation.unclassified !== undefined &&
+    observation.unclassified.lessThan(0)
+  );
 }
 
 /**

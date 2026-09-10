@@ -145,9 +145,12 @@ export function createFxTable(rows: readonly FxRateRecord[], options: FxTableOpt
    * dates inside one number.
    *
    * Without a `through` this is a completed month's average, where one stored
-   * observation is still that month's evidence and only a total absence falls
-   * back. Asking for the **current** month that way has no answer — 10.2 defines
-   * a current month's average only through `D` — so it says so rather than
+   * observation is still that month's evidence and a total absence is
+   * `Unavailable`: the shared fallback below cannot find a rate for a completed
+   * month, because `rateOn(end(M))` looks back ten days, every month is longer,
+   * and the window it searches is the one just found empty (v2.1.14 30.17).
+   * Asking for the **current** month that way has no answer — 10.2 defines a
+   * current month's average only through `D` — so it says so rather than
    * averaging a fortnight and calling it September.
    */
   function monthlyAverage(
@@ -170,7 +173,10 @@ export function createFxTable(rows: readonly FxRateRecord[], options: FxTableOpt
 
     if (samples.length < minimum) {
       // Too thin to be an average. Fall back to the dated rate at the cutoff and
-      // say so, rather than averaging three days and calling it a month.
+      // say so, rather than averaging three days and calling it a month. For a
+      // completed month this is reached only with zero in-month observations,
+      // and `rateOn(end(M))` then finds nothing within its ten days: the result
+      // is `Unavailable`, never an approximate completed average (30.17).
       const dated = rateOn(code, cutoff);
       if ('kind' in dated) return dated;
       return { ...dated, approximate: true, sampleCount: samples.length };
