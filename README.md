@@ -15,7 +15,7 @@ net-worth metrics — total (everything you track) and financial (the headline).
 value nobody has recorded is shown as unknown, never as zero, and a total that
 could not include something says so and says what.
 
-**Phase 3 server-side implementation has reached slice 10b.** Income, expenses
+**Phase 3 server-side implementation has reached slice 10c.** Income, expenses
 and transfers with their linked fee; recurring sources with their occurrences,
 terms, acceptances and skips, and how complete a past month's recurring record
 is; completed-month reconciliation with its issues and per-account residuals —
@@ -51,13 +51,23 @@ calendar slot rather than being replaced by an older one — averaging whatever
 survived, saying how many months that was, and never averaging a span or the
 month in progress.
 
+A finished month can now also say when it has more unexplained spending than it
+usually does. The large-unclassified advisory compares a month's residual, in
+its own currency, with the median residual of the six calendar months before
+it: only months that reconciled as reliable count, at least three of them are
+needed, a month that does not qualify keeps its slot rather than being replaced
+by an older one, and neither a span nor the month in progress is ever part of
+it. It speaks when the residual is strictly more than twice that median. A
+reliable or an estimated month with a computed residual can be judged; the
+advisory sits beside the figures and changes none of them. Dismissing it is not
+wired yet — that is the monthly editor's.
+
 None of it has an interface yet. There is no monthly editor, no spending page,
-no income page and no bulk-history editor; the large-unclassified and
-possible-missing-conversion advisories, the month's completeness report and the
-remaining read models and actions are still unwritten; the rest of the Phase 3
-end-to-end journeys are not yet covered; and no Phase 3 journey has been
-accepted end to end. Phase 3 is in progress, and is neither accepted nor
-frozen.
+no income page and no bulk-history editor; the possible-missing-conversion
+advisory, the month's completeness report and the remaining read models and
+actions are still unwritten; the rest of the Phase 3 end-to-end journeys are
+not yet covered; and no Phase 3 journey has been accepted end to end. Phase 3
+is in progress, and is neither accepted nor frozen.
 
 The authoritative specification is
 [`docs/implementation-blueprint.md`](docs/implementation-blueprint.md) (frozen,
@@ -82,7 +92,8 @@ packages/finance    pure engines — money, dates, FX lookup and conversion,
                     recurring occurrences and terms, completed-month,
                     month-to-date and multi-month-span reconciliation, native
                     spending decomposition and savings, reporting-currency cash
-                    flow and savings, rolling tracked-spending averages
+                    flow and savings, rolling tracked-spending averages, the
+                    large-unclassified advisory
 packages/validation Zod primitives and inputs shared by client, server, database
 packages/db         Drizzle schema, migrations, RLS policies, repositories, seed
 packages/application use cases: Better Auth, sessions, mailer, settings, FX service,
