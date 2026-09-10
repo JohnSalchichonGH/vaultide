@@ -411,29 +411,33 @@ describe('boundaries', () => {
   });
 
   /**
-   * The read contract, which is a constant bound rather than a single number.
+   * The transaction contract, which is a constant bound rather than a single
+   * number.
    *
-   * The completed-month loader and nothing else: seven reads with no template
-   * covering the month and eight with any, because every template's terms come
-   * back in one batched query. The `stale` rule reads valuations that window
-   * already holds, so it adds none.
+   * What is counted is user-scoped repository transactions — every
+   * `db.transaction` invocation, which is what each `withUser` scope opens —
+   * not individual SQL statements, several of which may run inside one scope.
+   * The completed-month loader and nothing else: seven transaction scopes with
+   * no template covering the month and eight with any, because every template's
+   * terms come back in one batched scope. The `stale` rule reads valuations that
+   * window already holds, so it adds none.
    */
-  describe('the read count is bounded by a constant', () => {
+  describe('the repository transaction count is bounded by a constant', () => {
     beforeEach(async () => {
       await closedAccount('BBVA');
     });
 
-    it('takes seven reads with no template and eight with any', async () => {
-      expect(await countRoundTrips()).toBe(7);
+    it('opens seven transaction scopes with no template and eight with any', async () => {
+      expect(await countTransactions()).toBe(7);
       await salaryTemplate();
-      expect(await countRoundTrips()).toBe(8);
+      expect(await countTransactions()).toBe(8);
       await salaryTemplate({ currency: 'USD' });
-      expect(await countRoundTrips()).toBe(8);
+      expect(await countTransactions()).toBe(8);
     });
 
     it('does not grow with accounts, valuations, other assets or resolutions', async () => {
       const salary = await salaryTemplate();
-      const before = await countRoundTrips();
+      const before = await countTransactions();
 
       for (const name of ['Savings', 'Brokerage', 'Joint']) await closedAccount(name);
       await createOtherAsset(harness.services.positions, OCT_1, {
@@ -446,13 +450,19 @@ describe('boundaries', () => {
       });
       await skipSuggestion(deps(), OCT_1, { templateId: salary.id, occurrenceDate: '2026-09-25', reason: 'skipped' });
 
-      expect(await countRoundTrips()).toBe(before);
+      expect(await countTransactions()).toBe(before);
     });
   });
 });
 
-/** How many transactions one completeness read opens. */
-async function countRoundTrips(): Promise<number> {
+/**
+ * How many user-scoped repository transactions one completeness read opens.
+ *
+ * Counted by proxying `db.transaction`, which every `withUser` scope goes
+ * through. This is not a count of SQL statements or network round trips: one
+ * scope sets the tenant and may then run several statements.
+ */
+async function countTransactions(): Promise<number> {
   let transactions = 0;
   const counting = new Proxy(harness.db, {
     get(target, property, receiver) {

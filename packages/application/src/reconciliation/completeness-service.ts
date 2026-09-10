@@ -15,10 +15,11 @@ import type { CashAccountRequirementDto, MonthCompletenessDto } from './types';
  *
  * Load, run the pure engine, serialize — and nothing else. The loader is the
  * completed-month one, so the templates arrive archived or not (30.10), the
- * valuations arrive with no lower bound (ADR 0004 §3), and the read costs the
- * same fixed number of round trips as any other single-month read. The `stale`
- * rule is answered from valuations that window already holds, not from a query
- * of its own.
+ * valuations arrive with no lower bound (ADR 0004 §3), and the read opens the
+ * loader's user-scoped repository transactions (`withUser`) and no others — a
+ * bounded count fixed by the loader rather than by the data, though one
+ * transaction may run several SQL statements. The `stale` rule is answered
+ * from valuations that window already holds, not from a query of its own.
  *
  * A read beside reconciliation, never inside it: this changes no bucket
  * status, figure or issue, and the reconciliation DTO does not carry it.
