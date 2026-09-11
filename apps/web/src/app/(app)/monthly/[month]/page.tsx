@@ -12,6 +12,7 @@ import {
 import { requireSessionPage } from '@/server/context';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { CompletedAccountsEditor, CurrentAccountsEditor } from '@/features/monthly/accounts-editor';
 import { MonthNavigation } from '@/features/monthly/month-navigation';
 import { CompletedOverview, CurrentOverview } from '@/features/monthly/overview';
 import { IssuesPanel } from '@/features/monthly/issues';
@@ -26,9 +27,9 @@ export const dynamic = 'force-dynamic';
  *
  * One month at a time, completed or current, read in one call: the page never
  * assembles financial figures from several reads, and never computes one. Its
- * two sections are the ones this phase has built — the Overview and the
- * Reconciliation — and the review state (the review mark, the hidden
- * advisories) is applied to the presentation only.
+ * sections are the ones this phase has built so far — the Overview, the cash
+ * Accounts and the Reconciliation — and the review state (the review mark, the
+ * hidden advisories) is applied to the presentation only.
  *
  * A month that is not well-formed, or has not begun, is not a page: there is no
  * evidence of any kind for it, and an empty result would be a synthetic one.
@@ -109,6 +110,7 @@ export default async function MonthlyPage({ params }: { params: Promise<{ month:
         />
         <nav aria-label="Month sections" className="flex flex-wrap gap-4 border-b pb-2 text-[length:var(--text-meta)]">
           <a href="#overview" className="underline">Overview</a>
+          <a href="#accounts" className="underline">Accounts</a>
           <a href="#reconciliation" className="underline">Reconciliation</a>
         </nav>
       </header>
@@ -125,6 +127,44 @@ export default async function MonthlyPage({ params }: { params: Promise<{ month:
         ) : (
           <CurrentOverview page={page} locale={locale} issues={presentation} />
         )}
+      </section>
+
+      <section id="accounts" aria-labelledby="accounts-heading" className="scroll-mt-20 space-y-4">
+        <div>
+          <h2 id="accounts-heading" className="text-[length:var(--text-section)] font-semibold tracking-tight">
+            Accounts
+          </h2>
+          <p className="mt-1 text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">
+            {page.kind === 'completed'
+              ? `Each cash account's statement balance at the end of ${monthName}. A snapshot is not a statement until you confirm it as one, and nothing is assumed unchanged unless you say so.`
+              : `Each cash account's latest balance, with its own date. Update them to today to move month to date forward.`}
+          </p>
+        </div>
+        <Card>
+          <CardContent>
+            {page.kind === 'completed' ? (
+              <CompletedAccountsEditor
+                key={page.month}
+                month={page.month}
+                monthName={monthName}
+                monthEndsOn={page.monthEndsOn}
+                previousMonthName={monthTitle(page.accounts.previousMonth, locale)}
+                accounts={page.accounts}
+                formatting={{ locale, minorUnitsByCurrency: page.minorUnitsByCurrency }}
+              />
+            ) : (
+              <CurrentAccountsEditor
+                key={page.month}
+                monthName={monthName}
+                monthEndsOn={page.monthEndsOn}
+                today={page.today}
+                previousMonthName={monthTitle(page.accounts.previousMonth, locale)}
+                accounts={page.accounts}
+                formatting={{ locale, minorUnitsByCurrency: page.minorUnitsByCurrency }}
+              />
+            )}
+          </CardContent>
+        </Card>
       </section>
 
       <section id="reconciliation" aria-labelledby="reconciliation-heading" className="scroll-mt-20 space-y-6">

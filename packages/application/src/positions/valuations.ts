@@ -3,12 +3,16 @@ import {
   findPosition,
   findValuation,
   findValuationOn,
+  findValuationOnIn,
   insertValuation,
+  insertValuationIn,
+  isUniqueViolation,
   listPositions,
   listValuations,
   quickUpdateValuations,
   updateCashDormantFlag,
   updateValuation,
+  withUser,
   QuickUpdateConflictError,
   type Database,
   type PositionRecord as PositionRow,
@@ -401,6 +405,151 @@ export async function confirmUnchanged(
       datePrecision: 'month_end',
     },
   );
+}
+
+export interface ConfirmUnchangedBatchArgs {
+  /** The month being closed, as `YYYY-MM`. */
+  readonly month: string;
+  readonly positionIds: readonly string[];
+}
+
+export interface ConfirmUnchangedBatchSummary {
+  readonly month: string;
+  readonly valuedOn: string;
+  readonly confirmed: number;
+  readonly positionIds: readonly string[];
+}
+
+const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/u;
+
+/**
+ * "Confirm all untouched as unchanged" (15.3, R22): `confirmUnchanged` for
+ * several accounts of one month, as one act.
+ *
+ * Each account gets exactly what the single action writes — a `month_end`
+ * valuation dated `end(M)`, source `confirmed_unchanged`, equal to its own
+ * **previous month's statement balance** — and under the same rules. The
+ * request names accounts, never amounts: every figure is read here.
+ *
+ * The whole list is judged, and written, together:
+ *
+ *  - it is **one transaction**, as the bulk editor's save is (20.3). An account
+ *    that is not eligible — no statement for the month before, already a
+ *    balance on `end(M)`, dormant, closed or not open by then — fails the whole
+ *    request and nothing is written, because a half-confirmed month is exactly
+ *    the state that makes a total quietly wrong;
+ *  - an existing balance on `end(M)` is never rewritten, whatever it is. A
+ *    statement is corrected through its own editor, and an ordinary snapshot on
+ *    the last day is confirmed, not replaced;
+ *  - the previous statement is read and held (`FOR SHARE`) inside the same
+ *    transaction, so the figure carried forward is still that statement when the
+ *    confirmation commits;
+ *  - accounts are locked in id order, so two overlapping requests cannot
+ *    deadlock, and the unique `(position_id, valued_on)` constraint settles a
+ *    race with any other write on `end(M)`.
+ *
+ * Dormant accounts are refused rather than skipped: they carry at zero without
+ * a confirmation (R22), and a request naming one was not built from this page.
+ * Every audit row carries the one request id.
+ */
+export async function confirmUnchangedBatch(
+  deps: PositionDependencies,
+  ctx: RequestContext,
+  args: ConfirmUnchangedBatchArgs,
+): Promise<ConfirmUnchangedBatchSummary> {
+  if (!MONTH_PATTERN.test(args.month)) {
+    throw new ValidationError('That is not a month.', { month: ['Expected YYYY-MM.'] });
+  }
+  const parts = args.month.split('-');
+  const month = monthKeyOf(Number(parts[0]), Number(parts[1]));
+  const end = endOfMonthKey(month);
+
+  if (!isMonthClosable(month, ctx.today)) {
+    throw new ValidationError(
+      'This month has not ended yet. Confirm it from the first day of the next month.',
+      { month: ['This month has not ended yet.'] },
+    );
+  }
+  if (args.positionIds.length === 0) {
+    throw new ValidationError('Choose at least one account.', { positionIds: ['Choose at least one account.'] });
+  }
+  if (new Set(args.positionIds).size !== args.positionIds.length) {
+    throw new ValidationError('Each account may appear only once.', {
+      positionIds: ['Each account may appear only once.'],
+    });
+  }
+
+  const previousMonth = monthKey(addMonths(startOfMonth(end), -1));
+  const previousEnd = endOfMonthKey(previousMonth);
+
+  const positions = await listPositions(deps.db, ctx.userId);
+  const byId = new Map(positions.map((row) => [row.id, row]));
+  const targets = args.positionIds.map((positionId) => {
+    const position = byId.get(positionId);
+    // Another user's id and a nonexistent one read the same (17.3).
+    if (position === undefined || position.kind !== 'cash') {
+      throw new NotFoundError('That account no longer exists.');
+    }
+    if (position.isDormant === true) {
+      throw new ImpossibleOperationError(
+        `${position.name} is dormant, so it carries at zero without a monthly confirmation. Nothing was confirmed.`,
+      );
+    }
+    if (position.openedOn !== null && position.openedOn > end) {
+      throw new ValidationError(`${position.name} opened after ${monthName(month)}. Nothing was confirmed.`);
+    }
+    if (position.closedOn !== null && position.closedOn <= end) {
+      throw new ImpossibleOperationError(
+        `${position.name} closed by the end of ${monthName(month)}, so its balance then is zero by definition. Nothing was confirmed.`,
+      );
+    }
+    return position;
+  });
+  const lockOrder = [...targets].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+  const audit = { userId: ctx.userId, requestId: ctx.requestId };
+  try {
+    await withUser(deps.db, { userId: ctx.userId }, async (tx) => {
+      for (const position of lockOrder) {
+        const previous = await findValuationOnIn(tx, position.id, previousEnd, { lock: 'share' });
+        if (previous === undefined || previous.datePrecision !== 'month_end') {
+          throw new IncompleteDataError(
+            `${position.name}: ${monthName(previousMonth)} has no month-end balance, so there is nothing to carry forward. Nothing was confirmed.`,
+          );
+        }
+
+        const existing = await findValuationOnIn(tx, position.id, end);
+        if (existing !== undefined) {
+          throw new DuplicateConflictError(
+            `${position.name} already has a balance for ${end}, so nothing was confirmed. Reload to see it.`,
+          );
+        }
+
+        await insertValuationIn(tx, audit, {
+          positionId: position.id,
+          valuedOn: end,
+          amount: previous.amount,
+          source: 'confirmed_unchanged',
+          datePrecision: 'month_end',
+        });
+      }
+    });
+  } catch (error) {
+    // A balance written on `end(M)` by another request after the check above.
+    if (isUniqueViolation(error)) {
+      throw new DuplicateConflictError(
+        'One of these accounts got a balance for the month in the meantime, so nothing was confirmed. Reload and try again.',
+      );
+    }
+    throw error;
+  }
+
+  return {
+    month: (month as string).slice(0, 7),
+    valuedOn: end,
+    confirmed: lockOrder.length,
+    positionIds: [...args.positionIds],
+  };
 }
 
 export interface QuickUpdateArgs {

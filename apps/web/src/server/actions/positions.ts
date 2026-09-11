@@ -5,6 +5,7 @@ import {
   closePosition,
   confirmMonthEnd,
   confirmUnchanged,
+  confirmUnchangedBatch,
   correctValuation,
   createCashAccount,
   createOtherAsset,
@@ -197,6 +198,22 @@ export const confirmUnchangedAction = financialAction({
     const created = await confirmUnchanged(getServices().positions, ctx, input);
     refreshFinancialViews();
     return { id: created.id, valuedOn: created.valuedOn };
+  },
+});
+
+/**
+ * "Confirm all untouched as unchanged" (15.3, R22): the same act for several
+ * accounts of one month, in one transaction — every one or none. The request
+ * names accounts only; each amount is the account's previous statement, read
+ * by the service, which judges every account's eligibility again.
+ */
+export const confirmUnchangedBatchAction = financialAction({
+  name: 'valuations.confirmUnchangedBatch',
+  input: positionInput.confirmUnchangedBatchInput,
+  async handler({ input, ctx }) {
+    const summary = await confirmUnchangedBatch(getServices().positions, ctx, input);
+    refreshFinancialViews();
+    return summary;
   },
 });
 

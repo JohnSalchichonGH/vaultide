@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { cashAccountTypes, otherAssetTypes } from '../enums';
 import { currencyCode } from '../primitives/currency';
 import { moneyString } from '../primitives/money';
-import { plainDate, plainDateNotAfter, valuationDateSchema } from '../primitives/date';
+import { monthKey, plainDate, plainDateNotAfter, valuationDateSchema } from '../primitives/date';
 
 /**
  * Position and valuation inputs (blueprint 6.2, 15.2, 20.1, M5, R15, R17).
@@ -187,6 +187,22 @@ export const confirmUnchangedInput = z.object({
     .string()
     .trim()
     .regex(/^\d{4}-(0[1-9]|1[0-2])$/u, 'Enter a month as YYYY-MM.'),
+});
+
+/**
+ * "Confirm all untouched as unchanged" (15.3): the same act as
+ * `confirmUnchangedInput`, for several accounts of one month in one
+ * transaction. It carries no amount — each is the account's own previous
+ * statement balance, read by the server — and the service re-checks every
+ * account's eligibility, so a stale or crafted list fails as a whole.
+ */
+export const confirmUnchangedBatchInput = z.object({
+  month: monthKey,
+  positionIds: z
+    .array(z.uuid())
+    .min(1, 'Choose at least one account.')
+    .max(100, 'Confirm at most 100 accounts at once.')
+    .refine((ids) => new Set(ids).size === ids.length, 'Each account may appear only once.'),
 });
 
 /**

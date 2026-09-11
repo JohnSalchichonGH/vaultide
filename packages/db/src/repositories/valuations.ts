@@ -65,6 +65,33 @@ export async function findValuationOn(
   return row;
 }
 
+/**
+ * The valuation dated exactly `valuedOn`, inside a caller's transaction.
+ *
+ * `lock: 'share'` holds the row until the transaction ends, so a correction or a
+ * deletion cannot commit between reading a balance and writing something derived
+ * from it; readers holding the same lock do not block one another.
+ */
+export async function findValuationOnIn(
+  tx: Transaction,
+  positionId: string,
+  valuedOn: string,
+  options: { readonly lock?: 'share' } = {},
+): Promise<ValuationRow | undefined> {
+  const query = tx
+    .select()
+    .from(positionValuations)
+    .where(
+      and(
+        eq(positionValuations.positionId, positionId),
+        eq(positionValuations.valuedOn, valuedOn),
+      ),
+    )
+    .limit(1);
+  const [row] = options.lock === 'share' ? await query.for('share') : await query;
+  return row;
+}
+
 /** The latest valuation on or before a date — the "current balance" question. */
 export async function findLatestValuation(
   db: Database,

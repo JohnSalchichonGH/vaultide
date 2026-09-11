@@ -31,12 +31,25 @@ import { cn } from '@/lib/utils';
  * is one transaction: it lands completely or not at all (20.3).
  */
 
+/**
+ * What the modal reads of a position. `PositionDto` satisfies it, and so does a
+ * Monthly account row, so both pages open the same modal (15.3).
+ */
+export type QuickUpdatePosition = Pick<
+  PositionDto,
+  'id' | 'name' | 'currency' | 'minorUnits' | 'status' | 'isDormant'
+> & {
+  readonly value: Pick<PositionDto['value'], 'native' | 'valuedOn'>;
+};
+
 export interface QuickUpdateProps {
-  readonly positions: readonly PositionDto[];
+  readonly positions: readonly QuickUpdatePosition[];
   readonly today: string;
   readonly locale: string;
   /** The last day of the current month, for the end-of-month note. */
   readonly monthEndsOn: string;
+  /** The opening button's words: "Quick update" unless a page names it otherwise. */
+  readonly label?: string;
 }
 
 interface Draft {
@@ -44,7 +57,13 @@ interface Draft {
   readonly error: string | null;
 }
 
-export function QuickUpdate({ positions, today, locale, monthEndsOn }: QuickUpdateProps) {
+export function QuickUpdate({
+  positions,
+  today,
+  locale,
+  monthEndsOn,
+  label = 'Quick update',
+}: QuickUpdateProps) {
   const router = useRouter();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const headingId = useId();
@@ -65,7 +84,7 @@ export function QuickUpdate({ positions, today, locale, monthEndsOn }: QuickUpda
     dialogRef.current?.showModal();
   };
 
-  const setDraft = (position: PositionDto, raw: string) => {
+  const setDraft = (position: QuickUpdatePosition, raw: string) => {
     const canonical = normalizeMoneyInput(raw);
     const decimals = canonical.split('.')[1]?.length ?? 0;
     const invalid =
@@ -132,7 +151,7 @@ export function QuickUpdate({ positions, today, locale, monthEndsOn }: QuickUpda
         data-testid="quick-update-open"
         className="rounded-[var(--radius-control)] bg-[var(--color-accent)] px-4 py-2 font-medium text-[var(--color-accent-foreground)] disabled:opacity-60"
       >
-        Quick update
+        {label}
       </button>
 
       {saved === null ? null : (
@@ -156,7 +175,7 @@ export function QuickUpdate({ positions, today, locale, monthEndsOn }: QuickUpda
       >
         <div className="border-b px-6 py-4">
           <h2 id={headingId} className="text-[length:var(--text-section)] font-semibold">
-            Quick update
+            {label}
           </h2>
           <p className="mt-1 text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">
             Balances are recorded for <strong>{today}</strong>. Leave one blank to keep its last
