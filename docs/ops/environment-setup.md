@@ -56,11 +56,11 @@ They are where each credential lives, and nowhere else.
    gh run watch "$(gh run list --workflow=bootstrap-database.yml --limit 1 --json databaseId --jq '.[0].databaseId')" --exit-status
    ```
 
-6. Apply the schema and seed the currencies:
-
-   ```bash
-   gh workflow run deploy-production.yml
-   ```
+6. The schema and the currency seed are applied automatically.
+   `deploy-production.yml` has no manual trigger: after every successful CI
+   run on `main` it checks that the commit is still the tip of `main`, runs
+   the migrations and the currency seed as `app_owner`, then deploys. Its
+   Vercel hook and health steps skip until section 2 sets them up.
 
 **Plan note.** Neon Free is enough through Phase 2. Move to Launch once real
 balances exist: it raises instant-restore history from 6 h to 7 days, which is
