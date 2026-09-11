@@ -4,8 +4,22 @@ import { sql, withoutUser } from '@vaultide/db';
 import { createHarness, type Harness } from '../helpers/harness';
 import { testContext, type RequestContext } from '../../src/context';
 import { provisionUser } from '../../src/users/provisioning';
-import { createCashAccount, createOtherAsset } from '../../src/positions/service';
-import { recordValuation } from '../../src/positions/valuations';
+import {
+  closePosition,
+  createCashAccount,
+  createOtherAsset,
+  updateCashAccount,
+} from '../../src/positions/service';
+import {
+  confirmMonthEnd,
+  confirmUnchanged,
+  confirmUnchangedBatch,
+  correctValuation,
+  positionHistory,
+  quickUpdate,
+  recordValuation,
+} from '../../src/positions/valuations';
+import { getNetWorth } from '../../src/positions/queries';
 import { listCategories } from '../../src/users/categories';
 import { createExpenseEntry } from '../../src/flows/expenses';
 import { createIncomeEntry } from '../../src/flows/income';
@@ -752,5 +766,635 @@ describe('the repository transaction count is bounded by a constant', () => {
     // The month-to-date loader's five, settings, the currency catalogue and the
     // review; euro-only, so no rate read opens a scope.
     expect(small).toBe(8);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The Accounts section (15.3 section 4)                                       */
+/* -------------------------------------------------------------------------- */
+
+const positionDeps = () => harness.services.positions;
+
+function accountNamed<T extends { readonly name: string }>(accounts: readonly T[], name: string): T {
+  const found = accounts.find((account) => account.name === name);
+  if (found === undefined) throw new Error(`no account named ${name}`);
+  return found;
+}
+
+const completedAccount = async (name: string, ctx: RequestContext = OCT_1) =>
+  accountNamed((await completed(ctx)).accounts.accounts, name);
+
+const currentAccount = async (name: string, ctx: RequestContext = SEPT_10) =>
+  accountNamed((await current(ctx)).accounts.accounts, name);
+
+/** An account that opened empty on a known day (8.1 `opened_zero`). */
+async function makeOpenedAccount(name: string, openedOn: string, ctx: RequestContext): Promise<string> {
+  const created = await createCashAccount(positionDeps(), ctx, {
+    name,
+    currency: 'EUR',
+    accountType: 'checking',
+    openedOn,
+  });
+  return created.id;
+}
+
+/** A zero-balance account marked dormant, the only way it can be (6.2, R22). */
+async function makeDormantAccount(name: string, zeroOn: string, ctx: RequestContext): Promise<string> {
+  const id = await makeAccount(name, { ctx });
+  await recordValuation(positionDeps(), ctx, {
+    positionId: id,
+    valuedOn: zeroOn,
+    amount: '0',
+    datePrecision: 'exact',
+  });
+  await updateCashAccount(positionDeps(), ctx, { positionId: id, expectedVersion: 1, isDormant: true });
+  return id;
+}
+
+describe('a completed month’s Accounts section', () => {
+  it('reads an ordinary month: the previous statement, and the current one with its version', async () => {
+    const bbva = await makeAccount('BBVA');
+    await statement(bbva, '2026-08-31', '8055.00');
+    await statement(bbva, '2026-09-30', '7880.00');
+
+    const page = await completed();
+    expect(page.accounts.previousMonth).toBe('2026-08');
+    const account = accountNamed(page.accounts.accounts, 'BBVA');
+    expect(account).toMatchObject({
+      positionId: bbva,
+      currency: 'EUR',
+      dormant: false,
+      opening: { kind: 'statement', amount: { amount: '8055', currency: 'EUR' }, valuedOn: '2026-08-31' },
+      closing: {
+        kind: 'statement',
+        version: 1,
+        amount: { amount: '7880', currency: 'EUR' },
+        confirmedUnchanged: false,
+      },
+    });
+    expect(account.state).toMatchObject({ month: '2026-09', open: 'month_end', close: 'month_end', included: true });
+  });
+
+  it('carries the id and version a correction needs, and the version it replaced is refused afterwards', async () => {
+    const bbva = await makeAccount('BBVA');
+    await statement(bbva, '2026-08-31', '8055.00');
+    await statement(bbva, '2026-09-30', '7880.00');
+
+    const before = (await completedAccount('BBVA')).closing;
+    if (before.kind !== 'statement') throw new Error('expected a statement');
+    await correctValuation(positionDeps(), OCT_1, {
+      valuationId: before.valuationId,
+      expectedVersion: before.version,
+      valuedOn: '2026-09-30',
+      amount: '7890.00',
+      datePrecision: 'month_end',
+    });
+
+    const after = (await completedAccount('BBVA')).closing;
+    expect(after).toMatchObject({
+      kind: 'statement',
+      valuationId: before.valuationId,
+      version: before.version + 1,
+      amount: { amount: '7890', currency: 'EUR' },
+    });
+
+    // The page that still holds the old version cannot overwrite the new figure.
+    await expect(
+      correctValuation(positionDeps(), OCT_1, {
+        valuationId: before.valuationId,
+        expectedVersion: before.version,
+        valuedOn: '2026-09-30',
+        amount: '7000.00',
+        datePrecision: 'month_end',
+      }),
+    ).rejects.toMatchObject({ code: 'CONFLICT_VERSION' });
+    expect((await completedAccount('BBVA')).closing).toMatchObject({ version: 2, amount: { amount: '7890' } });
+  });
+
+  it('offers a missing statement for entry, and "unchanged" because the month before is closed', async () => {
+    const bbva = await makeAccount('BBVA');
+    await statement(bbva, '2026-08-31', '8055.00');
+
+    const account = await completedAccount('BBVA');
+    expect(account.closing).toEqual({
+      kind: 'no_statement',
+      state: 'carried',
+      latestSnapshot: null,
+      canConfirmUnchanged: true,
+    });
+    expect(account.state.included).toBe(false);
+
+    // Entered exactly as the cell writes it: dated end(M), `month_end`.
+    await recordValuation(positionDeps(), OCT_1, {
+      positionId: bbva,
+      valuedOn: '2026-09-30',
+      amount: '8000.00',
+      datePrecision: 'month_end',
+    });
+    expect((await completedAccount('BBVA')).closing).toMatchObject({
+      kind: 'statement',
+      version: 1,
+      amount: { amount: '8000', currency: 'EUR' },
+    });
+  });
+
+  it('shows an account with nothing recorded as unknown at both ends, with no amount anywhere', async () => {
+    await makeAccount('Unvalued');
+
+    const account = await completedAccount('Unvalued');
+    expect(account.opening).toEqual({ kind: 'no_statement', state: 'missing' });
+    expect(account.closing).toEqual({
+      kind: 'no_statement',
+      state: 'missing',
+      latestSnapshot: null,
+      canConfirmUnchanged: false,
+    });
+  });
+
+  it('shows an ordinary snapshot inside the month only as a hint, never as the statement', async () => {
+    const bbva = await makeAccount('BBVA');
+    await statement(bbva, '2026-08-31', '8055.00');
+    await snapshot(bbva, '2026-09-10', '8200.00');
+    await snapshot(bbva, '2026-09-24', '8120.00');
+
+    const account = await completedAccount('BBVA');
+    expect(account.state.close).toBe('carried');
+    expect(account.closing).toEqual({
+      kind: 'no_statement',
+      state: 'carried',
+      latestSnapshot: { amount: { amount: '8120', currency: 'EUR' }, valuedOn: '2026-09-24' },
+      canConfirmUnchanged: true,
+    });
+  });
+
+  it('offers a last-day snapshot for confirmation, which upgrades that row and keeps its amount', async () => {
+    const bbva = await makeAccount('BBVA');
+    await statement(bbva, '2026-08-31', '8055.00');
+    await snapshot(bbva, '2026-09-30', '7880.00');
+
+    const closing = (await completedAccount('BBVA')).closing;
+    expect(closing).toMatchObject({ kind: 'last_day_snapshot', version: 1, amount: { amount: '7880' } });
+    if (closing.kind !== 'last_day_snapshot') throw new Error('expected a last-day snapshot');
+
+    await confirmMonthEnd(positionDeps(), OCT_1, {
+      valuationId: closing.valuationId,
+      expectedVersion: closing.version,
+    });
+
+    expect((await completedAccount('BBVA')).closing).toMatchObject({
+      kind: 'statement',
+      valuationId: closing.valuationId,
+      version: 2,
+      amount: { amount: '7880', currency: 'EUR' },
+    });
+    // One row for the last day, the snapshot itself — nothing was duplicated (M1).
+    const history = await positionHistory(positionDeps(), OCT_1, bbva);
+    expect(history.filter((row) => row.valuedOn === '2026-09-30')).toHaveLength(1);
+  });
+
+  it('turns a last-day snapshot into the statement figure the user types, in the same row', async () => {
+    const bbva = await makeAccount('BBVA');
+    await statement(bbva, '2026-08-31', '8055.00');
+    await snapshot(bbva, '2026-09-30', '7880.00');
+
+    const closing = (await completedAccount('BBVA')).closing;
+    if (closing.kind !== 'last_day_snapshot') throw new Error('expected a last-day snapshot');
+    await correctValuation(positionDeps(), OCT_1, {
+      valuationId: closing.valuationId,
+      expectedVersion: closing.version,
+      valuedOn: '2026-09-30',
+      amount: '7875.50',
+      datePrecision: 'month_end',
+    });
+
+    expect((await completedAccount('BBVA')).closing).toMatchObject({
+      kind: 'statement',
+      valuationId: closing.valuationId,
+      amount: { amount: '7875.5', currency: 'EUR' },
+    });
+    const history = await positionHistory(positionDeps(), OCT_1, bbva);
+    expect(history.filter((row) => row.valuedOn === '2026-09-30')).toHaveLength(1);
+  });
+
+  it('marks a month confirmed unchanged, at the previous statement’s exact amount', async () => {
+    const bbva = await makeAccount('BBVA');
+    await statement(bbva, '2026-08-31', '8055.55');
+    await confirmUnchanged(positionDeps(), OCT_1, { positionId: bbva, month: '2026-09' });
+
+    expect((await completedAccount('BBVA')).closing).toMatchObject({
+      kind: 'statement',
+      version: 1,
+      amount: { amount: '8055.55', currency: 'EUR' },
+      confirmedUnchanged: true,
+    });
+  });
+
+  it('opens an account opened in the month at zero by definition, and offers no "unchanged"', async () => {
+    const fresh = await makeOpenedAccount('New savings', '2026-09-10', OCT_1);
+
+    const before = await completedAccount('New savings');
+    expect(before.opening).toEqual({ kind: 'opened_zero' });
+    // Nothing before it opened to carry forward (8.1, R22).
+    expect(before.closing).toMatchObject({ kind: 'no_statement', state: 'missing', canConfirmUnchanged: false });
+
+    await statement(fresh, '2026-09-30', '500.00');
+    const after = await completedAccount('New savings');
+    expect(after.opening).toEqual({ kind: 'opened_zero' });
+    expect(after.closing).toMatchObject({ kind: 'statement', amount: { amount: '500' } });
+    expect(after.state.included).toBe(true);
+  });
+
+  it('closes an account closed in the month at zero by definition, with nothing to enter', async () => {
+    const old = await makeAccount('Old bank');
+    await statement(old, '2026-08-31', '100.00');
+    await snapshot(old, '2026-09-15', '0');
+    await closePosition(positionDeps(), OCT_1, { positionId: old, expectedVersion: 1, closedOn: '2026-09-15' });
+
+    const account = await completedAccount('Old bank');
+    expect(account.opening).toMatchObject({ kind: 'statement', amount: { amount: '100' } });
+    expect(account.closing).toEqual({ kind: 'closed_zero' });
+    expect(account.state).toMatchObject({ close: 'closed_zero', included: true });
+  });
+
+  it('carries a dormant account at zero at both ends, with nothing to enter or confirm', async () => {
+    await makeDormantAccount('Dormant', '2026-07-10', OCT_1);
+
+    const account = await completedAccount('Dormant');
+    expect(account.dormant).toBe(true);
+    expect(account.opening).toEqual({ kind: 'dormant_zero' });
+    expect(account.closing).toEqual({ kind: 'dormant_zero' });
+    expect(account.state.included).toBe(true);
+  });
+
+  it('keeps a pre-existing account first tracked in the month as a first balance, never an opening of zero', async () => {
+    const found = await makeAccount('Found account');
+    await statement(found, '2026-09-30', '3000.00');
+
+    const account = await completedAccount('Found account');
+    expect(account.opening).toEqual({ kind: 'first_balance' });
+    expect(account.closing).toMatchObject({ kind: 'statement', amount: { amount: '3000' } });
+    expect(account.state).toMatchObject({ firstBalance: true, included: false });
+  });
+
+  it('opens on the previous statement even when a snapshot sits on the month’s first day', async () => {
+    const bbva = await makeAccount('BBVA');
+    await statement(bbva, '2026-08-31', '8055.00');
+    await snapshot(bbva, '2026-09-01', '8050.00');
+    await statement(bbva, '2026-09-30', '7880.00');
+
+    // 8.1: `open(a, M)` is `close(a, M−1)` — August's statement, whatever was
+    // recorded inside September.
+    expect((await completedAccount('BBVA')).opening).toEqual({
+      kind: 'statement',
+      amount: { amount: '8055', currency: 'EUR' },
+      valuedOn: '2026-08-31',
+    });
+  });
+
+  it('lists exactly the accounts taking part in the month, and states them as the Accounts pages do', async () => {
+    const bbva = await makeAccount('BBVA');
+    await statement(bbva, '2026-08-31', '8055.00');
+    await snapshot(bbva, '2026-09-30', '7880.00');
+    const found = await makeAccount('Found account');
+    await statement(found, '2026-09-30', '3000.00');
+    await makeDormantAccount('Dormant', '2026-07-10', OCT_1);
+    await makeOpenedAccount('New savings', '2026-09-10', OCT_1);
+    // Closed in August: not part of September at all.
+    const gone = await makeAccount('Gone');
+    await snapshot(gone, '2026-08-05', '0');
+    await closePosition(positionDeps(), OCT_1, { positionId: gone, expectedVersion: 1, closedOn: '2026-08-05' });
+    // Opened in October: not part of September either.
+    await makeOpenedAccount('October account', '2026-10-01', OCT_1);
+    // Not cash.
+    await createOtherAsset(positionDeps(), OCT_1, {
+      name: 'Car',
+      currency: 'EUR',
+      assetType: 'vehicle',
+      includeInFinancialNetWorth: false,
+    });
+
+    const accounts = (await completed()).accounts.accounts;
+    expect(accounts.map((account) => account.name).sort()).toEqual([
+      'BBVA',
+      'Dormant',
+      'Found account',
+      'New savings',
+    ]);
+
+    // September is October 1st's last completed month, which is the state the
+    // Accounts pages show — through the same helper, so it is the same object.
+    const netWorth = await getNetWorth(positionDeps(), OCT_1);
+    for (const account of accounts) {
+      const position = netWorth.positions.find((item) => item.id === account.positionId);
+      expect(account.state, account.name).toEqual(position?.lastCompletedMonth);
+    }
+  });
+});
+
+describe('the current month’s Accounts section', () => {
+  async function withAugustStatement(name: string, amount = '1000.00'): Promise<string> {
+    const id = await makeAccount(name, { ctx: SEPT_10 });
+    await recordValuation(positionDeps(), SEPT_10, {
+      positionId: id,
+      valuedOn: '2026-08-31',
+      amount,
+      datePrecision: 'month_end',
+    });
+    return id;
+  }
+
+  it('shows the previous statement and the latest snapshot with its own date', async () => {
+    const bbva = await withAugustStatement('BBVA');
+    await snapshot(bbva, '2026-09-06', '900.00');
+
+    const account = await currentAccount('BBVA');
+    expect(account).toMatchObject({
+      status: 'active',
+      dormant: false,
+      opening: { kind: 'statement', amount: { amount: '1000', currency: 'EUR' }, valuedOn: '2026-08-31' },
+      latest: { state: 'carried', amount: { amount: '900', currency: 'EUR' }, valuedOn: '2026-09-06', statement: false },
+      todaySnapshot: null,
+      canUpdateToday: true,
+    });
+  });
+
+  it('carries today’s own row, which an update corrects in place against its version', async () => {
+    const bbva = await withAugustStatement('BBVA');
+    await snapshot(bbva, '2026-09-10', '880.00');
+
+    const before = await currentAccount('BBVA');
+    expect(before.latest).toMatchObject({ state: 'exact', valuedOn: '2026-09-10' });
+    expect(before.todaySnapshot).toMatchObject({ version: 1, amount: { amount: '880' } });
+    const todayRow = before.todaySnapshot;
+    if (todayRow === null) throw new Error('expected today’s row');
+
+    await quickUpdate(positionDeps(), SEPT_10, {
+      entries: [{ positionId: bbva, amount: '870.00', expectedVersion: todayRow.version }],
+    });
+    const after = await currentAccount('BBVA');
+    expect(after.todaySnapshot).toEqual({
+      valuationId: todayRow.valuationId,
+      version: 2,
+      amount: { amount: '870', currency: 'EUR' },
+    });
+    const history = await positionHistory(positionDeps(), SEPT_10, bbva);
+    expect(history.filter((row) => row.valuedOn === '2026-09-10')).toHaveLength(1);
+
+    // The version the page held is stale now: nothing is overwritten with it.
+    await expect(
+      quickUpdate(positionDeps(), SEPT_10, {
+        entries: [{ positionId: bbva, amount: '860.00', expectedVersion: todayRow.version }],
+      }),
+    ).rejects.toMatchObject({ code: 'CONFLICT_VERSION' });
+    expect((await currentAccount('BBVA')).todaySnapshot).toMatchObject({ version: 2, amount: { amount: '870' } });
+  });
+
+  it('shows the statement itself as the latest balance when nothing was recorded this month', async () => {
+    await withAugustStatement('BBVA');
+
+    const account = await currentAccount('BBVA');
+    expect(account.latest).toEqual({
+      state: 'carried',
+      amount: { amount: '1000', currency: 'EUR' },
+      valuedOn: '2026-08-31',
+      statement: true,
+    });
+    expect(account.todaySnapshot).toBeNull();
+    expect(account.canUpdateToday).toBe(true);
+  });
+
+  it('keeps a dormant account out of updates, carried at zero', async () => {
+    await makeDormantAccount('Dormant', '2026-08-20', SEPT_10);
+
+    const account = await currentAccount('Dormant');
+    expect(account.dormant).toBe(true);
+    expect(account.opening).toEqual({ kind: 'dormant_zero' });
+    expect(account.canUpdateToday).toBe(false);
+  });
+
+  it('opens an account opened this month at zero, and a pre-existing one first tracked this month as a first balance', async () => {
+    await makeOpenedAccount('New savings', '2026-09-05', SEPT_10);
+    const found = await makeAccount('Found account', { ctx: SEPT_10 });
+    await snapshot(found, '2026-09-03', '3000.00');
+
+    const opened = await currentAccount('New savings');
+    expect(opened.opening).toEqual({ kind: 'opened_zero' });
+    expect(opened.latest).toMatchObject({ state: 'opened_zero', amount: { amount: '0' }, valuedOn: '2026-09-05' });
+    expect(opened.canUpdateToday).toBe(true);
+
+    // 8.6: a first valuation inside the month makes it the month's first balance.
+    expect((await currentAccount('Found account')).opening).toEqual({ kind: 'first_balance' });
+  });
+
+  it('opens every account exactly as the month-to-date engine does', async () => {
+    const a = await withAugustStatement('BBVA');
+    const b = await withAugustStatement('Savings', '500.00');
+    await makeOpenedAccount('New savings', '2026-09-02', SEPT_10);
+    const opened = (await currentAccount('New savings')).positionId;
+    for (const id of [a, b, opened]) await snapshot(id, '2026-09-06', '100.00');
+
+    const page = await current();
+    expect(page.monthToDate.asOf).toBe('2026-09-06');
+    const engine = (page.monthToDate.buckets ?? []).flatMap((bucket) => bucket.accounts);
+    for (const account of page.accounts.accounts) {
+      const state = engine.find((item) => item.positionId === account.positionId);
+      const opening = account.opening;
+      expect(state?.openState, account.name).toBe(opening.kind === 'statement' ? 'month_end' : opening.kind);
+      expect(state?.opening, account.name).toEqual(
+        opening.kind === 'statement' ? opening.amount : opening.kind === 'opened_zero' ? { amount: '0', currency: 'EUR' } : null,
+      );
+    }
+  });
+
+  it('offers no month-end editing at all, even on the month’s last day', async () => {
+    const bbva = await withAugustStatement('BBVA');
+    await snapshot(bbva, '2026-09-30', '950.00');
+
+    const page = await current(on('2026-09-30'));
+    // The day it can be closed is the next one (M5, R15).
+    expect(page.accounts.closableFrom).toBe('2026-10-01');
+    const account = accountNamed(page.accounts.accounts, 'BBVA');
+    expect(Object.keys(account)).not.toContain('closing');
+    expect(account.todaySnapshot).toMatchObject({ amount: { amount: '950' } });
+  });
+});
+
+describe('confirming untouched accounts unchanged, all together', () => {
+  async function withAugustStatement(name: string, amount: string): Promise<string> {
+    const id = await makeAccount(name);
+    await statement(id, '2026-08-31', amount);
+    return id;
+  }
+
+  /** Audit rows written under one request id, read as the table owner. */
+  async function auditFor(requestId: string): Promise<{ entity_id: string; action: string; after: Record<string, unknown> }[]> {
+    const client = new pg.Client({ connectionString: harness.provisioned.ownerUrl });
+    await client.connect();
+    try {
+      const result = await client.query<{ entity_id: string; action: string; after: Record<string, unknown> }>(
+        `SELECT entity_id, action, after FROM audit_entries
+          WHERE entity_table = 'position_valuations' AND request_id = $1
+          ORDER BY occurred_at, id`,
+        [requestId],
+      );
+      return result.rows;
+    } finally {
+      await client.end();
+    }
+  }
+
+  const septemberRows = async (positionId: string) =>
+    (await positionHistory(positionDeps(), OCT_1, positionId)).filter((row) => row.valuedOn === '2026-09-30');
+
+  it('confirms every named account in one go, at each one’s own previous statement', async () => {
+    const a = await withAugustStatement('BBVA', '1000.00');
+    const b = await withAugustStatement('Savings', '500.55');
+
+    const summary = await confirmUnchangedBatch(positionDeps(), OCT_1, { month: '2026-09', positionIds: [a, b] });
+    expect(summary).toEqual({ month: '2026-09', valuedOn: '2026-09-30', confirmed: 2, positionIds: [a, b] });
+
+    const page = await completed();
+    expect(accountNamed(page.accounts.accounts, 'BBVA').closing).toMatchObject({
+      kind: 'statement',
+      amount: { amount: '1000' },
+      confirmedUnchanged: true,
+    });
+    expect(accountNamed(page.accounts.accounts, 'Savings').closing).toMatchObject({
+      kind: 'statement',
+      amount: { amount: '500.55' },
+      confirmedUnchanged: true,
+    });
+    for (const id of [a, b]) {
+      const [row] = await septemberRows(id);
+      expect(row).toMatchObject({ datePrecision: 'month_end', source: 'confirmed_unchanged', version: 1 });
+    }
+  });
+
+  /**
+   * Two accounts with August statements, in the order the batch reaches them:
+   * it locks and writes in id order, so `first` is written inside the
+   * transaction before anything about `second` can fail it.
+   */
+  async function twoInLockOrder(): Promise<[string, string]> {
+    const ids = [await withAugustStatement('One', '1000.00'), await withAugustStatement('Two', '500.00')].sort();
+    return [ids[0] as string, ids[1] as string];
+  }
+
+  it('never rewrites a balance already on the last day, and then writes nothing at all', async () => {
+    const [first, withStatement] = await twoInLockOrder();
+    await statement(withStatement, '2026-09-30', '510.00');
+
+    await expect(
+      confirmUnchangedBatch(positionDeps(), OCT_1, { month: '2026-09', positionIds: [first, withStatement] }),
+    ).rejects.toMatchObject({ code: 'CONFLICT_DUPLICATE' });
+    expect(await septemberRows(first)).toEqual([]);
+    expect(await septemberRows(withStatement)).toMatchObject([
+      { amount: '510.00000000', datePrecision: 'month_end', source: 'entered', version: 1 },
+    ]);
+
+    // An ordinary snapshot on the last day is confirmed, never replaced.
+    const withSnapshot = await withAugustStatement('Joint', '200.00');
+    await snapshot(withSnapshot, '2026-09-30', '190.00');
+    await expect(
+      confirmUnchangedBatch(positionDeps(), OCT_1, { month: '2026-09', positionIds: [first, withSnapshot] }),
+    ).rejects.toMatchObject({ code: 'CONFLICT_DUPLICATE' });
+    expect(await septemberRows(first)).toEqual([]);
+    expect(await septemberRows(withSnapshot)).toMatchObject([
+      { amount: '190.00000000', datePrecision: 'exact', version: 1 },
+    ]);
+  });
+
+  it('fails the whole request for one ineligible account, writing nothing for the others', async () => {
+    const [a, noStatement] = await twoInLockOrder();
+    // `noStatement` loses its August statement: nothing to carry forward.
+    await harness.asOwner(`DELETE FROM position_valuations WHERE position_id = $1`, [noStatement]);
+    await snapshot(noStatement, '2026-08-20', '300.00');
+    const dormant = await makeDormantAccount('Dormant', '2026-07-10', OCT_1);
+    const closed = await withAugustStatement('Closed', '0');
+    await closePosition(positionDeps(), OCT_1, { positionId: closed, expectedVersion: 1, closedOn: '2026-09-20' });
+
+    await expect(
+      confirmUnchangedBatch(positionDeps(), OCT_1, { month: '2026-09', positionIds: [a, noStatement] }),
+    ).rejects.toMatchObject({ code: 'INCOMPLETE_DATA', message: expect.stringContaining('August 2026') });
+    await expect(
+      confirmUnchangedBatch(positionDeps(), OCT_1, { month: '2026-09', positionIds: [a, dormant] }),
+    ).rejects.toMatchObject({ code: 'IMPOSSIBLE_OPERATION' });
+    await expect(
+      confirmUnchangedBatch(positionDeps(), OCT_1, { month: '2026-09', positionIds: [a, closed] }),
+    ).rejects.toMatchObject({ code: 'IMPOSSIBLE_OPERATION' });
+    // Nor before the month is over, on its last day included (M5, R15).
+    await expect(
+      confirmUnchangedBatch(positionDeps(), on('2026-09-30'), { month: '2026-09', positionIds: [a] }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    await expect(
+      confirmUnchangedBatch(positionDeps(), OCT_1, { month: '2026-09', positionIds: [a, a] }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+
+    for (const id of [a, noStatement, dormant]) expect(await septemberRows(id)).toEqual([]);
+  });
+
+  it('lets exactly one of two simultaneous confirmations of the same account win', async () => {
+    const a = await withAugustStatement('BBVA', '1000.00');
+    const b = await withAugustStatement('Savings', '500.00');
+
+    const results = await Promise.allSettled([
+      confirmUnchangedBatch(positionDeps(), OCT_1, { month: '2026-09', positionIds: [a, b] }),
+      confirmUnchangedBatch(positionDeps(), OCT_1, { month: '2026-09', positionIds: [b, a] }),
+    ]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find((result) => result.status === 'rejected');
+    expect(rejected?.reason).toMatchObject({ code: 'CONFLICT_DUPLICATE' });
+    for (const id of [a, b]) expect(await septemberRows(id)).toHaveLength(1);
+  });
+
+  it('writes every row under the one request id, each with its own insert audit', async () => {
+    const a = await withAugustStatement('BBVA', '1000.00');
+    const b = await withAugustStatement('Savings', '500.00');
+    const ctx = testContext({ today: '2026-10-01', userId: USER_A, requestId: 'batch-unchanged-request' });
+
+    await confirmUnchangedBatch(positionDeps(), ctx, { month: '2026-09', positionIds: [a, b] });
+
+    const audit = await auditFor('batch-unchanged-request');
+    const rows = [...(await septemberRows(a)), ...(await septemberRows(b))];
+    expect(audit.map((row) => row.action)).toEqual(['insert', 'insert']);
+    expect(audit.map((row) => row.entity_id).sort()).toEqual(rows.map((row) => row.id).sort());
+    for (const row of audit) {
+      expect(row.after).toMatchObject({ source: 'confirmed_unchanged', datePrecision: 'month_end', valuedOn: '2026-09-30' });
+    }
+  });
+
+  it('answers another user as though the account did not exist, and changes nothing', async () => {
+    const a = await withAugustStatement('BBVA', '1000.00');
+    const asB = on('2026-10-01', USER_B);
+
+    await expect(
+      confirmUnchangedBatch(positionDeps(), asB, { month: '2026-09', positionIds: [a] }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(await septemberRows(a)).toEqual([]);
+    expect((await completed(asB)).accounts.accounts).toEqual([]);
+  });
+});
+
+describe('the Accounts section reads nothing of its own', () => {
+  it('keeps both kinds of month at their constant bound with accounts of every kind', async () => {
+    const bbva = await makeAccount('BBVA');
+    await statement(bbva, '2026-08-31', '1000.00');
+    await statement(bbva, '2026-09-30', '900.00');
+    const small = await countTransactions(OCT_1);
+    const smallCurrent = await countTransactions(SEPT_10);
+
+    await makeDormantAccount('Dormant', '2026-07-10', OCT_1);
+    await makeOpenedAccount('New savings', '2026-09-10', OCT_1);
+    const found = await makeAccount('Found account');
+    await statement(found, '2026-09-30', '3000.00');
+    const snapshots = await makeAccount('Snapshots');
+    await statement(snapshots, '2026-08-31', '10.00');
+    for (const day of ['2026-09-03', '2026-09-17', '2026-09-30']) await snapshot(snapshots, day, '11.00');
+
+    const page = await completed();
+    expect(page.accounts.accounts).toHaveLength(5);
+    expect(await countTransactions(OCT_1)).toBe(small);
+    expect(small).toBe(10);
+    expect(await countTransactions(SEPT_10)).toBe(smallCurrent);
   });
 });

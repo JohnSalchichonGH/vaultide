@@ -110,6 +110,38 @@ async function accountWithStatements(
   await expect(page.getByTestId('month-end-2026-09')).toHaveCount(0);
 }
 
+/**
+ * An existing account whose August statement was entered as a last-day snapshot
+ * and confirmed, leaving the browser on the account's page.
+ */
+async function accountWithAugustStatement(
+  page: Page,
+  options: { name: string; type: 'checking' | 'savings' | 'cash'; august: string },
+): Promise<void> {
+  await page.goto('/accounts?tab=cash');
+  await expect(page.getByTestId('account-submit')).toBeEnabled();
+  await fillTestId(page, 'account-name', options.name);
+  await page.getByTestId('account-currency').selectOption('EUR');
+  await page.getByTestId('account-type').selectOption(options.type);
+  await fillTestId(page, 'account-balance', options.august);
+  await fillTestId(page, 'account-balance-date', '2026-08-31');
+  await page.getByTestId('account-submit').click();
+  await expect(page.getByText(`${options.name} added.`)).toBeVisible();
+
+  await page.getByRole('link', { name: options.name, exact: true }).click();
+  await page.getByTestId('confirm-statement-2026-08').click();
+  await expect(page.getByTestId('month-end-2026-08')).toHaveCount(0);
+}
+
+/** An ordinary snapshot on the account page the browser is on. */
+async function recordSnapshot(page: Page, amount: string, on: string): Promise<void> {
+  await expect(page.getByTestId('valuation-submit')).toBeEnabled();
+  await fillTestId(page, 'valuation-amount', amount);
+  await fillTestId(page, 'valuation-date', on);
+  await page.getByTestId('valuation-submit').click();
+  await expect(page.getByTestId('valuation-history')).toContainText(on);
+}
+
 test.describe('the monthly page', () => {
   test('a person opens this month, reviews last month, and hides and restores an advisory', async ({
     page,
@@ -242,5 +274,120 @@ test.describe('the monthly page', () => {
     // A month that has not begun is not a page.
     const future = await page.goto('/monthly/2026-11');
     expect(future?.status()).toBe(404);
+  });
+
+  /**
+   * Keeping cash evidence up to date from Monthly (15.3 section 4), on 6
+   * October: September is closed account by account — a statement typed in, a
+   * last-day snapshot confirmed, the untouched account confirmed unchanged — and
+   * its reconciliation follows; then October's accounts, which never share a
+   * balance date, are all updated today and month to date reaches today.
+   */
+  test('a person closes last month’s accounts and brings this month’s up to date', async ({ page, request }) => {
+    test.slow();
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': '2026-10-06T10:00:00Z' });
+    await onboard(page, request, uniqueEmail('e2e-monthly-accounts'));
+
+    await accountWithAugustStatement(page, { name: 'Everyday', type: 'checking', august: '2000.00' });
+    await recordSnapshot(page, '1950.00', '2026-09-20');
+    await recordSnapshot(page, '1880.00', '2026-10-03');
+    await accountWithAugustStatement(page, { name: 'Savings', type: 'savings', august: '10000.00' });
+    await recordSnapshot(page, '10010.00', '2026-09-30');
+    await recordSnapshot(page, '10010.00', '2026-10-04');
+    await accountWithAugustStatement(page, { name: 'Cash box', type: 'cash', august: '50.00' });
+
+    // --- September: nothing is closed yet --------------------------------------
+    await page.goto('/monthly/2026-09');
+    await expect(page.getByTestId('monthly-kind')).toHaveText('Completed month');
+    const accounts = page.getByTestId('monthly-accounts');
+    const row = (name: string) => accounts.locator('tbody tr', { hasText: name });
+
+    // Everyday has only an ordinary snapshot inside September: a hint, not a statement.
+    await expect(row('Everyday').getByTestId('account-status')).toHaveText(/Needs statement balance/u);
+    await expect(row('Everyday').getByTestId('closing-hint')).toHaveText(/Last snapshot €1,950\.00 on 20 Sept? 2026/u);
+    await expect(row('Everyday').getByTestId('closing-amount')).toHaveValue('');
+    // Savings has a snapshot on the last day, which is not a statement until confirmed.
+    await expect(row('Savings').getByTestId('closing-hint')).toContainText('not yet a statement balance');
+    await expect(row('Cash box').getByTestId('confirm-unchanged')).toBeVisible();
+    await expect(page.getByTestId('bucket-EUR')).toContainText('Unavailable');
+
+    // Enter moves down, and leaving the field saves Everyday's statement.
+    await row('Everyday').getByTestId('closing-amount').fill('1900.00');
+    await row('Everyday').getByTestId('closing-amount').press('Enter');
+    await expect(row('Everyday').getByTestId('account-status')).toHaveText(/Complete/u);
+    await expect(row('Everyday').getByTestId('save-status')).toHaveText('Saved.');
+    await expect(row('Everyday').getByTestId('closing-amount')).toHaveValue('1900.00');
+    await expect(row('Everyday').getByTestId('account-closing')).toContainText('Statement balance');
+
+    // The last-day snapshot becomes Savings' statement, amount untouched.
+    await row('Savings').getByTestId('confirm-statement').click();
+    await expect(row('Savings').getByTestId('account-status')).toHaveText(/Complete/u);
+    await expect(row('Savings').getByTestId('closing-amount')).toHaveValue('10010.00');
+
+    // Only the account nobody touched is confirmed unchanged, at August's statement.
+    await expect(page.getByTestId('confirm-all-unchanged-panel')).toContainText(
+      'for the 1 account you have not edited here: Cash box.',
+    );
+    await page.getByTestId('confirm-all-unchanged').click();
+    await expect(row('Cash box').getByTestId('account-status')).toHaveText(/Complete/u);
+    await expect(row('Cash box').getByTestId('account-closing')).toContainText('Confirmed unchanged');
+    await expect(row('Cash box').getByTestId('closing-amount')).toHaveValue('50.00');
+
+    // The server's reconciliation replaced the page: September now reconciles.
+    const bucket = page.getByTestId('bucket-EUR');
+    await expect(bucket).toContainText('Reliable');
+    await expect(bucket.getByTestId('identity-delta')).toContainText('90.00');
+    await expect(bucket.getByTestId('identity-tracked')).toContainText('€90.00');
+    await expect(page.getByTestId('reconciliation-status')).toContainText('Reliable');
+    await page.reload();
+    await expect(page.getByTestId('bucket-EUR')).toContainText('Reliable');
+
+    // --- October: in progress, and never a month-end control ------------------
+    await page.getByTestId('month-next').click();
+    await expect(page).toHaveURL(/\/monthly\/2026-10$/u);
+    await expect(page.getByTestId('monthly-kind')).toHaveText('In progress');
+    // Everyday was last updated on the 3rd and Savings on the 4th: no shared date.
+    await expect(page.getByTestId('mtd-no-common-date')).toBeVisible();
+    await expect(row('Everyday').getByTestId('account-opening')).toContainText('€1,900.00');
+    await expect(row('Everyday').getByTestId('account-latest')).toHaveText(/€1,880\.00\s*Snapshot, 3 Oct 2026/u);
+    await expect(row('Cash box').getByTestId('account-latest')).toHaveText(/€50\.00\s*Statement balance, 30 Sept? 2026/u);
+    await expect(page.getByTestId('accounts-current-note')).toContainText('can be closed from 1 Nov 2026');
+    for (const control of ['closing-amount', 'confirm-statement', 'confirm-unchanged', 'confirm-all-unchanged']) {
+      await expect(page.getByTestId(control)).toHaveCount(0);
+    }
+
+    // The section never widens the page: a narrow screen scrolls the table
+    // inside its own container, and the page itself not at all (16.5).
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      ),
+    ).toBe(true);
+
+    // Update all today: every account gets an exact balance dated today.
+    await expect(page.getByTestId('quick-update-open')).toHaveText('Update all today');
+    await page.getByTestId('quick-update-open').click();
+    const dialog = page.locator('dialog[open]');
+    await dialog.getByLabel(/^Everyday/u).fill('1870.00');
+    await dialog.getByLabel(/^Savings/u).fill('10010.00');
+    await dialog.getByLabel(/^Cash box/u).fill('50.00');
+    await page.getByTestId('quick-update-save').click();
+    await expect(page.getByTestId('quick-update-saved')).toContainText('Saved 3 balances dated 2026-10-06');
+
+    // Month to date now runs through today, over the balances just entered.
+    await expect(page.getByTestId('mtd-as-of')).toContainText('6 Oct 2026');
+    await expect(page.getByTestId('figure-trackedTotalSpending')).toContainText('30.00');
+    for (const name of ['Everyday', 'Savings', 'Cash box']) {
+      await expect(row(name).getByTestId('account-latest')).toContainText('Snapshot, today');
+    }
+
+    // One account corrected from its own row: today's row is updated, not duplicated.
+    await expect(row('Everyday').getByTestId('today-amount')).toHaveValue('1870.00');
+    await row('Everyday').getByTestId('today-amount').fill('1860.00');
+    await row('Everyday').getByTestId('today-amount').press('Tab');
+    await expect(row('Everyday').getByTestId('save-status')).toHaveText('Saved.');
+    await expect(row('Everyday').getByTestId('account-latest')).toContainText('€1,860.00');
+    await expect(page.getByTestId('mtd-as-of')).toContainText('6 Oct 2026');
+    await expect(page.getByTestId('figure-trackedTotalSpending')).toContainText('40.00');
   });
 });

@@ -109,6 +109,11 @@ describe('financial server actions authorize against the session store', () => {
     for (const item of inFinancialModules) {
       expect(item.wrapper, `${item.file}: ${item.name}`).toBe('financialAction');
     }
+    // Monthly's "confirm all untouched as unchanged" writes statement balances
+    // for several accounts at once: a valuation mutation like the others.
+    expect(
+      inFinancialModules.find((item) => item.name === 'confirmUnchangedBatchAction'),
+    ).toMatchObject({ file: 'positions.ts', wrapper: 'financialAction' });
   });
 
   it('keeps every Phase 3 flow, recurring and savings-preference mutation financial', () => {
