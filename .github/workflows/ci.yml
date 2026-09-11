@@ -3,6 +3,17 @@ name: CI
 # Blueprint 21.7: lint (ESLint + dependency-cruiser + gitleaks) → typecheck →
 # unit tests → integration tests → build → E2E. Required on every pull request;
 # the production deploy depends on it.
+#
+# Every pull request and every manual run gets the full suite. So does a push
+# to main, unless every path that differs from the last main commit to pass the
+# full suite is README.md or under docs/: then only the classifier and the
+# secret scan run, and the heavy jobs are skipped. The comparison starts at that
+# commit, which `Full CI complete` marks, rather than at the previous push: a
+# push cancels the main run before it, so a docs commit on top of a code commit
+# whose run was cancelled still gets the full suite.
+# scripts/ci/classify-main-change.mjs decides, and anything it cannot prove is
+# documentation gets the full suite. A green run on main, light or full, still
+# releases through deploy-production.yml, so production stays the tip of main.
 
 on:
   push:
@@ -13,6 +24,10 @@ on:
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
+
+# Read-only. The classifier adds `actions: read` for itself.
+permissions:
+  contents: read
 
 env:
   NODE_VERSION: '22'
@@ -25,8 +40,41 @@ env:
   CI_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
 jobs:
-  quality:
-    name: Lint, boundaries and types
+  classify:
+    name: Classify the change
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Earlier runs of this workflow and their jobs, to find the full-CI anchor.
+      actions: read
+    outputs:
+      full_ci: ${{ steps.classify.outputs.full_ci }}
+      anchor: ${{ steps.classify.outputs.anchor }}
+      reason: ${{ steps.classify.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.CI_SHA }}
+          # The anchor can be any earlier commit on main.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Test the classifier
+        run: node --test scripts/ci/classify-main-change.test.mjs
+
+      - name: Full suite or docs only
+        id: classify
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci/classify-main-change.mjs
+
+  secrets:
+    name: Secret scan
+    # Every run, light or full: a docs-only change can leak a secret too.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -44,6 +92,18 @@ jobs:
           url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           curl -sSfL "$url" | tar -xz -C /tmp gitleaks
           /tmp/gitleaks git . --config .gitleaks.toml --redact --exit-code 1 --report-format sarif --report-path gitleaks.sarif
+
+  quality:
+    name: Lint, boundaries and types
+    needs: classify
+    # The heavy jobs are skipped only on a positive docs-only answer; an empty
+    # or unexpected output runs them.
+    if: needs.classify.outputs.full_ci != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.CI_SHA }}
 
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
@@ -67,6 +127,8 @@ jobs:
 
   unit:
     name: Unit and property tests
+    needs: classify
+    if: needs.classify.outputs.full_ci != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -87,6 +149,8 @@ jobs:
 
   database:
     name: Fresh database, roles and backup
+    needs: classify
+    if: needs.classify.outputs.full_ci != 'false'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -152,7 +216,8 @@ jobs:
   build-and-e2e:
     name: Build and end-to-end
     runs-on: ubuntu-latest
-    needs: [quality, unit]
+    needs: [classify, quality, unit]
+    if: needs.classify.outputs.full_ci != 'false'
     services:
       postgres:
         image: postgres:18
@@ -207,3 +272,21 @@ jobs:
           name: playwright-report
           path: e2e/playwright-report
           retention-days: 7
+
+  full-ci-complete:
+    # The anchor the next push to main is measured against, found by this name
+    # (scripts/ci/classify-main-change.mjs). It runs only when every job of the
+    # full suite ran and passed: on a light run the heavy jobs are skipped, and
+    # skipped is not success, so this is skipped too.
+    name: Full CI complete
+    runs-on: ubuntu-latest
+    needs: [classify, secrets, quality, unit, database, build-and-e2e]
+    if: >-
+      needs.classify.result == 'success' &&
+      needs.secrets.result == 'success' &&
+      needs.quality.result == 'success' &&
+      needs.unit.result == 'success' &&
+      needs.database.result == 'success' &&
+      needs.build-and-e2e.result == 'success'
+    steps:
+      - run: echo "Every job of the full suite passed for ${CI_SHA}."

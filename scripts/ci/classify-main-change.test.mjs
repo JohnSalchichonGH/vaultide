@@ -11,7 +11,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, test } from 'node:test';
@@ -554,6 +554,20 @@ describe('real commit histories', () => {
       assert.equal(result.fullCi, true);
       assert.match(result.reason, /^Nothing differs from full-CI anchor/);
     });
+  });
+});
+
+describe('the workflow that consumes the decision', () => {
+  const workflow = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+
+  test('names its marker job exactly as the classifier looks for it', () => {
+    assert.match(workflow, new RegExp(`^ {4}name: ${MARKER_JOB}\\r?$`, 'm'));
+  });
+
+  test('skips a job only on an explicit docs-only answer', () => {
+    const gates = workflow.match(/needs\.classify\.outputs\.full_ci\s*\S+\s*'[^']*'/g) ?? [];
+    assert.ok(gates.length > 0);
+    for (const gate of gates) assert.equal(gate, "needs.classify.outputs.full_ci != 'false'");
   });
 });
 
