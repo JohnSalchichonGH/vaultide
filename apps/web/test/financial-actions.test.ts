@@ -25,12 +25,25 @@ const actionsDir = path.join(here, '..', 'src', 'server', 'actions');
 /**
  * The actions that are deliberately **not** financial.
  *
- * Each is a Phase 1 preference: cheap, reversible and visible to the account
- * holder. Phase 1's production verification observed exactly the trade ADR 0003
- * describes — a revoked session completed one settings write inside the cookie
- * window — and accepted it for these and only these.
+ * The first seven are Phase 1 preferences: cheap, reversible and visible to the
+ * account holder. Phase 1's production verification observed exactly the trade
+ * ADR 0003 describes — a revoked session completed one settings write inside the
+ * cookie window — and accepted it for those.
+ *
+ * The three month-review actions are the same kind of state (5.1, 6.2, 20.3).
+ * A review mark records that somebody looked at a completed month; a dismissal
+ * hides an advisory key from the month's presentation and is restored with one
+ * click. Neither changes a financial record, a figure, a status, an issue or a
+ * completeness result, so the cookie window can at most hide an advisory or mark
+ * a month as looked at — both visible to the account holder.
  */
-const NON_FINANCIAL_ACTIONS = new Set([
+const MONTH_REVIEW_ACTIONS = [
+  'markMonthReviewedAction',
+  'dismissMonthAdvisoryAction',
+  'restoreMonthAdvisoryAction',
+] as const;
+
+const NON_FINANCIAL_ACTIONS = new Set<string>([
   'updateSettingsAction',
   'setReportingCurrencyAction',
   'createCategoryAction',
@@ -38,6 +51,7 @@ const NON_FINANCIAL_ACTIONS = new Set([
   'createTagAction',
   'deleteTagAction',
   'completeOnboardingStepAction',
+  ...MONTH_REVIEW_ACTIONS,
 ]);
 
 interface DeclaredAction {
@@ -131,9 +145,25 @@ describe('financial server actions authorize against the session store', () => {
     }
 
     for (const name of expected) expect(declared, name).toContain(name);
+    // Everything outside positions.ts is financial unless it is named on the
+    // explicit list above — a name, not a whole file, so a financial action
+    // added beside a non-financial one is still held to the rule.
     for (const item of actions.filter((entry) => entry.file !== 'positions.ts')) {
-      if (item.file === 'settings.ts') continue;
+      if (NON_FINANCIAL_ACTIONS.has(item.name)) continue;
       expect(item.wrapper, `${item.file}: ${item.name}`).toBe('financialAction');
+    }
+  });
+
+  it('keeps the month-review actions on the ordinary path, and only those in monthly.ts', () => {
+    const monthly = actions.filter((item) => item.file === 'monthly.ts');
+    expect(monthly.map((item) => item.name).sort()).toEqual([...MONTH_REVIEW_ACTIONS].sort());
+    for (const item of monthly) expect(item.wrapper, item.name).toBe('action');
+
+    // Review state is written through the review service alone: the module
+    // imports no flow, valuation, template or skip mutation.
+    const source = readFileSync(path.join(actionsDir, 'monthly.ts'), 'utf8');
+    for (const forbidden of ['skipSuggestion', 'acceptSuggestion', 'recordValuation', 'createIncomeEntry']) {
+      expect(source).not.toContain(forbidden);
     }
   });
 

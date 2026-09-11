@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Route } from 'next';
 import Link from 'next/link';
 import { getNetWorth, getServices } from '@vaultide/application';
 import { requireSessionPage } from '@/server/context';
@@ -213,6 +213,14 @@ export default async function DashboardPage() {
             End-of-month balances can be entered from {addOneDay(netWorth.currentMonth.endsOn)} —
             not before, because the month has not finished.
           </span>
+          {/* 15.2: the current month opens from here — the sidebar is absent on small screens. */}
+          <Link
+            href={`/monthly/${netWorth.currentMonth.month}` as Route}
+            data-testid="open-current-month"
+            className="rounded-[var(--radius-control)] border px-3 py-1.5 text-[length:var(--text-meta)] font-medium"
+          >
+            Open this month
+          </Link>
         </CardContent>
       </Card>
 

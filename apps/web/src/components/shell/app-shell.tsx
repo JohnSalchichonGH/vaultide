@@ -20,6 +20,12 @@ interface NavigationItem {
   readonly label: string;
   /** Absent while the section has not been built yet. */
   readonly href?: Route;
+  /**
+   * The item opens the signed-in user's current month. Its address depends on
+   * today in the user's timezone, which only the server's session knows, so it
+   * is filled in per request rather than written into this table.
+   */
+  readonly currentMonth?: true;
   readonly phase: number;
 }
 
@@ -33,7 +39,7 @@ const NAVIGATION: readonly NavigationGroup[] = [
     label: 'Overview',
     items: [
       { label: 'Dashboard', href: '/dashboard', phase: 2 },
-      { label: 'Monthly', phase: 3 },
+      { label: 'Monthly', currentMonth: true, phase: 3 },
     ],
   },
   {
@@ -66,6 +72,17 @@ export interface AppShellProps {
   readonly currencies?: readonly { code: string; name: string }[];
   /** Hide the sidebar on pages that are a single flow, such as onboarding. */
   readonly showNavigation?: boolean;
+}
+
+/**
+ * Where an item points for this visitor: its fixed page, or — for Monthly — the
+ * current month from the session's own today (never the browser's clock).
+ */
+function hrefOf(item: NavigationItem, session: SessionContext | undefined): Route | undefined {
+  if (item.currentMonth === true) {
+    return session === undefined ? undefined : (`/monthly/${session.today.slice(0, 7)}` as Route);
+  }
+  return item.href;
 }
 
 export function AppShell({
@@ -132,30 +149,33 @@ export function AppShell({
                     {group.label}
                   </p>
                   <ul className="space-y-1">
-                    {group.items.map((item) => (
-                      <li
-                        key={item.label}
-                        className="flex items-center justify-between rounded-[var(--radius-control)] px-2 py-1.5 text-[var(--color-muted-foreground)]"
-                      >
-                        {item.href === undefined ? (
-                          <span>{item.label}</span>
-                        ) : (
-                          <Link className="underline" href={item.href}>
-                            {item.label}
-                          </Link>
-                        )}
-                        <span
-                          className="tabular text-[length:var(--text-meta)] text-[var(--color-unavailable)]"
-                          title={
-                            item.href === undefined
-                              ? `Arrives in Phase ${String(item.phase)}`
-                              : `Available since Phase ${String(item.phase)}`
-                          }
+                    {group.items.map((item) => {
+                      const href = hrefOf(item, session);
+                      return (
+                        <li
+                          key={item.label}
+                          className="flex items-center justify-between rounded-[var(--radius-control)] px-2 py-1.5 text-[var(--color-muted-foreground)]"
                         >
-                          P{item.phase}
-                        </span>
-                      </li>
-                    ))}
+                          {href === undefined ? (
+                            <span>{item.label}</span>
+                          ) : (
+                            <Link className="underline" href={href}>
+                              {item.label}
+                            </Link>
+                          )}
+                          <span
+                            className="tabular text-[length:var(--text-meta)] text-[var(--color-unavailable)]"
+                            title={
+                              item.href === undefined && item.currentMonth !== true
+                                ? `Arrives in Phase ${String(item.phase)}`
+                                : `Available since Phase ${String(item.phase)}`
+                            }
+                          >
+                            P{item.phase}
+                          </span>
+                        </li>
+                      );
+                    })}
                   </ul>
                 </li>
               ))}
@@ -170,7 +190,7 @@ export function AppShell({
 
       <footer className="border-t">
         <div className="mx-auto max-w-[var(--container-content)] px-4 py-6 text-[length:var(--text-meta)] text-[var(--color-muted-foreground)] sm:px-6">
-          Vaultide · Phase 2 — accounts, balances and net worth · blueprint v2.1.2
+          Vaultide · Phase 3 in progress · blueprint v2.1.15
         </div>
       </footer>
     </div>
