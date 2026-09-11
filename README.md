@@ -16,7 +16,8 @@ work on the repository; it does not restate the blueprint's rules.
 
 ### User-facing production
 
-Phases 0–2 are accepted, frozen and production-verified. What is usable today:
+Phases 0–2 are accepted, frozen and production-verified. Phase 3 is still in
+progress, but its first Monthly experience is live. What is usable today:
 
 - account creation, email verification, sign-in, and an optional second factor;
 - settings: base and reporting currencies, timezone and locale;
@@ -27,13 +28,17 @@ Phases 0–2 are accepted, frozen and production-verified. What is usable today:
 - total net worth (everything tracked) and financial net worth (the headline),
   valued across currencies with historical rates — a value nobody recorded is
   shown as unknown, never as zero, and a total that could not include something
-  says so.
+  says so;
+- Monthly, for a completed month or the current one: an overview of its income,
+  spending and savings in the reporting currency, its reconciliation in each
+  native currency, and, for a completed month, how complete its records are;
+- marking a completed month reviewed, and hiding an advisory for that month or
+  showing it again. Hiding changes only what the page shows; it resolves
+  nothing.
 
-### Phase 3 backend
+### Phase 3 implementation
 
-Server-side Phase 3 implementation now includes the completed-month completeness
-read. None of it has a user interface yet. Implemented behind the application
-layer:
+Implemented behind the application layer:
 
 - income, expenses and transfers, with a transfer's linked fee;
 - recurring templates with their terms, generated occurrences, acceptances and
@@ -60,15 +65,22 @@ layer:
   nobody recorded and another lost about as much in the same month, the month
   suggests the cross-currency transfer that would explain both.
 
-Both advisories sit beside the figures and change none of them. Dismissing an
-advisory is not wired yet; that belongs to the monthly editor.
+Both advisories sit beside the figures and change none of them. Monthly can hide
+an advisory for that month and show it again; that is presentation and review
+state only, and changes neither the reconciliation nor any financial record.
+There are no corrective actions on an issue yet.
+
+In production, the Monthly foundation consumes part of this through one
+composite read: a month's reconciliation, reporting-currency figures and
+completeness. The rest, such as recording flows and recurring templates, has no
+user interface yet.
 
 ### Remaining Phase 3
 
 Phase 3 is **in progress**, and is neither accepted nor frozen. Still to do:
 
-- the remaining actions, and the review and dismissal workflow;
-- the Monthly editor;
+- Monthly Income, Known expenses and Accounts editing, with the existing
+  financial actions those sections need;
 - the Spending and Income pages;
 - bulk history entry and correction;
 - the remaining end-to-end journeys and hardening;
@@ -103,8 +115,9 @@ reconciliation identities, rate selection and every edge case.
 
 ```text
 apps/web             Next.js App Router: auth pages, onboarding, settings, shell,
-                     dashboard, accounts and account detail; /api/auth,
-                     /api/cron/fx-refresh, /api/health
+                     dashboard, accounts and account detail, Monthly overview
+                     and reconciliation; /api/auth, /api/cron/fx-refresh,
+                     /api/health
 packages/finance     pure engines — money, dates, FX, Unavailable/Partial,
                      positions and net worth, flow roles, recurrence,
                      completed-month, month-to-date and span reconciliation,
@@ -115,12 +128,14 @@ packages/validation  Zod primitives and inputs shared by client, server, databas
 packages/db          Drizzle schema, migrations, RLS policies, repositories, seed
 packages/application use cases: auth and sessions, mailer, settings, FX service,
                      positions and valuations, quick update, net-worth reads,
-                     flows, recurring templates and suggestions, and every
+                     flows, recurring templates and suggestions, every
                      reconciliation, completeness, savings, reporting and
-                     rolling read
+                     rolling read, and the Monthly composite read with its
+                     review state
 packages/config      tsconfig, ESLint (incl. the money-coercion rule), boundaries
-e2e                  Playwright: smoke, the auth and settings flow, and the
-                     accounts, balances and net-worth journey
+e2e                  Playwright: smoke, the auth and settings flow, the
+                     accounts, balances and net-worth journey, and the Monthly
+                     journey
 scripts/db           role bootstrap, local PostgreSQL, currency reconciliation,
                      live environment and financial-invariant checks
 scripts/backup       dump → verify → encrypt
