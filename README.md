@@ -9,7 +9,7 @@ investments, other assets and liabilities, in as many currencies as you hold.
 
 The exact financial semantics live in
 [`docs/implementation-blueprint.md`](docs/implementation-blueprint.md) (frozen,
-v2.1.14). This README describes the product, its current status and how to
+v2.1.15). This README describes the product, its current status and how to
 work on the repository; it does not restate the blueprint's rules.
 
 ## Status
@@ -31,8 +31,9 @@ Phases 0–2 are accepted, frozen and production-verified. What is usable today:
 
 ### Phase 3 backend
 
-Server-side Phase 3 implementation is complete through **slice 10d**. None of it
-has a user interface yet. Implemented behind the application layer:
+Server-side Phase 3 implementation now includes the completed-month completeness
+read. None of it has a user interface yet. Implemented behind the application
+layer:
 
 - income, expenses and transfers, with a transfer's linked fee;
 - recurring templates with their terms, generated occurrences, acceptances and
@@ -50,6 +51,9 @@ has a user interface yet. Implemented behind the application layer:
   availability and the reason for anything it could not include;
 - rolling three-, six- and twelve-month averages of tracked spending over
   completed months;
+- completed-month completeness: whether a finished month holds the evidence its
+  cash accounts and scheduled recurring occurrences require, judged separately
+  from reconciliation, whose figures it does not change;
 - the large-unclassified advisory: a finished month is flagged when it has far
   more unexplained spending than its own recent history;
 - the possible-missing-conversion advisory: when one currency gained cash
@@ -63,7 +67,6 @@ advisory is not wired yet; that belongs to the monthly editor.
 
 Phase 3 is **in progress**, and is neither accepted nor frozen. Still to do:
 
-- the completed-month completeness report and the remaining read models;
 - the remaining actions, and the review and dismissal workflow;
 - the Monthly editor;
 - the Spending and Income pages;
@@ -106,13 +109,15 @@ packages/finance     pure engines — money, dates, FX, Unavailable/Partial,
                      positions and net worth, flow roles, recurrence,
                      completed-month, month-to-date and span reconciliation,
                      savings, reporting-currency figures, rolling averages,
-                     the two reconciliation advisories
+                     the two reconciliation advisories, completed-month
+                     completeness
 packages/validation  Zod primitives and inputs shared by client, server, database
 packages/db          Drizzle schema, migrations, RLS policies, repositories, seed
 packages/application use cases: auth and sessions, mailer, settings, FX service,
                      positions and valuations, quick update, net-worth reads,
                      flows, recurring templates and suggestions, and every
-                     reconciliation, savings, reporting and rolling read
+                     reconciliation, completeness, savings, reporting and
+                     rolling read
 packages/config      tsconfig, ESLint (incl. the money-coercion rule), boundaries
 e2e                  Playwright: smoke, the auth and settings flow, and the
                      accounts, balances and net-worth journey
@@ -205,7 +210,7 @@ policy filtered can never pass verification. Restoring is documented in
 ## Design and engineering docs
 
 - **Semantic authority:** [`docs/implementation-blueprint.md`](docs/implementation-blueprint.md)
-  (frozen, v2.1.14). When the code and the blueprint disagree, the blueprint is
+  (frozen, v2.1.15). When the code and the blueprint disagree, the blueprint is
   corrected or the code is — never silently either.
 - **Implementation decisions:** [`docs/adr/`](docs/adr/) —
   [Phase 0](docs/adr/0001-phase-0-implementation-decisions.md),

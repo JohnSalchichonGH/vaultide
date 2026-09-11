@@ -19,7 +19,7 @@ logs into this file.
 
 ## Current checkpoint
 
-- **Blueprint:** v2.1.14.
+- **Blueprint:** v2.1.15.
 - **Current phase:** Phase 3.
 - **Phase 3 status:** in progress; the phase as a whole is **not accepted or
   frozen**.
@@ -28,7 +28,9 @@ logs into this file.
 - **Phase 3 checkpoint:** backend slices through **10d
   (`possible_missing_conversion`)** have been reviewed under the review process
   in force at the time, production-verified, and frozen as completed slice
-  checkpoints.
+  checkpoints. The Phase-3-reachable completed-month completeness report and
+  read model (blueprint §12.6, §30.18) is also an accepted/frozen slice
+  checkpoint: independently reviewed, production-verified, and frozen.
 - **User-facing production:** Phase 0–2 functionality is exposed. Phase 3 has no
   user interface yet.
 - **Database migrations:** repository migrations run through
@@ -55,24 +57,28 @@ The backend currently includes:
 - reporting-currency figures with per-figure availability;
 - rolling 3-, 6-, and 12-month tracked-spending averages;
 - `large_unclassified` diagnostics and advisory output;
-- `possible_missing_conversion` diagnostics and advisory output.
+- `possible_missing_conversion` diagnostics and advisory output;
+- global completed-month completeness: state and counts over the Phase 3
+  requirements (participating non-dormant cash accounts and scheduled recurring
+  occurrences), exposed through its own read model.
 
-Historical missing-occurrence detection already exists and feeds reconciliation
-issues: `packages/finance/src/reconciliation/completeness.ts`, the application
-loaders' bounded recurring-resolution and term reads, and the
-`suggested_income_missing` issue path. The full completed-month completeness
-report/read model is still unfinished; do not rebuild the existing
-recurring-completeness foundation as if it did not exist.
+The recurring missing-income machinery remains part of the backend and shares
+its occurrence schedule with completeness: `scheduledOccurrences` in
+`packages/finance/src/reconciliation/completeness.ts` feeds both the
+completeness count (`packages/finance/src/completeness/`, read through
+`getMonthCompleteness`) and the income-only `suggested_income_missing` issue,
+both over the application loaders' bounded template and recurring-resolution
+reads. Extend that shared path rather than building a second occurrence reader.
 
 Web surface of the Phase 3 backend:
 
 - `apps/web/src/server/actions/flows.ts` and `recurring.ts` already declare the
   Phase 3 mutations with `financialAction` (ADR 0003). The only page-level
   consumer so far is the additional-spending setting in the settings form.
-- No Phase 3 read model (reconciliation, spans, savings, reporting, rolling) is
-  wired to any page or route yet; current direct consumers are tests. Future UI
-  work should inspect and reuse these existing backend reads, while additional
-  read-model work remains as scoped below.
+- No Phase 3 read model (reconciliation, spans, savings, reporting, rolling,
+  completeness) is wired to any page or route yet; current direct consumers are
+  tests. Future UI work should inspect and reuse these existing backend reads;
+  any further read-model work belongs to the remaining items below.
 - `month_reviews`, including `dismissed_issues`, exists in schema only; no read
   path applies dismissals yet. Applying them belongs to the review/dismissal
   workflow item below.
@@ -81,14 +87,12 @@ Web surface of the Phase 3 backend:
 
 ## Next planned work
 
-The next substantive financial slice is:
+The next planned Phase 3 area is:
 
-**Blueprint §12.6 — completed-month completeness report and the remaining
-read-model work needed around it.**
+**The remaining actions and the advisory review/dismissal workflow.**
 
 After that, remaining Phase 3 work includes:
 
-- the remaining actions and advisory review/dismissal workflow;
 - the Monthly editor;
 - the Spending and Income pages;
 - bulk history entry and historical correction;
@@ -96,9 +100,9 @@ After that, remaining Phase 3 work includes:
 - a cold whole-Phase-3 review;
 - Phase 3 acceptance, production verification, and freeze.
 
-The exact subdivision or order of work after the next slice may be refined by a
-later reviewed task prompt. Do not infer that an item is implemented merely
-because it appears in this remaining-work list.
+The exact scope, subdivision or order of this work, the next area included, may
+be refined by a later reviewed task prompt. Do not infer that an item is
+implemented merely because it appears in this remaining-work list.
 
 ## Maintenance rule
 
