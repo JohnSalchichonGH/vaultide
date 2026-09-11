@@ -8,6 +8,8 @@ import {
   ISSUE_CLASS_LABEL,
   ISSUE_CLASS_TONE,
   dayTitle,
+  issueSummary,
+  issueTitle,
   type IssueGroup,
   type IssuePresentation,
 } from '@/features/monthly/presentation';
@@ -61,7 +63,16 @@ function Candidate({ candidate, context }: { readonly candidate: ConversionCandi
   );
 }
 
-function InstanceDetail({ issue, context }: { readonly issue: ReconciliationIssueDto; readonly context: IssueContext }) {
+function InstanceDetail({
+  issue,
+  context,
+  ownReading,
+}: {
+  readonly issue: ReconciliationIssueDto;
+  readonly context: IssueContext;
+  /** Say which reading this instance is, because its group's words cover more than one. */
+  readonly ownReading: boolean;
+}) {
   const account =
     issue.positionName ?? (issue.positionId === null ? null : (context.names.get(issue.positionId) ?? null));
   const parts: ReactNode[] = [];
@@ -98,8 +109,13 @@ function InstanceDetail({ issue, context }: { readonly issue: ReconciliationIssu
   }
 
   return (
-    <li className="space-y-1">
+    <li className="space-y-1" data-testid={`issue-instance-${issue.key}`}>
       <div className="flex flex-wrap items-center gap-2 text-[length:var(--text-table)]">{parts}</div>
+      {ownReading ? (
+        <p className="text-[length:var(--text-meta)]" data-testid="issue-instance-reading">
+          <span className="font-medium">{issueTitle(issue)}.</span> {issueSummary(issue)}
+        </p>
+      ) : null}
       {issue.candidates === undefined ? null : (
         <ul className="list-disc space-y-1 pl-5 text-[length:var(--text-table)]">
           {issue.candidates.map((candidate) => (
@@ -130,7 +146,12 @@ function GroupBody({ group, context }: { readonly group: IssueGroup; readonly co
       <p className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">{group.summary}</p>
       <ul className="space-y-2">
         {group.instances.map((issue, index) => (
-          <InstanceDetail key={String(index)} issue={issue} context={context} />
+          <InstanceDetail
+            key={String(index)}
+            issue={issue}
+            context={context}
+            ownReading={group.variantsDiffer}
+          />
         ))}
       </ul>
     </>

@@ -1,7 +1,12 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import type { ReconciliationIssueDto, ReportingAmountDto } from '@vaultide/application';
+import type {
+  MtdBucketDto,
+  ReconciliationBucketDto,
+  ReconciliationIssueDto,
+  ReportingAmountDto,
+} from '@vaultide/application';
 
 // The review controls call server actions and the app router; neither exists
 // outside Next, and neither is what these tests are about.
@@ -13,6 +18,7 @@ vi.mock('@/server/actions/monthly', () => ({
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }) }));
 
 const {
+  STATUS_MEANING,
   completenessMeaning,
   dayTitle,
   isEditableTarget,
@@ -24,9 +30,11 @@ const {
   monthTitle,
   presentIssues,
   savingsRateReason,
+  unavailableCauseOf,
 } = await import('@/features/monthly/presentation');
 const { IssuesPanel } = await import('@/features/monthly/issues');
 const { ReportingFigure } = await import('@/features/monthly/reporting-figure');
+const { CompletedBucket, MonthToDateBucket } = await import('@/features/monthly/reconciliation');
 
 /**
  * The Monthly page's presentation (blueprint 8.5, 12.6, 15.3; 6.2 for why a
@@ -246,6 +254,223 @@ describe('the issues panel', () => {
     expect(html).toContain('data-testid="restore-possible_missing_interest"');
     expect(html).not.toContain('data-testid="dismiss-possible_missing_interest"');
     expect(html).toContain('Hidden advisories (1)');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Why a bucket is unavailable                                                 */
+/* -------------------------------------------------------------------------- */
+
+const zero = { amount: '0', currency: 'EUR' };
+const eur = (amount: string) => ({ amount, currency: 'EUR' });
+
+function completedBucket(
+  over: Partial<ReconciliationBucketDto> & Pick<ReconciliationBucketDto, 'status' | 'issues'>,
+): ReconciliationBucketDto {
+  return {
+    currency: 'EUR',
+    accounts: [],
+    totals: {
+      externalInflows: zero,
+      nonIncomeInflows: zero,
+      nonExpenseOutflows: zero,
+      knownTrackedExpenses: zero,
+      cashDelta: null,
+      trackedTotalSpending: null,
+      unclassified: null,
+    },
+    additionalSpending: zero,
+    thirdPartyPaid: zero,
+    explanation: [],
+    ...over,
+  };
+}
+
+function mtdBucket(
+  over: Partial<MtdBucketDto> & Pick<MtdBucketDto, 'status' | 'issues' | 'reason'>,
+): MtdBucketDto {
+  return {
+    currency: 'EUR',
+    accounts: [],
+    totals: {
+      externalInflows: zero,
+      nonIncomeInflows: zero,
+      nonExpenseOutflows: zero,
+      knownTrackedExpenses: zero,
+      cashDelta: null,
+      trackedTotalSpending: null,
+      unclassified: null,
+    },
+    additionalSpending: zero,
+    thirdPartyPaid: zero,
+    explanation: [],
+    ...over,
+  };
+}
+
+const flowWithoutAccount = (currency: string) =>
+  issue({ key: 'flow_without_cash_account', class: 'blocking', currency, amount: { amount: '40', currency } });
+
+const formatting = { locale: 'en-GB', minorUnits: 2 };
+const meaningIn = (html: string, currency: string): string =>
+  new RegExp(`data-testid="bucket-meaning-${currency}"[^>]*>([^<]*)<`, 'u').exec(html)?.[1] ?? '';
+
+describe('why a bucket is unavailable', () => {
+  it('reads the cause off the bucket, in a fixed order, never off the status', () => {
+    expect(unavailableCauseOf({ status: 'reliable', issues: [] })).toBeNull();
+    expect(unavailableCauseOf({ status: 'unresolved', issues: [missingEnd] })).toBeNull();
+    expect(unavailableCauseOf({ status: 'unavailable', reason: 'missing_opening', issues: [] })).toBe(
+      'missing_opening',
+    );
+    expect(unavailableCauseOf({ status: 'unavailable', issues: [flowWithoutAccount('EUR'), missingEnd] })).toBe(
+      'missing_month_end',
+    );
+    expect(unavailableCauseOf({ status: 'unavailable', issues: [flowWithoutAccount('USD')] })).toBe(
+      'flow_without_cash_account',
+    );
+    expect(unavailableCauseOf({ status: 'unavailable', issues: [firstBalance] })).toBe('first_balance');
+    expect(unavailableCauseOf({ status: 'unavailable', issues: [] })).toBe('unknown');
+  });
+
+  it('keeps the month-level wording true whatever made a currency unavailable', () => {
+    expect(STATUS_MEANING.unavailable).toBe('At least one currency cannot be reconciled; see the issues.');
+    expect(STATUS_MEANING.unavailable).not.toMatch(/balance|statement|opening/u);
+  });
+
+  it('says a completed bucket with an unattached flow has no account, not a missing statement', () => {
+    const html = renderToStaticMarkup(
+      createElement(CompletedBucket, {
+        bucket: completedBucket({ currency: 'USD', status: 'unavailable', issues: [flowWithoutAccount('USD')] }),
+        formatting,
+      }),
+    );
+    expect(meaningIn(html, 'USD')).toMatch(/names no cash account/u);
+    expect(meaningIn(html, 'USD')).not.toMatch(/statement|opening/u);
+    expect(html).toContain('Not computed: a flow has no cash account to reconcile against');
+    expect(html).not.toContain('Not computed: a month-end balance is missing');
+  });
+
+  it('says so for a month-to-date bucket too, while another currency reconciles through the common date', () => {
+    const html = renderToStaticMarkup(
+      createElement(MonthToDateBucket, {
+        bucket: mtdBucket({ currency: 'USD', status: 'unavailable', reason: null, issues: [flowWithoutAccount('USD')] }),
+        asOf: '2026-09-06',
+        formatting,
+      }),
+    );
+    expect(meaningIn(html, 'USD')).toMatch(/names no cash account/u);
+    expect(meaningIn(html, 'USD')).not.toMatch(/opening/u);
+    expect(html).toContain('Not computed: a flow has no cash account to reconcile against');
+    expect(html).toContain('Provisional, through 6 Sep');
+
+    // The other currency's bucket, through the same date, computes as usual.
+    const reconciled = renderToStaticMarkup(
+      createElement(MonthToDateBucket, {
+        bucket: mtdBucket({
+          status: 'provisional',
+          reason: null,
+          issues: [],
+          totals: {
+            externalInflows: zero,
+            nonIncomeInflows: zero,
+            nonExpenseOutflows: zero,
+            knownTrackedExpenses: zero,
+            cashDelta: eur('-100'),
+            trackedTotalSpending: eur('100'),
+            unclassified: eur('100'),
+          },
+        }),
+        asOf: '2026-09-06',
+        formatting,
+      }),
+    );
+    expect(meaningIn(reconciled, 'EUR')).toBe(STATUS_MEANING.provisional);
+    expect(reconciled).not.toContain('Not computed');
+  });
+
+  it('still says a missing statement when that is the cause', () => {
+    const html = renderToStaticMarkup(
+      createElement(CompletedBucket, {
+        bucket: completedBucket({ status: 'unavailable', issues: [missingEnd] }),
+        formatting,
+      }),
+    );
+    expect(meaningIn(html, 'EUR')).toMatch(/no statement balance/u);
+    expect(html).toContain('Not computed: a month-end balance is missing');
+  });
+
+  it('still says a missing opening when that is the cause', () => {
+    const html = renderToStaticMarkup(
+      createElement(MonthToDateBucket, {
+        bucket: mtdBucket({ status: 'unavailable', reason: 'missing_opening', issues: [] }),
+        asOf: '2026-09-06',
+        formatting,
+      }),
+    );
+    expect(meaningIn(html, 'EUR')).toMatch(/no usable opening balance/u);
+    expect(html).toContain('Not computed: an opening balance is missing');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* One key, two readings                                                       */
+/* -------------------------------------------------------------------------- */
+
+describe('an issue key raised with two readings in one month', () => {
+  const grew = issue({
+    key: 'unexplained_inflow',
+    class: 'blocking',
+    currency: 'EUR',
+    variant: 'a',
+    amount: { amount: '1000', currency: 'EUR' },
+  });
+  const exceeded = issue({
+    key: 'unexplained_inflow',
+    class: 'blocking',
+    currency: 'USD',
+    variant: 'b',
+    amount: { amount: '25', currency: 'USD' },
+  });
+
+  it('stays one group, with neutral words for the group', () => {
+    const presentation = presentIssues([grew, exceeded], []);
+    expect(presentation.active).toHaveLength(1);
+    const group = presentation.active[0];
+    expect(group?.key).toBe('unexplained_inflow');
+    expect(group?.instances).toHaveLength(2);
+    expect(group?.variantsDiffer).toBe(true);
+    expect(group?.title).toBe('Cash and records disagree');
+    expect(group?.title).not.toBe(issueTitle(grew));
+    expect(group?.title).not.toBe(issueTitle(exceeded));
+  });
+
+  it('keeps the specific words when every instance reads the same way', () => {
+    const presentation = presentIssues([grew, { ...grew, currency: 'USD' }], []);
+    expect(presentation.active[0]?.variantsDiffer).toBe(false);
+    expect(presentation.active[0]?.title).toBe('Cash grew more than your records explain');
+  });
+
+  it('renders one group with no per-reading control, and each instance says which reading it is', () => {
+    const html = renderToStaticMarkup(
+      createElement(IssuesPanel, {
+        presentation: presentIssues([grew, exceeded], []),
+        month: '2026-09',
+        monthName: 'September 2026',
+        context: { locale: 'en-GB', minorUnitsByCurrency: { EUR: 2, USD: 2 }, names: new Map() },
+      }),
+    );
+    expect(html.match(/data-testid="issue-group-unexplained_inflow"/gu)).toHaveLength(1);
+    // Blocking: never hideable, so no control for the key at all — and never one per reading.
+    expect(html).not.toContain('data-testid="dismiss-unexplained_inflow"');
+
+    const readings = [...html.matchAll(/data-testid="issue-instance-reading"[^>]*>(.*?)<\/p>/gu)].map(
+      (match) => match[1] ?? '',
+    );
+    expect(readings).toHaveLength(2);
+    expect(readings[0]).toContain('Cash grew more than your records explain.');
+    expect(readings[0]).toContain(issueSummary(grew));
+    expect(readings[1]).toContain('Known expenses exceed the cash that left.');
+    expect(readings[1]).toContain('paid from outside');
   });
 });
 

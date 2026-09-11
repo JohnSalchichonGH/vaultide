@@ -32,6 +32,13 @@ export interface IssueGroup {
   readonly instances: readonly ReconciliationIssueDto[];
   /** `true` for an advisory: the one kind a user may hide, key by key. */
   readonly dismissable: boolean;
+  /**
+   * `true` when the key's instances do not all mean the same thing — one
+   * currency's `unexplained_inflow` reading A and another's reading B (8.5,
+   * 30.11). The group's own words are then neutral, and each instance says
+   * which reading it is.
+   */
+  readonly variantsDiffer: boolean;
 }
 
 export interface IssuePresentation {
@@ -63,13 +70,18 @@ export function presentIssues(
 
   const groups: IssueGroup[] = [...byKey.entries()].map(([key, instances]) => {
     const first = instances[0] as ReconciliationIssueDto;
+    // One key, one group, one control — however its instances read. Only the
+    // words change when they read differently: the group's become neutral and
+    // each instance carries its own.
+    const variantsDiffer = new Set(instances.map((instance) => instance.variant)).size > 1;
     return {
       key,
       issueClass: first.class,
-      title: issueTitle(first),
-      summary: issueSummary(first),
+      title: variantsDiffer ? neutralTitle(key) : issueTitle(first),
+      summary: variantsDiffer ? neutralSummary(key) : issueSummary(first),
       instances,
       dismissable: first.class === 'advisory',
+      variantsDiffer,
     };
   });
 
@@ -88,6 +100,21 @@ export function presentIssues(
 function fallbackTitle(key: string): string {
   const words = key.replaceAll('_', ' ');
   return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * A key's name when its instances read differently. `unexplained_inflow` is
+ * the one key with readings in Phase 3: the name has to cover cash growing more
+ * than the records explain *and* known expenses exceeding the cash that left.
+ */
+function neutralTitle(key: string): string {
+  return key === 'unexplained_inflow' ? 'Cash and records disagree' : fallbackTitle(key);
+}
+
+function neutralSummary(key: string): string {
+  return key === 'unexplained_inflow'
+    ? 'In each currency below, the recorded flows and the change in cash cannot both be right. Each one says which way they disagree.'
+    : 'Vaultide raised this more than one way for the month; each instance below says how.';
 }
 
 /** The issue's name, in the blueprint's own meaning (8.5, 30.11 for the two variants). */
@@ -182,14 +209,76 @@ export const STATUS_TONE = {
   unresolved: 'negative',
 } as const satisfies Record<ReconciliationStatusDto, string>;
 
-/** What a status means to the person reading it (8.4). */
+/**
+ * What a status means to the person reading it (8.4).
+ *
+ * `unavailable` stays generic on purpose. At month level it is the worst of
+ * several buckets, and a bucket is unavailable for more than one reason — a
+ * missing statement, a missing opening, a flow with no cash account, or no
+ * account left to reconcile — so the month's status alone cannot say which.
+ * Each bucket says its own cause (`unavailableCauseOf`).
+ */
 export const STATUS_MEANING: Readonly<Record<ReconciliationStatusDto, string>> = {
   reliable: 'Every account has its evidence and the records explain the cash.',
   estimated:
     'An account started being tracked this month; its earlier movements are not included.',
   provisional: 'Measured to the latest date every account shares; the month is not over.',
-  unavailable: 'Spending cannot be inferred: some balance evidence is missing.',
+  unavailable: 'At least one currency cannot be reconciled; see the issues.',
   unresolved: 'The records and the balances contradict each other; see the issues.',
+};
+
+/** Why one bucket could not be reconciled, as far as its own evidence says. */
+export type UnavailableCause =
+  | 'missing_opening'
+  | 'missing_month_end'
+  | 'flow_without_cash_account'
+  | 'first_balance'
+  | 'unknown';
+
+/**
+ * The cause of an unavailable bucket, read off the bucket itself.
+ *
+ * Never inferred from the status: an unavailable bucket is only a bucket the
+ * arithmetic could not run for, and both engines already record why — the
+ * month-to-date one in `reason`, both in the issues they raised. The order is
+ * fixed rather than whichever issue came first, and it is the order the
+ * reporting read gives a residual's missing cause, so a bucket and the figures
+ * built on it name the same one. Nothing here decides whether an issue applies.
+ */
+export function unavailableCauseOf(bucket: {
+  readonly status: ReconciliationStatusDto;
+  readonly reason?: string | null;
+  readonly issues: readonly Pick<ReconciliationIssueDto, 'key'>[];
+}): UnavailableCause | null {
+  if (bucket.status !== 'unavailable') return null;
+  const raised = (key: string): boolean => bucket.issues.some((issue) => issue.key === key);
+  if (bucket.reason === 'missing_opening') return 'missing_opening';
+  if (raised('missing_month_end')) return 'missing_month_end';
+  if (raised('flow_without_cash_account')) return 'flow_without_cash_account';
+  if (raised('first_balance')) return 'first_balance';
+  return 'unknown';
+}
+
+/** A bucket's cause, as the sentence under its heading. */
+export const UNAVAILABLE_CAUSE_MEANING: Readonly<Record<UnavailableCause, string>> = {
+  missing_month_end:
+    'An account has no statement balance for the end of this month or of the month before, so spending in this currency cannot be inferred.',
+  missing_opening:
+    'An account of this currency has no usable opening balance, so it cannot be reconciled through the common date.',
+  flow_without_cash_account:
+    'A flow in this currency names no cash account, and no cash account of this currency took part, so there is nothing to reconcile it against.',
+  first_balance:
+    'Every account of this currency was first tracked this month, so there is nothing to reconcile yet.',
+  unknown: 'This currency could not be reconciled; see the issues.',
+};
+
+/** A bucket's cause, as the reason a figure it could not compute is missing. */
+export const UNAVAILABLE_FIGURE_REASON: Readonly<Record<UnavailableCause, string>> = {
+  missing_month_end: 'a month-end balance is missing — see the issues.',
+  missing_opening: 'an opening balance is missing — see the issues.',
+  flow_without_cash_account: 'a flow has no cash account to reconcile against — see the issues.',
+  first_balance: 'no account of this currency is in the month’s arithmetic yet.',
+  unknown: 'this currency could not be reconciled — see the issues.',
 };
 
 export const COMPLETENESS_LABEL: Readonly<Record<CompletenessStateDto, string>> = {

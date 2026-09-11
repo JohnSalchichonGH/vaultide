@@ -13,8 +13,11 @@ import {
   STATUS_LABEL,
   STATUS_MEANING,
   STATUS_TONE,
+  UNAVAILABLE_CAUSE_MEANING,
+  UNAVAILABLE_FIGURE_REASON,
   dayTitle,
   stateLabel,
+  unavailableCauseOf,
 } from '@/features/monthly/presentation';
 
 /**
@@ -120,14 +123,32 @@ function IdentityTable({
   );
 }
 
+/**
+ * A bucket's heading, and what its status means for this bucket.
+ *
+ * An unavailable bucket says its own cause — read from the bucket's `reason`
+ * and issues by `unavailableCauseOf`, never assumed from the status — and the
+ * figures it could not compute give the same cause as their reason.
+ */
+function describeBucket(bucket: {
+  readonly status: ReconciliationBucketDto['status'];
+  readonly reason?: string | null;
+  readonly issues: ReconciliationBucketDto['issues'];
+}): { meaning: string; figureReason: string } {
+  const cause = unavailableCauseOf(bucket);
+  return cause === null
+    ? { meaning: STATUS_MEANING[bucket.status], figureReason: 'not computed for this currency.' }
+    : { meaning: UNAVAILABLE_CAUSE_MEANING[cause], figureReason: UNAVAILABLE_FIGURE_REASON[cause] };
+}
+
 function StatusHeader({
   currency,
   status,
-  reason,
+  meaning,
 }: {
   readonly currency: string;
   readonly status: ReconciliationBucketDto['status'];
-  readonly reason?: string | undefined;
+  readonly meaning: string;
 }) {
   return (
     <CardHeader>
@@ -135,7 +156,7 @@ function StatusHeader({
         <CardTitle>{currency}</CardTitle>
         <Badge tone={STATUS_TONE[status]}>{STATUS_LABEL[status]}</Badge>
       </div>
-      <CardDescription>{reason ?? STATUS_MEANING[status]}</CardDescription>
+      <CardDescription data-testid={`bucket-meaning-${currency}`}>{meaning}</CardDescription>
     </CardHeader>
   );
 }
@@ -224,15 +245,16 @@ export function CompletedBucket({
   readonly formatting: Formatting;
 }) {
   const { currency } = bucket;
+  const described = describeBucket(bucket);
   return (
     <Card data-testid={`bucket-${currency}`}>
-      <StatusHeader currency={currency} status={bucket.status} />
+      <StatusHeader currency={currency} status={bucket.status} meaning={described.meaning} />
       <CardContent className="space-y-4">
         <IdentityTable
           totals={bucket.totals}
           currency={currency}
           formatting={formatting}
-          missingReason="an account has no statement evidence for the month — see the issues."
+          missingReason={described.figureReason}
         />
         {bucket.accounts.length === 0 ? null : (
           <div className="overflow-x-auto">
@@ -289,13 +311,10 @@ export function MonthToDateBucket({
   readonly formatting: Formatting;
 }) {
   const { currency } = bucket;
-  const reason =
-    bucket.reason === 'missing_opening'
-      ? 'An account of this currency has no usable opening balance, so it cannot be reconciled through the common date.'
-      : undefined;
+  const described = describeBucket(bucket);
   return (
     <Card data-testid={`bucket-${currency}`}>
-      <StatusHeader currency={currency} status={bucket.status} reason={reason} />
+      <StatusHeader currency={currency} status={bucket.status} meaning={described.meaning} />
       <CardContent className="space-y-4">
         <p className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">
           Provisional, through {dayTitle(asOf, formatting.locale)}.
@@ -304,7 +323,7 @@ export function MonthToDateBucket({
           totals={bucket.totals}
           currency={currency}
           formatting={formatting}
-          missingReason="an account has no usable opening balance."
+          missingReason={described.figureReason}
         />
         {bucket.accounts.length === 0 ? null : (
           <div className="overflow-x-auto">
