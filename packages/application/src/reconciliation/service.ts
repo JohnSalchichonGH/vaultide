@@ -21,6 +21,7 @@ import {
   type LargeUnclassifiedObservation,
   type MonthKey,
   type MonthReconciliation,
+  type PlainDate,
   type TemplateTerm,
 } from '@vaultide/finance';
 import type { RequestContext } from '../context';
@@ -28,7 +29,7 @@ import { ValidationError } from '../errors';
 import type { FxService } from '../fx/service';
 import { moneyDto } from '../positions/mapping';
 import type { CompletedMonthData, MonthDataDependencies } from './loader';
-import { loadCompletedRange } from './range-loader';
+import { loadCompletedRange, type CompletedRangeData } from './range-loader';
 import type {
   ConversionCandidateDto,
   MonthReconciliationDto,
@@ -223,9 +224,39 @@ export async function getMonthReconciliation(
     });
   }
 
-  const from = monthKey(addMonths(startOfMonthKey(month), -LARGE_UNCLASSIFIED_BASELINE_MONTHS));
-  const range = await loadCompletedRange(deps, ctx.userId, from, month, ctx.today);
+  const range = await loadCompletedRange(
+    deps,
+    ctx.userId,
+    reconciliationRangeStart(month),
+    month,
+    ctx.today,
+  );
+  return monthReconciliationFrom(deps, range, month, ctx.today);
+}
 
+/**
+ * The first month a completed month's reconciliation reads: `M−6`, the six
+ * calendar months the `large_unclassified` baseline needs (30.15 item 4).
+ */
+export function reconciliationRangeStart(month: MonthKey): MonthKey {
+  return monthKey(addMonths(startOfMonthKey(month), -LARGE_UNCLASSIFIED_BASELINE_MONTHS));
+}
+
+/**
+ * A completed month's reconciliation from a range already loaded.
+ *
+ * `range` must run from `reconciliationRangeStart(month)` to `month`, exactly
+ * as `getMonthReconciliation` loads it. Exported so a composite read — the
+ * Monthly page — can reconcile the month from the same load it takes its other
+ * figures from, and get the answer `getMonthReconciliation` gives, advisories
+ * and all, rather than loading the month a second time.
+ */
+export async function monthReconciliationFrom(
+  deps: ReconciliationDependencies,
+  range: CompletedRangeData,
+  month: MonthKey,
+  today: PlainDate,
+): Promise<MonthReconciliationDto> {
   const input = range.inputs.get(month);
   if (input === undefined) throw new Error(`no input for ${month}`);
   const data: CompletedMonthData = {
@@ -248,7 +279,7 @@ export async function getMonthReconciliation(
       ? judged
       : withPossibleMissingConversion(
           judged,
-          await deps.fx.loadTable(quotes, startOfMonthKey(month), endOfMonthKey(month), ctx.today),
+          await deps.fx.loadTable(quotes, startOfMonthKey(month), endOfMonthKey(month), today),
         );
   const names = new Map(data.positions.map((row) => [row.id, row.name]));
 

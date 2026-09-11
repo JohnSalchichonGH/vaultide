@@ -7,7 +7,7 @@ import {
 } from '@vaultide/finance';
 import type { RequestContext } from '../context';
 import { moneyDto } from '../positions/mapping';
-import { loadMonthToDate } from './mtd-loader';
+import { loadMonthToDate, type MonthToDateData } from './mtd-loader';
 import type { MonthDataDependencies } from './loader';
 import type {
   MonthToDateDto,
@@ -100,7 +100,16 @@ export async function getMonthToDate(
   deps: MonthToDateDependencies,
   ctx: RequestContext,
 ): Promise<MonthToDateDto> {
-  const data = await loadMonthToDate(deps, ctx.userId, ctx.today);
+  return monthToDateFrom(await loadMonthToDate(deps, ctx.userId, ctx.today));
+}
+
+/**
+ * The current month's reconciliation from rows already loaded.
+ *
+ * `getMonthToDate` is exactly this after its own load, so a composite read that
+ * already holds the month gets the same answer from it.
+ */
+export function monthToDateFrom(data: MonthToDateData): MonthToDateDto {
   const result: MonthToDateResult = reconcileMonthToDate(data.input);
   const month = (result.month as string).slice(0, 7);
 

@@ -300,6 +300,43 @@ function currenciesOf(
   return currencies;
 }
 
+/** The two settings a cash-flow report depends on (12.5, 30.16). */
+export interface ReportingSettings {
+  readonly reportingCurrency: string;
+  readonly countAdditionalSpending: boolean;
+}
+
+/**
+ * A completed month's cash flow from rows already loaded, reading the one FX
+ * table its figures need.
+ *
+ * `getMonthReportingCashFlow` is exactly this after its own load, so a
+ * composite read that already holds the month gets the same answer from it.
+ */
+export async function completedReportingFrom(
+  deps: ReportingDependencies,
+  data: CompletedMonthData,
+  settings: ReportingSettings,
+  today: PlainDate,
+): Promise<MonthReportingCashFlowDto> {
+  const month = data.input.month;
+  const fx = await loadRates(
+    deps,
+    currenciesOf(data.input),
+    settings.reportingCurrency,
+    startOfMonthKey(month),
+    endOfMonthKey(month),
+    today,
+  );
+
+  return monthReportingFrom(
+    data,
+    fx,
+    settings.reportingCurrency as CurrencyCode,
+    settings.countAdditionalSpending,
+  );
+}
+
 export async function getMonthReportingCashFlow(
   deps: ReportingDependencies,
   ctx: RequestContext,
@@ -316,21 +353,7 @@ export async function getMonthReportingCashFlow(
     readSettings(deps.db, ctx.userId),
   ]);
 
-  const fx = await loadRates(
-    deps,
-    currenciesOf(data.input),
-    settings.reportingCurrency,
-    startOfMonthKey(month),
-    endOfMonthKey(month),
-    plainDate(ctx.today),
-  );
-
-  return monthReportingFrom(
-    data,
-    fx,
-    settings.reportingCurrency as CurrencyCode,
-    settings.countAdditionalSpending,
-  );
+  return completedReportingFrom(deps, data, settings, plainDate(ctx.today));
 }
 
 /**
@@ -357,7 +380,23 @@ export async function getMonthToDateReportingCashFlow(
     readSettings(deps.db, ctx.userId),
   ]);
 
-  const today = plainDate(ctx.today);
+  return monthToDateReportingFrom(deps, data, settings, plainDate(ctx.today));
+}
+
+/**
+ * The current month's cash flow from rows already loaded, through `D` — or,
+ * without a `D`, the two untracked settlements through today and nothing
+ * tracked at all.
+ *
+ * `getMonthToDateReportingCashFlow` is exactly this after its own load, so a
+ * composite read that already holds the month gets the same answer from it.
+ */
+export async function monthToDateReportingFrom(
+  deps: ReportingDependencies,
+  data: MonthToDateData,
+  settings: ReportingSettings,
+  today: PlainDate,
+): Promise<MonthToDateReportingCashFlowDto> {
   const month = monthKey(today);
   const from = startOfMonthKey(month);
   const key = (month as string).slice(0, 7);

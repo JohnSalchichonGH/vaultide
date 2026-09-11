@@ -8,6 +8,7 @@ export * from './categories';
 export * from './currencies';
 export * from './flows';
 export * from './fx-rates';
+export * from './month-reviews';
 export * from './positions';
 export * from './recurring-templates';
 export * from './provisioning';

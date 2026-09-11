@@ -18,6 +18,7 @@ import {
   type CashAccountInput,
   type CompletedMonthInput,
   type MonthKey,
+  type PositionWithValuations,
 } from '@vaultide/finance';
 import { toPositionRecord, toValuationRecord } from '../positions/mapping';
 import {
@@ -49,6 +50,12 @@ export interface CompletedRangeData
   extends Pick<CompletedMonthData, 'positions' | 'categories' | 'templates' | 'terms'> {
   readonly months: readonly MonthKey[];
   readonly inputs: ReadonlyMap<MonthKey, CompletedMonthInput>;
+  /**
+   * Every position of every kind with its valuations up to the range's end —
+   * what 12.6's `stale` rule reads for the range's last month (v2.1.15 30.18
+   * item 3). From the window already loaded; no query of its own.
+   */
+  readonly positionsWithValuations: readonly PositionWithValuations[];
 }
 
 /** The completed months of `[from, to]`, oldest first. */
@@ -135,5 +142,16 @@ export async function loadCompletedRange(
     });
   }
 
-  return { months, inputs, positions: window.positions, categories, templates, terms };
+  return {
+    months,
+    inputs,
+    positions: window.positions,
+    categories,
+    templates,
+    terms,
+    positionsWithValuations: window.positions.map((row) => ({
+      position: toPositionRecord(row),
+      valuations: valuationsByPosition.get(row.id) ?? [],
+    })),
+  };
 }
