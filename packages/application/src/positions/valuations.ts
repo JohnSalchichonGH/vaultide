@@ -9,6 +9,7 @@ import {
   isUniqueViolation,
   listPositions,
   listValuations,
+  lockCashPositionsIn,
   quickUpdateValuations,
   updateCashDormantFlag,
   updateValuation,
@@ -431,32 +432,42 @@ const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/u;
  * **previous month's statement balance** — and under the same rules. The
  * request names accounts, never amounts: every figure is read here.
  *
- * The whole list is judged, and written, together:
+ * Everything the database decides happens in **one transaction** (20.3), and
+ * that is the point rather than a detail. Eligibility is read from rows this
+ * transaction has locked — `lockCashPositionsIn` holds each account's
+ * `positions` and `cash_accounts` row for its whole length — so an account
+ * cannot be closed or marked dormant between being judged eligible and being
+ * confirmed. A preliminary read outside the transaction would have been a
+ * snapshot of a state somebody else was free to change.
  *
- *  - it is **one transaction**, as the bulk editor's save is (20.3). An account
- *    that is not eligible — no statement for the month before, already a
- *    balance on `end(M)`, dormant, closed or not open by then — fails the whole
- *    request and nothing is written, because a half-confirmed month is exactly
- *    the state that makes a total quietly wrong;
+ * Within it:
+ *
+ *  - every requested id must resolve to a cash account of this user. Another
+ *    user's id, a nonexistent one and a position of another kind are all simply
+ *    absent from the locked set and read the same (17.2, 17.3);
+ *  - an account that is dormant, not yet open by `end(M)` or closed by then is
+ *    refused rather than skipped: dormancy carries at zero without a
+ *    confirmation (R22), and a request naming one was not built from this page;
+ *  - the previous statement is read and held (`FOR SHARE`), so the figure
+ *    carried forward is still that statement when the confirmation commits;
  *  - an existing balance on `end(M)` is never rewritten, whatever it is. A
  *    statement is corrected through its own editor, and an ordinary snapshot on
  *    the last day is confirmed, not replaced;
- *  - the previous statement is read and held (`FOR SHARE`) inside the same
- *    transaction, so the figure carried forward is still that statement when the
- *    confirmation commits;
- *  - accounts are locked in id order, so two overlapping requests cannot
- *    deadlock, and the unique `(position_id, valued_on)` constraint settles a
- *    race with any other write on `end(M)`.
+ *  - any of those fails the whole request and nothing is written, because a
+ *    half-confirmed month is exactly the state that makes a total quietly wrong.
  *
- * Dormant accounts are refused rather than skipped: they carry at zero without
- * a confirmation (R22), and a request naming one was not built from this page.
- * Every audit row carries the one request id.
+ * Accounts are locked and written in id order, so two overlapping requests
+ * queue rather than deadlock, and the unique `(position_id, valued_on)`
+ * constraint settles a race with any other write on `end(M)`. Every audit row
+ * carries the one request id.
  */
 export async function confirmUnchangedBatch(
   deps: PositionDependencies,
   ctx: RequestContext,
   args: ConfirmUnchangedBatchArgs,
 ): Promise<ConfirmUnchangedBatchSummary> {
+  // Everything that needs no database state is settled first, so a malformed
+  // request never opens a transaction.
   if (!MONTH_PATTERN.test(args.month)) {
     throw new ValidationError('That is not a month.', { month: ['Expected YYYY-MM.'] });
   }
@@ -481,36 +492,34 @@ export async function confirmUnchangedBatch(
 
   const previousMonth = monthKey(addMonths(startOfMonth(end), -1));
   const previousEnd = endOfMonthKey(previousMonth);
-
-  const positions = await listPositions(deps.db, ctx.userId);
-  const byId = new Map(positions.map((row) => [row.id, row]));
-  const targets = args.positionIds.map((positionId) => {
-    const position = byId.get(positionId);
-    // Another user's id and a nonexistent one read the same (17.3).
-    if (position === undefined || position.kind !== 'cash') {
-      throw new NotFoundError('That account no longer exists.');
-    }
-    if (position.isDormant === true) {
-      throw new ImpossibleOperationError(
-        `${position.name} is dormant, so it carries at zero without a monthly confirmation. Nothing was confirmed.`,
-      );
-    }
-    if (position.openedOn !== null && position.openedOn > end) {
-      throw new ValidationError(`${position.name} opened after ${monthName(month)}. Nothing was confirmed.`);
-    }
-    if (position.closedOn !== null && position.closedOn <= end) {
-      throw new ImpossibleOperationError(
-        `${position.name} closed by the end of ${monthName(month)}, so its balance then is zero by definition. Nothing was confirmed.`,
-      );
-    }
-    return position;
-  });
-  const lockOrder = [...targets].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const requested = [...args.positionIds].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 
   const audit = { userId: ctx.userId, requestId: ctx.requestId };
   try {
     await withUser(deps.db, { userId: ctx.userId }, async (tx) => {
-      for (const position of lockOrder) {
+      // Locked first, in id order, and held until this transaction ends.
+      const locked = await lockCashPositionsIn(tx, requested);
+      const byId = new Map(locked.map((position) => [position.id, position]));
+
+      for (const positionId of requested) {
+        const position = byId.get(positionId);
+        if (position === undefined) throw new NotFoundError('That account no longer exists.');
+        if (position.isDormant === true) {
+          throw new ImpossibleOperationError(
+            `${position.name} is dormant, so it carries at zero without a monthly confirmation. Nothing was confirmed.`,
+          );
+        }
+        if (position.openedOn !== null && position.openedOn > end) {
+          throw new ValidationError(`${position.name} opened after ${monthName(month)}. Nothing was confirmed.`);
+        }
+        if (position.closedOn !== null && position.closedOn <= end) {
+          throw new ImpossibleOperationError(
+            `${position.name} closed by the end of ${monthName(month)}, so its balance then is zero by definition. Nothing was confirmed.`,
+          );
+        }
+      }
+
+      for (const position of locked) {
         const previous = await findValuationOnIn(tx, position.id, previousEnd, { lock: 'share' });
         if (previous === undefined || previous.datePrecision !== 'month_end') {
           throw new IncompleteDataError(
@@ -547,7 +556,7 @@ export async function confirmUnchangedBatch(
   return {
     month: (month as string).slice(0, 7),
     valuedOn: end,
-    confirmed: lockOrder.length,
+    confirmed: args.positionIds.length,
     positionIds: [...args.positionIds],
   };
 }

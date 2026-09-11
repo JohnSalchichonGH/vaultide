@@ -451,6 +451,50 @@ export async function deletePosition(
   });
 }
 
+/**
+ * The user's **cash** positions among `positionIds`, locked for the rest of the
+ * transaction (blueprint 20.3).
+ *
+ * The two rows a cash account's lifecycle lives in are locked together, because
+ * two different writers change it: `updatePosition` — closing, marking dormant,
+ * editing — locks the `positions` row, while `updateCashDormantFlagIn` locks the
+ * `cash_accounts` row alone to clear dormancy for a flow or a balance. A caller
+ * that validates eligibility from these rows and then writes in the same
+ * transaction therefore cannot have either changed underneath it.
+ *
+ * Three properties are deliberate:
+ *
+ *  - the join to `cash_accounts` is **inner**, so a position of another kind is
+ *    absent exactly as another user's id and a nonexistent one are — a caller
+ *    cannot tell the three apart (17.2, 17.3);
+ *  - rows come back in id order and are locked in that order, so two overlapping
+ *    requests queue rather than deadlock;
+ *  - `FOR UPDATE OF` names the two inner tables: `other_assets` is on the
+ *    nullable side of an outer join, which PostgreSQL refuses to lock at all.
+ *
+ * The order — `positions`, then `cash_accounts` — is the order `updatePosition`
+ * already takes them, and nothing in this package locks `position_valuations`
+ * before either, so a caller may lock these first and write valuations after.
+ */
+export async function lockCashPositionsIn(
+  tx: Transaction,
+  positionIds: readonly string[],
+): Promise<PositionRecord[]> {
+  const ids = [...new Set(positionIds)];
+  if (ids.length === 0) return [];
+
+  const rows = await tx
+    .select(selection)
+    .from(positions)
+    .innerJoin(cashAccounts, eq(cashAccounts.positionId, positions.id))
+    .leftJoin(otherAssets, eq(otherAssets.positionId, positions.id))
+    .where(inArray(positions.id, ids))
+    .orderBy(asc(positions.id))
+    .for('update', { of: [positions, cashAccounts] });
+
+  return rows.map(toRecord);
+}
+
 /** How many valuations a position has — the "may it be deleted?" question. */
 export async function countValuations(
   db: Database,

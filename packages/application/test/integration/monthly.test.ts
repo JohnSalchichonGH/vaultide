@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import pg from 'pg';
-import { sql, withoutUser } from '@vaultide/db';
+import { sql, withoutUser, type Database } from '@vaultide/db';
 import { createHarness, type Harness } from '../helpers/harness';
 import { testContext, type RequestContext } from '../../src/context';
 import { provisionUser } from '../../src/users/provisioning';
@@ -642,15 +642,14 @@ describe('the month and its neighbours', () => {
 /* -------------------------------------------------------------------------- */
 
 /**
- * User-scoped repository transactions — every `db.transaction` invocation,
- * which is what each `withUser` scope and each global-table read opens — for
- * one run of the page's read. Not SQL statements: a scope sets the tenant and
- * may run several. The FX service is built over the same counting handle so
- * its reads are counted like any other.
+ * A handle that counts user-scoped repository transactions — every
+ * `db.transaction` invocation, which is what each `withUser` scope and each
+ * global-table read opens. Not SQL statements: one scope sets the tenant and may
+ * run several.
  */
-async function countTransactions(ctx: RequestContext, month = SEPTEMBER): Promise<number> {
+function countingDatabase(): { db: Database; transactions: () => number } {
   let transactions = 0;
-  const counting = new Proxy(harness.db, {
+  const db = new Proxy(harness.db, {
     get(target, property, receiver) {
       const value = Reflect.get(target, property, receiver) as unknown;
       if (property !== 'transaction' || typeof value !== 'function') return value;
@@ -660,9 +659,18 @@ async function countTransactions(ctx: RequestContext, month = SEPTEMBER): Promis
       };
     },
   });
-  const fx = createFxService({ db: counting, provider: harness.fxProvider });
-  await getMonthlyPage({ db: counting, fx }, ctx, month);
-  return transactions;
+  return { db, transactions: () => transactions };
+}
+
+/**
+ * The transactions one run of the page's read opens. The FX service is built
+ * over the same counting handle, so its reads are counted like any other.
+ */
+async function countTransactions(ctx: RequestContext, month = SEPTEMBER): Promise<number> {
+  const counting = countingDatabase();
+  const fx = createFxService({ db: counting.db, provider: harness.fxProvider });
+  await getMonthlyPage({ db: counting.db, fx }, ctx, month);
+  return counting.transactions();
 }
 
 describe('the repository transaction count is bounded by a constant', () => {
@@ -1345,6 +1353,113 @@ describe('confirming untouched accounts unchanged, all together', () => {
     const rejected = results.find((result) => result.status === 'rejected');
     expect(rejected?.reason).toMatchObject({ code: 'CONFLICT_DUPLICATE' });
     for (const id of [a, b]) expect(await septemberRows(id)).toHaveLength(1);
+  });
+
+  /**
+   * Wait until PostgreSQL itself reports a backend of this database blocked on
+   * a lock.
+   *
+   * A barrier, not a delay: it returns the moment the database says somebody is
+   * waiting, and fails if that never happens — which is exactly what an
+   * implementation that read account eligibility *outside* the write
+   * transaction would do, because nothing would block it.
+   */
+  async function waitUntilBlockedOnALock(): Promise<void> {
+    const client = new pg.Client({ connectionString: harness.provisioned.ownerUrl });
+    await client.connect();
+    try {
+      for (let attempt = 0; attempt < 400; attempt += 1) {
+        // `pg_locks` is read from rather than `pg_stat_activity.wait_event`,
+        // which PostgreSQL masks for a backend belonging to another role — and
+        // the batch runs as `app_user` while this connection is the owner.
+        const result = await client.query<{ waiting: number }>(
+          `SELECT count(*)::int AS waiting
+             FROM pg_locks locks
+             JOIN pg_stat_activity backends ON backends.pid = locks.pid
+            WHERE NOT locks.granted AND backends.datname = current_database()`,
+        );
+        if ((result.rows[0]?.waiting ?? 0) > 0) return;
+        // The poll interval only decides how often the barrier is checked; the
+        // condition is the database's, and never met is a failure below.
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error(
+        'no backend ever waited for a lock: account eligibility was read outside the write transaction',
+      );
+    } finally {
+      await client.end();
+    }
+  }
+
+  it('cannot confirm an account that another transaction is closing', async () => {
+    const account = await withAugustStatement('BBVA', '1000.00');
+
+    // A close, begun and deliberately not committed: the position row is
+    // changed and held. Its row lock (`FOR NO KEY UPDATE`) does not block a
+    // foreign-key check, so an insert judged against a stale read would sail
+    // straight past it.
+    const closing = new pg.Client({ connectionString: harness.provisioned.ownerUrl });
+    await closing.connect();
+    let settled = false;
+    let batch: Promise<unknown> | undefined;
+
+    try {
+      await closing.query('BEGIN');
+      await closing.query(
+        `UPDATE positions SET status = 'closed', closed_on = '2026-09-20', version = version + 1
+          WHERE id = $1`,
+        [account],
+      );
+
+      batch = confirmUnchangedBatch(positionDeps(), OCT_1, {
+        month: '2026-09',
+        positionIds: [account],
+      }).then(
+        (value) => {
+          settled = true;
+          return value;
+        },
+        (error: unknown) => {
+          settled = true;
+          throw error;
+        },
+      );
+      // Asserted below; this only keeps a rejection from going unhandled if the
+      // barrier fails first.
+      void batch.catch(() => undefined);
+
+      await waitUntilBlockedOnALock();
+      // It is waiting for the locked row rather than reading around it.
+      expect(settled).toBe(false);
+
+      await closing.query('COMMIT');
+    } finally {
+      await closing.end();
+    }
+
+    // And what it then reads is the account as it now is.
+    await expect(batch).rejects.toMatchObject({ code: 'IMPOSSIBLE_OPERATION' });
+    expect(await septemberRows(account)).toEqual([]);
+  });
+
+  it('opens one user-scoped transaction, whatever the number of accounts', async () => {
+    const one = await withAugustStatement('One', '1000.00');
+    const two = await withAugustStatement('Two', '500.00');
+    const three = await withAugustStatement('Three', '250.00');
+
+    const transactionsFor = async (positionIds: readonly string[]): Promise<number> => {
+      const counting = countingDatabase();
+      await confirmUnchangedBatch({ db: counting.db, fx: harness.services.fx }, OCT_1, {
+        month: '2026-09',
+        positionIds,
+      });
+      return counting.transactions();
+    };
+
+    // Statements grow with the accounts; transactions do not. Eligibility is
+    // read inside the one that writes, so there is no second scope to open.
+    expect(await transactionsFor([one])).toBe(1);
+    expect(await transactionsFor([two, three])).toBe(1);
   });
 
   it('writes every row under the one request id, each with its own insert audit', async () => {
