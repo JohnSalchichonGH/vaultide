@@ -10,20 +10,16 @@ import {
 import {
   addDays,
   addMonths,
-  cashMonthState,
   endOfMonth,
   endOfMonthKey,
-  monthEndBalance,
   isMonthClosable,
   monthKey,
-  money,
   netWorthAt,
   netWorthChange,
   netWorthSeries,
   plainDate,
   serialize,
   startOfMonth,
-  startOfMonthKey,
   type FxTable,
   type MonthKey,
   type PlainDate,
@@ -34,6 +30,7 @@ import { minorUnitsByCurrency } from '../currencies/service';
 import type { FxService } from '../fx/service';
 import { NotFoundError } from '../errors';
 import type { RequestContext } from '../context';
+import { cashMonthStateDto } from './cash-month';
 import {
   aggregateDto,
   positionDto,
@@ -134,46 +131,6 @@ async function loadWindow(deps: QueryDependencies, ctx: RequestContext): Promise
 /** The last month that is over, which is the newest month a statement can close. */
 export function lastCompletedMonth(today: PlainDate): MonthKey {
   return monthKey(addMonths(startOfMonth(today), -1));
-}
-
-function cashMonthStateDto(
-  entry: PositionWithValuations,
-  month: MonthKey,
-  currency: string,
-  rows: readonly ValuationRow[],
-): CashMonthStateDto {
-  const state = cashMonthState(entry.position, entry.valuations, month);
-  const versionOf = (id: string): number =>
-    rows.find((row) => row.id === id)?.version ?? 1;
-
-  // "Unchanged this month" carries the previous month's statement balance, so
-  // it is only available once that month is closed (8.1, R22).
-  const previousMonth = monthKey(addMonths(startOfMonthKey(month), -1));
-  const canConfirmUnchanged = monthEndBalance(entry.valuations, previousMonth) !== undefined;
-
-  return {
-    month: (month as string).slice(0, 7),
-    open: state.open,
-    close: state.close,
-    included: state.included,
-    firstBalance: state.excludedFirstBalance,
-    monthEnd:
-      state.monthEnd === undefined
-        ? null
-        : {
-            valuationId: state.monthEnd.id,
-            amount: serialize(money(state.monthEnd.amount, currency)),
-          },
-    confirmable:
-      state.confirmableSnapshot === undefined
-        ? null
-        : {
-            valuationId: state.confirmableSnapshot.id,
-            amount: serialize(money(state.confirmableSnapshot.amount, currency)),
-            version: versionOf(state.confirmableSnapshot.id),
-          },
-    canConfirmUnchanged,
-  };
 }
 
 function buildPositionDtos(

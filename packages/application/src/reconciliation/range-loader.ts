@@ -7,6 +7,7 @@ import {
   listTransfers,
   loadFinancialWindow,
   loadTermsForRange,
+  type ValuationRow,
 } from '@vaultide/db';
 import {
   addMonths,
@@ -56,6 +57,12 @@ export interface CompletedRangeData
    * item 3). From the window already loaded; no query of its own.
    */
   readonly positionsWithValuations: readonly PositionWithValuations[];
+  /**
+   * The same valuations as the rows the window returned, with the id and
+   * version an edit of one needs — what Monthly's Accounts section shows beside
+   * each state. From the window already loaded; no query of its own.
+   */
+  readonly valuations: readonly ValuationRow[];
 }
 
 /** The completed months of `[from, to]`, oldest first. */
@@ -153,5 +160,6 @@ export async function loadCompletedRange(
       position: toPositionRecord(row),
       valuations: valuationsByPosition.get(row.id) ?? [],
     })),
+    valuations: window.valuations,
   };
 }

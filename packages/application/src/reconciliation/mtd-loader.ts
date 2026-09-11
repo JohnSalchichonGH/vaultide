@@ -5,6 +5,7 @@ import {
   listTransfers,
   loadFinancialWindow,
   type PositionRecord as PositionRow,
+  type ValuationRow,
 } from '@vaultide/db';
 import {
   monthKey,
@@ -49,6 +50,12 @@ import {
 export interface MonthToDateData {
   readonly input: MonthToDateInput;
   readonly positions: readonly PositionRow[];
+  /**
+   * The window's valuation rows, with the id and version an edit of one needs —
+   * what Monthly's Accounts section offers to update. Already loaded; no query
+   * of its own.
+   */
+  readonly valuations: readonly ValuationRow[];
 }
 
 export async function loadMonthToDate(
@@ -95,5 +102,6 @@ export async function loadMonthToDate(
       transfers: transfers.map(toTransferFlow),
     },
     positions: window.positions,
+    valuations: window.valuations,
   };
 }

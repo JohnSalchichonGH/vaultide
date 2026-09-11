@@ -188,6 +188,16 @@ function openingOf(
   return { state };
 }
 
+/**
+ * 8.6's opening for one account of the current month, as `reconcileMonthToDate`
+ * decides it. Exported so a read model presenting the month's accounts shows
+ * the engine's own opening — including the `first_balance` rule Phase 2's
+ * `cashOpenState` cannot answer before the month ends — rather than a second
+ * interpretation of it. It is also defined when no common date exists, which is
+ * exactly when the result carries no account states to read it from.
+ */
+export { openingOf as monthToDateOpening };
+
 const SETTLED_OPENINGS: readonly string[] = [
   'month_end',
   'opened_zero',

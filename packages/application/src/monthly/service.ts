@@ -21,6 +21,7 @@ import {
   reconciliationRangeStart,
   type ReconciliationDependencies,
 } from '../reconciliation/service';
+import { completedAccountsOf, currentAccountsOf } from './accounts';
 import { reviewDtoOf } from './review-service';
 import type {
   CompletedMonthlyPageDto,
@@ -39,6 +40,8 @@ import type {
  * shows precisely what those reads would, the `large_unclassified` baseline and
  * the `possible_missing_conversion` signature included. The current variant
  * reads the month-to-date window once and does the same with its two reads.
+ * The Accounts section is built from the same loaded rows — the positions and
+ * valuations the reconciliation read — so it adds no read of its own.
  *
  * Nothing is computed here. The review state comes back beside the results and
  * is applied by the page's presentation, never by any result: a dismissed key
@@ -132,6 +135,7 @@ async function completedMonthlyPage(
     reconciliation,
     reporting,
     completeness: monthCompletenessFrom(data),
+    accounts: completedAccountsOf(month, range.positionsWithValuations, range.valuations),
   };
 }
 
@@ -155,5 +159,6 @@ async function currentMonthlyPage(
     review: reviewDtoOf(review),
     monthToDate: monthToDateFrom(data),
     reporting: await monthToDateReportingFrom(deps, data, settings, ctx.today),
+    accounts: currentAccountsOf(ctx.today, data.input.cashAccounts, data.valuations),
   };
 }
