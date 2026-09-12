@@ -78,6 +78,43 @@ export async function listTemplates(
   );
 }
 
+/**
+ * The active templates, inside an existing scope — the operational feed's own
+ * question (blueprint 23.2, v2.1.7 §30.10).
+ *
+ * `archived_at IS NULL` belongs **here** and never in a historical read:
+ * archiving is present-tense visibility that withdraws a source from the feed
+ * and blocks new acceptances, and it rewrites nothing a past month expected.
+ */
+export async function listActiveTemplatesIn(tx: Transaction): Promise<RecurringTemplateRow[]> {
+  return tx
+    .select()
+    .from(recurringTemplates)
+    .where(isNull(recurringTemplates.archivedAt))
+    .orderBy(asc(recurringTemplates.name));
+}
+
+/**
+ * Templates by id, inside an existing scope.
+ *
+ * A row can name a template no schedule window would have loaded: "received
+ * today" on 30 September for a source whose `start_date` is 1 November writes a
+ * September income entry whose template overlaps no month on the page. The row
+ * is a source fact and keeps its identity, so the ids it references are read
+ * back directly rather than inferred from a window.
+ */
+export async function listTemplatesByIdsIn(
+  tx: Transaction,
+  templateIds: readonly string[],
+): Promise<RecurringTemplateRow[]> {
+  if (templateIds.length === 0) return [];
+  return tx
+    .select()
+    .from(recurringTemplates)
+    .where(inArray(recurringTemplates.id, [...templateIds]))
+    .orderBy(asc(recurringTemplates.name));
+}
+
 export async function findTemplate(
   db: Database,
   userId: string,
@@ -288,44 +325,59 @@ export async function loadTermsForRange(
   rangeEnd: string,
 ): Promise<RecurringTemplateTermRow[]> {
   if (templateIds.length === 0) return [];
+  return withUser(db, { userId }, async (tx) =>
+    loadTermsForRangeIn(tx, templateIds, rangeStart, rangeEnd),
+  );
+}
 
-  return withUser(db, { userId }, async (tx) => {
-    const inRange = await tx
-      .select()
-      .from(recurringTemplateTerms)
-      .where(
-        and(
-          inArray(recurringTemplateTerms.templateId, [...templateIds]),
-          gt(recurringTemplateTerms.effectiveFrom, rangeStart),
-          lte(recurringTemplateTerms.effectiveFrom, rangeEnd),
-        ),
-      );
+/**
+ * The same two questions, inside an existing scope.
+ *
+ * The wrapper above delegates here so there is exactly one implementation of
+ * "the terms a range needs": a caller composing several reads in one
+ * user-scoped transaction must not have to restate the opening-term rule, which
+ * is the part that is easy to get subtly wrong.
+ */
+export async function loadTermsForRangeIn(
+  tx: Transaction,
+  templateIds: readonly string[],
+  rangeStart: string,
+  rangeEnd: string,
+): Promise<RecurringTemplateTermRow[]> {
+  if (templateIds.length === 0) return [];
 
-    // `DISTINCT ON` gives the latest term at or before the range start for each
-    // template in one pass rather than one query per template.
-    const opening = await tx
-      .select()
-      .from(recurringTemplateTerms)
-      .where(
-        and(
-          inArray(recurringTemplateTerms.templateId, [...templateIds]),
-          lte(recurringTemplateTerms.effectiveFrom, rangeStart),
-        ),
-      )
-      .orderBy(
-        asc(recurringTemplateTerms.templateId),
-        desc(recurringTemplateTerms.effectiveFrom),
-      );
+  const inRange = await tx
+    .select()
+    .from(recurringTemplateTerms)
+    .where(
+      and(
+        inArray(recurringTemplateTerms.templateId, [...templateIds]),
+        gt(recurringTemplateTerms.effectiveFrom, rangeStart),
+        lte(recurringTemplateTerms.effectiveFrom, rangeEnd),
+      ),
+    );
 
-    const seen = new Set<string>();
-    const latestOpening = opening.filter((row) => {
-      if (seen.has(row.templateId)) return false;
-      seen.add(row.templateId);
-      return true;
-    });
+  // `DISTINCT ON` gives the latest term at or before the range start for each
+  // template in one pass rather than one query per template.
+  const opening = await tx
+    .select()
+    .from(recurringTemplateTerms)
+    .where(
+      and(
+        inArray(recurringTemplateTerms.templateId, [...templateIds]),
+        lte(recurringTemplateTerms.effectiveFrom, rangeStart),
+      ),
+    )
+    .orderBy(asc(recurringTemplateTerms.templateId), desc(recurringTemplateTerms.effectiveFrom));
 
-    return [...latestOpening, ...inRange];
+  const seen = new Set<string>();
+  const latestOpening = opening.filter((row) => {
+    if (seen.has(row.templateId)) return false;
+    seen.add(row.templateId);
+    return true;
   });
+
+  return [...latestOpening, ...inRange];
 }
 
 /**
@@ -639,6 +691,84 @@ export async function listSkips(
       .from(recurringTemplateSkips)
       .where(inArray(recurringTemplateSkips.templateId, [...templateIds])),
   );
+}
+
+/**
+ * Every skip whose occurrence falls in a date range, inside an existing scope.
+ *
+ * Keyed on `occurrence_date`, because a skip has no other date: it is a stated
+ * absence of a flow, so there is no financial date to bound it by.
+ */
+export async function listSkipsInRangeIn(
+  tx: Transaction,
+  from: string,
+  to: string,
+): Promise<RecurringTemplateSkipRow[]> {
+  return tx
+    .select()
+    .from(recurringTemplateSkips)
+    .where(
+      and(
+        gte(recurringTemplateSkips.occurrenceDate, from),
+        lte(recurringTemplateSkips.occurrenceDate, to),
+      ),
+    )
+    .orderBy(asc(recurringTemplateSkips.occurrenceDate));
+}
+
+/**
+ * Every occurrence already resolved **after** a date, across every template
+ * (blueprint v2.1.7 §30.10).
+ *
+ * What "received today" eligibility is decided against: the earliest scheduled
+ * occurrence after today that nothing has resolved. The identity is returned
+ * whole rather than as bare dates, because the eligibility rule is per template
+ * and two sources may share a scheduled date — collapsing them would let one
+ * source's claimed occurrence silently resolve another's.
+ *
+ * No upper bound, because the rule has none: an annual source whose genuine next
+ * payment is eight months away must still be reachable (§30.10).
+ */
+export async function listResolvedOccurrencesAfterIn(
+  tx: Transaction,
+  after: string,
+): Promise<{ templateId: string; occurrenceDate: string }[]> {
+  const [income, expenses, moves, skips] = await Promise.all([
+    tx
+      .select({
+        templateId: incomeEntries.templateId,
+        occurrenceDate: incomeEntries.occurrenceDate,
+      })
+      .from(incomeEntries)
+      .where(
+        and(isNotNull(incomeEntries.occurrenceDate), gt(incomeEntries.occurrenceDate, after)),
+      ),
+    tx
+      .select({
+        templateId: expenseEntries.templateId,
+        occurrenceDate: expenseEntries.occurrenceDate,
+      })
+      .from(expenseEntries)
+      .where(
+        and(isNotNull(expenseEntries.occurrenceDate), gt(expenseEntries.occurrenceDate, after)),
+      ),
+    tx
+      .select({ templateId: transfers.templateId, occurrenceDate: transfers.occurrenceDate })
+      .from(transfers)
+      .where(and(isNotNull(transfers.occurrenceDate), gt(transfers.occurrenceDate, after))),
+    tx
+      .select({
+        templateId: recurringTemplateSkips.templateId,
+        occurrenceDate: recurringTemplateSkips.occurrenceDate,
+      })
+      .from(recurringTemplateSkips)
+      .where(gt(recurringTemplateSkips.occurrenceDate, after)),
+  ]);
+
+  return [...income, ...expenses, ...moves, ...skips].map((row) => ({
+    templateId: row.templateId as string,
+    occurrenceDate: row.occurrenceDate as string,
+  }));
 }
 
 export async function findSkipIn(

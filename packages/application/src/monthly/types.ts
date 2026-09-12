@@ -57,6 +57,185 @@ interface MonthlyPageBase {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Income (15.3 section 2)                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What the schedule says an occurrence is worth, and what a forward-looking
+ * edit of it must claim (blueprint 6.2, §30.9 item 4, 20.3).
+ *
+ * Two related questions live here and they are deliberately not one field. The
+ * **applicable** term is the row with the greatest `effective_from ≤
+ * occurrence_date` — it decides what the suggestion is worth, and it usually
+ * started months earlier. The **exact** term is whether a row starts on this
+ * occurrence's own date, which is what "From this occurrence on" has to state:
+ * `setTemplateTerm` is a replacement, not a patch, and the server must never
+ * decide create-versus-update from a read it took for itself.
+ */
+export interface OccurrenceTermDto {
+  /** The applicable term's amount, or `null` when no term covers the date yet. */
+  readonly net: MoneyDto | null;
+  readonly gross: MoneyDto | null;
+  /** The applicable term's own effective date — never the financial date. */
+  readonly effectiveFrom: string | null;
+  /**
+   * Whether a term starts **exactly** at this occurrence's date.
+   *
+   * `absent` means a write there creates one: net and gross may be prefilled
+   * from the applicable term as a convenience, but the note starts blank,
+   * because an older term's note explains why *that* term began.
+   *
+   * `version` carries the row a write would replace, note included, so the form
+   * can resubmit the complete state deliberately rather than clearing a note it
+   * never saw.
+   */
+  readonly exact:
+    | { readonly state: 'absent' }
+    | {
+        readonly state: 'version';
+        readonly termId: string;
+        readonly version: number;
+        readonly note: string | null;
+      };
+}
+
+/** One income entry: a materialized occurrence, or a row nothing scheduled. */
+export interface MonthlyIncomeEntryDto {
+  readonly entryId: string;
+  readonly version: number;
+  readonly kind: string;
+  readonly settlement: string;
+  /** The financial date (6.2). Never after today. */
+  readonly receivedOn: string;
+  /** `YYYY-MM` of `receivedOn`: the month that owns this row's editing. */
+  readonly receivedMonth: string;
+  readonly net: MoneyDto;
+  readonly gross: MoneyDto | null;
+  readonly currency: string;
+  /** `null` is tracked cash awaiting attribution, never external (8.1). */
+  readonly cashPositionId: string | null;
+  readonly cashAccountName: string | null;
+  readonly description: string | null;
+  readonly tags: readonly string[];
+  readonly isOneOff: boolean;
+  /** The scheduled occurrence this row materializes, when it materializes one. */
+  readonly occurrence: {
+    readonly templateId: string;
+    readonly templateName: string;
+    readonly occurrenceDate: string;
+    /** `YYYY-MM` of `occurrenceDate`: the month whose schedule expects it. */
+    readonly occurrenceMonth: string;
+  } | null;
+}
+
+/**
+ * What has become of one scheduled occurrence.
+ *
+ * The same four states the accept/skip service names, so the page and the
+ * engine cannot disagree about what an occurrence is. A completed month's
+ * unresolved occurrence is `due` — the presentation says "not recorded", and it
+ * is the same occurrence `suggested_income_missing` reports.
+ */
+export type IncomeOccurrenceStateDto =
+  | { readonly kind: 'due' }
+  | {
+      readonly kind: 'upcoming';
+      /**
+       * This is the one occurrence "received today" may reach (§30.10). Server
+       * evidence, not a browser derivation: deciding it needs every resolved
+       * occurrence after today and the source's whole schedule beyond the month.
+       * The server checks it again under the template's lock regardless.
+       */
+      readonly receivedTodayEligible: boolean;
+    }
+  | { readonly kind: 'accepted'; readonly entry: MonthlyIncomeEntryDto }
+  | {
+      readonly kind: 'skipped';
+      readonly skipId: string;
+      readonly reason: string;
+      readonly note: string | null;
+    };
+
+/** One occurrence the schedule placed in the displayed month. */
+export interface IncomeOccurrenceDto {
+  readonly templateId: string;
+  readonly templateName: string;
+  readonly counterparty: string | null;
+  readonly incomeKind: string;
+  readonly currency: string;
+  /** The scheduling identity (6.2). Never a financial date, never editable. */
+  readonly occurrenceDate: string;
+  readonly term: OccurrenceTermDto;
+  /** The source's default cash account; acceptance may choose another. */
+  readonly defaultCashPositionId: string | null;
+  readonly defaultCashAccountName: string | null;
+  /**
+   * Present-tense visibility (§30.10). It rewrites no history, and the services
+   * refuse a new acceptance or skip while it is set — so the page offers
+   * neither, rather than offering a control the server will refuse.
+   */
+  readonly sourceArchived: boolean;
+  readonly state: IncomeOccurrenceStateDto;
+}
+
+/**
+ * The one occurrence of a source that "received today" may reach, when it lies
+ * outside the displayed month (§30.10).
+ *
+ * There is no horizon: an annual source whose genuine next payment is eight
+ * months away is here when it is the next thing unresolved.
+ */
+export interface EarlyReceiptCandidateDto {
+  readonly templateId: string;
+  readonly templateName: string;
+  readonly incomeKind: string;
+  readonly currency: string;
+  /** Strictly after today, in whatever later month the schedule puts it. */
+  readonly occurrenceDate: string;
+  readonly occurrenceMonth: string;
+  readonly term: OccurrenceTermDto;
+  readonly defaultCashPositionId: string | null;
+  readonly defaultCashAccountName: string | null;
+}
+
+/**
+ * The month's income, partitioned so no entry is ever rendered twice.
+ *
+ * The three groups answer two different questions and the partition is a set
+ * difference, not a convention: `occurrences` is schedule membership
+ * (`occurrence_date ∈ M`) and embeds the entry that resolved each one;
+ * `otherRecurring` and `direct` are financial membership (`received_on ∈ M`)
+ * minus every entry already embedded above. A salary scheduled for 1 October
+ * and received on 30 September is therefore an accepted occurrence on October's
+ * page and an `otherRecurring` row on September's — one row, two questions,
+ * counted once in each.
+ */
+export interface MonthlyIncomeDto {
+  /** Every occurrence the schedule placed in M, by date then template. */
+  readonly occurrences: readonly IncomeOccurrenceDto[];
+  /** Recurring income received in M whose occurrence is not one of the above. */
+  readonly otherRecurring: readonly MonthlyIncomeEntryDto[];
+  /** Income received in M that no source scheduled. */
+  readonly direct: readonly MonthlyIncomeEntryDto[];
+  /**
+   * Cash accounts an income row may attach to, from the rows the page already
+   * loaded. The services remain authoritative for ownership, currency and the
+   * participation window.
+   */
+  readonly cashAccounts: readonly {
+    readonly positionId: string;
+    readonly name: string;
+    readonly currency: string;
+  }[];
+}
+
+/** The current month's income, with the operational surface a live month has. */
+export interface CurrentMonthlyIncomeDto extends MonthlyIncomeDto {
+  /** At most one per active source, and only when it lies outside the month. */
+  readonly earlyReceiptCandidates: readonly EarlyReceiptCandidateDto[];
+}
+
+/* -------------------------------------------------------------------------- */
 /* Accounts (15.3 section 4)                                                   */
 /* -------------------------------------------------------------------------- */
 
@@ -199,6 +378,8 @@ export interface CompletedMonthlyPageDto extends MonthlyPageBase {
   readonly completeness: MonthCompletenessDto;
   /** The month's cash accounts, from the rows the reconciliation read. */
   readonly accounts: CompletedAccountsDto;
+  /** The month's income: its schedule, and the money that arrived in it. */
+  readonly income: MonthlyIncomeDto;
 }
 
 /**
@@ -213,6 +394,8 @@ export interface CurrentMonthlyPageDto extends MonthlyPageBase {
   readonly reporting: MonthToDateReportingCashFlowDto;
   /** The month's cash accounts, from the rows the month-to-date read loaded. */
   readonly accounts: CurrentAccountsDto;
+  /** The month's income so far, and the schedule it is being measured against. */
+  readonly income: CurrentMonthlyIncomeDto;
 }
 
 export type MonthlyPageDto = CompletedMonthlyPageDto | CurrentMonthlyPageDto;

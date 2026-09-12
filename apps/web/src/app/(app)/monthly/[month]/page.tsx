@@ -13,6 +13,7 @@ import { requireSessionPage } from '@/server/context';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { CompletedAccountsEditor, CurrentAccountsEditor } from '@/features/monthly/accounts-editor';
+import { IncomeSection } from '@/features/monthly/income-editor';
 import { MonthNavigation } from '@/features/monthly/month-navigation';
 import { CompletedOverview, CurrentOverview } from '@/features/monthly/overview';
 import { IssuesPanel } from '@/features/monthly/issues';
@@ -110,6 +111,7 @@ export default async function MonthlyPage({ params }: { params: Promise<{ month:
         />
         <nav aria-label="Month sections" className="flex flex-wrap gap-4 border-b pb-2 text-[length:var(--text-meta)]">
           <a href="#overview" className="underline">Overview</a>
+          <a href="#income" className="underline">Income</a>
           <a href="#accounts" className="underline">Accounts</a>
           <a href="#reconciliation" className="underline">Reconciliation</a>
         </nav>
@@ -127,6 +129,32 @@ export default async function MonthlyPage({ params }: { params: Promise<{ month:
         ) : (
           <CurrentOverview page={page} locale={locale} issues={presentation} />
         )}
+      </section>
+
+      <section id="income" aria-labelledby="income-heading" className="scroll-mt-20 space-y-4">
+        <div>
+          <h2 id="income-heading" className="text-[length:var(--text-section)] font-semibold tracking-tight">
+            Income
+          </h2>
+          <p className="mt-1 text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">
+            What your recurring sources expected in {monthName}, and the money that actually
+            arrived. An occurrence keeps its scheduled date whatever day the money came.
+          </p>
+        </div>
+        <Card>
+          <CardContent>
+            <IncomeSection
+              key={page.month}
+              income={page.income}
+              month={page.month}
+              monthName={monthName}
+              monthEndsOn={page.monthEndsOn}
+              today={page.today}
+              reportingCurrency={session.reportingCurrency}
+              formatting={{ locale, minorUnitsByCurrency: page.minorUnitsByCurrency }}
+            />
+          </CardContent>
+        </Card>
       </section>
 
       <section id="accounts" aria-labelledby="accounts-heading" className="scroll-mt-20 space-y-4">

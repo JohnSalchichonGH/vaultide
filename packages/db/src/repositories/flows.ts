@@ -227,6 +227,37 @@ export async function listIncomeEntries(
   );
 }
 
+/**
+ * Income entries by the **scheduled** date of the occurrence they materialize,
+ * inside an existing scope (blueprint 6.2, 15.3 section 2).
+ *
+ * The sibling above asks "what money arrived in this month?" and this one asks
+ * "which of this month's occurrences were recorded?". They are different
+ * questions and they return different rows: a salary scheduled for 1 October
+ * and received on 30 September answers the first for September and the second
+ * for October, and a read keyed on `received_on` alone cannot see it from
+ * October at all (§30.9 item 2).
+ *
+ * Takes the transaction rather than the database so a caller composing one
+ * user-scoped read does not open a second one.
+ */
+export async function listIncomeEntriesByOccurrenceIn(
+  tx: Transaction,
+  from: string,
+  to: string,
+): Promise<IncomeEntryRow[]> {
+  return tx
+    .select()
+    .from(incomeEntries)
+    .where(
+      and(
+        isNotNull(incomeEntries.occurrenceDate),
+        between(incomeEntries.occurrenceDate, from, to),
+      ),
+    )
+    .orderBy(asc(incomeEntries.occurrenceDate), asc(incomeEntries.id));
+}
+
 /* ------------------------------------------------------------------------- */
 /* Expenses                                                                   */
 /* ------------------------------------------------------------------------- */

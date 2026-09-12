@@ -4,6 +4,7 @@ import {
   listIncomeEntries,
   listTransfers,
   loadFinancialWindow,
+  type IncomeEntryRow,
   type PositionRecord as PositionRow,
   type ValuationRow,
 } from '@vaultide/db';
@@ -56,6 +57,13 @@ export interface MonthToDateData {
    * of its own.
    */
   readonly valuations: readonly ValuationRow[];
+  /**
+   * The month's income entries so far as the rows they are, keyed on their
+   * **financial** date — what Monthly's Income section lists as received, with
+   * the occurrence link, gross, description and version the engine input drops.
+   * Already read to build that input; no query of its own.
+   */
+  readonly income: readonly IncomeEntryRow[];
 }
 
 export async function loadMonthToDate(
@@ -103,5 +111,6 @@ export async function loadMonthToDate(
     },
     positions: window.positions,
     valuations: window.valuations,
+    income,
   };
 }

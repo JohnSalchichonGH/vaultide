@@ -23,7 +23,8 @@ import { getNetWorth } from '../../src/positions/queries';
 import { listCategories } from '../../src/users/categories';
 import { createExpenseEntry } from '../../src/flows/expenses';
 import { createIncomeEntry } from '../../src/flows/income';
-import { createTemplate } from '../../src/recurring/templates';
+import { archiveTemplate, createTemplate, setTemplateTerm } from '../../src/recurring/templates';
+import { acceptSuggestion, skipSuggestion } from '../../src/recurring/suggestions';
 import { createFxService } from '../../src/fx/service';
 import { ValidationError } from '../../src/errors';
 import { getMonthReconciliation, parseMonth } from '../../src/reconciliation/service';
@@ -724,10 +725,10 @@ describe('the repository transaction count is bounded by a constant', () => {
     expect(large).toBe(small + 1);
     // Named, so a regression that adds a scope per account or per template is
     // visible rather than merely "the same as before": the range loader's seven,
-    // settings, the currency catalogue and the review. A euro-only month in a
-    // euro reporting currency needs no stored rate, so the rate read returns
-    // without opening one.
-    expect(small).toBe(10);
+    // the Income section's one, settings, the currency catalogue and the review.
+    // A euro-only month in a euro reporting currency needs no stored rate, so the
+    // rate read returns without opening one.
+    expect(small).toBe(11);
   });
 
   it('reads rates once for the whole month, however many currencies it holds', async () => {
@@ -738,10 +739,10 @@ describe('the repository transaction count is bounded by a constant', () => {
       await statement(id, '2026-09-30', '900.00');
     }
     const two = await countTransactions(OCT_1);
-    // The euro-only ten, plus the one rate read reporting makes for every
+    // The euro-only eleven, plus the one rate read reporting makes for every
     // foreign currency together. Both buckets spent, so no missing-conversion
     // signature exists and the diagnostic reads nothing.
-    expect(two).toBe(11);
+    expect(two).toBe(12);
 
     for (const currency of ['GBP', 'CHF']) {
       const id = await makeAccount(`In ${currency}`, { currency });
@@ -771,9 +772,12 @@ describe('the repository transaction count is bounded by a constant', () => {
     }
 
     expect(await countTransactions(SEPT_10)).toBe(small);
-    // The month-to-date loader's five, settings, the currency catalogue and the
-    // review; euro-only, so no rate read opens a scope.
-    expect(small).toBe(8);
+    // The month-to-date loader's five, the Income section's one, settings, the
+    // currency catalogue and the review; euro-only, so no rate read opens a
+    // scope. The Income scope runs several statements — the month's occurrence
+    // entries and skips, the active sources, everything resolved after today,
+    // the referenced sources and their terms — inside that one transaction.
+    expect(small).toBe(9);
   });
 });
 
@@ -1509,7 +1513,846 @@ describe('the Accounts section reads nothing of its own', () => {
     const page = await completed();
     expect(page.accounts.accounts).toHaveLength(5);
     expect(await countTransactions(OCT_1)).toBe(small);
-    expect(small).toBe(10);
+    expect(small).toBe(11);
     expect(await countTransactions(SEPT_10)).toBe(smallCurrent);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The Income section (15.3 section 2)                                         */
+/* -------------------------------------------------------------------------- */
+
+const NOV_1 = on('2026-11-01');
+
+/** October read as the month in progress, and as a completed month. */
+const currentOctober = async (): Promise<CurrentMonthlyPageDto> => {
+  const page = await getMonthlyPage(readDeps(), OCT_1, OCTOBER);
+  if (page.kind !== 'current') throw new Error('expected the current month');
+  return page;
+};
+
+const completedOctober = async (): Promise<CompletedMonthlyPageDto> => {
+  const page = await getMonthlyPage(readDeps(), NOV_1, OCTOBER);
+  if (page.kind !== 'completed') throw new Error('expected a completed month');
+  return page;
+};
+
+interface SourceOptions {
+  readonly name?: string;
+  readonly incomeKind?: 'employment' | 'rental' | 'bonus';
+  readonly frequency?: 'monthly' | 'annual';
+  readonly dayOfMonth?: number;
+  readonly startDate?: string;
+  readonly endDate?: string;
+  readonly amount?: string;
+  readonly grossAmount?: string;
+  readonly cashPositionId?: string;
+  readonly ctx?: RequestContext;
+}
+
+async function incomeSource(options: SourceOptions = {}) {
+  const created = await createTemplate(flowDeps(), options.ctx ?? OCT_1, {
+    kind: 'income',
+    name: options.name ?? 'Salary',
+    incomeKind: options.incomeKind ?? 'employment',
+    currency: 'EUR',
+    frequency: options.frequency ?? 'monthly',
+    dayOfMonth: options.dayOfMonth ?? 25,
+    startDate: options.startDate ?? '2026-01-01',
+    ...(options.endDate === undefined ? {} : { endDate: options.endDate }),
+    ...(options.cashPositionId === undefined ? {} : { cashPositionId: options.cashPositionId }),
+    amount: options.amount ?? '2100.00',
+    ...(options.grossAmount === undefined ? {} : { grossAmount: options.grossAmount }),
+  });
+  return created.template;
+}
+
+/** The occurrence a page shows for one `(template, date)` identity. */
+function occurrenceOf(
+  page: CompletedMonthlyPageDto | CurrentMonthlyPageDto,
+  templateId: string,
+  occurrenceDate: string,
+) {
+  const found = page.income.occurrences.find(
+    (row) => row.templateId === templateId && row.occurrenceDate === occurrenceDate,
+  );
+  if (found === undefined) {
+    throw new Error(
+      `no occurrence ${occurrenceDate} for ${templateId}; page has ${page.income.occurrences
+        .map((row) => `${row.templateId}@${row.occurrenceDate}`)
+        .join(', ')}`,
+    );
+  }
+  return found;
+}
+
+/**
+ * Every income entry a page renders, once each.
+ *
+ * The partition's whole point is that a materialized row appears in exactly one
+ * group, so this collects all three and lets a test assert on the multiset: a
+ * duplicate shows up as a repeated id rather than as a passing assertion in one
+ * group while another quietly holds the same row.
+ */
+function renderedEntryIds(page: CompletedMonthlyPageDto | CurrentMonthlyPageDto): string[] {
+  const accepted = page.income.occurrences.flatMap((row) =>
+    row.state.kind === 'accepted' ? [row.state.entry.entryId] : [],
+  );
+  return [
+    ...accepted,
+    ...page.income.otherRecurring.map((row) => row.entryId),
+    ...page.income.direct.map((row) => row.entryId),
+  ];
+}
+
+describe('the Income section reads a month’s own schedule and money', () => {
+  it('lists direct tracked income received in the month, once, with its evidence', async () => {
+    const bbva = await makeAccount('BBVA');
+    const created = await createIncomeEntry(flowDeps(), OCT_1, {
+      kind: 'other',
+      receivedOn: '2026-09-14',
+      netAmount: '480.00',
+      grossAmount: '600.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId: bbva,
+      description: 'Side work',
+    });
+
+    const page = await completed();
+    expect(page.income.direct).toHaveLength(1);
+    expect(page.income.direct[0]).toMatchObject({
+      entryId: created.id,
+      version: created.version,
+      kind: 'other',
+      settlement: 'tracked_cash',
+      receivedOn: '2026-09-14',
+      receivedMonth: '2026-09',
+      net: { amount: '480', currency: 'EUR' },
+      gross: { amount: '600', currency: 'EUR' },
+      cashPositionId: bbva,
+      cashAccountName: 'BBVA',
+      description: 'Side work',
+      occurrence: null,
+    });
+    expect(page.income.occurrences).toHaveLength(0);
+    expect(page.income.otherRecurring).toHaveLength(0);
+  });
+
+  it('lists ordinary income received outside tracked accounts as the settlement it is', async () => {
+    await makeAccount('BBVA');
+    await createIncomeEntry(flowDeps(), OCT_1, {
+      kind: 'freelance',
+      receivedOn: '2026-09-04',
+      netAmount: '300.00',
+      currency: 'EUR',
+      settlement: 'external',
+    });
+
+    expect((await completed()).income.direct[0]).toMatchObject({
+      settlement: 'external',
+      cashPositionId: null,
+      cashAccountName: null,
+      gross: null,
+    });
+  });
+
+  it('keeps a tracked flow with no account attributed to none, never external', async () => {
+    await makeAccount('BBVA');
+    await createIncomeEntry(flowDeps(), OCT_1, {
+      kind: 'other',
+      receivedOn: '2026-09-04',
+      netAmount: '75.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId: null,
+    });
+
+    // 8.1: a null cash leg is a tracked flow awaiting attribution, and nothing
+    // about the settlement may be inferred from it (§30.9 item 1).
+    expect((await completed()).income.direct[0]).toMatchObject({
+      settlement: 'tracked_cash',
+      cashPositionId: null,
+      cashAccountName: null,
+    });
+  });
+
+  it('shows an unresolved occurrence of a completed month as due, with its term', async () => {
+    const bbva = await makeAccount('BBVA');
+    const template = await incomeSource({ cashPositionId: bbva, grossAmount: '2700.00' });
+
+    const occurrence = occurrenceOf(await completed(), template.id, '2026-09-25');
+    expect(occurrence.state).toEqual({ kind: 'due' });
+    expect(occurrence).toMatchObject({
+      templateName: 'Salary',
+      incomeKind: 'employment',
+      currency: 'EUR',
+      sourceArchived: false,
+      defaultCashPositionId: bbva,
+      defaultCashAccountName: 'BBVA',
+    });
+    expect(occurrence.term.net).toEqual({ amount: '2100', currency: 'EUR' });
+    expect(occurrence.term.gross).toEqual({ amount: '2700', currency: 'EUR' });
+  });
+
+  it('shows an occurrence dated after today as upcoming', async () => {
+    const template = await incomeSource({ ctx: SEPT_10 });
+    expect(occurrenceOf(await current(), template.id, '2026-09-25').state.kind).toBe('upcoming');
+  });
+
+  it('embeds the entry of an accepted occurrence and never lists it twice', async () => {
+    const bbva = await makeAccount('BBVA');
+    const template = await incomeSource({ cashPositionId: bbva });
+    const accepted = await acceptSuggestion(flowDeps(), OCT_1, {
+      templateId: template.id,
+      occurrenceDate: '2026-09-25',
+    });
+
+    const page = await completed();
+    const occurrence = occurrenceOf(page, template.id, '2026-09-25');
+    if (occurrence.state.kind !== 'accepted') throw new Error('expected an accepted occurrence');
+    expect(occurrence.state.entry).toMatchObject({
+      entryId: accepted.entry.id,
+      version: accepted.entry.version,
+      receivedOn: '2026-09-25',
+      receivedMonth: '2026-09',
+      net: { amount: '2100', currency: 'EUR' },
+      cashPositionId: bbva,
+      occurrence: {
+        templateId: template.id,
+        templateName: 'Salary',
+        occurrenceDate: '2026-09-25',
+        occurrenceMonth: '2026-09',
+      },
+    });
+
+    // The whole partition, not one group: the embedded entry is subtracted from
+    // the financially-received rows rather than appearing in both.
+    expect(renderedEntryIds(page)).toEqual([accepted.entry.id]);
+    expect(page.income.otherRecurring).toHaveLength(0);
+    expect(page.income.direct).toHaveLength(0);
+  });
+
+  it('shows a skipped occurrence with its reason and note, and the id a restore needs', async () => {
+    const template = await incomeSource();
+    const skip = await skipSuggestion(flowDeps(), OCT_1, {
+      templateId: template.id,
+      occurrenceDate: '2026-09-25',
+      reason: 'skipped',
+      note: 'Contract ended mid-month.',
+    });
+
+    expect(occurrenceOf(await completed(), template.id, '2026-09-25').state).toEqual({
+      kind: 'skipped',
+      skipId: skip.id,
+      reason: 'skipped',
+      note: 'Contract ended mid-month.',
+    });
+  });
+
+  it('carries a rental occupancy reason, which is the only occupancy fact recorded', async () => {
+    const template = await incomeSource({ name: 'Flat 2B', incomeKind: 'rental', dayOfMonth: 5 });
+    await skipSuggestion(flowDeps(), OCT_1, {
+      templateId: template.id,
+      occurrenceDate: '2026-09-05',
+      reason: 'vacant',
+    });
+
+    expect(occurrenceOf(await completed(), template.id, '2026-09-05').state).toMatchObject({
+      kind: 'skipped',
+      reason: 'vacant',
+    });
+  });
+
+  it('offers the month’s cash accounts for attribution, from the rows already read', async () => {
+    const bbva = await makeAccount('BBVA');
+    await makeAccount('Dollars', { currency: 'USD' });
+
+    expect((await completed()).income.cashAccounts).toEqual(
+      expect.arrayContaining([
+        { positionId: bbva, name: 'BBVA', currency: 'EUR' },
+        expect.objectContaining({ name: 'Dollars', currency: 'USD' }),
+      ]),
+    );
+  });
+
+  it('never returns a financial date after today', async () => {
+    await makeAccount('BBVA', { ctx: SEPT_10 });
+    const template = await incomeSource({ ctx: SEPT_10 });
+    await acceptSuggestion(flowDeps(), SEPT_10, {
+      templateId: template.id,
+      occurrenceDate: '2026-09-25',
+      receivedToday: true,
+    });
+
+    const page = await current();
+    const dates = [
+      ...page.income.occurrences.flatMap((row) =>
+        row.state.kind === 'accepted' ? [row.state.entry.receivedOn] : [],
+      ),
+      ...page.income.otherRecurring.map((row) => row.receivedOn),
+      ...page.income.direct.map((row) => row.receivedOn),
+    ];
+    expect(dates).not.toHaveLength(0);
+    for (const date of dates) expect(date <= page.today).toBe(true);
+  });
+});
+
+describe('the Income section across a month boundary', () => {
+  /**
+   * The canonical early receipt (15.3, §30.9 item 2): a salary scheduled for 1
+   * October, recorded on 30 September through "received today". One row, two
+   * months, and each month answers its own question about it.
+   */
+  async function earlyReceipt() {
+    const sept30 = on('2026-09-30');
+    const bbva = await makeAccount('BBVA', { ctx: sept30 });
+    const template = await incomeSource({ dayOfMonth: 1, cashPositionId: bbva, ctx: sept30 });
+    const accepted = await acceptSuggestion(flowDeps(), sept30, {
+      templateId: template.id,
+      occurrenceDate: '2026-10-01',
+      receivedToday: true,
+    });
+    return { template, entryId: accepted.entry.id, bbva };
+  }
+
+  it('shows an early receipt in September as recurring income for another month', async () => {
+    const { template, entryId } = await earlyReceipt();
+
+    const page = await completed();
+    expect(renderedEntryIds(page)).toEqual([entryId]);
+    expect(page.income.direct).toHaveLength(0);
+    expect(page.income.otherRecurring).toHaveLength(1);
+    expect(page.income.otherRecurring[0]).toMatchObject({
+      entryId,
+      receivedOn: '2026-09-30',
+      receivedMonth: '2026-09',
+      occurrence: {
+        templateId: template.id,
+        templateName: 'Salary',
+        occurrenceDate: '2026-10-01',
+        occurrenceMonth: '2026-10',
+      },
+    });
+
+    // September's own 1 September occurrence is a different occurrence and is
+    // still unresolved: the early receipt did not answer for it.
+    expect(occurrenceOf(page, template.id, '2026-09-01').state).toEqual({ kind: 'due' });
+  });
+
+  it('shows the same row in October as an accepted occurrence received on 30 September', async () => {
+    const { template, entryId } = await earlyReceipt();
+
+    const page = await currentOctober();
+    const occurrence = occurrenceOf(page, template.id, '2026-10-01');
+    if (occurrence.state.kind !== 'accepted') throw new Error('expected an accepted occurrence');
+    expect(occurrence.state.entry).toMatchObject({
+      entryId,
+      receivedOn: '2026-09-30',
+      // October shows it; September owns editing it, because the financial month
+      // is the one holding the money.
+      receivedMonth: '2026-09',
+    });
+    expect(renderedEntryIds(page)).toEqual([entryId]);
+  });
+
+  it('counts an early receipt financially in September and never in October', async () => {
+    await earlyReceipt();
+
+    const september = await completed();
+    expect(
+      september.reconciliation.buckets.find((b) => b.currency === 'EUR')?.totals.externalInflows,
+    ).toEqual({ amount: '2100', currency: 'EUR' });
+
+    const october = await completedOctober();
+    expect(
+      october.reconciliation.buckets.find((b) => b.currency === 'EUR')?.totals.externalInflows,
+    ).toEqual({ amount: '0', currency: 'EUR' });
+  });
+
+  it('raises no missing-income issue for the October occurrence it already resolved', async () => {
+    const { template } = await earlyReceipt();
+
+    const missing = (await completedOctober()).reconciliation.buckets
+      .flatMap((bucket) => bucket.issues)
+      .filter((issue) => issue.key === 'suggested_income_missing');
+    expect(missing.map((issue) => issue.occurrenceDate)).not.toContain('2026-10-01');
+    expect(missing.every((issue) => issue.templateId === template.id)).toBe(true);
+  });
+
+  /**
+   * The mirror image: a salary scheduled for 25 September that actually arrived
+   * on 1 October. The two dates may differ in either direction, and the read has
+   * to answer for both months.
+   */
+  async function lateReceipt() {
+    const bbva = await makeAccount('BBVA');
+    const template = await incomeSource({ cashPositionId: bbva });
+    const accepted = await acceptSuggestion(flowDeps(), OCT_1, {
+      templateId: template.id,
+      occurrenceDate: '2026-09-25',
+      financialDate: '2026-10-01',
+    });
+    return { template, entryId: accepted.entry.id };
+  }
+
+  it('shows a late receipt in September as an accepted occurrence received in October', async () => {
+    const { template, entryId } = await lateReceipt();
+
+    const page = await completed();
+    const occurrence = occurrenceOf(page, template.id, '2026-09-25');
+    if (occurrence.state.kind !== 'accepted') throw new Error('expected an accepted occurrence');
+    expect(occurrence.state.entry).toMatchObject({
+      entryId,
+      receivedOn: '2026-10-01',
+      receivedMonth: '2026-10',
+    });
+    // Accepted, so September's schedule is answered — but the money is not
+    // September's, so it is in no financially-received group here.
+    expect(renderedEntryIds(page)).toEqual([entryId]);
+    expect(page.income.otherRecurring).toHaveLength(0);
+    expect(page.income.direct).toHaveLength(0);
+  });
+
+  it('shows the same row in October as recurring income for September’s occurrence', async () => {
+    const { template, entryId } = await lateReceipt();
+
+    const page = await currentOctober();
+    expect(renderedEntryIds(page)).toEqual([entryId]);
+    expect(page.income.otherRecurring[0]).toMatchObject({
+      entryId,
+      receivedOn: '2026-10-01',
+      receivedMonth: '2026-10',
+      occurrence: { templateId: template.id, occurrenceDate: '2026-09-25' },
+    });
+  });
+
+  it('counts a late receipt financially in October and never in September', async () => {
+    await lateReceipt();
+
+    const september = await completed();
+    expect(
+      september.reconciliation.buckets.find((b) => b.currency === 'EUR')?.totals.externalInflows,
+    ).toEqual({ amount: '0', currency: 'EUR' });
+
+    const october = await completedOctober();
+    expect(
+      october.reconciliation.buckets.find((b) => b.currency === 'EUR')?.totals.externalInflows,
+    ).toEqual({ amount: '2100', currency: 'EUR' });
+  });
+
+  it('accepts money that arrived before its scheduled date, with no lower bound', async () => {
+    // The domain bounds the financial date by today and by nothing else. A
+    // salary scheduled for the 25th that the bank posted on the 23rd is an
+    // ordinary fact, and recording it later must not make it unrepresentable.
+    const bbva = await makeAccount('BBVA');
+    const template = await incomeSource({ cashPositionId: bbva });
+    const accepted = await acceptSuggestion(flowDeps(), OCT_1, {
+      templateId: template.id,
+      occurrenceDate: '2026-09-25',
+      financialDate: '2026-09-23',
+    });
+
+    const page = await completed();
+    const occurrence = occurrenceOf(page, template.id, '2026-09-25');
+    if (occurrence.state.kind !== 'accepted') throw new Error('expected an accepted occurrence');
+    expect(occurrence.state.entry.receivedOn).toBe('2026-09-23');
+    expect(occurrence.state.entry.receivedMonth).toBe('2026-09');
+    expect(renderedEntryIds(page)).toEqual([accepted.entry.id]);
+  });
+
+  it('resolves the source of a row whose schedule window the month never loads', async () => {
+    // "Received today" on 30 September for a source that starts on 1 November:
+    // the entry is September's, and its template overlaps no month on the page.
+    const sept30 = on('2026-09-30');
+    const bbva = await makeAccount('BBVA', { ctx: sept30 });
+    const template = await incomeSource({
+      name: 'Annual bonus',
+      incomeKind: 'bonus',
+      frequency: 'annual',
+      dayOfMonth: 1,
+      startDate: '2026-11-01',
+      cashPositionId: bbva,
+      ctx: sept30,
+    });
+    await acceptSuggestion(flowDeps(), sept30, {
+      templateId: template.id,
+      occurrenceDate: '2026-11-01',
+      receivedToday: true,
+    });
+
+    expect((await completed()).income.otherRecurring[0]?.occurrence).toMatchObject({
+      templateId: template.id,
+      templateName: 'Annual bonus',
+      occurrenceDate: '2026-11-01',
+      occurrenceMonth: '2026-11',
+    });
+  });
+});
+
+describe('the Income section’s early-receipt candidates', () => {
+  it('names the next unresolved occurrence after today, and only that one', async () => {
+    const template = await incomeSource({ ctx: SEPT_10 });
+
+    const page = await current();
+    // 25 September is inside the month, so it is the month's own upcoming
+    // occurrence rather than a second offer beside it.
+    expect(occurrenceOf(page, template.id, '2026-09-25').state).toEqual({
+      kind: 'upcoming',
+      receivedTodayEligible: true,
+    });
+    expect(page.income.earlyReceiptCandidates).toHaveLength(0);
+  });
+
+  it('offers only the earliest of two future occurrences', async () => {
+    // §30.10 bounds the claim by the schedule: a user may record what arrived
+    // early, and can never step over an earlier occurrence that is still
+    // unresolved — which would leave a hole completeness then reports for ever.
+    await incomeSource({
+      frequency: 'annual',
+      dayOfMonth: 1,
+      startDate: '2026-12-01',
+      ctx: SEPT_10,
+    });
+
+    const page = await current();
+    expect(page.income.earlyReceiptCandidates).toHaveLength(1);
+    expect(page.income.earlyReceiptCandidates[0]?.occurrenceDate).toBe('2026-12-01');
+  });
+
+  it('moves the offer on once the earlier future occurrence is resolved', async () => {
+    const template = await incomeSource({
+      frequency: 'annual',
+      dayOfMonth: 1,
+      startDate: '2026-12-01',
+      ctx: SEPT_10,
+    });
+    await skipSuggestion(flowDeps(), SEPT_10, {
+      templateId: template.id,
+      occurrenceDate: '2026-12-01',
+      reason: 'skipped',
+    });
+
+    expect((await current()).income.earlyReceiptCandidates[0]?.occurrenceDate).toBe('2027-12-01');
+  });
+
+  it('is not blocked by an unresolved occurrence that has already passed', async () => {
+    // The bound is over occurrences **after** today (§30.10). One in the past
+    // needs no early-receipt path at all — it can be accepted on its own terms
+    // whenever the user gets to it — so it neither claims the offer nor holds
+    // it back.
+    const template = await incomeSource({ ctx: SEPT_10 });
+
+    // September's own occurrence belongs to September's page; October shows its
+    // own, and offers it even though the one behind it is still unresolved.
+    expect(occurrenceOf(await completed(), template.id, '2026-09-25').state).toEqual({
+      kind: 'due',
+    });
+    const page = await currentOctober();
+    expect(occurrenceOf(page, template.id, '2026-10-25').state).toEqual({
+      kind: 'upcoming',
+      receivedTodayEligible: true,
+    });
+  });
+
+  it('reaches an annual source months past the end of the month, with no horizon', async () => {
+    const template = await incomeSource({
+      name: 'Annual bonus',
+      incomeKind: 'bonus',
+      frequency: 'annual',
+      dayOfMonth: 15,
+      startDate: '2026-06-15',
+      amount: '5000.00',
+      grossAmount: '6200.00',
+      ctx: SEPT_10,
+    });
+    await skipSuggestion(flowDeps(), SEPT_10, {
+      templateId: template.id,
+      occurrenceDate: '2026-06-15',
+      reason: 'skipped',
+    });
+
+    // Nine months out, and still reachable because it is genuinely next.
+    const page = await current();
+    expect(page.income.earlyReceiptCandidates).toHaveLength(1);
+    expect(page.income.earlyReceiptCandidates[0]).toMatchObject({
+      templateId: template.id,
+      templateName: 'Annual bonus',
+      occurrenceDate: '2027-06-15',
+      occurrenceMonth: '2027-06',
+    });
+    // And priced by the term in force at that date, which the bounded read had
+    // to reach forward to find.
+    expect(page.income.earlyReceiptCandidates[0]?.term.net).toEqual({
+      amount: '5000',
+      currency: 'EUR',
+    });
+    expect(page.income.earlyReceiptCandidates[0]?.term.gross).toEqual({
+      amount: '6200',
+      currency: 'EUR',
+    });
+  });
+
+  it('prices a far candidate with a term that starts after the displayed month', async () => {
+    const template = await incomeSource({
+      frequency: 'annual',
+      dayOfMonth: 15,
+      startDate: '2026-06-15',
+      amount: '5000.00',
+      ctx: SEPT_10,
+    });
+    await skipSuggestion(flowDeps(), SEPT_10, {
+      templateId: template.id,
+      occurrenceDate: '2026-06-15',
+      reason: 'skipped',
+    });
+    await setTemplateTerm(flowDeps(), SEPT_10, {
+      templateId: template.id,
+      effectiveFrom: '2027-01-01',
+      amount: '5400.00',
+      expected: { state: 'absent' },
+    });
+
+    expect((await current()).income.earlyReceiptCandidates[0]?.term.net).toEqual({
+      amount: '5400',
+      currency: 'EUR',
+    });
+  });
+
+  it('keeps two sources sharing a scheduled date independent of each other', async () => {
+    const bbva = await makeAccount('BBVA', { ctx: SEPT_10 });
+    const first = await incomeSource({ name: 'Alpha', cashPositionId: bbva, ctx: SEPT_10 });
+    const second = await incomeSource({ name: 'Beta', cashPositionId: bbva, ctx: SEPT_10 });
+
+    // One source's occurrence is claimed early; the other's identical date must
+    // stay its own. `nextUnresolvedOccurrence` takes dates, so the resolved set
+    // it is given has to be that template's own or the two resolve each other.
+    await acceptSuggestion(flowDeps(), SEPT_10, {
+      templateId: first.id,
+      occurrenceDate: '2026-09-25',
+      receivedToday: true,
+    });
+
+    const page = await current();
+    expect(occurrenceOf(page, first.id, '2026-09-25').state.kind).toBe('accepted');
+    expect(occurrenceOf(page, second.id, '2026-09-25').state).toEqual({
+      kind: 'upcoming',
+      receivedTodayEligible: true,
+    });
+  });
+
+  it('offers no candidate at all for a source whose schedule has ended', async () => {
+    await incomeSource({ endDate: '2026-09-30', ctx: SEPT_10 });
+    expect((await currentOctober()).income.earlyReceiptCandidates).toHaveLength(0);
+  });
+});
+
+describe('the Income section and an archived source', () => {
+  it('keeps a historical occurrence of a source archived since, marked as archived', async () => {
+    const template = await incomeSource();
+    await archiveTemplate(flowDeps(), OCT_1, {
+      templateId: template.id,
+      expectedVersion: template.version,
+    });
+
+    // §30.10: archiving is present-tense visibility. It must not erase what a
+    // past month expected, or a month would become complete because of an
+    // action taken today.
+    const occurrence = occurrenceOf(await completed(), template.id, '2026-09-25');
+    expect(occurrence.state).toEqual({ kind: 'due' });
+    expect(occurrence.sourceArchived).toBe(true);
+  });
+
+  it('agrees with the missing-income issue about which occurrence is unaccounted for', async () => {
+    const template = await incomeSource();
+    await archiveTemplate(flowDeps(), OCT_1, {
+      templateId: template.id,
+      expectedVersion: template.version,
+    });
+    const bbva = await makeAccount('BBVA');
+    await statement(bbva, '2026-08-31', '1000.00');
+    await statement(bbva, '2026-09-30', '900.00');
+
+    const page = await completed();
+    const issues = page.reconciliation.buckets
+      .flatMap((bucket) => bucket.issues)
+      .filter((issue) => issue.key === 'suggested_income_missing');
+
+    // The same `(template_id, occurrence_date)` identity on both sides, so a
+    // jump from the issue lands on the exact row — never a name match.
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ templateId: template.id, occurrenceDate: '2026-09-25' });
+    expect(occurrenceOf(page, template.id, '2026-09-25').sourceArchived).toBe(true);
+  });
+
+  it('offers the live month no new suggestion from an archived source', async () => {
+    const template = await incomeSource({ ctx: SEPT_10 });
+    await archiveTemplate(flowDeps(), SEPT_10, {
+      templateId: template.id,
+      expectedVersion: template.version,
+    });
+
+    const page = await current();
+    expect(page.income.occurrences).toHaveLength(0);
+    expect(page.income.earlyReceiptCandidates).toHaveLength(0);
+  });
+
+  it('keeps a resolved occurrence of an archived source visible in the live month', async () => {
+    const bbva = await makeAccount('BBVA', { ctx: SEPT_10 });
+    const template = await incomeSource({ dayOfMonth: 5, cashPositionId: bbva, ctx: SEPT_10 });
+    const accepted = await acceptSuggestion(flowDeps(), SEPT_10, {
+      templateId: template.id,
+      occurrenceDate: '2026-09-05',
+    });
+    await archiveTemplate(flowDeps(), SEPT_10, {
+      templateId: template.id,
+      expectedVersion: template.version,
+    });
+
+    // Archiving stops the feed; it does not unrecord what was recorded.
+    const page = await current();
+    const occurrence = occurrenceOf(page, template.id, '2026-09-05');
+    expect(occurrence.state.kind).toBe('accepted');
+    expect(occurrence.sourceArchived).toBe(true);
+    expect(renderedEntryIds(page)).toEqual([accepted.entry.id]);
+  });
+});
+
+describe('the Income section’s term evidence', () => {
+  it('takes the term the scheduled date falls under, never the financial date', async () => {
+    const bbva = await makeAccount('BBVA');
+    const template = await incomeSource({ dayOfMonth: 1, cashPositionId: bbva });
+    await setTemplateTerm(flowDeps(), OCT_1, {
+      templateId: template.id,
+      effectiveFrom: '2026-10-01',
+      amount: '2250.00',
+      expected: { state: 'absent' },
+    });
+
+    // §30.9 item 4 keys the term to the schedule, so October's raise applies to
+    // October's occurrence however early the money arrives.
+    expect(occurrenceOf(await currentOctober(), template.id, '2026-10-01').term.net).toEqual({
+      amount: '2250',
+      currency: 'EUR',
+    });
+    expect(occurrenceOf(await completed(), template.id, '2026-09-01').term.net).toEqual({
+      amount: '2100',
+      currency: 'EUR',
+    });
+  });
+
+  it('says a term starts exactly here, with the row a replacement must claim', async () => {
+    const template = await incomeSource({ dayOfMonth: 25 });
+    const term = await setTemplateTerm(flowDeps(), OCT_1, {
+      templateId: template.id,
+      effectiveFrom: '2026-09-25',
+      amount: '2200.00',
+      note: 'Promotion.',
+      expected: { state: 'absent' },
+    });
+
+    const occurrence = occurrenceOf(await completed(), template.id, '2026-09-25');
+    expect(occurrence.term.net).toEqual({ amount: '2200', currency: 'EUR' });
+    expect(occurrence.term.effectiveFrom).toBe('2026-09-25');
+    expect(occurrence.term.exact).toEqual({
+      state: 'version',
+      termId: term.id,
+      version: term.version,
+      note: 'Promotion.',
+    });
+  });
+
+  it('says no term starts here, and carries no older note into the one a write would create', async () => {
+    const template = await incomeSource({ name: 'Stipend', dayOfMonth: 10 });
+    await setTemplateTerm(flowDeps(), OCT_1, {
+      templateId: template.id,
+      effectiveFrom: '2026-03-10',
+      amount: '400.00',
+      note: 'Original agreement.',
+      expected: { state: 'absent' },
+    });
+
+    const occurrence = occurrenceOf(await completed(), template.id, '2026-09-10');
+    // The applicable term prices the occurrence…
+    expect(occurrence.term.net).toEqual({ amount: '400', currency: 'EUR' });
+    expect(occurrence.term.effectiveFrom).toBe('2026-03-10');
+    // …but no term starts here, so a write creates one, and March's note explains
+    // why *March's* term began. Copying it would fabricate provenance.
+    expect(occurrence.term.exact).toEqual({ state: 'absent' });
+  });
+
+  it('prices an occurrence its source has no term for as unknown, never as zero', async () => {
+    const template = await incomeSource({ startDate: '2026-09-01', dayOfMonth: 25 });
+    await harness.asOwner('DELETE FROM recurring_template_terms');
+
+    const occurrence = occurrenceOf(await completed(), template.id, '2026-09-25');
+    expect(occurrence.term.net).toBeNull();
+    expect(occurrence.term.gross).toBeNull();
+    expect(occurrence.term.effectiveFrom).toBeNull();
+    expect(occurrence.term.exact).toEqual({ state: 'absent' });
+  });
+});
+
+describe('the Income section’s read stays bounded', () => {
+  it('does not open a scope per source, term, entry, skip or occurrence', async () => {
+    const bbva = await makeAccount('BBVA');
+    await statement(bbva, '2026-08-31', '1000.00');
+    await statement(bbva, '2026-09-30', '900.00');
+    // A month that already has a source, so the range loader's batched terms
+    // scope — which predates this section — is inside the baseline.
+    await incomeSource({ name: 'Baseline', dayOfMonth: 5, cashPositionId: bbva });
+    const baseCompleted = await countTransactions(OCT_1);
+    const baseCurrent = await countTransactions(SEPT_10);
+
+    for (const name of ['Salary', 'Rent', 'Stipend', 'Retainer']) {
+      const template = await incomeSource({ name, dayOfMonth: 5, cashPositionId: bbva });
+      for (const from of ['2026-04-05', '2026-06-05', '2026-08-05']) {
+        await setTemplateTerm(flowDeps(), OCT_1, {
+          templateId: template.id,
+          effectiveFrom: from,
+          amount: '150.00',
+          expected: { state: 'absent' },
+        });
+      }
+      await acceptSuggestion(flowDeps(), OCT_1, {
+        templateId: template.id,
+        occurrenceDate: '2026-09-05',
+      });
+      await skipSuggestion(flowDeps(), OCT_1, {
+        templateId: template.id,
+        occurrenceDate: '2026-08-05',
+        reason: 'skipped',
+      });
+    }
+    for (let index = 0; index < 5; index += 1) {
+      await createIncomeEntry(flowDeps(), OCT_1, {
+        kind: 'other',
+        receivedOn: '2026-09-12',
+        netAmount: '10.00',
+        currency: 'EUR',
+        settlement: 'tracked_cash',
+        cashPositionId: bbva,
+      });
+    }
+
+    // Four more sources, twelve terms, four accepted occurrences, four skips and
+    // five direct entries later, both pages open exactly the scopes they opened
+    // with none of them.
+    expect(await countTransactions(OCT_1)).toBe(baseCompleted);
+    expect(await countTransactions(SEPT_10)).toBe(baseCurrent);
+    expect((await completed()).income.occurrences.length).toBeGreaterThan(4);
+  });
+
+  it('does not grow with the number of early-receipt candidates', async () => {
+    await incomeSource({ name: 'Baseline', ctx: SEPT_10 });
+    const base = await countTransactions(SEPT_10);
+
+    for (const name of ['A', 'B', 'C', 'D', 'E']) {
+      await incomeSource({ name, frequency: 'annual', startDate: '2026-12-01', ctx: SEPT_10 });
+    }
+
+    const page = await current();
+    expect(page.income.earlyReceiptCandidates).toHaveLength(5);
+    expect(await countTransactions(SEPT_10)).toBe(base);
   });
 });

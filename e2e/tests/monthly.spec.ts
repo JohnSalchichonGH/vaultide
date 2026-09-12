@@ -391,3 +391,133 @@ test.describe('the monthly page', () => {
     await expect(page.getByTestId('figure-trackedTotalSpending')).toContainText('40.00');
   });
 });
+
+/**
+ * The Monthly Income journey (blueprint 15.3 section 2, 21.5).
+ *
+ * On 6 October, with the test clock: a person with one euro account adds a
+ * recurring salary from the Monthly page itself, records September's occurrence,
+ * watches the reconciliation change to the server's own answer, records the next
+ * occurrence early as received today, and adds a one-off payment by hand.
+ *
+ * Every record is written through the product's own pages — there is no seeding
+ * endpoint — which is only possible because Monthly can create an income source.
+ * The cross-month identity of an early receipt is pinned by the application
+ * integration tests, where both months can be read at once without moving the
+ * clock mid-journey.
+ */
+test.describe('the monthly income editor', () => {
+  test('a person adds a salary source, records it, takes the next one early, and adds a one-off', async ({
+    page,
+    request,
+  }) => {
+    test.slow();
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': '2026-10-06T10:00:00Z' });
+    await onboard(page, request, uniqueEmail('e2e-monthly-income'));
+
+    await accountWithAugustStatement(page, { name: 'Everyday', type: 'checking', august: '1000.00' });
+    await recordSnapshot(page, '3000.00', '2026-09-30');
+    await page.getByTestId('confirm-statement-2026-09').click();
+    await expect(page.getByTestId('month-end-2026-09')).toHaveCount(0);
+
+    // --- A recurring source, created from the month itself ---------------------
+    await page.goto('/monthly/2026-09');
+    await expect(page.getByTestId('monthly-kind')).toHaveText('Completed month');
+    await expect(page.getByTestId('income-occurrences-empty')).toBeVisible();
+
+    await page.getByTestId('source-add-toggle').click();
+    await fillTestId(page, 'source-name', 'Salary');
+    await page.getByTestId('source-kind').selectOption('employment');
+    await page.getByTestId('source-frequency').selectOption('monthly');
+    await fillTestId(page, 'source-day', '25');
+    await fillTestId(page, 'source-start-date', '2026-09-01');
+    await fillTestId(page, 'source-amount', '2000.00');
+    await fillTestId(page, 'source-gross', '2600.00');
+    await page.getByTestId('source-account').selectOption({ label: 'Everyday' });
+
+    // A start date in a finished month is allowed and says what it means (§30.10).
+    await expect(page.getByTestId('source-historical-warning')).toContainText(
+      'may become incomplete',
+    );
+    await page.getByTestId('source-submit').click();
+    await expect(page.getByTestId('source-saved')).toContainText('Salary added.');
+
+    // --- September's occurrence, recorded ---------------------------------------
+    const occurrence = page.getByTestId('income-occurrence').first();
+    await expect(occurrence).toHaveAttribute('data-occurrence-date', '2026-09-25');
+    await expect(occurrence.getByTestId('occurrence-status')).toHaveText('Not recorded');
+    await expect(occurrence.getByTestId('occurrence-amount')).toContainText('€2,000.00');
+
+    // The month expected a salary it has no record of, and says so.
+    await expect(page.getByTestId('issue-group-suggested_income_missing')).toBeVisible();
+
+    await occurrence.getByTestId('occurrence-accept').click();
+    await expect(page.getByTestId('income-occurrence').first().getByTestId('occurrence-status')).toHaveText(
+      'Recorded',
+    );
+    await expect(page.getByTestId('income-occurrence').first()).toContainText('Received 25 Sept 2026');
+
+    // The server's reconciliation replaced the page: €2,000 of income arrived,
+    // the balance rose by €2,000, so nothing was spent.
+    const bucket = page.getByTestId('bucket-EUR');
+    await expect(bucket.getByTestId('identity-I')).toContainText('€2,000.00');
+    await expect(bucket.getByTestId('identity-tracked')).toContainText('€0.00');
+    await expect(page.getByTestId('issue-group-suggested_income_missing')).toHaveCount(0);
+
+    // And it stays recorded, and is never suggested a second time.
+    await page.reload();
+    await expect(page.getByTestId('income-occurrence')).toHaveCount(1);
+    await expect(page.getByTestId('occurrence-status')).toHaveText('Recorded');
+    await expect(page.getByTestId('occurrence-accept')).toHaveCount(0);
+
+    // --- October: the next occurrence, received early --------------------------
+    await page.getByTestId('month-next').click();
+    await expect(page).toHaveURL(/\/monthly\/2026-10$/u);
+    await expect(page.getByTestId('monthly-kind')).toHaveText('In progress');
+
+    const october = page.getByTestId('income-occurrence').first();
+    await expect(october).toHaveAttribute('data-occurrence-date', '2026-10-25');
+    await expect(october.getByTestId('occurrence-status')).toHaveText('Upcoming');
+    // Nothing may be dated ahead of itself: the only way in is "received today".
+    await expect(october.getByTestId('occurrence-accept')).toHaveCount(0);
+
+    await october.getByTestId('occurrence-received-today').click();
+    await expect(page.getByTestId('accept-panel')).toContainText('Recorded as arriving today');
+    await page.getByTestId('accept-submit').click();
+
+    // The money is today's; the occurrence keeps its own scheduled date.
+    const recorded = page.getByTestId('income-occurrence').first();
+    await expect(recorded.getByTestId('occurrence-status')).toHaveText('Recorded');
+    await expect(recorded.getByTestId('occurrence-dates')).toContainText('Scheduled 25 Oct 2026');
+    await expect(recorded.getByTestId('occurrence-received-on')).toContainText('Received 6 Oct 2026');
+
+    // --- One payment by hand ----------------------------------------------------
+    await page.getByTestId('income-add-toggle').click();
+    await page.getByTestId('income-kind').selectOption('other');
+    await fillTestId(page, 'income-received-on', '2026-10-02');
+    await fillTestId(page, 'income-net', '150.00');
+    await page.getByTestId('income-account').selectOption({ label: 'Everyday' });
+    await fillTestId(page, 'income-description', 'Sold the old bike');
+    await page.getByTestId('income-submit').click();
+    await expect(page.getByTestId('income-saved')).toContainText('Income added.');
+
+    // It appears once, in the group for income nothing scheduled.
+    await expect(page.getByTestId('income-entry')).toHaveCount(1);
+    await expect(page.getByTestId('income-direct')).toContainText('Sold the old bike');
+    await expect(page.getByTestId('income-direct')).toContainText('€150.00');
+
+    // A date outside the month on screen is not offered at all.
+    await expect(page.getByTestId('income-received-on')).toHaveAttribute('min', '2026-10-01');
+    await expect(page.getByTestId('income-received-on')).toHaveAttribute('max', '2026-10-06');
+
+    // The section never widens the page on a narrow screen (16.5).
+    // The section never widens the page on a narrow screen (16.5): a table
+    // wider than the viewport scrolls inside its own container, and nothing —
+    // including the visually hidden labels inside its cells — escapes it.
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      ),
+    ).toBe(true);
+  });
+});

@@ -3,6 +3,7 @@ import {
   addMonths,
   endOfMonthKey,
   monthKey,
+  plainDate,
   startOfMonthKey,
   type MonthKey,
 } from '@vaultide/finance';
@@ -22,6 +23,8 @@ import {
   type ReconciliationDependencies,
 } from '../reconciliation/service';
 import { completedAccountsOf, currentAccountsOf } from './accounts';
+import { currentMonthlyIncomeOf, monthlyIncomeOf } from './income';
+import { loadCompletedMonthIncome, loadCurrentMonthIncome } from './income-loader';
 import { reviewDtoOf } from './review-service';
 import type {
   CompletedMonthlyPageDto,
@@ -47,10 +50,15 @@ import type {
  * is applied by the page's presentation, never by any result: a dismissed key
  * is still in every issue list this returns.
  *
+ * The Income section adds exactly one read, and only what no other read can
+ * answer: the rows behind the occurrences **scheduled** in the month. Its
+ * financial half — the entries received in the month — is the same income the
+ * loaders already read, handed on rather than fetched again (15.3 section 2).
+ *
  * The bound is a constant number of user-scoped repository transactions — the
- * loader's, one for settings, one for the currency catalogue, one for the
- * review, and the exchange-rate reads the reporting and diagnostic rules
- * already make — whatever the size of the month.
+ * loader's, one for the Income rows, one for settings, one for the currency
+ * catalogue, one for the review, and the exchange-rate reads the reporting and
+ * diagnostic rules already make — whatever the size of the month.
  */
 
 export type MonthlyDependencies = ReconciliationDependencies;
@@ -122,9 +130,21 @@ async function completedMonthlyPage(
     positionsWithValuations: range.positionsWithValuations,
   };
 
-  const [reconciliation, reporting] = await Promise.all([
+  // The month's own income entries, by financial date, sliced from the range
+  // the loader already read — the same rows, never a second query.
+  const receivedInMonth = range.income.filter(
+    (row) => row.receivedOn >= (startOfMonthKey(month) as string) && row.receivedOn <= base.monthEndsOn,
+  );
+
+  const [reconciliation, reporting, incomeRows] = await Promise.all([
     monthReconciliationFrom(deps, range, month, ctx.today),
     completedReportingFrom(deps, data, settings, ctx.today),
+    loadCompletedMonthIncome(
+      deps,
+      ctx.userId,
+      month,
+      receivedInMonth.flatMap((row) => (row.templateId === null ? [] : [row.templateId])),
+    ),
   ]);
 
   return {
@@ -136,6 +156,19 @@ async function completedMonthlyPage(
     reporting,
     completeness: monthCompletenessFrom(data),
     accounts: completedAccountsOf(month, range.positionsWithValuations, range.valuations),
+    income: monthlyIncomeOf({
+      month,
+      today: plainDate(ctx.today),
+      receivedInMonth,
+      // Archived included: `archived_at` is present-tense visibility and never a
+      // schedule boundary, so a source archived today still expected an
+      // occurrence last September (§30.10, 12.6).
+      scheduleTemplates: range.templates,
+      terms: range.terms,
+      positions: range.positions,
+      rows: incomeRows,
+      shape: 'completed',
+    }),
   };
 }
 
@@ -152,6 +185,18 @@ async function currentMonthlyPage(
     minorUnitsByCurrency(deps.db),
   ]);
 
+  // Everything the month-to-date read holds is already dated on or before
+  // today, and no actual record may be dated later (M5), so these are all of
+  // the month's income entries there can be.
+  const receivedInMonth = data.income;
+  const incomeRows = await loadCurrentMonthIncome(
+    deps,
+    ctx.userId,
+    month,
+    plainDate(ctx.today),
+    receivedInMonth.flatMap((row) => (row.templateId === null ? [] : [row.templateId])),
+  );
+
   return {
     kind: 'current',
     ...base,
@@ -160,5 +205,17 @@ async function currentMonthlyPage(
     monthToDate: monthToDateFrom(data),
     reporting: await monthToDateReportingFrom(deps, data, settings, ctx.today),
     accounts: currentAccountsOf(ctx.today, data.input.cashAccounts, data.valuations),
+    income: currentMonthlyIncomeOf({
+      month,
+      today: plainDate(ctx.today),
+      receivedInMonth,
+      // The operational feed's set: an archived source offers no new suggestion,
+      // and the resolved occurrences it already has stay visible (§30.10).
+      scheduleTemplates: incomeRows.activeTemplates,
+      terms: incomeRows.operationalTerms,
+      positions: data.positions,
+      rows: incomeRows,
+      shape: 'current',
+    }),
   };
 }

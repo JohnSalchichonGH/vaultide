@@ -7,6 +7,7 @@ import {
   listTransfers,
   loadFinancialWindow,
   loadTermsForRange,
+  type IncomeEntryRow,
   type ValuationRow,
 } from '@vaultide/db';
 import {
@@ -63,6 +64,13 @@ export interface CompletedRangeData
    * each state. From the window already loaded; no query of its own.
    */
   readonly valuations: readonly ValuationRow[];
+  /**
+   * The range's income entries as the rows they are, keyed on their **financial**
+   * date — what Monthly's Income section lists as received in the month, with
+   * the occurrence link, gross, description and version the engine input drops.
+   * Already read to build that input; no query of its own.
+   */
+  readonly income: readonly IncomeEntryRow[];
 }
 
 /** The completed months of `[from, to]`, oldest first. */
@@ -161,5 +169,6 @@ export async function loadCompletedRange(
       valuations: valuationsByPosition.get(row.id) ?? [],
     })),
     valuations: window.valuations,
+    income,
   };
 }
