@@ -478,6 +478,89 @@ describe('endpoint evidence', () => {
   });
 });
 
+describe('the opening boundary', () => {
+  /**
+   * 8.1: `open(a, M) = close(a, M−1)`. September opens on August's statement
+   * balance and on nothing else — an ordinary snapshot dated inside September
+   * is a snapshot of September, whichever day it carries. Quick Update writes
+   * one on the 1st as readily as on the 15th, and "the latest valuation on or
+   * before 1 September" finds that snapshot instead of August's statement: the
+   * opening state goes on saying `month_end` while the arithmetic opens at
+   * zero, and a whole balance is reported as one month of spending.
+   */
+  const september = (inside: CashAccountInput['valuations']): CompletedMonthInput =>
+    input({
+      cashAccounts: [
+        account(BBVA, 'BBVA', [
+          monthEnd(BBVA, '2026-08-31', '8055'),
+          ...inside,
+          monthEnd(BBVA, '2026-09-30', '7880'),
+        ]),
+      ],
+      income: [income({ netAmount: new Decimal('2100') })],
+      expenses: [expense({ amount: new Decimal('300') })],
+    });
+
+  const bucketWith = (inside: CashAccountInput['valuations']) =>
+    reconcileCompletedMonth(september(inside)).buckets[0];
+
+  const alone = bucketWith([]);
+  const firstDay = bucketWith([valuation(BBVA, '2026-09-01', '8000')]);
+  const midMonth = bucketWith([valuation(BBVA, '2026-09-15', '12000')]);
+
+  it('opens on August, not on a snapshot dated the 1st of September', () => {
+    const bbva = firstDay?.accounts[0];
+    expect(bbva?.opening.state).toBe('month_end');
+    expect(bbva?.opening.amount?.toString()).toBe('8055');
+    expect(bbva?.opening.valuedOn).toBe('2026-08-31');
+    expect(bbva?.closing.state).toBe('month_end');
+    expect(bbva?.closing.amount?.toString()).toBe('7880');
+    expect(bbva?.closing.valuedOn).toBe('2026-09-30');
+    expect(firstDay?.totals.cashDelta?.toString()).toBe('-175');
+  });
+
+  it('infers the spending the two statements imply, not a month of the balance', () => {
+    // 2,100 in − (−175) of cash change = 2,275 spent, of which 300 is known.
+    expect(firstDay?.totals.trackedTotalSpending?.toString()).toBe('2275');
+    expect(firstDay?.totals.unclassified?.toString()).toBe('1975');
+    expect(firstDay?.status).toBe('reliable');
+    expect(firstDay?.issues).toEqual([]);
+  });
+
+  it('reconciles identically with an ordinary snapshot anywhere inside the month', () => {
+    for (const bucket of [firstDay, midMonth]) {
+      expect(bucket?.accounts[0]?.opening.amount?.toString()).toBe(
+        alone?.accounts[0]?.opening.amount?.toString(),
+      );
+      expect(bucket?.totals.cashDelta?.toString()).toBe(alone?.totals.cashDelta?.toString());
+      expect(bucket?.totals.trackedTotalSpending?.toString()).toBe(
+        alone?.totals.trackedTotalSpending?.toString(),
+      );
+      expect(bucket?.totals.unclassified?.toString()).toBe(alone?.totals.unclassified?.toString());
+      expect(bucket?.status).toBe(alone?.status);
+    }
+  });
+
+  it('does not accept an ordinary snapshot dated the last day of August', () => {
+    // The mirror of 8.8's closing rule: an unconfirmed snapshot is not a
+    // statement on either side of the boundary, so September has no opening and
+    // the widened evidence the repair must not introduce would be visible here.
+    const bucket = reconcileCompletedMonth(
+      input({
+        cashAccounts: [
+          account(BBVA, 'BBVA', [
+            valuation(BBVA, '2026-08-31', '8055'),
+            monthEnd(BBVA, '2026-09-30', '7880'),
+          ]),
+        ],
+      }),
+    ).buckets[0];
+    expect(bucket?.accounts[0]?.opening.state).toBe('carried');
+    expect(bucket?.accounts[0]?.opening.amount).toBeUndefined();
+    expect(bucket?.status).toBe('unavailable');
+  });
+});
+
 describe('an account whose first balance lands in the month', () => {
   const newlyTracked = (): CashAccountInput =>
     account(SAVINGS, 'Savings', [monthEnd(SAVINGS, '2026-09-30', '5000')], {}, 'savings');

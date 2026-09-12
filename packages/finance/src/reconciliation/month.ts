@@ -1,7 +1,9 @@
 import { Decimal } from '../decimal';
 import {
+  addMonths,
   endOfMonthKey,
   isMonthCompleted,
+  monthKey,
   startOfMonthKey,
   type MonthKey,
   type PlainDate,
@@ -13,7 +15,6 @@ import {
   monthEndBalance,
   participatesIn,
 } from '../positions/cash-state';
-import { latestOnOrBefore } from '../positions/valuation';
 import type { RoleLeg } from '../flows/roles';
 import {
   legsInRange,
@@ -77,25 +78,24 @@ function endpointAmount(
   month: MonthKey,
   end: 'open' | 'close',
 ): { amount: Decimal; valuedOn?: PlainDate } {
-  if (end === 'close') {
-    const balance = monthEndBalance(account.valuations, month);
-    return balance === undefined
-      ? { amount: new Decimal(0) }
-      : { amount: balance.amount, valuedOn: balance.valuedOn };
-  }
+  // 8.1: `open(a, M) = close(a, M−1)`, so the two ends are one question asked
+  // of two months — which month-end statement balance closed it — and this is
+  // `cashOpenState`'s own delegation to `cashCloseState(M−1)`, read for its
+  // amount instead of its state. "What counts as a statement" is asked once, of
+  // `monthEndBalance`, and never restated here.
+  //
+  // The opening is emphatically **not** the latest valuation on or before
+  // start(M). That reading lets an ordinary snapshot dated inside M stand where
+  // M−1's statement belongs — the 1st as readily as the 15th, and Quick Update
+  // writes exactly such a row — which opened the month at zero while the state
+  // went on saying `month_end`, and reported a whole balance as one month of
+  // spending. A snapshot is not a statement on either side of the boundary (8.8).
+  const closing = end === 'close' ? month : monthKey(addMonths(startOfMonthKey(month), -1));
+  const balance = monthEndBalance(account.valuations, closing);
 
-  // The opening is the previous month's close, so it is that month's statement
-  // balance — the same row, read from the other side.
-  const previousEnd = startOfMonthKey(month);
-  const previous = latestOnOrBefore(account.valuations, previousEnd);
-  const isPreviousMonthEnd =
-    previous !== undefined &&
-    previous.datePrecision === 'month_end' &&
-    previous.valuedOn < previousEnd;
-
-  return isPreviousMonthEnd
-    ? { amount: previous.amount, valuedOn: previous.valuedOn }
-    : { amount: new Decimal(0) };
+  return balance === undefined
+    ? { amount: new Decimal(0) }
+    : { amount: balance.amount, valuedOn: balance.valuedOn };
 }
 
 /**

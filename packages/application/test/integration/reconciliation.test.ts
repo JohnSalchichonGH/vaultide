@@ -312,6 +312,39 @@ describe('a completed month, from real rows', () => {
   });
 });
 
+describe('an ordinary snapshot dated the first of the month', () => {
+  beforeEach(async () => {
+    await recordSeptember();
+    // Quick Update writes exactly this row, and nothing about it is wrong: a
+    // snapshot of what BBVA held on 1 September, entered as an ordinary balance.
+    await recordValuation(harness.services.positions, OCTOBER_1, {
+      positionId: bbva,
+      valuedOn: '2026-09-01',
+      amount: '8000.00',
+      datePrecision: 'exact',
+    });
+  });
+
+  it('opens the month on August, and moves no figure the month reports', async () => {
+    const { result, bucket } = await eurBucket();
+    const bbvaState = bucket?.accounts.find((a) => a.positionId === bbva);
+
+    // 8.1: `open(a, M) = close(a, M−1)`, so September opens on August's
+    // statement balance. The snapshot is September's own and belongs to neither
+    // endpoint, whichever day of the month it carries (8.8).
+    expect(bbvaState?.openState).toBe('month_end');
+    expect(bbvaState?.opening?.amount).toBe('8055');
+    expect(bbvaState?.closing?.amount).toBe('9226');
+
+    // Every figure of the block above, unchanged by the extra row.
+    expect(bucket?.totals.cashDelta?.amount).toBe('1402');
+    expect(bucket?.totals.trackedTotalSpending?.amount).toBe('698');
+    expect(bucket?.totals.unclassified?.amount).toBe('398');
+    expect(bbvaState?.residual?.amount).toBe('-429');
+    expect(result.status).toBe('reliable');
+  });
+});
+
 describe('a month whose statement balance is missing', () => {
   it('is unavailable, names the account and reports no figure', async () => {
     await recordValuation(harness.services.positions, OCTOBER_1, {

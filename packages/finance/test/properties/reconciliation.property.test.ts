@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { Decimal } from '../../src/decimal';
 import { monthKeyOf, plainDate } from '../../src/dates/plain-date';
 import { currencyCode } from '../../src/money/types';
-import { monthEnd, position } from '../helpers/records';
+import { monthEnd, position, valuation } from '../helpers/records';
 import type { ExpenseFlow, IncomeFlow, TransferFlow } from '../../src/flows/types';
 import {
   reconcileCompletedMonth,
@@ -448,6 +448,79 @@ describe('property: an excluded account takes its own legs with it', () => {
         );
         expect(after.accounts.find((a) => a.positionId === 'acct-new')?.included).toBe(false);
         expect(after.issues.some((i) => i.key === 'first_balance')).toBe(true);
+      }),
+    );
+  });
+});
+
+/** Any September day the two statement balances do not already occupy. */
+const insideMonthArb = fc
+  .integer({ min: 1, max: 29 })
+  .map((day) => `2026-09-${String(day).padStart(2, '0')}`);
+
+/** Everything a completed month says, as exact strings rather than Decimals. */
+function observableOf(bucket: ReturnType<typeof bucketOf>) {
+  return {
+    status: bucket.status,
+    cashDelta: bucket.totals.cashDelta?.toString(),
+    trackedTotalSpending: bucket.totals.trackedTotalSpending?.toString(),
+    unclassified: bucket.totals.unclassified?.toString(),
+    externalInflows: bucket.totals.externalInflows.toString(),
+    nonIncomeInflows: bucket.totals.nonIncomeInflows.toString(),
+    nonExpenseOutflows: bucket.totals.nonExpenseOutflows.toString(),
+    knownTrackedExpenses: bucket.totals.knownTrackedExpenses.toString(),
+    additionalSpending: bucket.additionalSpending.toString(),
+    thirdPartyPaid: bucket.thirdPartyPaid.toString(),
+    // Keys only, and sorted: which issues the month raises is the contract,
+    // the order they were detected in is not.
+    issues: bucket.issues.map((issue) => issue.key).sort(),
+    // 8.3 orders the accounts by id, so this array is the contract's own.
+    accounts: bucket.accounts.map((state) => ({
+      positionId: state.positionId,
+      openState: state.opening.state,
+      opening: state.opening.amount?.toString(),
+      openingValuedOn: state.opening.valuedOn,
+      closeState: state.closing.state,
+      closing: state.closing.amount?.toString(),
+      closingValuedOn: state.closing.valuedOn,
+      included: state.included,
+      excludedFirstBalance: state.excludedFirstBalance,
+      residual: state.residual?.toString(),
+    })),
+  };
+}
+
+describe('property: an ordinary snapshot inside the month is not an endpoint', () => {
+  /**
+   * 8.1 and 8.8, as an invariant rather than one date.
+   *
+   * A completed month is reconciled between two statement balances —
+   * `close(a, M−1)` and `close(a, M)` — so an ordinary snapshot dated strictly
+   * between them is evidence this engine reads nothing from. Adding one must
+   * leave every figure the month reports exactly where it was.
+   *
+   * The generated day deliberately includes the 1st, which is where reading the
+   * opening as "the latest valuation on or before start(M)" fell over: the
+   * snapshot stood in for M−1's statement, the account opened at zero while its
+   * state went on saying `month_end`, and the whole balance was reported as one
+   * month of spending. Quick Update writes such a row on the 1st routinely.
+   */
+  it('leaves every completed-month figure exactly where it was', () => {
+    fc.assert(
+      fc.property(monthArb, amountArb, insideMonthArb, (generated, amount, on) => {
+        const [first, ...rest] = generated.accounts;
+        if (first === undefined) return;
+
+        const before = observableOf(bucketOf(inputOf(generated)));
+        const snapshotted: CashAccountInput = {
+          ...first,
+          valuations: [...first.valuations, valuation(first.position.id, on, amount)],
+        };
+        const after = observableOf(
+          bucketOf(inputOf(generated, { cashAccounts: [snapshotted, ...rest] })),
+        );
+
+        expect(after).toEqual(before);
       }),
     );
   });
