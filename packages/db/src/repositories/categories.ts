@@ -1,7 +1,7 @@
 import { and, asc, eq, isNull } from 'drizzle-orm';
 import { categories } from '../schema/categories';
 import { tags } from '../schema/tags';
-import { withUser, type Database } from '../client';
+import { withUser, type Database, type Transaction } from '../client';
 
 /**
  * `categories` and `tags` reads and writes (blueprint 6.2, 6.3).
@@ -27,6 +27,28 @@ export async function listCategoryRecords(
       .where(options.includeArchived === true ? undefined : isNull(categories.archivedAt))
       .orderBy(asc(categories.sortOrder), asc(categories.name)),
   );
+}
+
+/**
+ * One category by id, **archived rows included**, inside an existing scope.
+ *
+ * For the callers that need a category's accounting `kind` rather than its
+ * availability: an occurrence materialized from a template that was made when
+ * the category was live is still that kind of expense, so archiving a category
+ * must not change what an already scheduled occurrence *is*. Whether a category
+ * may be chosen afresh is the separate question `listCategoryRecords` answers
+ * for the paths that ask it.
+ */
+export async function findCategoryIn(
+  tx: Transaction,
+  categoryId: string,
+): Promise<CategoryRecord | undefined> {
+  const [row] = await tx
+    .select()
+    .from(categories)
+    .where(eq(categories.id, categoryId))
+    .limit(1);
+  return row;
 }
 
 export async function listTagRecords(db: Database, userId: string): Promise<TagRecord[]> {

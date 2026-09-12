@@ -1,5 +1,6 @@
 import {
   deleteSkip,
+  findCategoryIn,
   findSkipIn,
   findTemplate,
   hasMaterializedOccurrenceIn,
@@ -34,6 +35,7 @@ import {
   NotFoundError,
   ValidationError,
 } from '../errors';
+import { assertCategoryUsableInPhase3 } from '../flows/expenses';
 import { clearDormancyForFlowIn, auditContextOf, resolveTrackedCashLeg, type FlowDependencies } from '../flows/shared';
 
 /**
@@ -415,6 +417,17 @@ export async function acceptSuggestion(
       /* v8 ignore next -- a 6.2 CHECK makes an expense template's category non-null. */
       throw new ImpossibleOperationError('This expense source has no category.');
     }
+
+    // The same rule again, under the lock, because template creation is not the
+    // only way a template can come to exist: a fixture, an import or a direct
+    // database write can leave one behind, and materialization is the step that
+    // would turn it into a financial fact. Read with archived rows included —
+    // the category's **kind** is what disqualifies it, and a category archived
+    // since the template was made does not change what its occurrences are.
+    const category = await findCategoryIn(tx, locked.categoryId);
+    /* v8 ignore next 2 -- a composite FK guarantees the user's own category. */
+    if (category === undefined) throw new NotFoundError('That category no longer exists.');
+    assertCategoryUsableInPhase3(category);
     const entry = await insertExpenseEntryIn(tx, audit, {
       categoryId: locked.categoryId,
       incurredOn: financialDate,

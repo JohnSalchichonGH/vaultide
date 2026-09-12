@@ -5,7 +5,7 @@ import { testContext, type RequestContext } from '../../src/context';
 import { provisionUser } from '../../src/users/provisioning';
 import { createCashAccount, createOtherAsset, updateCashAccount } from '../../src/positions/service';
 import { recordValuation } from '../../src/positions/valuations';
-import { listCategories } from '../../src/users/categories';
+import { archiveUserCategory, createCategory, listCategories } from '../../src/users/categories';
 import {
   createExpenseEntry,
   deleteExpenseEntry,
@@ -2251,5 +2251,113 @@ describe('a materialized recurring expense is still an expense', () => {
       }),
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
     expect(await countRows(USER_A, 'expense_entries')).toBe(1);
+  });
+});
+
+describe('a recurring expense obeys the same category rule as a direct one', () => {
+  // 7.4 defines `capital_improvement` and `transfer_fee` only as linked rows,
+  // and a schedule does not supply the link a direct expense cannot supply
+  // either. Guarding creation alone would still leave a hole: a template can
+  // also arrive from a fixture, an import or a direct write, and
+  // materialization is the step that turns one into a financial fact.
+
+  const PROTECTED = ['capital_improvement', 'transfer_fee'] as const;
+  const ALLOWED = [
+    'property_operating',
+    'investment_fee',
+    'acquisition_cost',
+    'disposal_cost',
+    'external_outflow',
+  ] as const;
+
+  async function categoryOfKind(kind: string): Promise<string> {
+    const categories = await listCategories(harness.db, USER_A);
+    const found = categories.find((row) => row.kind === kind)?.id;
+    expect(found, kind).toBeDefined();
+    return found as string;
+  }
+
+  function templateArgs(categoryId: string) {
+    return {
+      kind: 'expense' as const,
+      name: 'Scheduled',
+      categoryId,
+      currency: 'EUR',
+      frequency: 'monthly' as const,
+      dayOfMonth: 1,
+      startDate: '2026-01-01',
+      cashPositionId: bbva,
+      amount: '120.00',
+    };
+  }
+
+  it.each(PROTECTED)('refuses an expense template under %s', async (kind) => {
+    await expect(
+      createTemplate(deps(), SEPT_15, templateArgs(await categoryOfKind(kind))),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(await countRows(USER_A, 'recurring_templates')).toBe(0);
+  });
+
+  it.each(ALLOWED)('still creates an expense template under %s', async (kind) => {
+    const { template } = await createTemplate(
+      deps(),
+      SEPT_15,
+      templateArgs(await categoryOfKind(kind)),
+    );
+    expect(template.kind).toBe('expense');
+  });
+
+  it.each(PROTECTED)('refuses to materialize a template already filed under %s', async (kind) => {
+    // The template is built through the service under a permitted category and
+    // then re-pointed as the owner, which is the only way to reach the state a
+    // pre-existing row could already be in. Materialization has to judge it on
+    // its own rather than trust that creation did.
+    const { template } = await createTemplate(deps(), SEPT_15, templateArgs(groceries));
+    await harness.asOwner('UPDATE recurring_templates SET category_id = $1 WHERE id = $2', [
+      await categoryOfKind(kind),
+      template.id,
+    ]);
+
+    await expect(
+      acceptSuggestion(deps(), SEPT_15, {
+        templateId: template.id,
+        occurrenceDate: '2026-09-01',
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(await countRows(USER_A, 'expense_entries')).toBe(0);
+  });
+
+  /** A disposable category, so archiving one never disturbs the shared ones. */
+  async function retiredCategory(): Promise<string> {
+    const category = await createCategory(harness.db, USER_A, {
+      kind: 'subscriptions',
+      name: 'Old gym',
+    });
+    return category.id;
+  }
+
+  it('still materializes an occurrence whose category was archived afterwards', async () => {
+    // Archiving is present tense: it stops new choices. It does not reach back
+    // and change what an already scheduled occurrence is, so a template whose
+    // category has since been archived still produces its occurrences.
+    const categoryId = await retiredCategory();
+    const { template } = await createTemplate(deps(), SEPT_15, templateArgs(categoryId));
+    await archiveUserCategory(harness.db, USER_A, categoryId);
+
+    const accepted = await acceptSuggestion(deps(), SEPT_15, {
+      templateId: template.id,
+      occurrenceDate: '2026-09-01',
+    });
+    expect(accepted.entry).toMatchObject({ categoryId, amount: '120.00000000' });
+  });
+
+  it('still refuses a new template under an archived category', async () => {
+    // The two questions stay separate: materialization asks what the category
+    // *is*, while creation also asks whether it is still a choice on offer.
+    const categoryId = await retiredCategory();
+    await archiveUserCategory(harness.db, USER_A, categoryId);
+    await expect(createTemplate(deps(), SEPT_15, templateArgs(categoryId))).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+    });
   });
 });

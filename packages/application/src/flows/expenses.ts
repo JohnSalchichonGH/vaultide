@@ -101,8 +101,14 @@ export async function requireCategory(
  *
  * The other five system kinds are ordinary tracked expenses that happen to
  * carry a non-consumption bucket, and are allowed.
+ *
+ * Exported because a recurring expense is an ordinary Phase 3 expense too: the
+ * template that schedules one and the acceptance that materializes one both
+ * reach this, so the rule has one statement rather than three copies that can
+ * drift apart. It judges the category's **kind** and nothing else — whether the
+ * category is live is a separate question, asked where it belongs.
  */
-function assertCategoryUsableInPhase3(category: CategoryRecord): void {
+export function assertCategoryUsableInPhase3(category: CategoryRecord): void {
   if (category.kind === 'capital_improvement') {
     throw new ValidationError(
       'A capital improvement has to be linked to the property or asset it improves, which arrives with properties.',

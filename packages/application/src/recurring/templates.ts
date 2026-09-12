@@ -21,7 +21,7 @@ import {
   ValidationError,
   VersionConflictError,
 } from '../errors';
-import { requireCategory } from '../flows/expenses';
+import { assertCategoryUsableInPhase3, requireCategory } from '../flows/expenses';
 import { auditContextOf, requireCashAccount, type FlowDependencies } from '../flows/shared';
 
 /**
@@ -136,7 +136,14 @@ async function validateTemplateShape(
     });
   }
 
-  if (args.categoryId !== undefined) await requireCategory(deps.db, ctx, args.categoryId);
+  if (args.categoryId !== undefined) {
+    // A recurring expense is an ordinary Phase 3 expense that happens to be
+    // scheduled, so it obeys the same rule about which category kinds one may
+    // be filed under (7.4). Checking only that the category exists and is live
+    // let a template be built on a kind the direct path refuses, and every
+    // occurrence it materialized was a fact 7.4 does not define.
+    assertCategoryUsableInPhase3(await requireCategory(deps.db, ctx, args.categoryId));
+  }
 
   if (args.cashPositionId !== undefined) {
     const account = await requireCashAccount(deps.db, ctx, args.cashPositionId);
