@@ -557,3 +557,78 @@ test.describe('the monthly income editor', () => {
     ).toBe(true);
   });
 });
+
+/**
+ * A version conflict on a Monthly income amount, and the way out of it
+ * (blueprint 15.3, 20.3).
+ *
+ * Two views of the same row in one signed-in session, which is the ordinary way
+ * a conflict happens: a second tab, or a phone left open. One of them saves and
+ * the other is holding the version that write consumed.
+ *
+ * What it proves is the pair of rules that only make sense together. A refused
+ * save keeps what the user typed — the server stored nothing, so their amount
+ * exists nowhere else and must not be thrown away by a refresh they did not ask
+ * for. Reload is the one deliberate way to give it up, and it has to reach the
+ * amount inputs too: their draft is their own state, so clearing the row's
+ * drafts alone would leave a rejected figure rendering over the real one.
+ */
+test.describe('two views of one income row', () => {
+  test('a refused amount stays on screen, and Reload replaces it with the server’s', async ({
+    page,
+    request,
+  }) => {
+    test.slow();
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': '2026-10-06T10:00:00Z' });
+    await onboard(page, request, uniqueEmail('e2e-monthly-conflict'));
+    await accountWithAugustStatement(page, { name: 'Everyday', type: 'checking', august: '1000.00' });
+
+    // One ordinary income row, recorded through the product's own form.
+    await page.goto('/monthly/2026-10');
+    await page.getByTestId('income-add-toggle').click();
+    await page.getByTestId('income-kind').selectOption('other');
+    await fillTestId(page, 'income-received-on', '2026-10-02');
+    await fillTestId(page, 'income-net', '100.00');
+    await page.getByTestId('income-account').selectOption({ label: 'Everyday' });
+    await page.getByTestId('income-submit').click();
+    await expect(page.getByTestId('income-saved')).toContainText('Income added.');
+    await expect(page.getByTestId('entry-net')).toHaveValue('100.00');
+
+    // A second view of the same row, in the same session and the same clock.
+    const stale = await page.context().newPage();
+    await stale.setExtraHTTPHeaders({ 'x-vaultide-test-clock': '2026-10-06T10:00:00Z' });
+    await stale.goto('/monthly/2026-10');
+    await expect(stale.getByTestId('entry-net')).toHaveValue('100.00');
+
+    // The first view corrects the amount, which consumes the row's version.
+    await page.getByTestId('entry-net').fill('150.00');
+    await page.getByTestId('entry-net').press('Tab');
+    await expect(page.getByTestId('income-save-status').last()).toHaveText('Saved.');
+    await expect(page.getByTestId('entry-net')).toHaveValue('150.00');
+
+    // The second view is holding the version that write consumed.
+    await stale.getByTestId('entry-net').fill('200.00');
+    await stale.getByTestId('entry-net').press('Tab');
+    await expect(stale.getByTestId('income-save-status').last()).toContainText(
+      'Nothing was overwritten.',
+    );
+    // Nothing was stored, so 200 exists nowhere but here — it stays visible,
+    // and no refresh runs over it.
+    await expect(stale.getByTestId('entry-net')).toHaveValue('200.00');
+    await expect(stale.getByTestId('entry-reload')).toBeVisible();
+
+    // Reload is the explicit choice to give it up.
+    await stale.getByTestId('entry-reload').click();
+    await expect(stale.getByTestId('entry-net')).toHaveValue('150.00');
+    await expect(stale.getByTestId('income-save-status').last()).toHaveText('');
+
+    // And the row really is the server's now: the next edit from here succeeds.
+    await stale.getByTestId('entry-net').fill('175.00');
+    await stale.getByTestId('entry-net').press('Tab');
+    await expect(stale.getByTestId('income-save-status').last()).toHaveText('Saved.');
+    await stale.close();
+
+    await page.reload();
+    await expect(page.getByTestId('entry-net')).toHaveValue('175.00');
+  });
+});

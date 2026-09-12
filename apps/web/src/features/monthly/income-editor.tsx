@@ -858,6 +858,10 @@ function useEntrySave(entry: MonthlyIncomeEntryDto) {
   const router = useRouter();
   const [state, setState] = useState<SaveState>(IDLE);
   const [drafts, setDrafts] = useState<EntryDrafts>({});
+  // Bumped by `reload`, and used as the amount inputs' key. Their draft is
+  // their own `useState`, so clearing this row's drafts cannot reach it — only
+  // remounting can, which is the same mechanism the Accounts editor uses.
+  const [generation, setGeneration] = useState(0);
   const busy = state.kind === 'saving';
 
   const setDraft = (partial: EntryDrafts): void => {
@@ -898,9 +902,18 @@ function useEntrySave(entry: MonthlyIncomeEntryDto) {
     return final;
   };
 
+  /**
+   * Discard everything local and take the server's row instead.
+   *
+   * The one deliberate way out of a refused save: a conflict keeps what the
+   * user attempted — in the row's drafts *and* inside the amount inputs — so
+   * adopting the authoritative values has to be a choice, and it has to reach
+   * both places or the amount would go on rendering over the refreshed one.
+   */
   const reload = (): void => {
     setDrafts({});
     setState(IDLE);
+    setGeneration((current) => current + 1);
     router.refresh();
   };
 
@@ -911,7 +924,18 @@ function useEntrySave(entry: MonthlyIncomeEntryDto) {
     });
   };
 
-  return { state, setState, drafts, busy, setDraft, clearDraft, commit, reload, remove };
+  return {
+    state,
+    setState,
+    drafts,
+    busy,
+    generation,
+    setDraft,
+    clearDraft,
+    commit,
+    reload,
+    remove,
+  };
 }
 
 /**
@@ -1018,7 +1042,7 @@ function EntryFields({
 }) {
   const statusId = useId();
   const ids = { account: useId(), date: useId(), description: useId() };
-  const { state, setState, drafts, busy, setDraft, clearDraft, commit, reload, remove } =
+  const { state, setState, drafts, busy, generation, setDraft, clearDraft, commit, reload, remove } =
     useEntrySave(entry);
   const hydrated = useHydrated();
   const minorUnits = minorUnitsOf(formatting, entry.currency);
@@ -1042,6 +1066,7 @@ function EntryFields({
         <div className="flex flex-col items-end gap-0.5">
           <span className={META}>Net</span>
           <AmountField
+            key={`net-${String(generation)}`}
             label={`Net amount (${entry.currency})`}
             testId="entry-net"
             saved={entry.net.amount}
@@ -1056,6 +1081,7 @@ function EntryFields({
         <div className="flex flex-col items-end gap-0.5">
           <span className={META}>Gross</span>
           <AmountField
+            key={`gross-${String(generation)}`}
             label={`Gross amount (${entry.currency})`}
             testId="entry-gross"
             saved={entry.gross?.amount ?? null}
