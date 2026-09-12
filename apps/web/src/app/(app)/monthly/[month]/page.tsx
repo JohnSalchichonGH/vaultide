@@ -151,6 +151,7 @@ export default async function MonthlyPage({ params }: { params: Promise<{ month:
               monthEndsOn={page.monthEndsOn}
               today={page.today}
               reportingCurrency={session.reportingCurrency}
+              selectableCurrencyCodes={page.selectableCurrencyCodes}
               formatting={{ locale, minorUnitsByCurrency: page.minorUnitsByCurrency }}
             />
           </CardContent>

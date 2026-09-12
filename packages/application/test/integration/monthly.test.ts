@@ -1798,6 +1798,33 @@ describe('the Income section reads a month’s own schedule and money', () => {
   });
 });
 
+describe('the currencies Monthly offers', () => {
+  it('are the catalogue’s, not the ones the user holds an account in', async () => {
+    await makeAccount('BBVA');
+
+    const page = await completed();
+    // A picker offers what this product is willing to convert (10.5) — income
+    // received outside tracked accounts, and tracked income not yet attributed,
+    // are both legitimate in a currency no account exists for.
+    expect(page.selectableCurrencyCodes).toContain('USD');
+    expect(page.selectableCurrencyCodes).toContain('EUR');
+    expect(page.selectableCurrencyCodes.length).toBeGreaterThan(
+      page.income.cashAccounts.length,
+    );
+    // Same rows as the formatter uses, so one read answers both questions.
+    for (const code of page.selectableCurrencyCodes) {
+      expect(page.minorUnitsByCurrency[code]).toBeTypeOf('number');
+    }
+  });
+
+  it('are offered on the current month too, and stay sorted and unique', async () => {
+    await makeAccount('BBVA', { ctx: SEPT_10 });
+    const codes = (await current()).selectableCurrencyCodes;
+    expect(codes).toEqual([...new Set(codes)]);
+    expect([...codes]).toEqual([...codes].sort());
+  });
+});
+
 describe('the Income section across a month boundary', () => {
   /**
    * The canonical early receipt (15.3, §30.9 item 2): a salary scheduled for 1

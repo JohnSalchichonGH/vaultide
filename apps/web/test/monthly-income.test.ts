@@ -1,6 +1,7 @@
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
+import type { SaveOutcome } from '@/features/monthly/autosave';
 import type {
   CurrentMonthlyIncomeDto,
   EarlyReceiptCandidateDto,
@@ -31,12 +32,25 @@ vi.mock('next/link', () => ({
     createElement('a', { href, ...rest }, children),
 }));
 
-const { IncomeSection } = await import('@/features/monthly/income-editor');
+const { AddIncomeForm, AddIncomeSourceForm, IncomeSection } = await import(
+  '@/features/monthly/income-editor'
+);
 const {
+  IDLE,
+  canWrite,
+  draftsAfterSave,
+  runSave,
+  withoutDraft,
+} = await import('@/features/monthly/autosave');
+const {
+  SCHEDULABLE_INCOME_KINDS,
+  accountForCurrency,
+  defaultPickerCurrency,
   crossMonthNotice,
-  directDateBounds,
   occurrenceAnchorId,
   occurrenceStateLabel,
+  ownedEntryDateBounds,
+  pickerCurrencies,
   ownsEntry,
   settlementOptions,
   skipReasonOptions,
@@ -137,7 +151,12 @@ function income(over: Partial<CurrentMonthlyIncomeDto> = {}): CurrentMonthlyInco
 
 function render(
   value: MonthlyIncomeDto | CurrentMonthlyIncomeDto,
-  over: { month?: string; today?: string; monthEndsOn?: string } = {},
+  over: {
+    month?: string;
+    today?: string;
+    monthEndsOn?: string;
+    currencies?: readonly string[];
+  } = {},
 ): string {
   return renderToStaticMarkup(
     createElement(IncomeSection, {
@@ -147,6 +166,7 @@ function render(
       monthEndsOn: over.monthEndsOn ?? '2026-09-30',
       today: over.today ?? '2026-10-01',
       reportingCurrency: 'EUR',
+      selectableCurrencyCodes: over.currencies ?? ['CHF', 'EUR', 'GBP', 'USD'],
       formatting,
     }),
   );
@@ -157,6 +177,12 @@ const count = (html: string, testId: string): number =>
   html.match(new RegExp(`data-testid="${testId}"`, 'gu'))?.length ?? 0;
 
 const has = (html: string, testId: string): boolean => count(html, testId) > 0;
+
+/** What a row says about where the money went, from its own cell. */
+function attribution(html: string): string | null {
+  const match = /data-testid="entry-attribution"[^>]*>([^<]*)</u.exec(html);
+  return match?.[1] ?? null;
+}
 
 /* -------------------------------------------------------------------------- */
 /* Scheduled occurrences                                                       */
@@ -235,8 +261,16 @@ describe('a scheduled occurrence', () => {
     expect(has(html, 'entry-net')).toBe(true);
     expect(has(html, 'entry-gross')).toBe(true);
     expect(has(html, 'entry-delete')).toBe(true);
-    // Its identity is not up for editing, and a term change stays a separate act.
-    expect(has(html, 'entry-received-on')).toBe(false);
+    // The date the money arrived is a financial fact this month owns, so it is
+    // correctable — bounded to the month, never out of it.
+    expect(has(html, 'entry-received-on')).toBe(true);
+    expect(html).toContain('min="2026-09-01"');
+    expect(html).toContain('max="2026-09-30"');
+    // What is identity stays fixed: the scheduled date is not a field at all,
+    // and the source decides the kind and the settlement.
+    expect(html).toContain('data-occurrence-date="2026-09-25"');
+    expect(has(html, 'entry-kind')).toBe(false);
+    expect(has(html, 'entry-settlement')).toBe(false);
     expect(has(html, 'occurrence-accept')).toBe(false);
     expect(has(html, 'occurrence-term')).toBe(true);
   });
@@ -394,8 +428,10 @@ describe('a recorded income row', () => {
         direct: [entry({ cashPositionId: null, cashAccountName: null, kind: 'other' })],
       }),
     );
-    expect(html).toContain('Not attributed yet');
-    expect(html).not.toContain('Outside my tracked accounts');
+    // 8.1: a null cash leg is tracked cash nobody has attributed yet. The row's
+    // own statement of how the money arrived must not read as "external" —
+    // which is a different settlement the picker beside it does offer.
+    expect(attribution(html)).toBe('Not attributed yet');
   });
 
   it('says how income received outside tracked accounts arrived', () => {
@@ -406,7 +442,7 @@ describe('a recorded income row', () => {
         ],
       }),
     );
-    expect(html).toContain('Outside my tracked accounts');
+    expect(attribution(html)).toBe('Outside my tracked accounts');
     // There is no account to choose for a flow that never touched one.
     expect(has(html, 'entry-account')).toBe(false);
   });
@@ -416,6 +452,22 @@ describe('a recorded income row', () => {
     expect(has(render(income({ direct: [entry({ gross: null })] })), 'entry-clear-gross')).toBe(
       false,
     );
+  });
+
+  it('lets a direct row correct its kind and settlement, which a recurring row may not', () => {
+    const direct = render(income({ direct: [entry({ kind: 'other', occurrence: null })] }));
+    expect(has(direct, 'entry-kind')).toBe(true);
+    expect(has(direct, 'entry-settlement')).toBe(true);
+
+    // A materialized occurrence is what its source scheduled; changing that
+    // here would rewrite the source's own meaning (7.4).
+    const recurring = render(
+      income({
+        occurrences: [occurrence({ state: { kind: 'accepted', entry: entry() } })],
+      }),
+    );
+    expect(has(recurring, 'entry-kind')).toBe(false);
+    expect(has(recurring, 'entry-settlement')).toBe(false);
   });
 
   it('keeps a direct row’s date inside the month on screen', () => {
@@ -435,6 +487,17 @@ describe('a recorded income row', () => {
       today: '2026-09-10',
     });
     expect(html).toContain('max="2026-09-10"');
+  });
+
+  it('does not offer a date on a row whose money belongs to another month', () => {
+    const html = render(
+      income({
+        otherRecurring: [entry({ receivedOn: '2026-10-02', receivedMonth: '2026-10' })],
+      }),
+    );
+    // The row is October's to correct; September may only point at it.
+    expect(has(html, 'entry-received-on')).toBe(false);
+    expect(has(html, 'entry-elsewhere')).toBe(true);
   });
 
   it('offers only accounts that could hold the flow’s currency', () => {
@@ -538,18 +601,220 @@ describe('what a control may offer', () => {
     expect(crossMonthNotice('2026-10-02', '2026-09', name)).toContain('September');
   });
 
-  it('bounds a direct row by the month, and by today inside it', () => {
-    expect(directDateBounds({ month: '2026-09', monthEndsOn: '2026-09-30', today: '2026-10-05' })).toEqual(
-      { min: '2026-09-01', max: '2026-09-30' },
-    );
-    expect(directDateBounds({ month: '2026-09', monthEndsOn: '2026-09-30', today: '2026-09-08' })).toEqual(
-      { min: '2026-09-01', max: '2026-09-08' },
-    );
+  it('bounds an owned row by the month, and by today inside it', () => {
+    expect(
+      ownedEntryDateBounds({ month: '2026-09', monthEndsOn: '2026-09-30', today: '2026-10-05' }),
+    ).toEqual({ min: '2026-09-01', max: '2026-09-30' });
+    expect(
+      ownedEntryDateBounds({ month: '2026-09', monthEndsOn: '2026-09-30', today: '2026-09-08' }),
+    ).toEqual({ min: '2026-09-01', max: '2026-09-08' });
+  });
+
+  it('offers every schedulable income kind and nothing a schedule cannot promise', () => {
+    expect([...SCHEDULABLE_INCOME_KINDS]).toEqual([
+      'employment',
+      'freelance',
+      'bonus',
+      'rental',
+      'other',
+      'interest',
+      'dividend',
+    ]);
+    // 6.2 refuses these on the table: they explain tracked cash when it
+    // happens, so nothing can schedule them.
+    expect([...SCHEDULABLE_INCOME_KINDS]).not.toContain('external_inflow');
+    expect([...SCHEDULABLE_INCOME_KINDS]).not.toContain('adjustment');
+  });
+
+  it('takes its currencies from the catalogue, and the reporting currency only as a fallback', () => {
+    expect(pickerCurrencies(['CHF', 'EUR', 'USD'], 'EUR')).toEqual(['CHF', 'EUR', 'USD']);
+    // An empty catalogue is a broken install, not a reason to render no options.
+    expect(pickerCurrencies([], 'EUR')).toEqual(['EUR']);
+    expect(defaultPickerCurrency(['CHF', 'EUR', 'USD'], 'EUR')).toBe('EUR');
+    // Reporting currency not offered: start on something that is.
+    expect(defaultPickerCurrency(['CHF', 'USD'], 'EUR')).toBe('CHF');
+  });
+
+  it('drops an account the new currency cannot hold, and keeps one it can', () => {
+    const accounts = ACCOUNTS;
+    expect(accountForCurrency(accounts, 'pos-bbva', 'USD', '__none__')).toBe('__none__');
+    expect(accountForCurrency(accounts, 'pos-bbva', 'EUR', '__none__')).toBe('pos-bbva');
+    expect(accountForCurrency(accounts, '__none__', 'USD', '__none__')).toBe('__none__');
+    // An id nothing lists any more is not a selection worth keeping.
+    expect(accountForCurrency(accounts, 'pos-gone', 'EUR', '__none__')).toBe('__none__');
   });
 
   it('knows when a source’s start date reaches back into finished months', () => {
     expect(startsInThePast('2026-01-01', '2026-09-10')).toBe(true);
     expect(startsInThePast('2026-09-10', '2026-09-10')).toBe(false);
     expect(startsInThePast('2026-12-01', '2026-09-10')).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* What a refused save does to what the user typed                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A row's drafts are what the user has and the server has not (15.3, 20.3).
+ *
+ * These are the decisions the Income row's save hook is built from, driven
+ * here the way `runSave` is: with real outcomes rather than markup, because
+ * markup can only show that a draft renders once it exists and says nothing
+ * about whether a refusal keeps it.
+ */
+describe('a row’s drafts across a save', () => {
+  const drafts = { receivedOn: '2026-09-18', cashPositionId: 'pos-usd', description: 'Bonus' };
+
+  const finish = async (outcome: SaveOutcome, fields: readonly string[]) => {
+    const states: string[] = [];
+    const refresh = vi.fn();
+    const final = await runSave(() => Promise.resolve(outcome), (s) => states.push(s.kind), refresh);
+    return { states, refresh, kept: draftsAfterSave(drafts, fields, final) };
+  };
+
+  it('keeps the attempted date when the write conflicts, and refreshes nothing over it', async () => {
+    const { states, refresh, kept } = await finish(
+      { ok: false, error: { code: 'CONFLICT_VERSION', message: 'Changed elsewhere.' } },
+      ['receivedOn'],
+    );
+    expect(states).toEqual(['saving', 'conflict']);
+    expect(refresh).not.toHaveBeenCalled();
+    // Nothing was stored, so the date the user chose exists nowhere else.
+    expect(kept).toEqual(drafts);
+  });
+
+  it('keeps the attempted account when the write conflicts', async () => {
+    const { kept, refresh } = await finish(
+      { ok: false, error: { code: 'CONFLICT_DUPLICATE', message: 'Already recorded.' } },
+      ['cashPositionId'],
+    );
+    expect(refresh).not.toHaveBeenCalled();
+    expect(kept.cashPositionId).toBe('pos-usd');
+  });
+
+  it('keeps them through an ordinary refusal too', async () => {
+    const { kept } = await finish(
+      { ok: false, error: { code: 'VALIDATION_ERROR', message: 'That date is in the future.' } },
+      ['receivedOn'],
+    );
+    expect(kept).toEqual(drafts);
+  });
+
+  it('hands back only the fields a success actually saved', async () => {
+    const { states, refresh, kept } = await finish({ ok: true }, ['receivedOn']);
+    expect(states).toEqual(['saving', 'saved']);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    // The saved field now matches the server; the two the user is still holding
+    // are untouched, so an earlier refusal is not quietly discarded by a later
+    // unrelated save.
+    expect(kept).toEqual({ cashPositionId: 'pos-usd', description: 'Bonus' });
+  });
+
+  it('will not start a second write while one is in flight', () => {
+    // Every control on a row captured the same `entry.version`, so a second
+    // write started before the first returns would conflict with the user's own
+    // save rather than with anybody else's.
+    expect(canWrite({ kind: 'saving' })).toBe(false);
+    for (const state of [IDLE, { kind: 'saved' } as const, { kind: 'conflict', message: 'x' } as const]) {
+      expect(canWrite(state)).toBe(true);
+    }
+  });
+
+  it('drops one draft on request, which is what Reload does to all of them', () => {
+    expect(withoutDraft(drafts, 'description')).toEqual({
+      receivedOn: '2026-09-18',
+      cashPositionId: 'pos-usd',
+    });
+    // Reload discards every draft and asks the server again; the component
+    // resets to `{}` and calls `router.refresh()`, so the authoritative row is
+    // adopted only because the user chose it.
+    expect(draftsAfterSave({}, [], { kind: 'saved' })).toEqual({});
+  });
+
+  it('offers a way back to the server’s version exactly when a save has failed', () => {
+    const conflicted = render(
+      income({ direct: [entry({ kind: 'other', occurrence: null })] }),
+    );
+    // Idle rows do not offer it: there is nothing to discard.
+    expect(has(conflicted, 'entry-reload')).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The two forms                                                               */
+/* -------------------------------------------------------------------------- */
+
+const EUR_ONLY = [{ positionId: 'pos-bbva', name: 'BBVA', currency: 'EUR' }];
+const SUPPORTED = ['CHF', 'EUR', 'USD'];
+
+const addIncome = (currencies: readonly string[] = SUPPORTED): string =>
+  renderToStaticMarkup(
+    createElement(AddIncomeForm, {
+      accounts: EUR_ONLY,
+      currencies,
+      bounds: { min: '2026-09-01', max: '2026-09-30' },
+      defaultCurrency: 'EUR',
+    }),
+  );
+
+const addSource = (currencies: readonly string[] = SUPPORTED): string =>
+  renderToStaticMarkup(
+    createElement(AddIncomeSourceForm, {
+      accounts: EUR_ONLY,
+      currencies,
+      defaultCurrency: 'EUR',
+      today: '2026-09-10',
+      locale: 'en-GB',
+    }),
+  );
+
+describe('adding income by hand', () => {
+  it('offers every supported currency, not only the ones an account exists in', () => {
+    // A EUR-only user still receives dollars outside their tracked accounts,
+    // and that is an income record like any other (7.4).
+    const html = addIncome();
+    for (const code of SUPPORTED) expect(html).toContain(`<option value="${code}"`);
+  });
+
+  it('offers only the accounts that could hold the chosen currency', () => {
+    const html = addIncome();
+    expect(html).toContain('>BBVA<');
+    expect(html).toContain('>Not attributed yet<');
+  });
+
+  it('bounds the date to the month on screen', () => {
+    const html = addIncome();
+    expect(html).toContain('min="2026-09-01"');
+    expect(html).toContain('max="2026-09-30"');
+  });
+});
+
+describe('adding a recurring income source', () => {
+  it('offers an optional end date, which the schedule uses and archiving does not', () => {
+    expect(addSource()).toContain('data-testid="source-end-date"');
+  });
+
+  it('offers every schedulable income kind and nothing a schedule cannot promise', () => {
+    const html = addSource();
+    // Interest and dividends are ordinary Phase 3 recurring sources: they
+    // materialize as tracked cash like any other template (§30.9 item 5).
+    for (const label of ['Salary', 'Freelance', 'Bonus', 'Rent', 'Other income', 'Interest', 'Dividend']) {
+      expect(html).toContain(`>${label}</option>`);
+    }
+    // 6.2 refuses these on the table itself.
+    expect(html).not.toContain('>Money in from outside</option>');
+    expect(html).not.toContain('>Reconciliation adjustment</option>');
+  });
+
+  it('offers a currency the user holds no account in, for a source with no default', () => {
+    const html = addSource();
+    expect(html).toContain('<option value="USD">USD</option>');
+    expect(html).toContain('>Not attributed yet<');
+  });
+
+  it('exposes nothing that manages an existing source', () => {
+    const html = addSource().toLowerCase();
+    for (const word of ['archive', 'unarchive', 'delete']) expect(html).not.toContain(word);
   });
 });

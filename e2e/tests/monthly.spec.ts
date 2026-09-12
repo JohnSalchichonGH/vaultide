@@ -510,6 +510,42 @@ test.describe('the monthly income editor', () => {
     await expect(page.getByTestId('income-received-on')).toHaveAttribute('min', '2026-10-01');
     await expect(page.getByTestId('income-received-on')).toHaveAttribute('max', '2026-10-06');
 
+    // --- Correcting what was recorded --------------------------------------------
+    const directRow = page.getByTestId('income-entry').first();
+
+    // A direct row is the one kind with no source identity to keep, so how the
+    // money arrived is correctable here (7.4).
+    await directRow.getByTestId('entry-kind').selectOption('freelance');
+    await directRow.getByTestId('entry-settlement').selectOption('external');
+    await directRow.getByTestId('entry-apply-kind').click();
+    // The server's answer replaced the row: it now states a settlement that
+    // never touched tracked cash, so it carries no account either (7.4, 6.2).
+    await expect(directRow.getByTestId('entry-attribution')).toHaveText(
+      'Outside my tracked accounts',
+    );
+    await expect(directRow.getByTestId('entry-account')).toHaveCount(0);
+
+    // The recurring row this month owns: its financial date moves inside the
+    // month, and the occurrence it fulfils does not move with it.
+    const recorded2 = page.getByTestId('income-occurrence').first();
+    await expect(recorded2).toHaveAttribute('data-occurrence-date', '2026-10-25');
+    await recorded2.getByTestId('entry-received-on').fill('2026-10-05');
+    await expect(
+      page.getByTestId('income-occurrence').first().getByTestId('occurrence-received-on'),
+    ).toContainText('Received 5 Oct 2026');
+    // The scheduling identity did not move with the money's date.
+    await expect(page.getByTestId('income-occurrence').first()).toHaveAttribute(
+      'data-occurrence-date',
+      '2026-10-25',
+    );
+    // Still October's, still recorded once.
+    await expect(page.getByTestId('income-occurrence')).toHaveCount(1);
+    await expect(page.getByTestId('occurrence-status')).toHaveText('Recorded');
+
+    // And it cannot be pushed out of the month from here.
+    await expect(recorded2.getByTestId('entry-received-on')).toHaveAttribute('min', '2026-10-01');
+    await expect(recorded2.getByTestId('entry-received-on')).toHaveAttribute('max', '2026-10-06');
+
     // The section never widens the page on a narrow screen (16.5).
     // The section never widens the page on a narrow screen (16.5): a table
     // wider than the viewport scrolls inside its own container, and nothing —

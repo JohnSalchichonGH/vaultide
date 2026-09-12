@@ -124,13 +124,15 @@ export function crossMonthNotice(
 }
 
 /**
- * The dates a direct income row of this page may carry.
+ * The dates a row this page owns may carry.
  *
- * The month on screen, never past today. Moving an existing row to another
- * month is a historical correction and belongs to the phase that shows what it
- * affects (15.3); creating one here is ordinary maintenance of this month.
+ * The month on screen, never past today. `received_on` is a financial fact and
+ * is corrected here — including on a materialized recurring occurrence, whose
+ * `occurrence_date` is the identity and does not move with it (§30.9 item 2).
+ * What stays out is moving a recorded row to a **different** month: that is the
+ * historical correction that shows every month and span it affects (15.3).
  */
-export function directDateBounds(page: {
+export function ownedEntryDateBounds(page: {
   readonly month: string;
   readonly monthEndsOn: string;
   readonly today: string;
@@ -152,3 +154,67 @@ export const startsInThePast = (startDate: string, today: string): boolean => st
 
 export const HISTORICAL_START_WARNING =
   'Starting this source in the past creates expected occurrences from that date. Past months with no recorded or skipped occurrence may become incomplete.';
+
+/**
+ * The income kinds a **recurring source** may have (6.2, §30.9).
+ *
+ * Everything the template service accepts and nothing it does not:
+ * `external_inflow` and `adjustment` exist to explain tracked cash when it
+ * happens, so a schedule cannot promise them, and a 6.2 CHECK refuses them on
+ * the table. Every other income kind — interest and dividends included, which
+ * Phase 3 materializes as tracked cash — is a source somebody can have.
+ */
+export const SCHEDULABLE_INCOME_KINDS = [
+  'employment',
+  'freelance',
+  'bonus',
+  'rental',
+  'other',
+  'interest',
+  'dividend',
+] as const;
+
+/**
+ * The currencies a picker on this page offers, and which one it starts on.
+ *
+ * The catalogue decides, not the user's accounts (10.5): income received
+ * outside tracked accounts, income not yet attributed to an account, and a
+ * source with no default account are all legitimate in a currency no account
+ * exists for. The reporting currency is only a fallback for the case where the
+ * catalogue says nothing at all, which is a broken install rather than a state
+ * a picker should render empty for.
+ */
+export function pickerCurrencies(
+  selectable: readonly string[],
+  reportingCurrency: string,
+): readonly string[] {
+  return selectable.length === 0 ? [reportingCurrency] : selectable;
+}
+
+export function defaultPickerCurrency(
+  currencies: readonly string[],
+  reportingCurrency: string,
+): string {
+  return currencies.includes(reportingCurrency)
+    ? reportingCurrency
+    : (currencies[0] ?? reportingCurrency);
+}
+
+/**
+ * The account a form should hold after its currency changes.
+ *
+ * A cash account holds one currency (8.1, R4), so a selection made under the
+ * old one may no longer be offered. Returning the unattributed state keeps the
+ * form honest about what it will submit, rather than hiding an id the picker no
+ * longer lists and leaving the server to refuse it.
+ */
+export function accountForCurrency(
+  accounts: readonly { readonly positionId: string; readonly currency: string }[],
+  selected: string,
+  currency: string,
+  none: string,
+): string {
+  if (selected === none) return none;
+  const account = accounts.find((row) => row.positionId === selected);
+  return account !== undefined && account.currency === currency ? selected : none;
+}

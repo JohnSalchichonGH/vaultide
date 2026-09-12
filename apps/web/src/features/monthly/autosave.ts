@@ -149,3 +149,54 @@ export function saveStateText(state: SaveState): string {
       return `${state.message} Nothing was overwritten.`;
   }
 }
+
+/* -------------------------------------------------------------------------- */
+/* Row drafts (15.3, 20.3)                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What a row holds that the server has not accepted.
+ *
+ * A control whose value comes straight from the server prop has no way to show
+ * a refused edit: the moment the save fails, the field re-renders as whatever
+ * the server still says, and what the user chose is gone with no trace. So
+ * every autosaved control reads `draft ?? server` instead, and these two
+ * functions decide when a draft stops being the truth.
+ */
+export type FieldDrafts = Readonly<Record<string, unknown>>;
+
+/** A row may not start a second write while one is in flight (20.3). */
+export function canWrite(state: SaveState): boolean {
+  return state.kind !== 'saving';
+}
+
+/**
+ * The drafts a row keeps once a save has finished.
+ *
+ * Only a **success** hands its own fields back to the server — the row now
+ * matches what was sent, so holding the draft would shadow the authoritative
+ * value the refresh brings. A conflict or an error keeps every draft, including
+ * the fields this write tried: nothing was stored, so the user's attempt is
+ * still the only place those values exist, and discarding them would lose work
+ * to a failure the user did not cause.
+ *
+ * Fields this write did not touch survive either way. A date refused a moment
+ * ago is still unsaved after an unrelated amount saves.
+ */
+export function draftsAfterSave(
+  drafts: FieldDrafts,
+  savedFields: readonly string[],
+  final: SaveState,
+): FieldDrafts {
+  if (final.kind !== 'saved') return drafts;
+  const next: Record<string, unknown> = { ...drafts };
+  for (const field of savedFields) delete next[field];
+  return next;
+}
+
+/** Drop one draft without writing: what was typed is the server's value again. */
+export function withoutDraft(drafts: FieldDrafts, field: string): FieldDrafts {
+  const next: Record<string, unknown> = { ...drafts };
+  delete next[field];
+  return next;
+}

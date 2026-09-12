@@ -9,7 +9,7 @@ import {
 } from '@vaultide/finance';
 import type { RequestContext } from '../context';
 import { ValidationError } from '../errors';
-import { minorUnitsByCurrency } from '../currencies/service';
+import { currencyCatalogue } from '../currencies/service';
 import { readSettings } from '../settings/service';
 import { monthCompletenessFrom } from '../reconciliation/completeness-service';
 import type { LoadedCompletedMonth } from '../reconciliation/loader';
@@ -107,11 +107,13 @@ async function completedMonthlyPage(
   month: MonthKey,
   base: PageBase,
 ): Promise<CompletedMonthlyPageDto> {
-  const [range, settings, review, minorUnits] = await Promise.all([
+  const [range, settings, review, currencies] = await Promise.all([
     loadCompletedRange(deps, ctx.userId, reconciliationRangeStart(month), month, ctx.today),
     readSettings(deps.db, ctx.userId),
     findMonthReview(deps.db, ctx.userId, month),
-    minorUnitsByCurrency(deps.db),
+    // One catalogue read answers both questions the page has of it: how to
+    // format every amount, and which currencies a picker may offer.
+    currencyCatalogue(deps.db),
   ]);
 
   const input = range.inputs.get(month);
@@ -150,7 +152,8 @@ async function completedMonthlyPage(
   return {
     kind: 'completed',
     ...base,
-    minorUnitsByCurrency: minorUnits,
+    minorUnitsByCurrency: currencies.minorUnitsByCurrency,
+    selectableCurrencyCodes: currencies.selectableCurrencyCodes,
     review: reviewDtoOf(review),
     reconciliation,
     reporting,
@@ -178,11 +181,11 @@ async function currentMonthlyPage(
   base: PageBase,
 ): Promise<CurrentMonthlyPageDto> {
   const month = monthKey(ctx.today);
-  const [data, settings, review, minorUnits] = await Promise.all([
+  const [data, settings, review, currencies] = await Promise.all([
     loadMonthToDate(deps, ctx.userId, ctx.today),
     readSettings(deps.db, ctx.userId),
     findMonthReview(deps.db, ctx.userId, month),
-    minorUnitsByCurrency(deps.db),
+    currencyCatalogue(deps.db),
   ]);
 
   // Everything the month-to-date read holds is already dated on or before
@@ -200,7 +203,8 @@ async function currentMonthlyPage(
   return {
     kind: 'current',
     ...base,
-    minorUnitsByCurrency: minorUnits,
+    minorUnitsByCurrency: currencies.minorUnitsByCurrency,
+    selectableCurrencyCodes: currencies.selectableCurrencyCodes,
     review: reviewDtoOf(review),
     monthToDate: monthToDateFrom(data),
     reporting: await monthToDateReportingFrom(deps, data, settings, ctx.today),

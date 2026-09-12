@@ -34,8 +34,12 @@ import { cn } from '@/lib/utils';
 import { dayTitle, monthTitle } from '@/features/monthly/presentation';
 import {
   HISTORICAL_START_WARNING,
+  SCHEDULABLE_INCOME_KINDS,
+  accountForCurrency,
+  defaultPickerCurrency,
   crossMonthNotice,
-  directDateBounds,
+  ownedEntryDateBounds,
+  pickerCurrencies,
   incomeKindLabel,
   occurrenceAnchorId,
   occurrenceStateLabel,
@@ -48,11 +52,14 @@ import {
 } from '@/features/monthly/income-presentation';
 import {
   IDLE,
+  canWrite,
   decideOnBlur,
+  draftsAfterSave,
   fieldValueOf,
   isProblem,
   runSave,
   saveStateText,
+  withoutDraft,
   type SaveOutcome,
   type SaveState,
 } from '@/features/monthly/autosave';
@@ -794,16 +801,24 @@ function SkipOccurrence({
 /* -------------------------------------------------------------------------- */
 
 /**
- * The facts about the money that Monthly may correct on a materialized row.
+ * What Monthly may correct on a materialized row, and what it may not.
  *
- * Deliberately narrower than the service accepts. `kind`, `settlement`, `tags`
- * and the one-off flag are what the row **is** rather than what the money did,
- * and `occurrence_date` is scheduling identity the repository type cannot even
- * express (§30.9 item 2). Offering them here because a generic service would
- * take them would be offering a salary occurrence the chance to become a
- * dividend.
+ * `receivedOn` is a **financial fact** and is editable on the page whose month
+ * holds it — bounded to that month, because moving a recorded row to another one
+ * is the historical correction that shows what it affects (15.3). It is not
+ * identity: `occurrence_date` is, and the repository patch type cannot even
+ * express it (§30.9 item 2).
+ *
+ * `kind` and `settlement` are offered on a **direct** row and never on a
+ * materialized recurring occurrence. A salary occurrence that could become a
+ * dividend would be rewriting what its source scheduled; a row nobody scheduled
+ * has no such identity, and a payment mis-recorded as `external` changes
+ * reconciliation until it is corrected. `tags` and the one-off flag stay out of
+ * both, and currency stays out because `updateIncomeEntry` does not accept one.
  */
 interface EntryPatch {
+  readonly kind?: string;
+  readonly settlement?: string;
   readonly netAmount?: string;
   readonly grossAmount?: string | null;
   readonly receivedOn?: string;
@@ -812,47 +827,214 @@ interface EntryPatch {
 }
 
 /**
- * The amounts, account and date of a materialized row, corrected in place.
+ * What the user has on this row that the server has not accepted yet.
  *
- * Only what is genuinely a fact about the money: its kind, its settlement and
- * the occurrence it fulfils are its identity and are not offered here. A date
- * stays inside the month that owns the row — moving one to another month is the
- * historical correction that shows what it affects, and that is not this slice.
+ * An index signature as well as the named fields, so the shared draft rules in
+ * `autosave.ts` — which are field-agnostic on purpose — can operate on it.
+ */
+interface EntryDrafts extends Readonly<Record<string, unknown>> {
+  readonly kind?: string;
+  readonly settlement?: string;
+  readonly receivedOn?: string;
+  readonly cashPositionId?: string | null;
+  readonly description?: string;
+}
+
+/**
+ * One row's drafts, its save state, and the writes it may make (20.3, 15.3).
+ *
+ * A draft is simply what the user has that the server has not: it is set by
+ * every control, and cleared **only** by the save that succeeds for that field.
+ * That is what makes a conflict safe — the attempted date or account stays on
+ * screen with the conflict beside it, rather than snapping back to the server
+ * value as though nothing had been typed, and nothing is refreshed over it.
+ *
+ * Only a successful write refreshes. `reload` is the explicit way out: it
+ * discards the drafts and asks the server for the row again, so adopting the
+ * authoritative state is a choice the user makes rather than one a failed save
+ * makes for them.
+ */
+function useEntrySave(entry: MonthlyIncomeEntryDto) {
+  const router = useRouter();
+  const [state, setState] = useState<SaveState>(IDLE);
+  const [drafts, setDrafts] = useState<EntryDrafts>({});
+  const busy = state.kind === 'saving';
+
+  const setDraft = (partial: EntryDrafts): void => {
+    setDrafts((current) => ({ ...current, ...partial }));
+  };
+
+  const clearDraft = (key: string): void => {
+    setDrafts((current) => withoutDraft(current, key));
+  };
+
+  /**
+   * Write one patch under the version this row was rendered from.
+   *
+   * Refused while another write is in flight: every control on the row captured
+   * the same `entry.version`, so a second write started before the first
+   * returns would carry a version the server has already consumed and conflict
+   * against the user's own save.
+   */
+  const commit = async (patch: EntryPatch, draft: EntryDrafts = {}): Promise<SaveState> => {
+    if (!canWrite(state)) return state;
+    setDraft(draft);
+    const fields = Object.keys(draft);
+    const final = await runSave(
+      () =>
+        updateIncomeEntryAction({
+          entryId: entry.entryId,
+          expectedVersion: entry.version,
+          ...patch,
+        }),
+      setState,
+      () => {
+        router.refresh();
+      },
+    );
+    // `runSave` refreshes only a success, and the drafts follow the same rule:
+    // a conflict keeps what the user attempted, on screen, beside the message.
+    setDrafts((current) => draftsAfterSave(current, fields, final));
+    return final;
+  };
+
+  const reload = (): void => {
+    setDrafts({});
+    setState(IDLE);
+    router.refresh();
+  };
+
+  const remove = async (): Promise<SaveState> => {
+    if (!canWrite(state)) return state;
+    return runSave(() => deleteIncomeEntryAction({ entryId: entry.entryId }), setState, () => {
+      router.refresh();
+    });
+  };
+
+  return { state, setState, drafts, busy, setDraft, clearDraft, commit, reload, remove };
+}
+
+/**
+ * The income kind and how the money arrived, corrected together.
+ *
+ * They are one fact in two fields: 7.4 allows a settlement only for certain
+ * kinds, so changing the kind can invalidate the settlement beside it. Writing
+ * each on change would either send a pair the service refuses or silently
+ * reinterpret where the money went — so both are held as drafts, the settlement
+ * options follow the chosen kind, and one explicit action writes the pair.
+ */
+function KindAndSettlement({
+  entry,
+  drafts,
+  disabled,
+  onDraft,
+  onApply,
+}: {
+  readonly entry: MonthlyIncomeEntryDto;
+  readonly drafts: EntryDrafts;
+  readonly disabled: boolean;
+  readonly onDraft: (partial: EntryDrafts) => void;
+  readonly onApply: (kind: string, settlement: string) => void;
+}) {
+  const ids = { kind: useId(), settlement: useId() };
+  const kind = drafts.kind ?? entry.kind;
+  const allowed = settlementOptions(kind);
+  const settlement = drafts.settlement ?? entry.settlement;
+  // The draft pair is kept valid as it is built, so the action below can never
+  // offer a combination 7.4 does not define.
+  const effectiveSettlement = allowed.some((option) => option.value === settlement)
+    ? settlement
+    : 'tracked_cash';
+  const changed = kind !== entry.kind || effectiveSettlement !== entry.settlement;
+
+  return (
+    <>
+      <Select
+        id={ids.kind}
+        testId="entry-kind"
+        label="What kind of income"
+        hideLabel
+        value={kind}
+        options={DIRECT_KINDS.map((value) => ({ value, label: incomeKindLabel(value) }))}
+        disabled={disabled}
+        onChange={(value) => {
+          const next = settlementOptions(value);
+          onDraft({
+            kind: value,
+            settlement: next.some((option) => option.value === effectiveSettlement)
+              ? effectiveSettlement
+              : 'tracked_cash',
+          });
+        }}
+      />
+      <Select
+        id={ids.settlement}
+        testId="entry-settlement"
+        label="How it arrived"
+        hideLabel
+        value={effectiveSettlement}
+        options={allowed}
+        disabled={disabled}
+        onChange={(value) => {
+          onDraft({ settlement: value });
+        }}
+      />
+      {changed ? (
+        <button
+          type="button"
+          data-testid="entry-apply-kind"
+          className={cn(PRIMARY, 'self-end')}
+          disabled={disabled}
+          onClick={() => {
+            onApply(kind, effectiveSettlement);
+          }}
+        >
+          Apply
+        </button>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * The facts about the money on one materialized row, corrected in place.
+ *
+ * Rendered only on the page that financially owns the row, so every control
+ * here is one this month is entitled to change.
  */
 function EntryFields({
   entry,
   accounts,
   formatting,
   bounds,
-  editableDate,
+  editableIdentity,
 }: {
   readonly entry: MonthlyIncomeEntryDto;
   readonly accounts: MonthlyIncomeDto['cashAccounts'];
   readonly formatting: Formatting;
   readonly bounds: { readonly min: string; readonly max: string };
-  readonly editableDate: boolean;
+  /** Direct rows only: a scheduled occurrence's kind is its source's (7.4). */
+  readonly editableIdentity: boolean;
 }) {
-  const router = useRouter();
   const statusId = useId();
   const ids = { account: useId(), date: useId(), description: useId() };
-  const [state, setState] = useState<SaveState>(IDLE);
-  const [description, setDescription] = useState<string | null>(null);
+  const { state, setState, drafts, busy, setDraft, clearDraft, commit, reload, remove } =
+    useEntrySave(entry);
   const hydrated = useHydrated();
   const minorUnits = minorUnitsOf(formatting, entry.currency);
+  const disabled = !hydrated || busy;
 
-  const run = (send: () => Promise<SaveOutcome>): Promise<SaveState> =>
-    runSave(send, setState, () => {
-      router.refresh();
-    });
+  const settlement = drafts.settlement ?? entry.settlement;
+  const cashPositionId =
+    drafts.cashPositionId === undefined ? entry.cashPositionId : drafts.cashPositionId;
+  const description = drafts.description ?? entry.description ?? '';
 
-  const patch = (fields: EntryPatch): Promise<SaveState> =>
-    run(() =>
-      updateIncomeEntryAction({
-        entryId: entry.entryId,
-        expectedVersion: entry.version,
-        ...fields,
-      }),
-    );
+  const onInvalid = (message: string): void => {
+    setState({ kind: 'invalid', message });
+  };
+  const onReverted = (): void => {
+    setState(IDLE);
+  };
 
   return (
     <div className="flex flex-col gap-2">
@@ -864,15 +1046,11 @@ function EntryFields({
             testId="entry-net"
             saved={entry.net.amount}
             minorUnits={minorUnits}
-            disabled={!hydrated}
+            disabled={disabled}
             describedBy={statusId}
-            onCommit={(amount) => patch({ netAmount: amount })}
-            onInvalid={(message) => {
-              setState({ kind: 'invalid', message });
-            }}
-            onReverted={() => {
-              setState(IDLE);
-            }}
+            onCommit={(amount) => commit({ netAmount: amount })}
+            onInvalid={onInvalid}
+            onReverted={onReverted}
           />
         </div>
         <div className="flex flex-col items-end gap-0.5">
@@ -882,24 +1060,20 @@ function EntryFields({
             testId="entry-gross"
             saved={entry.gross?.amount ?? null}
             minorUnits={minorUnits}
-            disabled={!hydrated}
+            disabled={disabled}
             describedBy={statusId}
-            onCommit={(amount) => patch({ grossAmount: amount })}
-            onInvalid={(message) => {
-              setState({ kind: 'invalid', message });
-            }}
-            onReverted={() => {
-              setState(IDLE);
-            }}
+            onCommit={(amount) => commit({ grossAmount: amount })}
+            onInvalid={onInvalid}
+            onReverted={onReverted}
           />
           {entry.gross === null ? null : (
             <button
               type="button"
               data-testid="entry-clear-gross"
               className={ACTION}
-              disabled={!hydrated || state.kind === 'saving'}
+              disabled={disabled}
               onClick={() => {
-                void patch({ grossAmount: null });
+                void commit({ grossAmount: null });
               }}
             >
               No gross figure
@@ -909,38 +1083,66 @@ function EntryFields({
       </div>
 
       <div className="grid gap-2 sm:grid-cols-2">
-        {editableDate ? (
-          <div className="space-y-1">
-            <Label htmlFor={ids.date} className="sr-only">
-              Date the money arrived
-            </Label>
-            <Input
-              id={ids.date}
-              data-testid="entry-received-on"
-              type="date"
-              value={entry.receivedOn}
-              min={bounds.min}
-              max={bounds.max}
-              disabled={!hydrated}
-              className="tabular"
-              onChange={(event) => {
-                void patch({ receivedOn: event.target.value });
-              }}
-            />
-          </div>
+        <div className="space-y-1">
+          <Label htmlFor={ids.date} className="sr-only">
+            Date the money arrived ({entry.currency})
+          </Label>
+          <Input
+            id={ids.date}
+            data-testid="entry-received-on"
+            type="date"
+            value={drafts.receivedOn ?? entry.receivedOn}
+            min={bounds.min}
+            max={bounds.max}
+            disabled={disabled}
+            className="tabular"
+            onChange={(event) => {
+              const receivedOn = event.target.value;
+              // Inside this month only. The occurrence this row materializes
+              // keeps its own scheduled date whatever happens here.
+              if (receivedOn < bounds.min || receivedOn > bounds.max) {
+                setDraft({ receivedOn });
+                onInvalid(`Choose a date between ${bounds.min} and ${bounds.max}.`);
+                return;
+              }
+              void commit({ receivedOn }, { receivedOn });
+            }}
+          />
+        </div>
+
+        {editableIdentity ? (
+          <KindAndSettlement
+            entry={entry}
+            drafts={drafts}
+            disabled={disabled}
+            onDraft={setDraft}
+            onApply={(kind, nextSettlement) => {
+              void commit(
+                {
+                  kind,
+                  settlement: nextSettlement,
+                  // A settlement that never touched tracked cash carries no
+                  // account, and the service drops one anyway (6.2 CHECK).
+                  ...(nextSettlement === 'tracked_cash' ? {} : { cashPositionId: null }),
+                },
+                { kind, settlement: nextSettlement },
+              );
+            }}
+          />
         ) : null}
 
-        {entry.settlement === 'tracked_cash' ? (
+        {settlement === 'tracked_cash' ? (
           <Select
             id={ids.account}
             testId="entry-account"
             label="Account"
             hideLabel
-            value={entry.cashPositionId ?? NO_ACCOUNT}
+            value={cashPositionId ?? NO_ACCOUNT}
             options={accountOptions(accounts, entry.currency)}
-            disabled={!hydrated}
+            disabled={disabled}
             onChange={(value) => {
-              void patch({ cashPositionId: value === NO_ACCOUNT ? null : value });
+              const next = value === NO_ACCOUNT ? null : value;
+              void commit({ cashPositionId: next }, { cashPositionId: next });
             }}
           />
         ) : null}
@@ -953,14 +1155,22 @@ function EntryFields({
             id={ids.description}
             data-testid="entry-description"
             placeholder="Note"
-            value={description ?? (entry.description ?? '')}
-            disabled={!hydrated}
+            value={description}
+            disabled={disabled}
             onChange={(event) => {
-              setDescription(event.target.value);
+              setDraft({ description: event.target.value });
             }}
             onBlur={() => {
-              if (description === null || description === (entry.description ?? '')) return;
-              void patch({ description: description.trim() === '' ? null : description.trim() });
+              if (drafts.description === undefined) return;
+              if (drafts.description === (entry.description ?? '')) {
+                clearDraft('description');
+                return;
+              }
+              const trimmed = drafts.description.trim();
+              void commit(
+                { description: trimmed === '' ? null : trimmed },
+                { description: drafts.description },
+              );
             }}
           />
         </div>
@@ -968,14 +1178,19 @@ function EntryFields({
 
       <SaveStatus id={statusId} state={state} />
 
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
+        {state.kind === 'conflict' || state.kind === 'error' ? (
+          <button type="button" data-testid="entry-reload" className={ACTION} onClick={reload}>
+            Reload
+          </button>
+        ) : null}
         <button
           type="button"
           data-testid="entry-delete"
           className={ACTION}
-          disabled={!hydrated || state.kind === 'saving'}
+          disabled={disabled}
           onClick={() => {
-            void run(() => deleteIncomeEntryAction({ entryId: entry.entryId }));
+            void remove();
           }}
         >
           Delete
@@ -1233,9 +1448,9 @@ function OccurrenceRow({
                 accounts={accounts}
                 formatting={formatting}
                 bounds={bounds}
-                // The occurrence fixes the schedule; the money's date is a fact
-                // about this month and stays inside it.
-                editableDate={false}
+                // The occurrence fixes what this row is; the date the money
+                // arrived is a separate fact, and this month owns it.
+                editableIdentity={false}
               />
             ) : (
               <ElsewhereNotice entry={occurrenceState.entry} locale={formatting.locale} />
@@ -1375,14 +1590,14 @@ function EntryRow({
   formatting,
   month,
   bounds,
-  editableDate,
+  editableIdentity,
 }: {
   readonly entry: MonthlyIncomeEntryDto;
   readonly accounts: MonthlyIncomeDto['cashAccounts'];
   readonly formatting: Formatting;
   readonly month: string;
   readonly bounds: { readonly min: string; readonly max: string };
-  readonly editableDate: boolean;
+  readonly editableIdentity: boolean;
 }) {
   const owns = ownsEntry(entry, month);
 
@@ -1441,7 +1656,7 @@ function EntryRow({
             accounts={accounts}
             formatting={formatting}
             bounds={bounds}
-            editableDate={editableDate}
+            editableIdentity={editableIdentity}
           />
         ) : (
           <ElsewhereNotice entry={entry} locale={formatting.locale} />
@@ -1467,7 +1682,7 @@ const DIRECT_KINDS = [
   'adjustment',
 ] as const;
 
-function AddIncomeForm({
+export function AddIncomeForm({
   accounts,
   currencies,
   bounds,
@@ -1579,7 +1794,10 @@ function AddIncomeForm({
           label="Currency"
           value={currency}
           options={currencies.map((code) => ({ value: code, label: code }))}
-          onChange={setCurrency}
+          onChange={(value) => {
+            setCurrency(value);
+            setAccount((current) => accountForCurrency(accounts, current, value, NO_ACCOUNT));
+          }}
         />
         <div className="space-y-1.5">
           <Label htmlFor={ids.net}>Net ({currency})</Label>
@@ -1657,7 +1875,6 @@ function AddIncomeForm({
 /* Add a recurring income source                                               */
 /* -------------------------------------------------------------------------- */
 
-const SOURCE_KINDS = ['employment', 'freelance', 'bonus', 'rental', 'other'] as const;
 const FREQUENCIES = [
   { value: 'monthly', label: 'Every month' },
   { value: 'quarterly', label: 'Every three months' },
@@ -1674,7 +1891,7 @@ const FREQUENCIES = [
  * historical — which is the schedule's own meaning (§30.10) and is therefore
  * stated plainly rather than quietly prevented.
  */
-function AddIncomeSourceForm({
+export function AddIncomeSourceForm({
   accounts,
   currencies,
   defaultCurrency,
@@ -1696,6 +1913,7 @@ function AddIncomeSourceForm({
     frequency: useId(),
     dayOfMonth: useId(),
     startDate: useId(),
+    endDate: useId(),
     amount: useId(),
     gross: useId(),
     account: useId(),
@@ -1707,6 +1925,7 @@ function AddIncomeSourceForm({
   const [frequency, setFrequency] = useState<string>('monthly');
   const [dayOfMonth, setDayOfMonth] = useState('25');
   const [startDate, setStartDate] = useState(today);
+  const [endDate, setEndDate] = useState('');
   const [amount, setAmount] = useState('');
   const [gross, setGross] = useState('');
   const [account, setAccount] = useState(NO_ACCOUNT);
@@ -1741,6 +1960,9 @@ function AddIncomeSourceForm({
             frequency: frequency as 'monthly',
             ...(Number.isNaN(day) ? {} : { dayOfMonth: day }),
             startDate,
+            // The server refuses an end before the start; the form does not
+            // restate that rule, it just carries what was chosen (6.2).
+            ...(endDate === '' ? {} : { endDate }),
             ...(account === NO_ACCOUNT ? {} : { cashPositionId: account }),
             amount: net,
             ...(grossAmount === '' ? {} : { grossAmount }),
@@ -1786,7 +2008,7 @@ function AddIncomeSourceForm({
           testId="source-kind"
           label="What kind"
           value={incomeKind}
-          options={SOURCE_KINDS.map((value) => ({ value, label: incomeKindLabel(value) }))}
+          options={SCHEDULABLE_INCOME_KINDS.map((value) => ({ value, label: incomeKindLabel(value) }))}
           onChange={setIncomeKind}
         />
         <Select
@@ -1795,7 +2017,10 @@ function AddIncomeSourceForm({
           label="Currency"
           value={currency}
           options={currencies.map((code) => ({ value: code, label: code }))}
-          onChange={setCurrency}
+          onChange={(value) => {
+            setCurrency(value);
+            setAccount((current) => accountForCurrency(accounts, current, value, NO_ACCOUNT));
+          }}
         />
         <Select
           id={ids.frequency}
@@ -1832,6 +2057,22 @@ function AddIncomeSourceForm({
               setStartDate(event.target.value);
             }}
           />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={ids.endDate}>Ends (optional)</Label>
+          <Input
+            id={ids.endDate}
+            data-testid="source-end-date"
+            type="date"
+            value={endDate}
+            className="tabular"
+            onChange={(event) => {
+              setEndDate(event.target.value);
+            }}
+          />
+          <p className={META}>
+            A source that genuinely stopped says so here. Leave it empty while it continues.
+          </p>
         </div>
         <div className="space-y-1.5">
           <Label htmlFor={ids.amount}>Usual net ({currency})</Label>
@@ -1947,6 +2188,16 @@ export interface IncomeSectionProps {
   readonly monthEndsOn: string;
   readonly today: string;
   readonly reportingCurrency: string;
+  /**
+   * The active FX-supported catalogue (10.5), from the page's own read.
+   *
+   * Never the currencies the user holds an account in: income received outside
+   * tracked accounts has no account at all, tracked income may be recorded
+   * before it is attributed to one, and a source need not have a default
+   * account. Offering only account currencies would make each of those
+   * unrecordable.
+   */
+  readonly selectableCurrencyCodes: readonly string[];
   readonly formatting: Formatting;
 }
 
@@ -1957,18 +2208,14 @@ export function IncomeSection({
   monthEndsOn,
   today,
   reportingCurrency,
+  selectableCurrencyCodes,
   formatting,
 }: IncomeSectionProps) {
-  const bounds = directDateBounds({ month, monthEndsOn, today });
+  const bounds = ownedEntryDateBounds({ month, monthEndsOn, today });
   const candidates =
     'earlyReceiptCandidates' in income ? income.earlyReceiptCandidates : [];
-  const currencies =
-    income.cashAccounts.length === 0
-      ? [reportingCurrency]
-      : [...new Set(income.cashAccounts.map((account) => account.currency))];
-  const defaultCurrency = currencies.includes(reportingCurrency)
-    ? reportingCurrency
-    : (currencies[0] as string);
+  const currencies = pickerCurrencies(selectableCurrencyCodes, reportingCurrency);
+  const defaultCurrency = defaultPickerCurrency(currencies, reportingCurrency);
 
   return (
     <div className="space-y-6" data-testid="monthly-income">
@@ -2059,7 +2306,8 @@ export function IncomeSection({
                 formatting={formatting}
                 month={month}
                 bounds={bounds}
-                editableDate={false}
+                // Recurring: its kind and settlement are its source's.
+                editableIdentity={false}
               />
             ))}
           </Table>
@@ -2093,7 +2341,8 @@ export function IncomeSection({
                 formatting={formatting}
                 month={month}
                 bounds={bounds}
-                editableDate
+                // Nothing scheduled it, so it has no source identity to keep.
+                editableIdentity
               />
             ))}
           </Table>

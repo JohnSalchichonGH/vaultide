@@ -65,3 +65,30 @@ export async function minorUnitsByCurrency(db: Database): Promise<Record<string,
   const rows = await listCurrencyRecords(db);
   return Object.fromEntries(rows.map((row) => [row.code, row.minorUnits]));
 }
+
+/**
+ * The two things a page needs from the catalogue, from **one** read.
+ *
+ * A page formats every amount it shows and offers a currency for every amount
+ * it takes, and those are different questions over the same rows: minor units
+ * are needed for *any* currency a record already carries, while a picker may
+ * only offer one this product is willing to convert (`fxSupportedOnly`, 10.5).
+ *
+ * Reading the catalogue twice to answer them would be two scopes for one table
+ * that is global, tiny and already in hand — so the FX-supported filter is
+ * applied here, over rows the single read returned, rather than by a second
+ * query with a `WHERE` clause.
+ */
+export interface CurrencyCatalogue {
+  readonly minorUnitsByCurrency: Readonly<Record<string, number>>;
+  /** Active and FX-supported, ascending — what a picker may offer (10.5). */
+  readonly selectableCurrencyCodes: readonly string[];
+}
+
+export async function currencyCatalogue(db: Database): Promise<CurrencyCatalogue> {
+  const rows = await listCurrencyRecords(db);
+  return {
+    minorUnitsByCurrency: Object.fromEntries(rows.map((row) => [row.code, row.minorUnits])),
+    selectableCurrencyCodes: rows.filter((row) => row.isFxSupported).map((row) => row.code),
+  };
+}

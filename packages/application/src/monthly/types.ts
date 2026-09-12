@@ -53,6 +53,13 @@ interface MonthlyPageBase {
   readonly navigation: MonthlyNavigationDto;
   /** Minor units per currency, so every amount formats in its own scale. */
   readonly minorUnitsByCurrency: Readonly<Record<string, number>>;
+  /**
+   * The currencies a picker on this page may offer: active and FX-supported
+   * (10.5). Deliberately **not** the currencies the user holds an account in —
+   * income received outside tracked accounts, and tracked income still awaiting
+   * attribution, are both legitimate in a currency no account exists for.
+   */
+  readonly selectableCurrencyCodes: readonly string[];
   readonly review: MonthReviewDto;
 }
 
