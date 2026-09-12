@@ -354,6 +354,20 @@ export async function acceptSuggestion(
     });
   }
 
+  // An expense is strictly positive (6.2), while a term may legitimately be
+  // zero — `recurring_template_terms.amount >= 0`, which income relies on. The
+  // two contracts are both correct and they meet here, at the one point where a
+  // term amount becomes an expense, so this is where the difference is stated.
+  // Without it a zero-term acceptance reaches `expense_entries_amount_positive`
+  // and surfaces as an internal error instead of something the user can act on.
+  // The DB CHECK stays the backstop; this is the answer.
+  if (template.kind === 'expense' && !new Decimal(amount).greaterThan(0)) {
+    throw new ValidationError(
+      'An expense has to be more than zero. Enter what this one actually cost.',
+      { amount: ['Enter an amount greater than zero.'] },
+    );
+  }
+
   // Three states, and `??` would collapse two of them: an omitted gross inherits
   // the term's — exactly what every caller did before the field existed — while
   // an explicit `null` states that this occurrence had no gross at all. Written

@@ -2126,3 +2126,130 @@ describe('early materialization reaches only the next unresolved occurrence', ()
     expect(new Set(claimed).size).toBe(claimed.length);
   });
 });
+
+describe('a materialized recurring expense is still an expense', () => {
+  // `recurring_template_terms.amount >= 0` and `expense_entries.amount > 0` are
+  // both right: a term may legitimately be zero (a month a source charged
+  // nothing, which income records as a real fact), while an expense of zero is
+  // not a purchase. Acceptance is where the two contracts meet, so it is where
+  // the difference has to be stated — otherwise a zero term reaches the CHECK
+  // and the user is shown an internal error for an ordinary data problem.
+
+  async function expenseTemplate(amount: string) {
+    const { template } = await createTemplate(deps(), SEPT_15, {
+      kind: 'expense',
+      name: 'Gym',
+      categoryId: groceries,
+      currency: 'EUR',
+      frequency: 'monthly',
+      dayOfMonth: 1,
+      startDate: '2026-01-01',
+      cashPositionId: bbva,
+      amount,
+    });
+    return template;
+  }
+
+  it('refuses a zero-amount occurrence as something the user can act on', async () => {
+    const template = await expenseTemplate('0');
+    await expect(
+      acceptSuggestion(deps(), SEPT_15, {
+        templateId: template.id,
+        occurrenceDate: '2026-09-01',
+      }),
+    ).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+      fieldErrors: { amount: expect.any(Array) },
+    });
+  });
+
+  it('writes no expense row when it refuses, leaving the occurrence unresolved', async () => {
+    const template = await expenseTemplate('0');
+    await expect(
+      acceptSuggestion(deps(), SEPT_15, {
+        templateId: template.id,
+        occurrenceDate: '2026-09-01',
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+
+    expect(await countRows(USER_A, 'expense_entries')).toBe(0);
+    const suggestions = await listSuggestions(deps(), SEPT_15, {
+      from: '2026-09-01',
+      to: '2026-09-30',
+      templates: await listUserTemplates(deps(), SEPT_15),
+    });
+    expect(suggestions.find((row) => row.occurrenceDate === '2026-09-01')?.state).toBe('due');
+  });
+
+  it('refuses a zero the caller states explicitly, not only one inherited from the term', async () => {
+    const template = await expenseTemplate('40.00');
+    await expect(
+      acceptSuggestion(deps(), SEPT_15, {
+        templateId: template.id,
+        occurrenceDate: '2026-09-01',
+        amount: '0.00',
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(await countRows(USER_A, 'expense_entries')).toBe(0);
+  });
+
+  it('accepts the smallest amount above zero, so the bound is zero and not a cent', async () => {
+    const template = await expenseTemplate('0.00000001');
+    const accepted = await acceptSuggestion(deps(), SEPT_15, {
+      templateId: template.id,
+      occurrenceDate: '2026-09-01',
+    });
+    expect(accepted.entry).toMatchObject({ amount: '0.00000001' });
+  });
+
+  it('leaves income’s zero semantics untouched', async () => {
+    // A zero income occurrence is a fact: the source produced nothing that
+    // month, and `income_entries` has no positivity CHECK precisely so it can
+    // be recorded. Nothing here narrows that.
+    const { template } = await createTemplate(deps(), SEPT_15, {
+      kind: 'income',
+      name: 'Royalties',
+      incomeKind: 'other',
+      currency: 'EUR',
+      frequency: 'monthly',
+      dayOfMonth: 1,
+      startDate: '2026-01-01',
+      cashPositionId: bbva,
+      amount: '0',
+    });
+
+    const accepted = await acceptSuggestion(deps(), SEPT_15, {
+      templateId: template.id,
+      occurrenceDate: '2026-09-01',
+    });
+    expect(accepted.kind).toBe('income');
+    expect(accepted.entry).toMatchObject({ netAmount: '0.00000000' });
+  });
+
+  it('judges the term the occurrence falls under, not the newest one', async () => {
+    // August is charged; September's term is zero. The rule has to follow the
+    // same term selection the amount does, or it would refuse a past
+    // occurrence that was perfectly valid when it happened.
+    const template = await expenseTemplate('40.00');
+    await setTemplateTerm(deps(), SEPT_15, {
+      templateId: template.id,
+      effectiveFrom: '2026-09-01',
+      amount: '0',
+      expected: { state: 'absent' },
+    });
+
+    const august = await acceptSuggestion(deps(), SEPT_15, {
+      templateId: template.id,
+      occurrenceDate: '2026-08-01',
+    });
+    expect(august.entry).toMatchObject({ amount: '40.00000000' });
+
+    await expect(
+      acceptSuggestion(deps(), SEPT_15, {
+        templateId: template.id,
+        occurrenceDate: '2026-09-01',
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(await countRows(USER_A, 'expense_entries')).toBe(1);
+  });
+});
