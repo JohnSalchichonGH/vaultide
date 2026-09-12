@@ -1476,6 +1476,119 @@ describe('accepting and skipping occurrences', () => {
   });
 });
 
+/**
+ * The gross figure of one accepted occurrence (blueprint 6.2, 15.3 section 2).
+ *
+ * A term carries a net and an optional gross, and acceptance may state either
+ * for this occurrence alone. The three states are distinct facts and the
+ * implementation must not collapse them: omitting the field inherits the term's
+ * gross — the behaviour of every caller written before it existed — while an
+ * explicit `null` says this occurrence had no gross at all, which is what an
+ * overridden net needs so the row does not carry a pair the user never agreed
+ * to. No `gross >= net` rule is implied or enforced anywhere; 6.2 requires only
+ * that both be non-negative.
+ */
+describe('a one-occurrence gross amount', () => {
+  // `null` means "create the source without a gross term"; a default parameter
+  // could not express that, because passing `undefined` would take the default.
+  async function salaryTemplate(gross: string | null = '2700.00') {
+    const { template } = await createTemplate(deps(), SEPT_15, {
+      kind: 'income',
+      name: 'Salary',
+      incomeKind: 'employment',
+      currency: 'EUR',
+      frequency: 'monthly',
+      dayOfMonth: 25,
+      startDate: '2026-01-01',
+      cashPositionId: bbva,
+      amount: '2100.00',
+      ...(gross === null ? {} : { grossAmount: gross }),
+    });
+    return template;
+  }
+
+  it('inherits the term’s gross when the field is omitted', async () => {
+    const template = await salaryTemplate();
+    const accepted = await acceptSuggestion(deps(), SEPT_15, {
+      templateId: template.id,
+      occurrenceDate: '2026-08-25',
+    });
+    if (accepted.kind !== 'income') throw new Error('expected an income entry');
+    expect(accepted.entry.netAmount).toBe('2100.00000000');
+    expect(accepted.entry.grossAmount).toBe('2700.00000000');
+  });
+
+  it('inherits an absent term gross as absent, which is unchanged behaviour', async () => {
+    const template = await salaryTemplate(null);
+    const accepted = await acceptSuggestion(deps(), SEPT_15, {
+      templateId: template.id,
+      occurrenceDate: '2026-08-25',
+    });
+    if (accepted.kind !== 'income') throw new Error('expected an income entry');
+    expect(accepted.entry.grossAmount).toBeNull();
+  });
+
+  it('stores an explicit gross for this occurrence alone', async () => {
+    const template = await salaryTemplate();
+    const accepted = await acceptSuggestion(deps(), SEPT_15, {
+      templateId: template.id,
+      occurrenceDate: '2026-08-25',
+      amount: '2300.00',
+      grossAmount: '2950.00',
+    });
+    if (accepted.kind !== 'income') throw new Error('expected an income entry');
+    expect(accepted.entry.netAmount).toBe('2300.00000000');
+    expect(accepted.entry.grossAmount).toBe('2950.00000000');
+
+    // The term itself is untouched: this was one occurrence, not a raise.
+    const [term] = await listTerms(harness.db, USER_A, template.id);
+    expect(term?.amount).toBe('2100.00000000');
+    expect(term?.grossAmount).toBe('2700.00000000');
+  });
+
+  it('records no gross at all when the field is explicitly null', async () => {
+    const template = await salaryTemplate();
+    const accepted = await acceptSuggestion(deps(), SEPT_15, {
+      templateId: template.id,
+      occurrenceDate: '2026-08-25',
+      amount: '450.00',
+      grossAmount: null,
+    });
+    if (accepted.kind !== 'income') throw new Error('expected an income entry');
+    expect(accepted.entry.netAmount).toBe('450.00000000');
+    // Not the term's 2700: an explicit null is a statement, not an omission.
+    expect(accepted.entry.grossAmount).toBeNull();
+  });
+
+  it('refuses a gross on an expense source rather than dropping it', async () => {
+    const { template } = await createTemplate(deps(), SEPT_15, {
+      kind: 'expense',
+      name: 'Rent',
+      categoryId: groceries,
+      currency: 'EUR',
+      frequency: 'monthly',
+      dayOfMonth: 1,
+      startDate: '2026-01-01',
+      amount: '900.00',
+    });
+
+    await expect(
+      acceptSuggestion(deps(), SEPT_15, {
+        templateId: template.id,
+        occurrenceDate: '2026-09-01',
+        grossAmount: '1000.00',
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+
+    // And omitting it still materializes the expense exactly as before.
+    const accepted = await acceptSuggestion(deps(), SEPT_15, {
+      templateId: template.id,
+      occurrenceDate: '2026-09-01',
+    });
+    expect(accepted.kind).toBe('expense');
+  });
+});
+
 describe('a term write says what it expected to find', () => {
   async function salaryTemplate() {
     const { template, term } = await createTemplate(deps(), SEPT_15, {

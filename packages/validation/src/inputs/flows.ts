@@ -300,6 +300,21 @@ export function acceptSuggestionInput(today: string) {
     receivedToday: z.boolean().optional(),
     /** "This month only": overrides the term for this occurrence alone. */
     amount: moneyString({ nonNegative: true }).optional(),
+    /**
+     * The gross figure for this occurrence alone, in three deliberate states.
+     *
+     * Omitted inherits the term's gross, which is what every caller before this
+     * field did; an amount states this occurrence's own gross; and `null` states
+     * that it had none. The third state exists because inheriting a term's gross
+     * beside an overridden net produces a pair the user never agreed to — the
+     * same nullable shape `updateIncomeEntryInput` already uses, so a gross can
+     * be stated once rather than corrected afterwards.
+     *
+     * Income templates only: `expense_entries` has no gross column, so the
+     * service refuses an explicit gross on an expense source rather than
+     * dropping a stated financial value.
+     */
+    grossAmount: moneyString({ nonNegative: true }).nullable().optional(),
     cashPositionId: z.uuid().nullable().optional(),
     description: description.optional(),
   });

@@ -260,6 +260,12 @@ export interface AcceptSuggestionArgs {
   readonly receivedToday?: boolean | undefined;
   /** Overrides the term's amount for this occurrence only ("this month only"). */
   readonly amount?: string | undefined;
+  /**
+   * The gross figure for this occurrence only, in three distinct states:
+   * omitted inherits the term's gross, a string states this occurrence's own,
+   * and `null` states that it had none. Income sources only.
+   */
+  readonly grossAmount?: string | null | undefined;
   readonly cashPositionId?: string | null | undefined;
   readonly description?: string | undefined;
 }
@@ -282,6 +288,14 @@ export async function acceptSuggestion(
 ): Promise<AcceptedOccurrence> {
   const template = await findTemplate(deps.db, ctx.userId, args.templateId);
   if (template === undefined) throw new NotFoundError('That source no longer exists.');
+
+  // An expense has no gross figure to carry (6.2: `expense_entries` has no such
+  // column), so a stated one is refused rather than silently dropped.
+  if (args.grossAmount !== undefined && template.kind !== 'income') {
+    throw new ValidationError('Only income records a gross amount.', {
+      grossAmount: ['This source is not income.'],
+    });
+  }
 
   // Two shapes, and only one of them may carry a future occurrence.
   //
@@ -340,6 +354,13 @@ export async function acceptSuggestion(
     });
   }
 
+  // Three states, and `??` would collapse two of them: an omitted gross inherits
+  // the term's — exactly what every caller did before the field existed — while
+  // an explicit `null` states that this occurrence had no gross at all. Written
+  // as an `undefined` test rather than a coalesce so that stays true.
+  const grossAmount =
+    args.grossAmount === undefined ? (term?.grossAmount?.toString() ?? null) : args.grossAmount;
+
   const cashPositionId =
     args.cashPositionId === undefined ? template.cashPositionId : args.cashPositionId;
 
@@ -365,7 +386,7 @@ export async function acceptSuggestion(
         kind: locked.incomeKind,
         receivedOn: financialDate,
         netAmount: amount,
-        grossAmount: term?.grossAmount?.toString() ?? null,
+        grossAmount,
         currency: locked.currency,
         settlement: 'tracked_cash',
         cashPositionId,
