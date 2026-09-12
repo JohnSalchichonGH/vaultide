@@ -38,8 +38,7 @@ logs into this file.
     Reconciliation, the MonthReview reviewed state, and advisory
     dismiss/restore as presentation state;
   - **Monthly Accounts editing** — maintaining each cash account's balances for
-    the month on screen, together with the completed-month opening-boundary
-    finance repair that landed with it;
+    the month on screen;
   - **Monthly Income** — a month's recurring income occurrences and the money
     actually received in it.
 
