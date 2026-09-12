@@ -17,7 +17,7 @@ work on the repository; it does not restate the blueprint's rules.
 ### User-facing production
 
 Phases 0–2 are accepted, frozen and production-verified. Phase 3 is still in
-progress, but its first Monthly experience is live. What is usable today:
+progress, but Monthly is live. What is usable today:
 
 - account creation, email verification, sign-in, and an optional second factor;
 - settings: base and reporting currencies, timezone and locale;
@@ -32,6 +32,14 @@ progress, but its first Monthly experience is live. What is usable today:
 - Monthly, for a completed month or the current one: an overview of its income,
   spending and savings in the reporting currency, its reconciliation in each
   native currency, and, for a completed month, how complete its records are;
+- working a month through Monthly itself:
+  - **Income** — what each recurring source expected that month and what became
+    of it, recording or skipping an occurrence, recording one received early,
+    changing what a source is worth from an occurrence on, adding a recurring
+    income source, and maintaining the other income received in the month;
+  - **Accounts** — each cash account's balance for that month: entering or
+    correcting a statement balance, confirming a last-day snapshot as one,
+    confirming a month unchanged, and updating balances today;
 - marking a completed month reviewed, and hiding an advisory for that month or
   showing it again. Hiding changes only what the page shows; it resolves
   nothing.
@@ -70,17 +78,18 @@ an advisory for that month and show it again; that is presentation and review
 state only, and changes neither the reconciliation nor any financial record.
 There are no corrective actions on an issue yet.
 
-In production, the Monthly foundation consumes part of this through one
-composite read: a month's reconciliation, reporting-currency figures and
-completeness. The rest, such as recording flows and recurring templates, has no
-user interface yet.
+In production, Monthly consumes this through one composite read: a month's
+reconciliation, reporting-currency figures and completeness, the cash balances
+it is measured from, and the income it expected and received. Known expenses,
+transfers and the standalone Spending and Income pages have no user interface
+yet.
 
 ### Remaining Phase 3
 
 Phase 3 is **in progress**, and is neither accepted nor frozen. Still to do:
 
-- Monthly Income, Known expenses and Accounts editing, with the existing
-  financial actions those sections need;
+- Monthly Known expenses, with the existing financial actions that section
+  needs;
 - the Spending and Income pages;
 - bulk history entry and correction;
 - the remaining end-to-end journeys and hardening;
@@ -115,9 +124,9 @@ reconciliation identities, rate selection and every edge case.
 
 ```text
 apps/web             Next.js App Router: auth pages, onboarding, settings, shell,
-                     dashboard, accounts and account detail, Monthly overview
-                     and reconciliation; /api/auth, /api/cron/fx-refresh,
-                     /api/health
+                     dashboard, accounts and account detail, Monthly overview,
+                     income, accounts and reconciliation; /api/auth,
+                     /api/cron/fx-refresh, /api/health
 packages/finance     pure engines — money, dates, FX, Unavailable/Partial,
                      positions and net worth, flow roles, recurrence,
                      completed-month, month-to-date and span reconciliation,
