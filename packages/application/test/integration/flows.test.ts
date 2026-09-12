@@ -2298,6 +2298,31 @@ describe('a recurring expense obeys the same category rule as a direct one', () 
     expect(await countRows(USER_A, 'recurring_templates')).toBe(0);
   });
 
+  it.each(PROTECTED)('leaves an income template carrying a %s category alone', async (kind) => {
+    // Deliberately odd: nothing sensible files income under a transfer fee, and
+    // `createTemplateInput` still accepts a `categoryId` on either kind. 7.4 is
+    // a rule about what an **expense** may be filed under, so it has nothing to
+    // say here, and this repair must not quietly narrow an accepted contract it
+    // was not asked to touch. The assertion is that this stayed exactly as it
+    // was before the guard existed.
+    const categoryId = await categoryOfKind(kind);
+    const { template } = await createTemplate(deps(), SEPT_15, {
+      kind: 'income',
+      name: 'Odd but accepted',
+      incomeKind: 'other',
+      categoryId,
+      currency: 'EUR',
+      frequency: 'monthly',
+      dayOfMonth: 1,
+      startDate: '2026-01-01',
+      cashPositionId: bbva,
+      amount: '75.00',
+    });
+
+    expect(template.kind).toBe('income');
+    expect(template.categoryId).toBe(categoryId);
+  });
+
   it.each(ALLOWED)('still creates an expense template under %s', async (kind) => {
     const { template } = await createTemplate(
       deps(),

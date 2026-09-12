@@ -137,12 +137,20 @@ async function validateTemplateShape(
   }
 
   if (args.categoryId !== undefined) {
-    // A recurring expense is an ordinary Phase 3 expense that happens to be
-    // scheduled, so it obeys the same rule about which category kinds one may
-    // be filed under (7.4). Checking only that the category exists and is live
-    // let a template be built on a kind the direct path refuses, and every
-    // occurrence it materialized was a fact 7.4 does not define.
-    assertCategoryUsableInPhase3(await requireCategory(deps.db, ctx, args.categoryId));
+    const category = await requireCategory(deps.db, ctx, args.categoryId);
+    if (args.kind === 'expense') {
+      // A recurring expense is an ordinary Phase 3 expense that happens to be
+      // scheduled, so it obeys the same rule about which category kinds one may
+      // be filed under (7.4). Checking only that the category exists and is live
+      // let a template be built on a kind the direct path refuses, and every
+      // occurrence it materialized was a fact 7.4 does not define.
+      //
+      // Only for an expense: 7.4 is a rule about what an expense may be filed
+      // under, and an income template's category is not that. The input accepts
+      // one on either kind, and widening this test to both would narrow an
+      // accepted contract that has nothing to do with the defect being repaired.
+      assertCategoryUsableInPhase3(category);
+    }
   }
 
   if (args.cashPositionId !== undefined) {
