@@ -2361,3 +2361,200 @@ describe('a recurring expense obeys the same category rule as a direct one', () 
     });
   });
 });
+
+describe('a corrected flow and the dormancy it clears are one transaction', () => {
+  // ADR 0005 §2: the flow write and the dormancy clear commit together or not
+  // at all. Creation has always done this; correction opened a second
+  // transaction for the clear, so a failure between them could leave the entry
+  // attributed to an account still asserting that nothing moved through it —
+  // and nothing would report it, because both halves succeeded on their own.
+
+  async function makeDormant(): Promise<void> {
+    await recordValuation(harness.services.positions, SEPT_15, {
+      positionId: savings,
+      valuedOn: '2026-09-01',
+      amount: '0',
+      datePrecision: 'exact',
+    });
+    const rows = await withUser(harness.db, { userId: USER_A }, async (tx) => {
+      const result = await tx.execute(sql`SELECT version FROM positions WHERE id = ${savings}`);
+      return result.rows as { version: number }[];
+    });
+    await updateCashAccount(harness.services.positions, SEPT_15, {
+      positionId: savings,
+      expectedVersion: rows[0]?.version as number,
+      isDormant: true,
+    });
+  }
+
+  async function accountState(): Promise<{ dormant: boolean; version: number }> {
+    return withUser(harness.db, { userId: USER_A }, async (tx) => {
+      const result = await tx.execute(
+        sql`SELECT c.is_dormant, p.version
+              FROM cash_accounts c JOIN positions p ON p.id = c.position_id
+             WHERE c.position_id = ${savings}`,
+      );
+      const row = result.rows[0] as { is_dormant: boolean; version: number };
+      return { dormant: row.is_dormant, version: row.version };
+    });
+  }
+
+  /**
+   * A database barrier rather than a sleep: any UPDATE of `cash_accounts`
+   * raises.
+   *
+   * The clear takes its row lock first and fails on the write itself, so the
+   * failure lands strictly *after* the flow row has been updated. Whether the
+   * flow row survives is then exactly the question of whether the two writes
+   * shared a transaction.
+   */
+  async function withBlockedDormancyClear<T>(body: () => Promise<T>): Promise<T> {
+    await harness.asOwner(
+      `CREATE OR REPLACE FUNCTION test_block_cash_account_write() RETURNS trigger
+         LANGUAGE plpgsql AS $fn$ BEGIN RAISE EXCEPTION 'cash_accounts write blocked'; END $fn$`,
+    );
+    await harness.asOwner(
+      `CREATE TRIGGER test_block_cash_account_write BEFORE UPDATE ON cash_accounts
+         FOR EACH ROW EXECUTE FUNCTION test_block_cash_account_write()`,
+    );
+    try {
+      return await body();
+    } finally {
+      await harness.asOwner('DROP TRIGGER IF EXISTS test_block_cash_account_write ON cash_accounts');
+      await harness.asOwner('DROP FUNCTION IF EXISTS test_block_cash_account_write()');
+    }
+  }
+
+  async function flowRow(table: 'income_entries' | 'expense_entries', entryId: string) {
+    return withUser(harness.db, { userId: USER_A }, async (tx) => {
+      const result = await tx.execute(
+        sql`SELECT cash_position_id, version
+              FROM ${sql.identifier(table)} WHERE id = ${entryId}`,
+      );
+      return result.rows[0] as { cash_position_id: string; version: number };
+    });
+  }
+
+  async function income() {
+    return createIncomeEntry(deps(), SEPT_15, {
+      kind: 'other',
+      receivedOn: '2026-09-10',
+      netAmount: '100.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId: bbva,
+    });
+  }
+
+  async function expense() {
+    return createExpenseEntry(deps(), SEPT_15, {
+      categoryId: groceries,
+      incurredOn: '2026-09-10',
+      amount: '15.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId: bbva,
+    });
+  }
+
+  it('rolls the income correction back when the clear cannot be written', async () => {
+    const entry = await income();
+    await makeDormant();
+
+    await withBlockedDormancyClear(async () => {
+      await expect(
+        updateIncomeEntry(deps(), SEPT_15, {
+          entryId: entry.id,
+          expectedVersion: entry.version,
+          cashPositionId: savings,
+        }),
+      ).rejects.toThrow();
+    });
+
+    const row = await flowRow('income_entries', entry.id);
+    expect(row.cash_position_id).toBe(bbva);
+    expect(row.version).toBe(entry.version);
+    expect((await accountState()).dormant).toBe(true);
+    // Nothing half-happened: an audited update would mean the row write had
+    // committed on its own.
+    expect((await auditFor(USER_A, entry.id)).map((row) => row.action)).toEqual(['insert']);
+  });
+
+  it('rolls the expense correction back when the clear cannot be written', async () => {
+    const entry = await expense();
+    await makeDormant();
+
+    await withBlockedDormancyClear(async () => {
+      await expect(
+        updateExpenseEntry(deps(), SEPT_15, {
+          entryId: entry.id,
+          expectedVersion: entry.version,
+          cashPositionId: savings,
+        }),
+      ).rejects.toThrow();
+    });
+
+    const row = await flowRow('expense_entries', entry.id);
+    expect(row.cash_position_id).toBe(bbva);
+    expect(row.version).toBe(entry.version);
+    expect((await accountState()).dormant).toBe(true);
+    expect((await auditFor(USER_A, entry.id)).map((row) => row.action)).toEqual(['insert']);
+  });
+
+  it('commits both halves of an income correction when nothing blocks it', async () => {
+    const entry = await income();
+    await makeDormant();
+    const before = await accountState();
+
+    const updated = await updateIncomeEntry(deps(), SEPT_15, {
+      entryId: entry.id,
+      expectedVersion: entry.version,
+      cashPositionId: savings,
+    });
+
+    expect(updated.cashPositionId).toBe(savings);
+    expect(updated.version).toBe(entry.version + 1);
+    const after = await accountState();
+    expect(after.dormant).toBe(false);
+    // 8.8: the clear is a consequence, not a user edit, so it must not consume
+    // the position's version and invalidate a form somebody has open.
+    expect(after.version).toBe(before.version);
+  });
+
+  it('commits both halves of an expense correction when nothing blocks it', async () => {
+    const entry = await expense();
+    await makeDormant();
+    const before = await accountState();
+
+    const updated = await updateExpenseEntry(deps(), SEPT_15, {
+      entryId: entry.id,
+      expectedVersion: entry.version,
+      cashPositionId: savings,
+    });
+
+    expect(updated.cashPositionId).toBe(savings);
+    expect(updated.version).toBe(entry.version + 1);
+    const after = await accountState();
+    expect(after.dormant).toBe(false);
+    expect(after.version).toBe(before.version);
+  });
+
+  it('still reports a stale correction as a conflict and writes nothing', async () => {
+    // The merged scope must not turn a version conflict into something else:
+    // the repository finds no row to update, the transaction rolls back, and
+    // the caller still gets CONFLICT_VERSION.
+    const entry = await income();
+    await makeDormant();
+
+    await expect(
+      updateIncomeEntry(deps(), SEPT_15, {
+        entryId: entry.id,
+        expectedVersion: entry.version + 5,
+        cashPositionId: savings,
+      }),
+    ).rejects.toMatchObject({ code: 'CONFLICT_VERSION' });
+
+    expect((await flowRow('income_entries', entry.id)).cash_position_id).toBe(bbva);
+    expect((await accountState()).dormant).toBe(true);
+  });
+});

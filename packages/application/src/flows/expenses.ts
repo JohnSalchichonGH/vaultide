@@ -3,7 +3,7 @@ import {
   findExpenseEntry,
   insertExpenseEntryIn,
   listCategoryRecords,
-  updateExpenseEntry as updateExpenseEntryRow,
+  updateExpenseEntryIn,
   withUser,
   type CategoryRecord,
   type Database,
@@ -221,12 +221,12 @@ export async function updateExpenseEntry(
     });
   }
 
-  const updated = await updateExpenseEntryRow(
-    deps.db,
-    auditContextOf(ctx, args.reason),
-    args.entryId,
-    args.expectedVersion,
-    {
+  // One scope, as creation already does — see the note on the income twin. The
+  // corrected row, its audit entry and the dormancy the correction clears commit
+  // together or not at all (ADR 0005 §2).
+  const audit = auditContextOf(ctx, args.reason);
+  const updated = await withUser(deps.db, { userId: ctx.userId }, async (tx) => {
+    const row = await updateExpenseEntryIn(tx, audit, args.entryId, args.expectedVersion, {
       incurredOn,
       settlement,
       cashPositionId,
@@ -235,17 +235,14 @@ export async function updateExpenseEntry(
       ...(args.description === undefined ? {} : { description: args.description }),
       ...(args.tags === undefined ? {} : { tags: args.tags }),
       ...(args.isOneOff === undefined ? {} : { isOneOff: args.isOneOff }),
-    },
-  );
+    });
+    if (row === undefined) return undefined;
+    await clearDormancyForFlowIn(tx, ctx, [cashPositionId]);
+    return row;
+  });
 
   if (updated === undefined) {
     throw new VersionConflictError('This expense changed while you were editing it.');
-  }
-
-  if (cashPositionId !== null) {
-    await withUser(deps.db, { userId: ctx.userId }, async (tx) =>
-      clearDormancyForFlowIn(tx, ctx, [cashPositionId]),
-    );
   }
 
   return updated;

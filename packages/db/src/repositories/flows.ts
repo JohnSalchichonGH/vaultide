@@ -142,38 +142,48 @@ export async function updateIncomeEntry(
   expectedVersion: number,
   patch: IncomeEntryPatch,
 ): Promise<IncomeEntryRow | undefined> {
-  return withUser(db, { userId: ctx.userId }, async (tx) => {
-    const [before] = await tx
-      .select()
-      .from(incomeEntries)
-      .where(eq(incomeEntries.id, entryId))
-      .limit(1)
-      .for('update');
-    if (before === undefined) return undefined;
+  return withUser(db, { userId: ctx.userId }, async (tx) =>
+    updateIncomeEntryIn(tx, ctx, entryId, expectedVersion, patch),
+  );
+}
 
-    const { cashPositionId, ...rest } = patch;
-    const values = {
-      ...rest,
+export async function updateIncomeEntryIn(
+  tx: Transaction,
+  ctx: AuditContext,
+  entryId: string,
+  expectedVersion: number,
+  patch: IncomeEntryPatch,
+): Promise<IncomeEntryRow | undefined> {
+  const [before] = await tx
+    .select()
+    .from(incomeEntries)
+    .where(eq(incomeEntries.id, entryId))
+    .limit(1)
+    .for('update');
+  if (before === undefined) return undefined;
+
+  const { cashPositionId, ...rest } = patch;
+  const values = {
+    ...rest,
     ...(cashPositionId === undefined ? {} : cashRef(cashPositionId)),
-      version: expectedVersion + 1,
-    };
+    version: expectedVersion + 1,
+  };
 
-    const [row] = await tx
-      .update(incomeEntries)
-      .set(values as Partial<typeof incomeEntries.$inferInsert>)
-      .where(and(eq(incomeEntries.id, entryId), eq(incomeEntries.version, expectedVersion)))
-      .returning();
-    if (row === undefined) return undefined;
+  const [row] = await tx
+    .update(incomeEntries)
+    .set(values as Partial<typeof incomeEntries.$inferInsert>)
+    .where(and(eq(incomeEntries.id, entryId), eq(incomeEntries.version, expectedVersion)))
+    .returning();
+  if (row === undefined) return undefined;
 
-    await recordAudit(tx, ctx, {
-      entityTable: 'income_entries',
-      entityId: entryId,
-      action: 'update',
-      before,
-      after: row,
-    });
-    return row;
+  await recordAudit(tx, ctx, {
+    entityTable: 'income_entries',
+    entityId: entryId,
+    action: 'update',
+    before,
+    after: row,
   });
+  return row;
 }
 
 export async function deleteIncomeEntry(

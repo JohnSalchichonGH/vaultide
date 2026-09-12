@@ -2,7 +2,7 @@ import {
   deleteIncomeEntry as deleteIncomeEntryRow,
   findIncomeEntry,
   insertIncomeEntryIn,
-  updateIncomeEntry as updateIncomeEntryRow,
+  updateIncomeEntryIn,
   withUser,
   type IncomeEntryRow,
 } from '@vaultide/db';
@@ -168,27 +168,32 @@ export async function updateIncomeEntry(
     });
   }
 
+  // One scope, as creation already does: the corrected row, its audit entry and
+  // the dormancy the correction clears are one fact (ADR 0005 §2). Moving an
+  // entry onto a dormant account in two transactions could commit the
+  // attribution and then lose the clear, leaving the account asserting "no
+  // movement" while a flow it owns says otherwise — and nothing would report it,
+  // because each half succeeded.
   const audit = auditContextOf(ctx, args.reason);
-  const updated = await updateIncomeEntryRow(deps.db, audit, args.entryId, args.expectedVersion, {
-    kind,
-    receivedOn,
-    netAmount,
-    settlement,
-    cashPositionId,
-    ...(args.grossAmount === undefined ? {} : { grossAmount: args.grossAmount }),
-    ...(args.description === undefined ? {} : { description: args.description }),
-    ...(args.tags === undefined ? {} : { tags: args.tags }),
-    ...(args.isOneOff === undefined ? {} : { isOneOff: args.isOneOff }),
+  const updated = await withUser(deps.db, { userId: ctx.userId }, async (tx) => {
+    const row = await updateIncomeEntryIn(tx, audit, args.entryId, args.expectedVersion, {
+      kind,
+      receivedOn,
+      netAmount,
+      settlement,
+      cashPositionId,
+      ...(args.grossAmount === undefined ? {} : { grossAmount: args.grossAmount }),
+      ...(args.description === undefined ? {} : { description: args.description }),
+      ...(args.tags === undefined ? {} : { tags: args.tags }),
+      ...(args.isOneOff === undefined ? {} : { isOneOff: args.isOneOff }),
+    });
+    if (row === undefined) return undefined;
+    await clearDormancyForFlowIn(tx, ctx, [cashPositionId]);
+    return row;
   });
 
   if (updated === undefined) {
     throw new VersionConflictError('This entry changed while you were editing it.');
-  }
-
-  if (cashPositionId !== null) {
-    await withUser(deps.db, { userId: ctx.userId }, async (tx) =>
-      clearDormancyForFlowIn(tx, ctx, [cashPositionId]),
-    );
   }
 
   return updated;
