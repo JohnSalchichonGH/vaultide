@@ -221,7 +221,7 @@ export async function updateTemplateDetails(
   args: UpdateTemplateArgs,
 ): Promise<RecurringTemplateRow> {
   const existing = await findTemplate(deps.db, ctx.userId, args.templateId);
-  if (existing === undefined) throw new NotFoundError('That income source no longer exists.');
+  if (existing === undefined) throw new NotFoundError('That source no longer exists.');
 
   if (args.endDate !== undefined && args.endDate !== null) {
     if (args.endDate < existing.startDate) {
@@ -250,7 +250,7 @@ export async function updateTemplateDetails(
     },
   );
   if (updated === undefined) {
-    throw new VersionConflictError('This income source changed while you were editing it.');
+    throw new VersionConflictError('This source changed while you were editing it.');
   }
   return updated;
 }
