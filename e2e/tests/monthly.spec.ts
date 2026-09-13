@@ -632,3 +632,244 @@ test.describe('two views of one income row', () => {
     await expect(page.getByTestId('entry-net')).toHaveValue('175.00');
   });
 });
+
+/**
+ * The Monthly Known-expenses journey (blueprint 15.3 section 3, 21.5).
+ *
+ * On 6 October, with the test clock: a person with one euro account — closed for
+ * September at 1,900 after August's 2,000, and updated to 1,850 on 4 October —
+ * adds a monthly gym source from September's page, records September's
+ * occurrence and watches the reconciliation take it as a known expense, pays
+ * October's early, adds a one-off dinner paid outside tracked accounts,
+ * corrects the gym payment's date inside October, skips and restores a
+ * zero-cost parking source, ends that source, and is refused an end date that
+ * would erase the gym's recorded occurrence.
+ *
+ * Every record is written through the product's own pages. The application
+ * integration suite pins the cross-month identities, where both months can be
+ * read at once without moving the clock mid-journey.
+ */
+test.describe('the monthly known-expenses editor', () => {
+  test('a person records, pays ahead, adds, corrects, skips and ends known expenses', async ({ page, request }) => {
+    test.slow();
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': '2026-10-06T10:00:00Z' });
+    await onboard(page, request, uniqueEmail('e2e-monthly-expenses'));
+
+    await accountWithAugustStatement(page, { name: 'Everyday', type: 'checking', august: '2000.00' });
+    await recordSnapshot(page, '1900.00', '2026-09-30');
+    await page.getByTestId('confirm-statement-2026-09').click();
+    await expect(page.getByTestId('month-end-2026-09')).toHaveCount(0);
+    await recordSnapshot(page, '1850.00', '2026-10-04');
+
+    // --- A recurring expense source, created from September -------------------
+    await page.goto('/monthly/2026-09');
+    const section = page.getByTestId('monthly-known-expenses');
+    const occurrenceOn = (date: string) =>
+      section.locator(`tr[data-testid="expense-occurrence"][data-occurrence-date="${date}"]`);
+    await expect(section.getByTestId('expense-occurrences-empty')).toBeVisible();
+
+    await section.getByTestId('expense-source-add-toggle').click();
+    await fillTestId(page, 'expense-source-name', 'Gym');
+    await page.getByTestId('expense-source-category').selectOption({ label: 'Subscriptions' });
+    await page.getByTestId('expense-source-frequency').selectOption('monthly');
+    await fillTestId(page, 'expense-source-day', '15');
+    await fillTestId(page, 'expense-source-start-date', '2026-09-01');
+    await fillTestId(page, 'expense-source-amount', '40.00');
+    await page.getByTestId('expense-source-account').selectOption({ label: 'Everyday' });
+    // A start in a finished month is allowed, and says what it asks of those months.
+    await expect(page.getByTestId('expense-source-historical-note')).toContainText(
+      'Past completed months may need those occurrences recorded or skipped.',
+    );
+    await page.getByTestId('expense-source-submit').click();
+    await expect(page.getByTestId('expense-source-saved')).toContainText('Gym added.');
+
+    // --- September's occurrence, recorded ---------------------------------------
+    const september = occurrenceOn('2026-09-15');
+    await expect(september.getByTestId('expense-occurrence-status')).toHaveText('Not recorded');
+    await expect(september.getByTestId('expense-occurrence-amount')).toContainText('€40.00');
+    const bucket = page.getByTestId('bucket-EUR');
+    await expect(bucket.getByTestId('identity-K')).toContainText('€0.00');
+
+    await september.getByTestId('expense-record').click();
+    await expect(september.getByTestId('expense-occurrence-status')).toHaveText('Recorded');
+    // The server's reconciliation replaced the page: cash fell by €100, and €40
+    // of it is now a known expense rather than unclassified spending.
+    await expect(bucket.getByTestId('identity-K')).toContainText('€40.00');
+    await expect(bucket.getByTestId('identity-unclassified')).toContainText('€60.00');
+
+    // --- October: the next occurrence, paid today ------------------------------
+    await page.getByTestId('month-next').click();
+    await expect(page).toHaveURL(/\/monthly\/2026-10$/u);
+    const october = occurrenceOn('2026-10-15');
+    await expect(october.getByTestId('expense-occurrence-status')).toHaveText('Upcoming');
+    // Nothing is recorded ahead of its date except as paid today.
+    await expect(october.getByTestId('expense-record')).toHaveCount(0);
+
+    await october.getByTestId('expense-paid-today').click();
+    const panel = page.getByTestId('expense-accept-panel');
+    await expect(panel).toContainText('Paid today');
+    await expect(panel).toContainText('Recorded as paid today');
+    await expect(section.getByText(/received today/iu)).toHaveCount(0);
+    await fillTestId(page, 'expense-accept-amount', '42.00');
+    await page.getByTestId('expense-accept-submit').click();
+
+    await expect(october.getByTestId('expense-occurrence-status')).toHaveText('Recorded');
+    await expect(october.getByTestId('expense-occurrence-dates')).toContainText('Scheduled 15 Oct 2026');
+    await expect(october.getByTestId('expense-occurrence-incurred-on')).toContainText('Incurred 6 Oct 2026');
+    await expect(october.getByTestId('expense-occurrence-amount')).toContainText('€42.00');
+    // "Paid today" has moved on to the next occurrence, beyond the month.
+    await expect(section.getByTestId('expense-paid-today-candidate')).toHaveAttribute(
+      'data-occurrence-date',
+      '2026-11-15',
+    );
+
+    // --- One expense by hand, paid outside tracked accounts ---------------------
+    await section.getByTestId('expense-add-toggle').click();
+    await page.getByTestId('expense-add-category').selectOption({ label: 'Eating out' });
+    await fillTestId(page, 'expense-add-date', '2026-10-05');
+    await fillTestId(page, 'expense-add-amount', '25.00');
+    await page.getByTestId('expense-add-payment').selectOption({ label: 'Paid by me outside tracked accounts' });
+    // It never touched a tracked account, so there is none to choose.
+    await expect(page.getByTestId('expense-add-account')).toHaveCount(0);
+    await page.getByTestId('expense-add-one-off').check();
+    await fillTestId(page, 'expense-add-description', 'Birthday dinner');
+    await page.getByTestId('expense-add-submit').click();
+    await expect(page.getByTestId('expense-add-saved')).toContainText('Expense added.');
+
+    // It appears once, in the group for expenses nothing scheduled.
+    await expect(section.getByTestId('expense-entry')).toHaveCount(1);
+    const direct = section.getByTestId('expense-direct');
+    await expect(direct).toContainText('Birthday dinner');
+    await expect(direct).toContainText('€25.00');
+    await expect(direct.getByTestId('expense-entry-meta')).toContainText(
+      'Paid by me outside tracked accounts · one-off',
+    );
+
+    // --- Beyond the month-to-date date -----------------------------------------
+    // Reconciliation runs through 4 October, the last day the account was
+    // updated; both expenses after it are still listed, and neither is inside
+    // the figure labelled through that date.
+    await expect(page.getByTestId('mtd-as-of')).toContainText('4 Oct 2026');
+    await expect(bucket.getByTestId('identity-K')).toContainText('€0.00');
+    await expect(october).toBeVisible();
+    await expect(direct).toBeVisible();
+
+    // --- Correcting the gym payment this month owns ------------------------------
+    await october.getByTestId('expense-incurred-on').fill('2026-10-05');
+    await expect(october.getByTestId('expense-occurrence-incurred-on')).toContainText('Incurred 5 Oct 2026');
+    // The scheduling identity did not move with the financial date.
+    await expect(october).toHaveAttribute('data-occurrence-date', '2026-10-15');
+    await expect(october.getByTestId('expense-occurrence-status')).toHaveText('Recorded');
+    // …and the date cannot be pushed out of October from here.
+    await expect(october.getByTestId('expense-incurred-on')).toHaveAttribute('min', '2026-10-01');
+    await expect(october.getByTestId('expense-incurred-on')).toHaveAttribute('max', '2026-10-06');
+
+    // --- A source that costs nothing: skipped, restored, and ended --------------
+    await section.getByTestId('expense-source-add-toggle').click();
+    await fillTestId(page, 'expense-source-name', 'Parking');
+    await page.getByTestId('expense-source-category').selectOption({ label: 'Transport' });
+    await fillTestId(page, 'expense-source-day', '3');
+    await fillTestId(page, 'expense-source-start-date', '2026-10-01');
+    await fillTestId(page, 'expense-source-amount', '0');
+    await page.getByTestId('expense-source-submit').click();
+    await expect(page.getByTestId('expense-source-saved')).toContainText('Parking added.');
+
+    const parking = occurrenceOn('2026-10-03');
+    await expect(parking.getByTestId('expense-occurrence-status')).toHaveText('Not recorded');
+    await expect(parking.getByTestId('expense-occurrence-amount')).toContainText('€0.00');
+    // Recording zero would be refused, so it is not offered; stating an amount
+    // and skipping are.
+    await expect(parking.getByTestId('expense-record')).toHaveCount(0);
+    await expect(parking.getByTestId('expense-adjust')).toBeVisible();
+
+    await parking.getByTestId('expense-skip').click();
+    await page.getByTestId('expense-skip-submit').click();
+    await expect(parking.getByTestId('expense-occurrence-status')).toHaveText('Skipped');
+    await parking.getByTestId('expense-restore').click();
+    await expect(parking.getByTestId('expense-occurrence-status')).toHaveText('Not recorded');
+
+    await parking.getByTestId('expense-end').click();
+    await fillTestId(page, 'expense-end-date', '2026-10-02');
+    await page.getByTestId('expense-end-review').click();
+    const confirmation = page.getByTestId('expense-end-confirmation');
+    await expect(confirmation).toContainText('Parking will end on 2 Oct 2026.');
+    await expect(confirmation).toContainText('stop being expected');
+    await expect(confirmation).toContainText('No completed month’s expected occurrences change.');
+    await page.getByTestId('expense-end-confirm').click();
+    // The schedule ends before its only occurrence, so October no longer expects it.
+    await expect(parking).toHaveCount(0);
+
+    // --- An end date that would erase recorded history --------------------------
+    await october.getByTestId('expense-end').click();
+    await fillTestId(page, 'expense-end-date', '2026-10-10');
+    await page.getByTestId('expense-end-review').click();
+    await page.getByTestId('expense-end-confirm').click();
+    await expect(page.getByTestId('expense-end-confirmation').getByTestId('expense-error')).toContainText(
+      'already recorded or skipped',
+    );
+    await expect(october.getByTestId('expense-occurrence-status')).toHaveText('Recorded');
+
+    // The section never widens the page on a narrow screen (16.5).
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      ),
+    ).toBe(true);
+  });
+});
+
+/**
+ * A version conflict on a known expense's amount, and the way out of it (15.3,
+ * 20.3) — the same pair of rules the Income conflict journey proves: a refused
+ * save keeps what was typed, and Reload is the one deliberate way to give it up.
+ */
+test.describe('two views of one known expense', () => {
+  test('a refused amount stays on screen, and Reload replaces it with the server’s', async ({
+    page,
+    request,
+  }) => {
+    test.slow();
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': '2026-10-06T10:00:00Z' });
+    await onboard(page, request, uniqueEmail('e2e-monthly-expense-conflict'));
+    await accountWithAugustStatement(page, { name: 'Everyday', type: 'checking', august: '1000.00' });
+
+    await page.goto('/monthly/2026-10');
+    await page.getByTestId('expense-add-toggle').click();
+    await page.getByTestId('expense-add-category').selectOption({ label: 'Groceries' });
+    await fillTestId(page, 'expense-add-date', '2026-10-02');
+    await fillTestId(page, 'expense-add-amount', '100.00');
+    await page.getByTestId('expense-add-account').selectOption({ label: 'Everyday' });
+    await page.getByTestId('expense-add-submit').click();
+    await expect(page.getByTestId('expense-add-saved')).toContainText('Expense added.');
+    await expect(page.getByTestId('expense-amount')).toHaveValue('100.00');
+
+    const stale = await page.context().newPage();
+    await stale.setExtraHTTPHeaders({ 'x-vaultide-test-clock': '2026-10-06T10:00:00Z' });
+    await stale.goto('/monthly/2026-10');
+    await expect(stale.getByTestId('expense-amount')).toHaveValue('100.00');
+
+    await page.getByTestId('expense-amount').fill('150.00');
+    await page.getByTestId('expense-amount').press('Tab');
+    await expect(page.getByTestId('expense-save-status').last()).toHaveText('Saved.');
+    await expect(page.getByTestId('expense-amount')).toHaveValue('150.00');
+
+    await stale.getByTestId('expense-amount').fill('200.00');
+    await stale.getByTestId('expense-amount').press('Tab');
+    await expect(stale.getByTestId('expense-save-status').last()).toContainText('Nothing was overwritten.');
+    // Nothing was stored, so 200 exists nowhere but here.
+    await expect(stale.getByTestId('expense-amount')).toHaveValue('200.00');
+    await expect(stale.getByTestId('expense-reload')).toBeVisible();
+
+    await stale.getByTestId('expense-reload').click();
+    await expect(stale.getByTestId('expense-amount')).toHaveValue('150.00');
+    await expect(stale.getByTestId('expense-save-status').last()).toHaveText('');
+
+    await stale.getByTestId('expense-amount').fill('175.00');
+    await stale.getByTestId('expense-amount').press('Tab');
+    await expect(stale.getByTestId('expense-save-status').last()).toHaveText('Saved.');
+    await stale.close();
+
+    await page.reload();
+    await expect(page.getByTestId('expense-amount')).toHaveValue('175.00');
+  });
+});
