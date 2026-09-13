@@ -6,6 +6,7 @@ import {
   insertExpenseEntry,
   insertTemplate,
   insertTerm,
+  listCategoryRecords,
   listExpenseEntriesByOccurrenceIn,
   sql,
   withUser,
@@ -20,6 +21,7 @@ import { createCashAccount } from '../../src/positions/service';
 import { recordValuation } from '../../src/positions/valuations';
 import { archiveUserCategory, createCategory, listCategories } from '../../src/users/categories';
 import {
+  assertCategoryUsableInPhase3,
   createExpenseEntry,
   deleteExpenseEntry,
   updateExpenseEntry,
@@ -36,6 +38,7 @@ import { createFxService } from '../../src/fx/service';
 import { DuplicateConflictError, ValidationError } from '../../src/errors';
 import { parseMonth } from '../../src/reconciliation/service';
 import { getMonthlyPage, type MonthlyDependencies } from '../../src/monthly/service';
+import { expenseSourceProtectionOf } from '../../src/monthly/expenses';
 import {
   loadCompletedMonthExpenses,
   loadCurrentMonthExpenses,
@@ -389,6 +392,7 @@ describe('the section lists a month’s own schedule and spending', () => {
       startDate: '2026-07-01',
       endDate: null,
       archived: false,
+      protection: null,
       defaultCashPositionId: bbva,
       defaultCashAccountName: 'BBVA',
       completedOccurrenceDates: ['2026-07-15', '2026-08-15', '2026-09-15'],
@@ -882,43 +886,309 @@ describe('the categories Known expenses offers', () => {
     });
   });
 
-  it('lists no capital improvement, while every figure still counts it', async () => {
+  it('lists no capital-improvement expense, while every figure still counts it', async () => {
     const bbva = await makeAccount('BBVA');
     await statement(bbva, '2026-08-31', '1000.00');
     await statement(bbva, '2026-09-30', '500.00');
-    const capital = await categoryId({ kind: 'capital_improvement' });
     // Phase 3's services refuse this row — there is no asset to link it to — but
     // imported or later-phase data can hold one, so it is written below the
     // domain, the way such data arrives.
     const legacy = await insertExpenseEntry(harness.db, { userId: USER_A }, {
-      categoryId: capital,
+      categoryId: await categoryId({ kind: 'capital_improvement' }),
       incurredOn: '2026-09-12',
       amount: '500.00',
       currency: 'EUR',
       settlement: 'tracked_cash',
       cashPositionId: bbva,
     });
-    const works = await insertTemplate(harness.db, { userId: USER_A }, {
-      kind: 'expense',
-      name: 'Extension works',
-      categoryId: capital,
-      currency: 'EUR',
-      frequency: 'monthly',
-      dayOfMonth: 20,
-      startDate: '2026-01-01',
-    });
-    await insertTerm(harness.db, { userId: USER_A }, {
-      templateId: works.id,
-      effectiveFrom: '2026-01-01',
-      amount: '100.00',
-    });
 
     const page = await completed();
     expect(renderedEntryIds(page.expenses)).not.toContain(legacy.id);
-    expect(page.expenses.occurrences.map((row) => row.templateId)).not.toContain(works.id);
+    expect(page.expenses.direct).toEqual([]);
+    expect(page.expenses.otherRecurring).toEqual([]);
     // Capital allocation (`Nout`), in the reconciliation that owns it (7.4).
     expect(eurTotals(page).nonExpenseOutflows).toEqual(eur('500'));
     expect(eurTotals(page).knownTrackedExpenses).toEqual(eur('0'));
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Legacy sources this section cannot record                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A source the template service refuses today — filed under one of the two kinds
+ * no expense may be materialized under — written below the domain, the way data
+ * older than that guard, or imported past it, arrives. The guard is not touched.
+ */
+async function legacySource(
+  kind: 'capital_improvement' | 'transfer_fee',
+  options: {
+    readonly name: string;
+    readonly dayOfMonth: number;
+    readonly startDate?: string;
+    readonly amount?: string;
+    readonly cashPositionId?: string;
+  },
+) {
+  const template = await insertTemplate(harness.db, { userId: USER_A }, {
+    kind: 'expense',
+    name: options.name,
+    categoryId: await categoryId({ kind }),
+    currency: 'EUR',
+    frequency: 'monthly',
+    dayOfMonth: options.dayOfMonth,
+    startDate: options.startDate ?? '2026-01-01',
+    ...(options.cashPositionId === undefined ? {} : { cashPositionId: options.cashPositionId }),
+  });
+  await insertTerm(harness.db, { userId: USER_A }, {
+    templateId: template.id,
+    effectiveFrom: template.startDate,
+    amount: options.amount ?? '100.00',
+  });
+  return template;
+}
+
+/** The completeness requirement for one `(template, date)` identity. */
+function requirementOf(page: CompletedMonthlyPageDto, templateId: string, occurrenceDate: string) {
+  const found = page.completeness.recurringOccurrences.find(
+    (row) => row.templateId === templateId && row.occurrenceDate === occurrenceDate,
+  );
+  if (found === undefined) throw new Error(`no requirement ${occurrenceDate} for ${templateId}`);
+  return found;
+}
+
+describe('a legacy source under a kind the expense services cannot record', () => {
+  it('is protected exactly when the expense guard would refuse its kind', async () => {
+    const records = await listCategoryRecords(harness.db, USER_A, { includeArchived: true });
+    for (const record of records) {
+      let refused = false;
+      try {
+        assertCategoryUsableInPhase3(record);
+      } catch {
+        refused = true;
+      }
+      expect(expenseSourceProtectionOf(record.kind) !== null, record.kind).toBe(refused);
+    }
+    // Both protected kinds were among the kinds checked.
+    expect(
+      [...new Set(records.map((row) => row.kind).filter((kind) => expenseSourceProtectionOf(kind) !== null))].sort(),
+    ).toEqual(['capital_improvement', 'transfer_fee']);
+  });
+
+  it('keeps an unresolved capital-improvement occurrence as the schedule truth completeness counts', async () => {
+    const bbva = await makeAccount('BBVA');
+    await statement(bbva, '2026-08-31', '1000.00');
+    await statement(bbva, '2026-09-30', '500.00');
+    const works = await legacySource('capital_improvement', {
+      name: 'Extension works',
+      dayOfMonth: 20,
+      cashPositionId: bbva,
+    });
+    // An actual capital improvement too, written below the domain the same way.
+    const capex = await insertExpenseEntry(harness.db, { userId: USER_A }, {
+      categoryId: await categoryId({ kind: 'capital_improvement' }),
+      incurredOn: '2026-09-12',
+      amount: '500.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId: bbva,
+    });
+
+    const page = await completed();
+    const occurrence = occurrenceOf(page.expenses, works.id, '2026-09-20');
+    expect(occurrence.state).toEqual({ kind: 'due' });
+    expect(occurrence.source).toMatchObject({
+      name: 'Extension works',
+      protection: 'capital_improvement',
+      category: { kind: 'capital_improvement', use: 'other' },
+    });
+    // Nothing here can record it, so nothing says one click could.
+    expect(occurrence.recordableAsExpected).toBe(false);
+    // The very occurrence completeness is still waiting for.
+    expect(requirementOf(page, works.id, '2026-09-20')).toMatchObject({
+      templateKind: 'expense',
+      satisfied: false,
+    });
+
+    // The capital expenditure itself is still no known expense…
+    expect(renderedEntryIds(page.expenses)).not.toContain(capex.id);
+    expect(page.expenses.direct).toEqual([]);
+    // …and reconciliation classifies it exactly as before.
+    expect(eurTotals(page).nonExpenseOutflows).toEqual(eur('500'));
+    expect(eurTotals(page).knownTrackedExpenses).toEqual(eur('0'));
+
+    // And the guard still refuses to materialize the occurrence.
+    await expect(
+      acceptSuggestion(flowDeps(), OCT_1, {
+        templateId: works.id,
+        occurrenceDate: '2026-09-20',
+        amount: '100.00',
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(occurrenceOf((await completed()).expenses, works.id, '2026-09-20').state).toEqual({
+      kind: 'due',
+    });
+  });
+
+  it('resolves a protected occurrence by a skip, restores it, and ends the source', async () => {
+    const works = await legacySource('capital_improvement', { name: 'Extension works', dayOfMonth: 20 });
+    const before = await completed();
+    expect(requirementOf(before, works.id, '2026-09-20').satisfied).toBe(false);
+
+    const skip = await skipSuggestion(flowDeps(), OCT_1, {
+      templateId: works.id,
+      occurrenceDate: '2026-09-20',
+      reason: 'skipped',
+    });
+    let page = await completed();
+    expect(occurrenceOf(page.expenses, works.id, '2026-09-20').state).toMatchObject({
+      kind: 'skipped',
+      skipId: skip.id,
+    });
+    expect(requirementOf(page, works.id, '2026-09-20').satisfied).toBe(true);
+    expect(page.completeness.satisfied).toBe(before.completeness.satisfied + 1);
+
+    await unskipSuggestion(flowDeps(), OCT_1, { skipId: skip.id });
+    page = await completed();
+    expect(occurrenceOf(page.expenses, works.id, '2026-09-20').state).toEqual({ kind: 'due' });
+    expect(requirementOf(page, works.id, '2026-09-20').satisfied).toBe(false);
+
+    // Ending it before September takes September's requirement away with the row.
+    await updateTemplateDetails(flowDeps(), OCT_1, {
+      templateId: works.id,
+      expectedVersion: works.version,
+      endDate: '2026-08-31',
+    });
+    page = await completed();
+    expect(page.expenses.occurrences.map((row) => row.templateId)).not.toContain(works.id);
+    expect(page.completeness.recurringOccurrences.map((row) => row.templateId)).not.toContain(works.id);
+    expect(page.completeness.required).toBe(before.completeness.required - 1);
+  });
+
+  it('keeps a legacy transfer-fee source visible without offering to record it, today or early', async () => {
+    const bbva = await makeAccount('BBVA', { ctx: SEPT_10 });
+    const wires = await legacySource('transfer_fee', {
+      name: 'Wire fees',
+      dayOfMonth: 5,
+      startDate: '2026-08-01',
+      amount: '3.00',
+      cashPositionId: bbva,
+    });
+    const cards = await legacySource('transfer_fee', {
+      name: 'Card fees',
+      dayOfMonth: 25,
+      startDate: '2026-08-01',
+      amount: '2.00',
+      cashPositionId: bbva,
+    });
+
+    let page = await current();
+    const due = occurrenceOf(page.expenses, wires.id, '2026-09-05');
+    expect(due.state).toEqual({ kind: 'due' });
+    expect(due.source.protection).toBe('transfer_fee');
+    expect(due.recordableAsExpected).toBe(false);
+    // The schedule makes 25 September this source's next occurrence, but
+    // "Paid today" could never record it.
+    expect(occurrenceOf(page.expenses, cards.id, '2026-09-25').state).toEqual({
+      kind: 'upcoming',
+      paidTodayEligible: false,
+    });
+    // Nor is 5 October a candidate beyond the month.
+    expect(page.expenses.paidTodayCandidates).toEqual([]);
+
+    // The guard refuses both ways of trying.
+    await expect(
+      acceptSuggestion(flowDeps(), SEPT_10, { templateId: wires.id, occurrenceDate: '2026-09-05' }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(
+      acceptSuggestion(flowDeps(), SEPT_10, {
+        templateId: wires.id,
+        occurrenceDate: '2026-10-05',
+        receivedToday: true,
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+
+    // What remains available still works: a skip, its restore, an end date.
+    const skip = await skipSuggestion(flowDeps(), SEPT_10, {
+      templateId: wires.id,
+      occurrenceDate: '2026-09-05',
+      reason: 'other',
+    });
+    page = await current();
+    expect(occurrenceOf(page.expenses, wires.id, '2026-09-05').state).toMatchObject({
+      kind: 'skipped',
+      reason: 'other',
+    });
+    await unskipSuggestion(flowDeps(), SEPT_10, { skipId: skip.id });
+    expect(occurrenceOf((await current()).expenses, wires.id, '2026-09-05').state).toEqual({
+      kind: 'due',
+    });
+    await updateTemplateDetails(flowDeps(), SEPT_10, {
+      templateId: cards.id,
+      expectedVersion: cards.version,
+      endDate: '2026-09-20',
+    });
+    expect((await current()).expenses.occurrences.map((row) => row.templateId)).not.toContain(cards.id);
+
+    // A completed month shows it as the unresolved requirement completeness reports.
+    const september = await completed();
+    expect(occurrenceOf(september.expenses, wires.id, '2026-09-05').source.protection).toBe('transfer_fee');
+    expect(requirementOf(september, wires.id, '2026-09-05').satisfied).toBe(false);
+  });
+
+  it('shows protected history already recorded as recorded, and offers nothing to change it', async () => {
+    const bbva = await makeAccount('BBVA');
+    const works = await legacySource('capital_improvement', {
+      name: 'Extension works',
+      dayOfMonth: 20,
+      cashPositionId: bbva,
+    });
+    const wires = await legacySource('transfer_fee', { name: 'Wire fees', dayOfMonth: 25, cashPositionId: bbva });
+    // Materialized before the guard existed, occurrence identity and all.
+    const works20 = await insertExpenseEntry(harness.db, { userId: USER_A }, {
+      categoryId: works.categoryId as string,
+      incurredOn: '2026-09-20',
+      amount: '100.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId: bbva,
+      occurrence: { templateId: works.id, occurrenceDate: '2026-09-20' },
+    });
+    // Scheduled in September, paid in October.
+    const wires25 = await insertExpenseEntry(harness.db, { userId: USER_A }, {
+      categoryId: wires.categoryId as string,
+      incurredOn: '2026-10-01',
+      amount: '3.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId: bbva,
+      occurrence: { templateId: wires.id, occurrenceDate: '2026-09-25' },
+    });
+
+    const september = await completed();
+    for (const [template, recorded, date] of [
+      [works, works20, '2026-09-20'],
+      [wires, wires25, '2026-09-25'],
+    ] as const) {
+      const occurrence = occurrenceOf(september.expenses, template.id, date);
+      expect(occurrence.state).toMatchObject({
+        kind: 'accepted',
+        entry: { entryId: recorded.id, readOnly: 'other_workflow' },
+      });
+      expect(requirementOf(september, template.id, date).satisfied).toBe(true);
+    }
+    // Neither is listed as an ordinary expense of the month.
+    expect(september.expenses.direct).toEqual([]);
+    expect(september.expenses.otherRecurring).toEqual([]);
+    // The capital improvement's financial effect is where it always was.
+    expect(eurTotals(september).nonExpenseOutflows).toEqual(eur('100'));
+
+    // October holds the fee's money: it is listed there, and read-only there too.
+    const october = await currentOctober();
+    expect(october.expenses.otherRecurring).toEqual([
+      expect.objectContaining({ entryId: wires25.id, readOnly: 'other_workflow' }),
+    ]);
   });
 });
 

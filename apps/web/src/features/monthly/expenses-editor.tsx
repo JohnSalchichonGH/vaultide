@@ -68,6 +68,7 @@ import {
   paymentMethodFor,
   paymentMethodLabel,
   paymentMethodOptions,
+  protectedSourceNote,
   termAmountProblem,
 } from '@/features/monthly/expenses-presentation';
 import {
@@ -1386,8 +1387,9 @@ function EntryControls({
   readonly bounds: Bounds;
   readonly mode: 'direct' | 'recurring';
 }) {
-  if (!ownsExpense(entry, month)) return <ElsewhereNotice entry={entry} locale={formatting.locale} />;
+  // A row no page may change links nowhere — not even to the month holding it.
   if (entry.readOnly !== null) return <ReadOnlyNotice entry={entry} />;
+  if (!ownsExpense(entry, month)) return <ElsewhereNotice entry={entry} locale={formatting.locale} />;
   return (
     <EntryFields
       entry={entry}
@@ -1431,6 +1433,10 @@ function OccurrenceRow({
   const { state: occurrenceState, source, term } = occurrence;
   const busy = !hydrated || state.kind === 'saving';
   const archived = source.archived;
+  // A protected source keeps only what resolves an occurrence without recording
+  // it: the services refuse to record anything under its kind (7.4).
+  const recordable = source.protection === null;
+  const protectedNote = protectedSourceNote(source);
   const day = (date: string): string => dayTitle(date, formatting.locale);
   const close = (): void => {
     setPanel(null);
@@ -1528,7 +1534,7 @@ function OccurrenceRow({
       <td className="py-2">
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap justify-end gap-2">
-            {occurrenceState.kind === 'due' && !archived ? (
+            {occurrenceState.kind === 'due' && !archived && recordable ? (
               <>
                 {occurrence.recordableAsExpected ? (
                   <button
@@ -1562,7 +1568,10 @@ function OccurrenceRow({
               </>
             ) : null}
 
-            {occurrenceState.kind === 'upcoming' && occurrenceState.paidTodayEligible && !archived ? (
+            {occurrenceState.kind === 'upcoming' &&
+            occurrenceState.paidTodayEligible &&
+            !archived &&
+            recordable ? (
               <button
                 type="button"
                 data-testid="expense-paid-today"
@@ -1604,7 +1613,7 @@ function OccurrenceRow({
               </button>
             ) : null}
 
-            {archived ? null : (
+            {archived || !recordable ? null : (
               <button
                 type="button"
                 data-testid="expense-term"
@@ -1631,7 +1640,13 @@ function OccurrenceRow({
             </button>
           </div>
 
-          {occurrenceState.kind === 'due' && !occurrence.recordableAsExpected && !archived ? (
+          {protectedNote === null ? null : (
+            <p className={META} data-testid="expense-protected-source" data-reason={source.protection ?? undefined}>
+              {protectedNote}
+            </p>
+          )}
+
+          {occurrenceState.kind === 'due' && !occurrence.recordableAsExpected && !archived && recordable ? (
             <p className={META} data-testid="expense-needs-amount">
               {term.amount === null
                 ? 'No amount is set for this date. Record it with what it cost, or skip it.'

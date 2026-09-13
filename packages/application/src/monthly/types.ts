@@ -281,11 +281,25 @@ export interface ExpenseCategoryDto {
  *  - `transfer_fee` — the row is a transfer's fee. The transfer owns it (M14),
  *    and the services refuse to edit or delete it on its own.
  *  - `other_workflow` — a row nothing scheduled, filed under a kind this
- *    section does not offer (or paid in a way it does not offer). Its recording
- *    belongs to another aggregate, so a generic picker here must not quietly
- *    reclassify it.
+ *    section does not offer (or paid in a way it does not offer), or a row a
+ *    protected source recorded (see `ExpenseSourceProtectionDto`). Its recording
+ *    belongs to another aggregate, so nothing here corrects, reclassifies or
+ *    deletes it.
  */
 export type ExpenseReadOnlyReasonDto = 'transfer_fee' | 'other_workflow';
+
+/**
+ * Why Known expenses cannot record a source's occurrences, when it cannot.
+ *
+ * The expense services refuse to materialize anything filed under these two
+ * kinds (7.4): a capital improvement needs the asset it improves, and a
+ * transfer's fee belongs to its transfer. A source under either can only exist
+ * from before that guard or from data written below it — and its schedule is
+ * still schedule truth, which completeness counts. So its occurrences are shown,
+ * and offered only what resolves one without recording it: a skip, a restore and
+ * an end date.
+ */
+export type ExpenseSourceProtectionDto = 'capital_improvement' | 'transfer_fee';
 
 /** One expense entry: a materialized occurrence, or a row nothing scheduled. */
 export interface MonthlyExpenseEntryDto {
@@ -336,6 +350,8 @@ export interface ExpenseSourceDto {
   readonly startDate: string;
   readonly endDate: string | null;
   readonly archived: boolean;
+  /** `null` when this section can record the source's occurrences; otherwise why it cannot. */
+  readonly protection: ExpenseSourceProtectionDto | null;
   readonly defaultCashPositionId: string | null;
   readonly defaultCashAccountName: string | null;
   /**
@@ -384,6 +400,7 @@ export type ExpenseOccurrenceStateDto =
       /**
        * This is the one occurrence "Paid today" may reach (§30.10). Server
        * evidence, checked again under the template's lock when it is used.
+       * Never set for a protected source, which could not be recorded at all.
        */
       readonly paidTodayEligible: boolean;
     }
@@ -406,7 +423,8 @@ export interface ExpenseOccurrenceDto {
    * One-click recording can succeed as far as the amount goes: a term covers the
    * date and it is more than zero. An expense is strictly positive while a term
    * may be zero (6.2), so a zero or missing term is known in advance to need the
-   * amount stated — or a skip, when nothing was charged.
+   * amount stated — or a skip, when nothing was charged. Always `false` for a
+   * protected source, which this section cannot record whatever the amount.
    */
   readonly recordableAsExpected: boolean;
   readonly state: ExpenseOccurrenceStateDto;
@@ -437,8 +455,10 @@ export interface PaidTodayCandidateDto {
  * It is every expense the month knows about — paid from a tracked account, paid
  * by the user outside tracked accounts, and paid by somebody else — so it is not
  * `ΣK` and carries no total. Reconciliation owns the known tracked figure.
- * Capital improvements are not here: they are capital allocation (`Nout`), and
- * they stay in every financial figure the page shows.
+ * A capital improvement's expense is not listed here: it is capital allocation
+ * (`Nout`), and it stays in every financial figure the page shows. A legacy
+ * source under a protected kind still shows its occurrences, because
+ * completeness counts them.
  */
 export interface MonthlyExpensesDto {
   /** Every expense occurrence the schedule placed in M, by date then template. */
@@ -469,7 +489,10 @@ export interface MonthlyExpensesDto {
 
 /** The current month's known expenses, with the operational surface a live month has. */
 export interface CurrentMonthlyExpensesDto extends MonthlyExpensesDto {
-  /** At most one per active source, and only when it lies outside the month. */
+  /**
+   * At most one per active source this section can record, and only when it
+   * lies outside the month. A protected source is never one.
+   */
   readonly paidTodayCandidates: readonly PaidTodayCandidateDto[];
 }
 

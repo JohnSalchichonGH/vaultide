@@ -63,6 +63,7 @@ const {
   paymentMethodFor,
   paymentMethodLabel,
   paymentMethodOptions,
+  protectedSourceNote,
   termAmountProblem,
 } = await import('@/features/monthly/expenses-presentation');
 
@@ -123,6 +124,7 @@ function source(over: Partial<ExpenseSourceDto> = {}): ExpenseSourceDto {
     startDate: '2026-01-01',
     endDate: null,
     archived: false,
+    protection: null,
     defaultCashPositionId: 'pos-bbva',
     defaultCashAccountName: 'BBVA',
     completedOccurrenceDates: ['2026-07-15', '2026-08-15', '2026-09-15'],
@@ -353,6 +355,140 @@ describe('a scheduled expense occurrence', () => {
   it('says when a source ends', () => {
     const html = render(expenses({ occurrences: [occurrence({ source: source({ endDate: '2026-12-31' }) })] }));
     expect(html).toContain('Ends 31 Dec 2026');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Legacy sources this section cannot record                                   */
+/* -------------------------------------------------------------------------- */
+
+describe('an occurrence of a legacy source this section cannot record', () => {
+  const capex = source({
+    templateId: 'tpl-works',
+    name: 'Extension works',
+    category: category({
+      categoryId: 'cat-capex',
+      name: 'Capital improvements',
+      kind: 'capital_improvement',
+      use: 'other',
+      selectable: false,
+    }),
+    protection: 'capital_improvement',
+  });
+  const fees = source({
+    templateId: 'tpl-fees',
+    name: 'Wire fees',
+    category: category({
+      categoryId: 'cat-fee',
+      name: 'Transfer fees',
+      kind: 'transfer_fee',
+      use: 'other',
+      selectable: false,
+    }),
+    protection: 'transfer_fee',
+  });
+  const protectedOccurrence = (over: Partial<ExpenseOccurrenceDto> = {}): ExpenseOccurrenceDto =>
+    occurrence({
+      templateId: 'tpl-works',
+      occurrenceDate: '2026-09-20',
+      source: capex,
+      recordableAsExpected: false,
+      ...over,
+    });
+
+  const NEVER = ['expense-record', 'expense-adjust', 'expense-paid-today', 'expense-term'];
+
+  it('offers a due occurrence a skip and an end date, and nothing that would record it', () => {
+    const html = render(expenses({ occurrences: [protectedOccurrence()] }));
+    for (const control of NEVER) expect(has(html, control), control).toBe(false);
+    for (const control of ['expense-skip', 'expense-end']) expect(has(html, control), control).toBe(true);
+    expect(html).toContain('data-reason="capital_improvement"');
+    expect(html).toContain('This editor cannot record it');
+    // Not told to state an amount it could never record.
+    expect(has(html, 'expense-needs-amount')).toBe(false);
+  });
+
+  it('offers an upcoming occurrence no “Paid today”, whatever the read says about eligibility', () => {
+    const html = render(
+      expenses({
+        occurrences: [
+          protectedOccurrence({
+            templateId: 'tpl-fees',
+            source: fees,
+            state: { kind: 'upcoming', paidTodayEligible: true },
+          }),
+        ],
+      }),
+      { today: '2026-09-10' },
+    );
+    for (const control of NEVER) expect(has(html, control), control).toBe(false);
+    expect(has(html, 'expense-skip')).toBe(true);
+    expect(has(html, 'expense-end')).toBe(true);
+    expect(html).toContain('data-reason="transfer_fee"');
+  });
+
+  it('restores a skipped occurrence and ends the source, and still offers no future amount', () => {
+    const html = render(
+      expenses({
+        occurrences: [
+          protectedOccurrence({ state: { kind: 'skipped', skipId: 'skip-9', reason: 'other', note: null } }),
+        ],
+      }),
+    );
+    expect(has(html, 'expense-restore')).toBe(true);
+    expect(has(html, 'expense-end')).toBe(true);
+    for (const control of [...NEVER, 'expense-skip']) expect(has(html, control), control).toBe(false);
+  });
+
+  it('leaves an archived one what any archived source keeps: its end date', () => {
+    const html = render(expenses({ occurrences: [protectedOccurrence({ source: { ...capex, archived: true } })] }));
+    for (const control of [...NEVER, 'expense-skip']) expect(has(html, control), control).toBe(false);
+    expect(has(html, 'expense-end')).toBe(true);
+    expect(html).toContain('Source archived');
+  });
+
+  it('shows history it already recorded as recorded, with nothing to correct or delete and nowhere to go', () => {
+    const recorded = entry({
+      entryId: 'exp-works',
+      category: capex.category,
+      incurredOn: '2026-10-02',
+      incurredMonth: '2026-10',
+      amount: eur('100'),
+      readOnly: 'other_workflow',
+      occurrence: {
+        templateId: 'tpl-works',
+        templateName: 'Extension works',
+        occurrenceDate: '2026-09-20',
+        occurrenceMonth: '2026-09',
+      },
+    });
+    const html = render(expenses({ occurrences: [protectedOccurrence({ state: { kind: 'accepted', entry: recorded } })] }));
+    expect(html).toContain('Recorded');
+    for (const control of [
+      ...NEVER,
+      'expense-amount',
+      'expense-incurred-on',
+      'expense-account',
+      'expense-delete',
+      'expense-elsewhere',
+    ]) {
+      expect(has(html, control), control).toBe(false);
+    }
+    expect(has(html, 'expense-read-only')).toBe(true);
+    expect(has(html, 'expense-end')).toBe(true);
+    // No link to a month that could not change it either, and none to an editor that does not exist.
+    const row = /<tr[^>]*data-testid="expense-occurrence".*?<\/tr>/su.exec(html)?.[0] ?? '';
+    expect(row).not.toContain('href=');
+  });
+
+  it('says why, per protected kind, and nothing for a source it can record', () => {
+    expect(protectedSourceNote(capex)).toBe(
+      'A legacy source filed under Capital improvements. This editor cannot record it: a capital improvement belongs to the asset it improves, not to Known expenses.',
+    );
+    expect(protectedSourceNote(fees)).toBe(
+      'A legacy source filed under Transfer fees. This editor cannot record it: a transfer fee is recorded with the transfer it was charged on.',
+    );
+    expect(protectedSourceNote(source())).toBeNull();
   });
 });
 

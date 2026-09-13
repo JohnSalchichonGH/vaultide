@@ -31,6 +31,7 @@ import type {
   ExpenseOccurrenceDto,
   ExpenseReadOnlyReasonDto,
   ExpenseSourceDto,
+  ExpenseSourceProtectionDto,
   ExpenseTermDto,
   MonthlyExpenseEntryDto,
   MonthlyExpensesDto,
@@ -72,10 +73,20 @@ import type {
  * ## What the section lists
  *
  * Every expense the month knows about, whoever paid it — which is why it is not
- * `ΣK` and never totals anything. Capital improvements are the exception: 7.4
- * makes one capital allocation (`Nout`) rather than a known expense, and 15.3
- * records it from the asset's page. Only their **presentation** is filtered
- * here; the loaders' rows, and every figure built from them, keep them.
+ * `ΣK` and never totals anything. A capital improvement's expense is the
+ * exception: 7.4 makes one capital allocation (`Nout`) rather than a known
+ * expense, and 15.3 records it from the asset's page. Only its **presentation**
+ * is filtered here; the loaders' rows, and every figure built from them, keep it.
+ *
+ * ## Sources this section cannot record
+ *
+ * The expense services refuse to materialize anything filed under a capital
+ * improvement or a transfer fee (`assertCategoryUsableInPhase3`). A source under
+ * one can only be legacy — older than that guard, or written below it — and its
+ * schedule is schedule truth all the same: completeness counts its occurrences.
+ * So every occurrence is shown, marked by its source's `protection`, and none is
+ * described as recordable or as reachable by "Paid today". What such a source
+ * already recorded is shown as recorded and offered for no correction.
  */
 
 export interface MonthlyExpensesInput {
@@ -112,6 +123,17 @@ export function expenseCategoryUseOf(kind: string): ExpenseCategoryUseDto {
   if ((consumptionCategoryKinds as readonly string[]).includes(kind)) return 'spending';
   if (kind === 'external_outflow') return 'money_out';
   return 'other';
+}
+
+/**
+ * Whether Known expenses can record anything filed under this kind.
+ *
+ * The same two kinds `assertCategoryUsableInPhase3` refuses, stated as data so
+ * the page never offers an action that guard must refuse. It is not a second
+ * rule: an integration test holds the two together, kind by kind.
+ */
+export function expenseSourceProtectionOf(kind: string): ExpenseSourceProtectionDto | null {
+  return kind === 'capital_improvement' || kind === 'transfer_fee' ? kind : null;
 }
 
 function categoryDtoOf(row: CategoryRecord): ExpenseCategoryDto {
@@ -151,12 +173,12 @@ function toTemplateTerm(row: RecurringTemplateTermRow): TemplateTerm {
   };
 }
 
-/** The term an occurrence takes, and whether one-click recording can use it. */
+/** The term an occurrence takes, and whether its amount could become an expense. */
 function termOf(
   terms: readonly RecurringTemplateTermRow[],
   occurrenceDate: PlainDate,
   currency: string,
-): { readonly term: ExpenseTermDto; readonly recordableAsExpected: boolean } {
+): { readonly term: ExpenseTermDto; readonly positiveAmount: boolean } {
   const applicable = termForOccurrence(terms.map(toTemplateTerm), occurrenceDate);
   const exactRow = terms.find((row) => row.effectiveFrom === (occurrenceDate as string));
 
@@ -176,16 +198,17 @@ function termOf(
     },
     // Decided on the exact decimal: an expense must be more than zero (6.2), so
     // a zero term is known in advance to need the amount stated.
-    recordableAsExpected: applicable !== undefined && applicable.amount.greaterThan(0),
+    positiveAmount: applicable !== undefined && applicable.amount.greaterThan(0),
   };
 }
 
 /**
  * Why the section shows a row without offering to change it, if it does.
  *
- * A row a source scheduled keeps the recurring correction whatever its kind:
+ * A row a source scheduled keeps the recurring correction whatever its kind —
  * its classification is its source's and is not offered anyway, so nothing can
- * be reclassified by it.
+ * be reclassified by it — unless its kind is one the services would refuse to
+ * record today, whose history this section leaves exactly as it was recorded.
  */
 function readOnlyReasonOf(
   row: ExpenseEntryRow,
@@ -196,6 +219,7 @@ function readOnlyReasonOf(
   // the workflow that does, and keeps its meaning.
   if (row.settlement === 'deducted_from_asset') return 'other_workflow';
   if (row.templateId === null && category.use === 'other') return 'other_workflow';
+  if (expenseSourceProtectionOf(category.kind) !== null) return 'other_workflow';
   return null;
 }
 
@@ -270,16 +294,18 @@ function build(input: MonthlyExpensesInput): { dto: MonthlyExpensesDto; context:
     const cached = sources.get(template.id);
     if (cached !== undefined) return cached;
     const schedule = scheduleOf(template);
+    const sourceCategory = category(categoryId);
     const created: ExpenseSourceDto = {
       templateId: template.id,
       version: template.version,
       name: template.name,
       counterparty: template.counterparty,
       currency: template.currency,
-      category: category(categoryId),
+      category: sourceCategory,
       startDate: template.startDate,
       endDate: template.endDate,
       archived: template.archivedAt !== null,
+      protection: expenseSourceProtectionOf(sourceCategory.kind),
       defaultCashPositionId: template.cashPositionId,
       defaultCashAccountName:
         template.cashPositionId === null ? null : accountName(template.cashPositionId),
@@ -345,8 +371,10 @@ function build(input: MonthlyExpensesInput): { dto: MonthlyExpensesDto; context:
   for (const template of templatesById.values()) {
     if (template.kind !== 'expense' || template.categoryId === null) continue;
     const categoryId = template.categoryId;
-    if (isCapitalImprovement(category(categoryId))) continue;
     const archived = template.archivedAt !== null;
+    // Every expense source's schedule is shown, a protected one's included:
+    // completeness counts its occurrences, so none may vanish from here.
+    const recordable = expenseSourceProtectionOf(category(categoryId).kind) === null;
 
     for (const occurrenceDate of occurrencesInRange(scheduleOf(template), from, to)) {
       const key = occurrenceKeyOf(template.id, occurrenceDate);
@@ -368,13 +396,13 @@ function build(input: MonthlyExpensesInput): { dto: MonthlyExpensesDto; context:
       } else if (occurrenceDate > input.today) {
         state = {
           kind: 'upcoming',
-          paidTodayEligible: eligible?.get(template.id) === occurrenceDate,
+          paidTodayEligible: recordable && eligible?.get(template.id) === occurrenceDate,
         };
       } else {
         state = { kind: 'due' };
       }
 
-      const { term, recordableAsExpected } = termOf(
+      const { term, positiveAmount } = termOf(
         termsOf(template.id),
         occurrenceDate,
         template.currency,
@@ -384,7 +412,7 @@ function build(input: MonthlyExpensesInput): { dto: MonthlyExpensesDto; context:
         occurrenceDate,
         source: source(template, categoryId),
         term,
-        recordableAsExpected,
+        recordableAsExpected: recordable && positiveAmount,
         state,
       });
     }
@@ -433,9 +461,11 @@ export function currentMonthlyExpensesOf(
     /* v8 ignore next -- candidates are derived from these same templates, and an
        expense template's category is non-null by a 6.2 CHECK. */
     if (template === undefined || template.categoryId === null) continue;
-    if (isCapitalImprovement(context.category(template.categoryId))) continue;
+    // Never an offer the services must refuse: a protected source cannot be
+    // recorded here at all, early or otherwise.
+    if (expenseSourceProtectionOf(context.category(template.categoryId).kind) !== null) continue;
 
-    const { term, recordableAsExpected } = termOf(
+    const { term, positiveAmount } = termOf(
       context.termsOf(templateId),
       occurrenceDate,
       template.currency,
@@ -446,7 +476,7 @@ export function currentMonthlyExpensesOf(
       occurrenceMonth: label(monthKey(occurrenceDate)),
       source: context.source(template, template.categoryId),
       term,
-      recordableAsExpected,
+      recordableAsExpected: positiveAmount,
     });
   }
 

@@ -303,6 +303,28 @@ export function otherWorkflowNote(entry: Pick<MonthlyExpenseEntryDto, 'category'
   return `Filed under ${entry.category.name}, a kind of cost recorded by its own workflow rather than here. It is shown as it was recorded.`;
 }
 
+/**
+ * Why a legacy source's occurrences cannot be recorded here, or `null` when
+ * they can (7.4).
+ *
+ * The read says which protection applies; this only says it in words. The row
+ * keeps what can resolve an occurrence without recording it — a skip, a
+ * restore, an end date — and links to no other editor, because none exists yet
+ * for either workflow.
+ */
+export function protectedSourceNote(
+  source: Pick<ExpenseSourceDto, 'protection' | 'category'>,
+): string | null {
+  switch (source.protection) {
+    case null:
+      return null;
+    case 'capital_improvement':
+      return `A legacy source filed under ${source.category.name}. This editor cannot record it: a capital improvement belongs to the asset it improves, not to Known expenses.`;
+    case 'transfer_fee':
+      return `A legacy source filed under ${source.category.name}. This editor cannot record it: a transfer fee is recorded with the transfer it was charged on.`;
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* A source's end date                                                         */
 /* -------------------------------------------------------------------------- */
