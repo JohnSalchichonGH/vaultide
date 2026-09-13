@@ -65,6 +65,7 @@ import {
   knownExpensesHref,
   otherWorkflowNote,
   ownsExpense,
+  paymentMethodChoice,
   paymentMethodFor,
   paymentMethodLabel,
   paymentMethodOptions,
@@ -240,6 +241,8 @@ function AmountField({
 interface Option {
   readonly value: string;
   readonly label: string;
+  /** Listed so a stored value reads truthfully, and not choosable again. */
+  readonly disabled?: boolean;
 }
 
 function Select({
@@ -277,7 +280,7 @@ function Select({
         }}
       >
         {options.map((option) => (
-          <option key={option.value} value={option.value}>
+          <option key={option.value} value={option.value} disabled={option.disabled}>
             {option.label}
           </option>
         ))}
@@ -1076,6 +1079,11 @@ function useExpenseSave(entry: MonthlyExpenseEntryDto) {
  * account on this section, so choosing it narrows the methods, and choosing
  * something else opens them again. Both are held as drafts and one explicit
  * action writes the pair, so nothing is reclassified by a stray selection.
+ *
+ * Until the user chooses, the controls show the row as stored — a legacy
+ * money-out row paid outside tracked accounts included, whose method is listed
+ * as recorded rather than silently shown as tracked cash — and nothing is
+ * offered for applying.
  */
 function Classification({
   entry,
@@ -1094,11 +1102,17 @@ function Classification({
 }) {
   const ids = { category: useId(), payment: useId() };
   const categoryId = drafts.categoryId ?? entry.category.categoryId;
+  const categoryChanged = categoryId !== entry.category.categoryId;
   const category =
     eligible.find((row) => row.categoryId === categoryId) ??
-    (categoryId === entry.category.categoryId ? entry.category : undefined);
-  const payment = paymentMethodFor(category, drafts.settlement ?? entry.settlement);
-  const changed = categoryId !== entry.category.categoryId || payment !== entry.settlement;
+    (categoryChanged ? undefined : entry.category);
+  const payment = paymentMethodChoice({
+    category,
+    categoryChanged,
+    stored: entry.settlement,
+    draft: drafts.settlement,
+  });
+  const changed = categoryChanged || payment.value !== entry.settlement;
 
   return (
     <>
@@ -1113,7 +1127,7 @@ function Classification({
         disabled={disabled}
         onChange={(value) => {
           const next = eligible.find((row) => row.categoryId === value);
-          onDraft({ categoryId: value, settlement: paymentMethodFor(next, payment) });
+          onDraft({ categoryId: value, settlement: paymentMethodFor(next, payment.value) });
         }}
       />
       <Select
@@ -1121,8 +1135,8 @@ function Classification({
         testId="expense-payment"
         label="How it was paid"
         hideLabel
-        value={payment}
-        options={paymentMethodOptions(category)}
+        value={payment.value}
+        options={payment.options}
         disabled={disabled}
         onChange={(value) => {
           onDraft({ settlement: value });
@@ -1133,14 +1147,14 @@ function Classification({
           {MONEY_OUT_NOTE}
         </p>
       ) : null}
-      {changed ? (
+      {changed && payment.applicable ? (
         <button
           type="button"
           data-testid="expense-apply-classification"
           className={cn(PRIMARY, 'self-end')}
           disabled={disabled}
           onClick={() => {
-            onApply(categoryId, payment);
+            onApply(categoryId, payment.value);
           }}
         >
           Apply

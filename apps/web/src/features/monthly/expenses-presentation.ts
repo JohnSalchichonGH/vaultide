@@ -73,6 +73,48 @@ export function paymentMethodFor(
     : 'tracked_cash';
 }
 
+/** A payment method as a stored row's control lists it. */
+export interface PaymentMethodOption {
+  readonly value: string;
+  readonly label: string;
+  readonly disabled: boolean;
+}
+
+/**
+ * What a stored row's payment-method control shows, before and after a choice.
+ *
+ * Until the user chooses, it shows the row's **stored** method — even one the
+ * category would not be offered with today. A legacy money-out row paid outside
+ * tracked accounts therefore shows that payment, marked as recorded and not
+ * choosable again, rather than a switch to a tracked account nobody has saved
+ * displayed as though it were the fact. `applicable` says whether the method
+ * shown is one the category may carry, the only kind a correction may write. A
+ * changed category offers exactly what a new classification would.
+ */
+export function paymentMethodChoice(args: {
+  readonly category: Pick<ExpenseCategoryDto, 'use'> | undefined;
+  readonly categoryChanged: boolean;
+  readonly stored: string;
+  readonly draft: string | undefined;
+}): {
+  readonly value: string;
+  readonly options: readonly PaymentMethodOption[];
+  readonly applicable: boolean;
+} {
+  const offered = paymentMethodOptions(args.category).map((option) => ({ ...option, disabled: false }));
+  const value =
+    args.draft ?? (args.categoryChanged ? paymentMethodFor(args.category, args.stored) : args.stored);
+  const storedOffered = offered.some((option) => option.value === args.stored);
+  const options =
+    args.categoryChanged || storedOffered
+      ? offered
+      : [
+          ...offered,
+          { value: args.stored, label: `${paymentMethodLabel(args.stored)} (as recorded)`, disabled: true },
+        ];
+  return { value, options, applicable: offered.some((option) => option.value === value) };
+}
+
 /* -------------------------------------------------------------------------- */
 /* Categories                                                                  */
 /* -------------------------------------------------------------------------- */

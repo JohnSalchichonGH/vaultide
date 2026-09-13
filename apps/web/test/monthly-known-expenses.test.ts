@@ -60,6 +60,7 @@ const {
   expenseSkipReasonOptions,
   knownExpensesHref,
   ownsExpense,
+  paymentMethodChoice,
   paymentMethodFor,
   paymentMethodLabel,
   paymentMethodOptions,
@@ -674,6 +675,32 @@ describe('a recorded direct expense', () => {
     expect(html).toContain(MONEY_OUT_NOTE);
   });
 
+  it('shows a legacy money-out row’s payment as recorded, and offers nothing to apply until another is chosen', () => {
+    const html = render(
+      expenses({
+        direct: [
+          entry({
+            category: MONEY_OUT,
+            settlement: 'untracked_self',
+            cashPositionId: null,
+            cashAccountName: null,
+          }),
+        ],
+      }),
+    );
+    const picker = selectMarkup(html, 'expense-payment');
+    // The stored fact is the selected value, not an unsaved switch to tracked cash…
+    expect(picker).toContain(
+      '<option value="untracked_self" disabled="" selected="">Paid by me outside tracked accounts (as recorded)</option>',
+    );
+    // …while tracked cash stays the one method the category may be changed to.
+    expect(picker).toContain('<option value="tracked_cash">Paid from tracked account</option>');
+    expect(has(html, 'expense-apply-classification')).toBe(false);
+    expect(html).toMatch(/data-testid="expense-attribution"[^>]*>Paid by me outside tracked accounts</u);
+    // Paid outside tracked accounts as stored, so no tracked account is offered yet.
+    expect(has(html, 'expense-account')).toBe(false);
+  });
+
   it('shows an archived category as it is, and offers it for nothing new', () => {
     const archived = category({ categoryId: 'cat-club', name: 'Old club', archived: true, selectable: false });
     const html = render(expenses({ direct: [entry({ category: archived })] }));
@@ -910,6 +937,49 @@ describe('what a control may offer', () => {
     expect(paymentMethodFor(MONEY_OUT, 'third_party')).toBe('tracked_cash');
     expect(paymentMethodFor(GROCERIES, 'third_party')).toBe('third_party');
     expect(paymentMethodOptions(GROCERIES)).toHaveLength(3);
+  });
+
+  it('shows a stored method the category is no longer offered with until a supported one is chosen', () => {
+    expect(
+      paymentMethodChoice({ category: MONEY_OUT, categoryChanged: false, stored: 'third_party', draft: undefined }),
+    ).toEqual({
+      value: 'third_party',
+      options: [
+        { value: 'tracked_cash', label: 'Paid from tracked account', disabled: false },
+        { value: 'third_party', label: 'Paid by someone else (as recorded)', disabled: true },
+      ],
+      applicable: false,
+    });
+    // Choosing the supported method is what makes a correction applicable.
+    expect(
+      paymentMethodChoice({ category: MONEY_OUT, categoryChanged: false, stored: 'third_party', draft: 'tracked_cash' }),
+    ).toMatchObject({ value: 'tracked_cash', applicable: true });
+
+    // Classifying a row as money out afresh still offers tracked cash alone.
+    const reclassified = paymentMethodChoice({
+      category: MONEY_OUT,
+      categoryChanged: true,
+      stored: 'third_party',
+      draft: undefined,
+    });
+    expect(reclassified.value).toBe('tracked_cash');
+    expect(reclassified.options.map((option) => option.value)).toEqual(['tracked_cash']);
+    expect(reclassified.applicable).toBe(true);
+
+    // An ordinary row shows its stored method among the three, with nothing added.
+    const ordinary = paymentMethodChoice({
+      category: GROCERIES,
+      categoryChanged: false,
+      stored: 'third_party',
+      draft: undefined,
+    });
+    expect(ordinary.value).toBe('third_party');
+    expect(ordinary.options.map((option) => option.value)).toEqual([
+      'tracked_cash',
+      'untracked_self',
+      'third_party',
+    ]);
+    expect(ordinary.applicable).toBe(true);
   });
 
   it('groups eligible categories, and shows a row’s own ineligible one without offering it', () => {
