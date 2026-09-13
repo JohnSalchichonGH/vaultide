@@ -1,3 +1,4 @@
+import type { Route } from 'next';
 import type {
   ExpenseCategoryDto,
   ExpenseOccurrenceDto,
@@ -319,8 +320,15 @@ export function expenseSkipReasonOptions(): readonly Option[] {
 export const ownsExpense = (entry: Pick<MonthlyExpenseEntryDto, 'incurredMonth'>, month: string): boolean =>
   entry.incurredMonth === month;
 
-/** The owner month's Known-expenses section. */
-export const knownExpensesHref = (month: string): string => `/monthly/${month}#known-expenses`;
+/**
+ * The owner month's Known-expenses section, as the typed route a `Link` takes.
+ *
+ * The one deliberate `as Route` lives here, as in the Income section's own
+ * helper, so no call site asserts it again — whether or not the typed-route
+ * definitions have been generated.
+ */
+export const knownExpensesHref = (month: string): Route =>
+  `/monthly/${month}#known-expenses` as Route;
 
 /**
  * What to say before recording lands an expense in another month.

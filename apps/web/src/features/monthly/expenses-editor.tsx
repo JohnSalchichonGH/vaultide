@@ -2,7 +2,6 @@
 
 import { useId, useState, useTransition, type ReactNode } from 'react';
 import Link from 'next/link';
-import type { Route } from 'next';
 import { useRouter } from 'next/navigation';
 import type {
   CurrentMonthlyExpensesDto,
@@ -1367,7 +1366,7 @@ function ElsewhereNotice({
   return (
     <p className={META} data-testid="expense-elsewhere">
       Incurred in {name}.{' '}
-      <Link href={knownExpensesHref(entry.incurredMonth) as Route} className="underline">
+      <Link href={knownExpensesHref(entry.incurredMonth)} className="underline">
         Open {name} to change it
       </Link>
     </p>
@@ -1876,7 +1875,7 @@ function EntryRow({
         {entry.occurrence === null ? null : (
           <span className={cn('block whitespace-nowrap', META)} data-testid="expense-entry-occurrence">
             For the occurrence scheduled {day(entry.occurrence.occurrenceDate)} ·{' '}
-            <Link href={knownExpensesHref(entry.occurrence.occurrenceMonth) as Route} className="underline">
+            <Link href={knownExpensesHref(entry.occurrence.occurrenceMonth)} className="underline">
               {monthTitle(entry.occurrence.occurrenceMonth, formatting.locale)}
             </Link>
           </span>
