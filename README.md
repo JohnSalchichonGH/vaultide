@@ -37,6 +37,9 @@ progress, but Monthly is live. What is usable today:
     of it, recording or skipping an occurrence, recording one received early,
     changing what a source is worth from an occurrence on, adding a recurring
     income source, and maintaining the other income received in the month;
+  - **Known expenses** — the recurring expenses expected that month and what
+    became of each, recording or skipping them, and maintaining the month's
+    other known expenses, including how each one was paid;
   - **Accounts** — each cash account's balance for that month: entering or
     correcting a statement balance, confirming a last-day snapshot as one,
     confirming a month unchanged, and updating balances today;
@@ -80,16 +83,14 @@ There are no corrective actions on an issue yet.
 
 In production, Monthly consumes this through one composite read: a month's
 reconciliation, reporting-currency figures and completeness, the cash balances
-it is measured from, and the income it expected and received. Known expenses,
-transfers and the standalone Spending and Income pages have no user interface
-yet.
+it is measured from, the income it expected and received, and the expenses it
+expected and recorded. Transfers and the standalone Spending and Income pages
+have no user interface yet.
 
 ### Remaining Phase 3
 
 Phase 3 is **in progress**, and is neither accepted nor frozen. Still to do:
 
-- Monthly Known expenses, with the existing financial actions that section
-  needs;
 - the Spending and Income pages;
 - bulk history entry and correction;
 - the remaining end-to-end journeys and hardening;
@@ -125,8 +126,8 @@ reconciliation identities, rate selection and every edge case.
 ```text
 apps/web             Next.js App Router: auth pages, onboarding, settings, shell,
                      dashboard, accounts and account detail, Monthly overview,
-                     income, accounts and reconciliation; /api/auth,
-                     /api/cron/fx-refresh, /api/health
+                     income, known expenses, accounts and reconciliation;
+                     /api/auth, /api/cron/fx-refresh, /api/health
 packages/finance     pure engines — money, dates, FX, Unavailable/Partial,
                      positions and net worth, flow roles, recurrence,
                      completed-month, month-to-date and span reconciliation,

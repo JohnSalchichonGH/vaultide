@@ -30,7 +30,7 @@ logs into this file.
   in force at the time, production-verified, and frozen as completed slice
   checkpoints. The Phase-3-reachable completed-month completeness report and
   read model (blueprint §12.6, §30.18) is also an accepted/frozen slice
-  checkpoint: independently reviewed, production-verified, and frozen. Three
+  checkpoint: independently reviewed, production-verified, and frozen. Four
   **Monthly** slices are likewise accepted, frozen and production-verified, each
   independently reviewed:
   - **Monthly foundation** — `/monthly/[yyyy-mm]` for completed and current
@@ -40,13 +40,16 @@ logs into this file.
   - **Monthly Accounts editing** — maintaining each cash account's balances for
     the month on screen;
   - **Monthly Income** — a month's recurring income occurrences and the money
-    actually received in it.
+    actually received in it;
+  - **Monthly Known expenses** — a month's recurring expense occurrences and the
+    known expenses that financially belong to it.
 
-  Together these are still not the complete Monthly editor: Known expenses and
-  the later sections remain.
+  Together these slices make up the Monthly sections Phase 3 has built so far;
+  later-phase Monthly sections remain outside this Phase 3 checkpoint.
 - **User-facing production:** Phases 0–2 remain the accepted/frozen user-facing
   foundation. Phase 3's Monthly page is in production with Overview, Income,
-  Accounts and Reconciliation; the rest of Phase 3 remains in progress.
+  Known expenses, Accounts and Reconciliation; the rest of Phase 3 remains in
+  progress.
 - **Database migrations:** repository migrations run through
   `0007_phase3_privileges_and_triggers.sql`; the production release workflow
   applies migrations before deploying application code.
@@ -98,39 +101,41 @@ Monthly adds, on top of that backend:
   occurrence received early, changing what a source is worth from an occurrence
   on, creating a recurring income source, and maintaining the direct income
   received in the month;
+- **Known expenses**: the recurring expense occurrences a month expected and
+  what became of each, recording or skipping them and restoring a skip,
+  recording an upcoming occurrence early, changing what a source costs from an
+  occurrence on or when it ends, creating a recurring expense source, and
+  maintaining the month's direct known expenses;
 - MonthReview state: a completed month can be marked reviewed;
 - advisory dismissal and restoration, applied only as presentation state.
 
 Web surface of Phase 3:
 
 - Monthly (`/monthly/[yyyy-mm]`) is a production route with Overview, Income,
-  Accounts and Reconciliation. It consumes the existing reconciliation,
-  reporting, completeness, month-to-date and recurring machinery through the
-  Monthly composite read. Spans and rolling averages are not wired to any page
-  yet. Future UI work should reuse these existing reads rather than build
-  parallel ones.
+  Known expenses, Accounts and Reconciliation. It consumes the existing
+  reconciliation, reporting, completeness, month-to-date and recurring
+  machinery through the Monthly composite read. Spans and rolling averages are
+  not wired to any page yet. Future UI work should reuse these existing reads
+  rather than build parallel ones.
 - MonthReview has repository, application and action paths
   (`apps/web/src/server/actions/monthly.ts`), used by Monthly to mark a
   completed month reviewed and to dismiss or restore an advisory as
   presentation state. Month notes are not edited anywhere yet.
 - `apps/web/src/server/actions/flows.ts` and `recurring.ts` declare the Phase 3
-  financial mutations with `financialAction` (ADR 0003). Monthly's Income
-  section is their main consumer; the expense and transfer mutations still have
-  no page of their own, and Known expenses is the section that will use the
-  expense ones.
+  financial mutations with `financialAction` (ADR 0003). Monthly's Income and
+  Known expenses sections are their consumers; transfer editing still has no
+  dedicated user-facing workflow.
 - End-to-end coverage now also includes the Monthly journeys (`monthly`),
   alongside the Phase 0–2 journeys (`smoke`, `auth`, `accounts`).
 
 ## Next planned work
 
-The next planned Phase 3 area is:
+The next planned Phase 3 area is the **standalone Spending page**.
 
-**Monthly Known expenses** — the remaining Monthly editor section, wiring the
-existing expense and recurring actions into it.
+Remaining Phase 3 work, beginning with that page, includes:
 
-After that, remaining Phase 3 work includes:
-
-- the Spending and Income pages;
+- the standalone Spending page;
+- the standalone Income page;
 - bulk history entry and historical correction;
 - remaining end-to-end journeys and Phase 3 hardening;
 - a cold whole-Phase-3 review;
