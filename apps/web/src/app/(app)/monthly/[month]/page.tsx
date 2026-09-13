@@ -13,6 +13,7 @@ import { requireSessionPage } from '@/server/context';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { CompletedAccountsEditor, CurrentAccountsEditor } from '@/features/monthly/accounts-editor';
+import { KnownExpensesSection } from '@/features/monthly/expenses-editor';
 import { IncomeSection } from '@/features/monthly/income-editor';
 import { MonthNavigation } from '@/features/monthly/month-navigation';
 import { CompletedOverview, CurrentOverview } from '@/features/monthly/overview';
@@ -28,9 +29,10 @@ export const dynamic = 'force-dynamic';
  *
  * One month at a time, completed or current, read in one call: the page never
  * assembles financial figures from several reads, and never computes one. Its
- * sections are the ones this phase has built so far — the Overview, the cash
- * Accounts and the Reconciliation — and the review state (the review mark, the
- * hidden advisories) is applied to the presentation only.
+ * sections are the ones this phase has built so far — the Overview, Income,
+ * Known expenses, the cash Accounts and the Reconciliation — and the review
+ * state (the review mark, the hidden advisories) is applied to the presentation
+ * only.
  *
  * A month that is not well-formed, or has not begun, is not a page: there is no
  * evidence of any kind for it, and an empty result would be a synthetic one.
@@ -112,6 +114,7 @@ export default async function MonthlyPage({ params }: { params: Promise<{ month:
         <nav aria-label="Month sections" className="flex flex-wrap gap-4 border-b pb-2 text-[length:var(--text-meta)]">
           <a href="#overview" className="underline">Overview</a>
           <a href="#income" className="underline">Income</a>
+          <a href="#known-expenses" className="underline">Known expenses</a>
           <a href="#accounts" className="underline">Accounts</a>
           <a href="#reconciliation" className="underline">Reconciliation</a>
         </nav>
@@ -146,6 +149,36 @@ export default async function MonthlyPage({ params }: { params: Promise<{ month:
             <IncomeSection
               key={page.month}
               income={page.income}
+              month={page.month}
+              monthName={monthName}
+              monthEndsOn={page.monthEndsOn}
+              today={page.today}
+              reportingCurrency={session.reportingCurrency}
+              selectableCurrencyCodes={page.selectableCurrencyCodes}
+              formatting={{ locale, minorUnitsByCurrency: page.minorUnitsByCurrency }}
+            />
+          </CardContent>
+        </Card>
+      </section>
+
+      <section id="known-expenses" aria-labelledby="known-expenses-heading" className="scroll-mt-20 space-y-4">
+        <div>
+          <h2 id="known-expenses-heading" className="text-[length:var(--text-section)] font-semibold tracking-tight">
+            Known expenses
+          </h2>
+          <p className="mt-1 text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">
+            What your recurring expense sources expected in {monthName}, and the expenses you know
+            about. A scheduled date is when a recurring occurrence belongs; an incurred date is when
+            the expense actually happened. How it was paid decides what it means: from a tracked
+            account it moved tracked cash, paid by you outside tracked accounts it is additional
+            spending, and paid by someone else it is recorded for information only.
+          </p>
+        </div>
+        <Card>
+          <CardContent>
+            <KnownExpensesSection
+              key={page.month}
+              expenses={page.expenses}
               month={page.month}
               monthName={monthName}
               monthEndsOn={page.monthEndsOn}
