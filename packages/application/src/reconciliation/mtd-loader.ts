@@ -4,6 +4,8 @@ import {
   listIncomeEntries,
   listTransfers,
   loadFinancialWindow,
+  type CategoryRecord,
+  type ExpenseEntryRow,
   type IncomeEntryRow,
   type PositionRecord as PositionRow,
   type ValuationRow,
@@ -64,6 +66,20 @@ export interface MonthToDateData {
    * Already read to build that input; no query of its own.
    */
   readonly income: readonly IncomeEntryRow[];
+  /**
+   * The month's expense entries so far as the rows they are, keyed on their
+   * **financial** date and running through today rather than through `D` — what
+   * Monthly's Known-expenses section lists, with the occurrence link,
+   * description, one-off flag and version the engine input drops. Already read
+   * to build that input; no query of its own.
+   */
+  readonly expenses: readonly ExpenseEntryRow[];
+  /**
+   * Every category of the user's, archived included — the rows that gave each
+   * expense above its kind. Already read to build that input; no query of its
+   * own.
+   */
+  readonly categories: readonly CategoryRecord[];
 }
 
 export async function loadMonthToDate(
@@ -112,5 +128,7 @@ export async function loadMonthToDate(
     positions: window.positions,
     valuations: window.valuations,
     income,
+    expenses,
+    categories,
   };
 }

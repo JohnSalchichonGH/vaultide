@@ -243,6 +243,237 @@ export interface CurrentMonthlyIncomeDto extends MonthlyIncomeDto {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Known expenses (15.3 section 3)                                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How Known expenses may use a category (blueprint 7.4, 15.3 section 3).
+ *
+ * The generic expense service accepts more kinds than this section offers, and
+ * that is deliberate: several system kinds are ordinary tracked expenses whose
+ * recording workflow belongs to an aggregate a later phase builds. So the use
+ * says which of three things a category is here:
+ *
+ *  - `spending` — a consumption kind: offered, with every Phase 3 payment method;
+ *  - `money_out` — `external_outflow`: offered apart from spending, because it
+ *    is not consumption, and only as paid from a tracked account;
+ *  - `other` — a kind whose workflow another aggregate owns (investment fees,
+ *    property costs, transfer fees, capital improvements): shown as recorded,
+ *    never offered for a new classification.
+ */
+export type ExpenseCategoryUseDto = 'spending' | 'money_out' | 'other';
+
+export interface ExpenseCategoryDto {
+  readonly categoryId: string;
+  /** The user's own name for it. The kind, never the name, decides its accounting (7.4). */
+  readonly name: string;
+  readonly kind: string;
+  readonly use: ExpenseCategoryUseDto;
+  /** Archived categories keep every expense filed under them and take no new ones (R12). */
+  readonly archived: boolean;
+  /** Offered for a new classification: live, and `spending` or `money_out`. */
+  readonly selectable: boolean;
+}
+
+/**
+ * Why Known expenses shows a row without offering to change it.
+ *
+ *  - `transfer_fee` — the row is a transfer's fee. The transfer owns it (M14),
+ *    and the services refuse to edit or delete it on its own.
+ *  - `other_workflow` — a row nothing scheduled, filed under a kind this
+ *    section does not offer (or paid in a way it does not offer). Its recording
+ *    belongs to another aggregate, so a generic picker here must not quietly
+ *    reclassify it.
+ */
+export type ExpenseReadOnlyReasonDto = 'transfer_fee' | 'other_workflow';
+
+/** One expense entry: a materialized occurrence, or a row nothing scheduled. */
+export interface MonthlyExpenseEntryDto {
+  readonly entryId: string;
+  readonly version: number;
+  readonly category: ExpenseCategoryDto;
+  /** How it was paid (6.2, 7.4). */
+  readonly settlement: string;
+  /** The financial date (6.2). Never after today. */
+  readonly incurredOn: string;
+  /** `YYYY-MM` of `incurredOn`: the month that owns this row's editing. */
+  readonly incurredMonth: string;
+  readonly amount: MoneyDto;
+  readonly currency: string;
+  /** `null` with `tracked_cash` is tracked cash awaiting attribution, never untracked (8.1). */
+  readonly cashPositionId: string | null;
+  readonly cashAccountName: string | null;
+  readonly description: string | null;
+  readonly isOneOff: boolean;
+  /** `null` when the displayed owner month may correct it. */
+  readonly readOnly: ExpenseReadOnlyReasonDto | null;
+  /** The scheduled occurrence this row materializes, when it materializes one. */
+  readonly occurrence: {
+    readonly templateId: string;
+    readonly templateName: string;
+    readonly occurrenceDate: string;
+    /** `YYYY-MM` of `occurrenceDate`: the month whose schedule expects it. */
+    readonly occurrenceMonth: string;
+  } | null;
+}
+
+/**
+ * A recurring expense source, as far as Known expenses shows it and ends it.
+ *
+ * `end_date` is the one field of a source this section edits, and only because
+ * a source that cannot be stopped leaves every later month expecting it:
+ * `archived_at` is present-tense visibility and never a schedule boundary
+ * (§30.10).
+ */
+export interface ExpenseSourceDto {
+  readonly templateId: string;
+  /** The template's optimistic version, which an end-date change must claim (20.3). */
+  readonly version: number;
+  readonly name: string;
+  readonly counterparty: string | null;
+  readonly currency: string;
+  readonly category: ExpenseCategoryDto;
+  readonly startDate: string;
+  readonly endDate: string | null;
+  readonly archived: boolean;
+  readonly defaultCashPositionId: string | null;
+  readonly defaultCashAccountName: string | null;
+  /**
+   * Every date this schedule places in a completed month, generated as though it
+   * never ended — what a proposed end date is measured against.
+   *
+   * From the same recurrence function the services use (6.2), so a page
+   * summarizing an end-date change compares dates against these and never
+   * generates a schedule of its own. Bounded by the source's start and by the end
+   * of the last completed month; the server still decides whether a change is
+   * allowed.
+   */
+  readonly completedOccurrenceDates: readonly string[];
+}
+
+/**
+ * What the schedule says an expense occurrence costs (6.2, §30.9 item 4).
+ *
+ * The same two questions as income's term, without a gross figure, which
+ * `expense_entries` has no column for.
+ */
+export interface ExpenseTermDto {
+  /**
+   * The applicable term's amount, or `null` when no term covers the date yet.
+   * Zero is a real amount here: a term may be zero while an expense may not.
+   */
+  readonly amount: MoneyDto | null;
+  /** The applicable term's own effective date — never the financial date. */
+  readonly effectiveFrom: string | null;
+  /** Whether a term starts **exactly** at this occurrence's date (see `OccurrenceTermDto`). */
+  readonly exact:
+    | { readonly state: 'absent' }
+    | {
+        readonly state: 'version';
+        readonly termId: string;
+        readonly version: number;
+        readonly note: string | null;
+      };
+}
+
+/** What has become of one scheduled expense occurrence, in the accept/skip service's four states. */
+export type ExpenseOccurrenceStateDto =
+  | { readonly kind: 'due' }
+  | {
+      readonly kind: 'upcoming';
+      /**
+       * This is the one occurrence "Paid today" may reach (§30.10). Server
+       * evidence, checked again under the template's lock when it is used.
+       */
+      readonly paidTodayEligible: boolean;
+    }
+  | { readonly kind: 'accepted'; readonly entry: MonthlyExpenseEntryDto }
+  | {
+      readonly kind: 'skipped';
+      readonly skipId: string;
+      readonly reason: string;
+      readonly note: string | null;
+    };
+
+/** One expense occurrence the schedule placed in the displayed month. */
+export interface ExpenseOccurrenceDto {
+  readonly templateId: string;
+  /** The scheduling identity (6.2). Never a financial date, never editable. */
+  readonly occurrenceDate: string;
+  readonly source: ExpenseSourceDto;
+  readonly term: ExpenseTermDto;
+  /**
+   * One-click recording can succeed as far as the amount goes: a term covers the
+   * date and it is more than zero. An expense is strictly positive while a term
+   * may be zero (6.2), so a zero or missing term is known in advance to need the
+   * amount stated — or a skip, when nothing was charged.
+   */
+  readonly recordableAsExpected: boolean;
+  readonly state: ExpenseOccurrenceStateDto;
+}
+
+/**
+ * The one occurrence of a source that "Paid today" may reach, when it lies
+ * outside the displayed month (§30.10). There is no horizon.
+ */
+export interface PaidTodayCandidateDto {
+  readonly templateId: string;
+  /** Strictly after today, in whatever later month the schedule puts it. */
+  readonly occurrenceDate: string;
+  readonly occurrenceMonth: string;
+  readonly source: ExpenseSourceDto;
+  readonly term: ExpenseTermDto;
+  readonly recordableAsExpected: boolean;
+}
+
+/**
+ * The month's known expenses, partitioned so no entry is ever rendered twice.
+ *
+ * The same set difference as income: `occurrences` is schedule membership
+ * (`occurrence_date ∈ M`) and embeds the entry that resolved each one;
+ * `otherRecurring` and `direct` are financial membership (`incurred_on ∈ M`)
+ * minus every entry already embedded above.
+ *
+ * It is every expense the month knows about — paid from a tracked account, paid
+ * by the user outside tracked accounts, and paid by somebody else — so it is not
+ * `ΣK` and carries no total. Reconciliation owns the known tracked figure.
+ * Capital improvements are not here: they are capital allocation (`Nout`), and
+ * they stay in every financial figure the page shows.
+ */
+export interface MonthlyExpensesDto {
+  /** Every expense occurrence the schedule placed in M, by date then template. */
+  readonly occurrences: readonly ExpenseOccurrenceDto[];
+  /** Recurring expenses incurred in M whose occurrence is not one of the above. */
+  readonly otherRecurring: readonly MonthlyExpenseEntryDto[];
+  /** Expenses incurred in M that no source scheduled. */
+  readonly direct: readonly MonthlyExpenseEntryDto[];
+  /**
+   * What a category picker on this section offers: the live `spending` and
+   * `money_out` categories, in the user's order. Derived once here, never
+   * reassembled from kinds in the browser.
+   */
+  readonly eligibleCategories: readonly ExpenseCategoryDto[];
+  /**
+   * Cash accounts an expense may attach to, from the rows the page already
+   * loaded, with the window a flow's date must fall in (8.1). The services
+   * remain authoritative for ownership, currency and participation.
+   */
+  readonly cashAccounts: readonly {
+    readonly positionId: string;
+    readonly name: string;
+    readonly currency: string;
+    readonly openedOn: string | null;
+    readonly closedOn: string | null;
+  }[];
+}
+
+/** The current month's known expenses, with the operational surface a live month has. */
+export interface CurrentMonthlyExpensesDto extends MonthlyExpensesDto {
+  /** At most one per active source, and only when it lies outside the month. */
+  readonly paidTodayCandidates: readonly PaidTodayCandidateDto[];
+}
+
+/* -------------------------------------------------------------------------- */
 /* Accounts (15.3 section 4)                                                   */
 /* -------------------------------------------------------------------------- */
 
@@ -387,6 +618,8 @@ export interface CompletedMonthlyPageDto extends MonthlyPageBase {
   readonly accounts: CompletedAccountsDto;
   /** The month's income: its schedule, and the money that arrived in it. */
   readonly income: MonthlyIncomeDto;
+  /** The month's known expenses: its expense schedule, and what was spent in it. */
+  readonly expenses: MonthlyExpensesDto;
 }
 
 /**
@@ -403,6 +636,11 @@ export interface CurrentMonthlyPageDto extends MonthlyPageBase {
   readonly accounts: CurrentAccountsDto;
   /** The month's income so far, and the schedule it is being measured against. */
   readonly income: CurrentMonthlyIncomeDto;
+  /**
+   * The month's known expenses through today — not through the month-to-date
+   * date, which bounds reconciliation figures and not which records exist.
+   */
+  readonly expenses: CurrentMonthlyExpensesDto;
 }
 
 export type MonthlyPageDto = CompletedMonthlyPageDto | CurrentMonthlyPageDto;

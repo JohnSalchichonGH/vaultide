@@ -23,6 +23,8 @@ import {
   type ReconciliationDependencies,
 } from '../reconciliation/service';
 import { completedAccountsOf, currentAccountsOf } from './accounts';
+import { currentMonthlyExpensesOf, monthlyExpensesOf } from './expenses';
+import { loadCompletedMonthExpenses, loadCurrentMonthExpenses } from './expenses-loader';
 import { currentMonthlyIncomeOf, monthlyIncomeOf } from './income';
 import { loadCompletedMonthIncome, loadCurrentMonthIncome } from './income-loader';
 import { reviewDtoOf } from './review-service';
@@ -55,10 +57,17 @@ import type {
  * financial half — the entries received in the month — is the same income the
  * loaders already read, handed on rather than fetched again (15.3 section 2).
  *
+ * The Known-expenses section does the same for expenses, with a read of its own
+ * rather than a share of Income's: the expense rows and categories the loaders
+ * already hold are its financial half, and one scope answers its schedule side
+ * (15.3 section 3). The two sections' reads are independent, so they run side by
+ * side.
+ *
  * The bound is a constant number of user-scoped repository transactions — the
- * loader's, one for the Income rows, one for settings, one for the currency
- * catalogue, one for the review, and the exchange-rate reads the reporting and
- * diagnostic rules already make — whatever the size of the month.
+ * loader's, one for the Income rows, one for the Known-expenses rows, one for
+ * settings, one for the currency catalogue, one for the review, and the
+ * exchange-rate reads the reporting and diagnostic rules already make — whatever
+ * the size of the month.
  */
 
 export type MonthlyDependencies = ReconciliationDependencies;
@@ -138,7 +147,14 @@ async function completedMonthlyPage(
     (row) => row.receivedOn >= (startOfMonthKey(month) as string) && row.receivedOn <= base.monthEndsOn,
   );
 
-  const [reconciliation, reporting, incomeRows] = await Promise.all([
+  // The month's own expense entries, by financial date, from the same range —
+  // capital improvements included, which the section's mapping leaves unlisted
+  // while every figure above keeps them.
+  const incurredInMonth = range.expenses.filter(
+    (row) => row.incurredOn >= (startOfMonthKey(month) as string) && row.incurredOn <= base.monthEndsOn,
+  );
+
+  const [reconciliation, reporting, incomeRows, expenseRows] = await Promise.all([
     monthReconciliationFrom(deps, range, month, ctx.today),
     completedReportingFrom(deps, data, settings, ctx.today),
     loadCompletedMonthIncome(
@@ -146,6 +162,12 @@ async function completedMonthlyPage(
       ctx.userId,
       month,
       receivedInMonth.flatMap((row) => (row.templateId === null ? [] : [row.templateId])),
+    ),
+    loadCompletedMonthExpenses(
+      deps,
+      ctx.userId,
+      month,
+      incurredInMonth.flatMap((row) => (row.templateId === null ? [] : [row.templateId])),
     ),
   ]);
 
@@ -172,6 +194,18 @@ async function completedMonthlyPage(
       rows: incomeRows,
       shape: 'completed',
     }),
+    expenses: monthlyExpensesOf({
+      month,
+      today: plainDate(ctx.today),
+      incurredInMonth,
+      // The same schedule window as Income, archived sources included (§30.10).
+      scheduleTemplates: range.templates,
+      terms: range.terms,
+      categories: range.categories,
+      positions: range.positions,
+      rows: expenseRows,
+      shape: 'completed',
+    }),
   };
 }
 
@@ -192,13 +226,26 @@ async function currentMonthlyPage(
   // today, and no actual record may be dated later (M5), so these are all of
   // the month's income entries there can be.
   const receivedInMonth = data.income;
-  const incomeRows = await loadCurrentMonthIncome(
-    deps,
-    ctx.userId,
-    month,
-    plainDate(ctx.today),
-    receivedInMonth.flatMap((row) => (row.templateId === null ? [] : [row.templateId])),
-  );
+  // The same holds for expenses, and the rows run through today rather than
+  // through the month-to-date date: `D` bounds what a reconciliation figure
+  // covers, never which records exist.
+  const incurredInMonth = data.expenses;
+  const [incomeRows, expenseRows] = await Promise.all([
+    loadCurrentMonthIncome(
+      deps,
+      ctx.userId,
+      month,
+      plainDate(ctx.today),
+      receivedInMonth.flatMap((row) => (row.templateId === null ? [] : [row.templateId])),
+    ),
+    loadCurrentMonthExpenses(
+      deps,
+      ctx.userId,
+      month,
+      plainDate(ctx.today),
+      incurredInMonth.flatMap((row) => (row.templateId === null ? [] : [row.templateId])),
+    ),
+  ]);
 
   return {
     kind: 'current',
@@ -219,6 +266,17 @@ async function currentMonthlyPage(
       terms: incomeRows.operationalTerms,
       positions: data.positions,
       rows: incomeRows,
+      shape: 'current',
+    }),
+    expenses: currentMonthlyExpensesOf({
+      month,
+      today: plainDate(ctx.today),
+      incurredInMonth,
+      scheduleTemplates: expenseRows.activeTemplates,
+      terms: expenseRows.operationalTerms,
+      categories: data.categories,
+      positions: data.positions,
+      rows: expenseRows,
       shape: 'current',
     }),
   };

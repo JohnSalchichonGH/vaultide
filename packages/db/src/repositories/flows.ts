@@ -451,6 +451,37 @@ export async function listExpenseEntries(
   );
 }
 
+/**
+ * Expense entries by the **scheduled** date of the occurrence they materialize,
+ * inside an existing scope (blueprint 6.2, 15.3 section 3).
+ *
+ * The expense twin of `listIncomeEntriesByOccurrenceIn`, for the same reason:
+ * the sibling above asks "what was spent in this month?" and this one asks
+ * "which of this month's occurrences were recorded?". A gym fee scheduled for
+ * 1 October and paid on 30 September answers the first for September and the
+ * second for October, and a read keyed on `incurred_on` alone cannot see it
+ * from October at all (§30.9 item 2).
+ *
+ * Takes the transaction rather than the database so a caller composing one
+ * user-scoped read does not open a second one.
+ */
+export async function listExpenseEntriesByOccurrenceIn(
+  tx: Transaction,
+  from: string,
+  to: string,
+): Promise<ExpenseEntryRow[]> {
+  return tx
+    .select()
+    .from(expenseEntries)
+    .where(
+      and(
+        isNotNull(expenseEntries.occurrenceDate),
+        between(expenseEntries.occurrenceDate, from, to),
+      ),
+    )
+    .orderBy(asc(expenseEntries.occurrenceDate), asc(expenseEntries.id));
+}
+
 /** The fee rows linked to a transfer. Normally one; the query does not assume it. */
 export async function findTransferFeesIn(
   tx: Transaction,

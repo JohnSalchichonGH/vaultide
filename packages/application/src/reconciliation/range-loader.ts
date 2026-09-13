@@ -7,6 +7,7 @@ import {
   listTransfers,
   loadFinancialWindow,
   loadTermsForRange,
+  type ExpenseEntryRow,
   type IncomeEntryRow,
   type ValuationRow,
 } from '@vaultide/db';
@@ -71,6 +72,14 @@ export interface CompletedRangeData
    * Already read to build that input; no query of its own.
    */
   readonly income: readonly IncomeEntryRow[];
+  /**
+   * The range's expense entries as the rows they are, keyed on their
+   * **financial** date — what Monthly's Known-expenses section lists as incurred
+   * in the month, with the occurrence link, description, one-off flag and
+   * version the engine input drops. Already read to build that input; no query
+   * of its own.
+   */
+  readonly expenses: readonly ExpenseEntryRow[];
 }
 
 /** The completed months of `[from, to]`, oldest first. */
@@ -170,5 +179,6 @@ export async function loadCompletedRange(
     })),
     valuations: window.valuations,
     income,
+    expenses,
   };
 }
