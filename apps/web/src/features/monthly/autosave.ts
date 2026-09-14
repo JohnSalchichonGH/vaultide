@@ -2,8 +2,10 @@ import { moneyString } from '@vaultide/validation';
 import { normalizeMoneyInput } from '@/lib/money-input';
 
 /**
- * Autosave for Monthly's amount fields (blueprint 15.3 "every field autosaves on
- * blur with optimistic UI and version checks", 16.6, 20.3).
+ * Autosave for Monthly's simple amount fields (blueprint 15.3, v2.1.16 30.19: a
+ * simple field autosaves on blur with optimistic UI and version checks, while a
+ * multi-field financial aggregate may save atomically with an explicit Save
+ * instead; 16.6, 20.3).
  *
  * The rules, and nothing that needs a browser, so they are tested as rules:
  *

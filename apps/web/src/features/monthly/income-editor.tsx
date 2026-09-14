@@ -143,8 +143,8 @@ function SaveStatus({ id, state }: { readonly id: string; readonly state: SaveSt
 }
 
 /**
- * One amount, saved when the field is left (15.3: "every field autosaves on
- * blur with optimistic UI and version checks").
+ * One amount, saved when the field is left: a simple field, so it autosaves on
+ * blur with optimistic UI and version checks (15.3, v2.1.16 30.19).
  *
  * Clearing saves nothing — an amount is corrected here, never deleted — so a
  * gross figure that should go away has its own explicit control instead.
