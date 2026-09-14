@@ -1,4 +1,4 @@
-import { and, asc, between, eq, isNotNull } from 'drizzle-orm';
+import { and, asc, between, eq, getTableColumns, isNotNull } from 'drizzle-orm';
 import { expenseEntries } from '../schema/expense-entries';
 import { incomeEntries } from '../schema/income-entries';
 import { transfers } from '../schema/transfers';
@@ -493,6 +493,35 @@ export async function findTransferFeesIn(
     .where(eq(expenseEntries.transferId, transferId))
     .orderBy(asc(expenseEntries.id))
     .for('update');
+}
+
+/**
+ * Every expense row linked to a transfer whose **financial** date falls in
+ * `[from, to]`, whatever the row's own date (M14; ADR 0006 §7).
+ *
+ * A fee keeps its own `incurred_on`, so a read of the window's expenses by that
+ * date cannot promise to hold every fee of the window's transfers: a September
+ * transfer's October fee is invisible to September's expense read. This asks the
+ * other question — which rows hang off the transfers dated in the window — in
+ * one statement joined on the link, so its cost does not grow with the number
+ * of transfers or fees. Every linked row comes back, not only well-formed fees:
+ * a row that breaks the fee's rules is still the transfer's, and the reader
+ * decides what to make of it.
+ */
+export async function listTransferFeesByTransferDate(
+  db: Database,
+  userId: string,
+  from: string,
+  to: string,
+): Promise<ExpenseEntryRow[]> {
+  return withUser(db, { userId }, async (tx) =>
+    tx
+      .select(getTableColumns(expenseEntries))
+      .from(expenseEntries)
+      .innerJoin(transfers, eq(transfers.id, expenseEntries.transferId))
+      .where(between(transfers.occurredOn, from, to))
+      .orderBy(asc(expenseEntries.transferId), asc(expenseEntries.id)),
+  );
 }
 
 export async function findTransferFees(

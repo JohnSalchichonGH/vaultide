@@ -9,6 +9,7 @@ import {
   loadTermsForRange,
   type ExpenseEntryRow,
   type IncomeEntryRow,
+  type TransferRow,
   type ValuationRow,
 } from '@vaultide/db';
 import {
@@ -80,6 +81,13 @@ export interface CompletedRangeData
    * of its own.
    */
   readonly expenses: readonly ExpenseEntryRow[];
+  /**
+   * The range's transfers as the rows they are, keyed on their **financial**
+   * date — what Monthly's Accounts section lists as the month's transfers, with
+   * the description and version the engine input drops. Already read to build
+   * that input; no query of its own.
+   */
+  readonly transfers: readonly TransferRow[];
 }
 
 /** The completed months of `[from, to]`, oldest first. */
@@ -180,5 +188,6 @@ export async function loadCompletedRange(
     valuations: window.valuations,
     income,
     expenses,
+    transfers,
   };
 }

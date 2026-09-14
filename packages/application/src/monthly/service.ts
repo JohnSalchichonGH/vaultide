@@ -1,4 +1,4 @@
-import { findMonthReview } from '@vaultide/db';
+import { findMonthReview, listTransferFeesByTransferDate } from '@vaultide/db';
 import {
   addMonths,
   endOfMonthKey,
@@ -28,6 +28,7 @@ import { loadCompletedMonthExpenses, loadCurrentMonthExpenses } from './expenses
 import { currentMonthlyIncomeOf, monthlyIncomeOf } from './income';
 import { loadCompletedMonthIncome, loadCurrentMonthIncome } from './income-loader';
 import { reviewDtoOf } from './review-service';
+import { monthlyTransfersOf } from './transfers';
 import type {
   CompletedMonthlyPageDto,
   CurrentMonthlyPageDto,
@@ -63,11 +64,17 @@ import type {
  * (15.3 section 3). The two sections' reads are independent, so they run side by
  * side.
  *
+ * Accounts' transfer maintenance adds one read as well, for the one thing no
+ * other read holds: every row linked to the month's transfers, whatever its own
+ * date (ADR 0006 §7). The transfers are the rows the loaders already read,
+ * handed on; their fees cannot be, because a September transfer's fee may be
+ * dated in October and the loaders read expenses by their own date.
+ *
  * The bound is a constant number of user-scoped repository transactions — the
  * loader's, one for the Income rows, one for the Known-expenses rows, one for
- * settings, one for the currency catalogue, one for the review, and the
- * exchange-rate reads the reporting and diagnostic rules already make — whatever
- * the size of the month.
+ * the transfers' linked fees, one for settings, one for the currency catalogue,
+ * one for the review, and the exchange-rate reads the reporting and diagnostic
+ * rules already make — whatever the size of the month.
  */
 
 export type MonthlyDependencies = ReconciliationDependencies;
@@ -154,7 +161,7 @@ async function completedMonthlyPage(
     (row) => row.incurredOn >= (startOfMonthKey(month) as string) && row.incurredOn <= base.monthEndsOn,
   );
 
-  const [reconciliation, reporting, incomeRows, expenseRows] = await Promise.all([
+  const [reconciliation, reporting, incomeRows, expenseRows, transferFees] = await Promise.all([
     monthReconciliationFrom(deps, range, month, ctx.today),
     completedReportingFrom(deps, data, settings, ctx.today),
     loadCompletedMonthIncome(
@@ -169,6 +176,7 @@ async function completedMonthlyPage(
       month,
       incurredInMonth.flatMap((row) => (row.templateId === null ? [] : [row.templateId])),
     ),
+    listTransferFeesByTransferDate(deps.db, ctx.userId, startOfMonthKey(month), base.monthEndsOn),
   ]);
 
   return {
@@ -181,6 +189,15 @@ async function completedMonthlyPage(
     reporting,
     completeness: monthCompletenessFrom(data),
     accounts: completedAccountsOf(month, range.positionsWithValuations, range.valuations),
+    transfers: monthlyTransfersOf({
+      from: startOfMonthKey(month),
+      to: base.monthEndsOn,
+      // The range's own rows, kept to the month by their financial date.
+      transfers: range.transfers,
+      linkedRows: transferFees,
+      categories: range.categories,
+      positions: range.positions,
+    }),
     income: monthlyIncomeOf({
       month,
       today: plainDate(ctx.today),
@@ -230,7 +247,7 @@ async function currentMonthlyPage(
   // through the month-to-date date: `D` bounds what a reconciliation figure
   // covers, never which records exist.
   const incurredInMonth = data.expenses;
-  const [incomeRows, expenseRows] = await Promise.all([
+  const [incomeRows, expenseRows, transferFees] = await Promise.all([
     loadCurrentMonthIncome(
       deps,
       ctx.userId,
@@ -245,6 +262,8 @@ async function currentMonthlyPage(
       plainDate(ctx.today),
       incurredInMonth.flatMap((row) => (row.templateId === null ? [] : [row.templateId])),
     ),
+    // The same window the month-to-date loader read transfers over.
+    listTransferFeesByTransferDate(deps.db, ctx.userId, startOfMonthKey(month), ctx.today),
   ]);
 
   return {
@@ -256,6 +275,14 @@ async function currentMonthlyPage(
     monthToDate: monthToDateFrom(data),
     reporting: await monthToDateReportingFrom(deps, data, settings, ctx.today),
     accounts: currentAccountsOf(ctx.today, data.input.cashAccounts, data.valuations),
+    transfers: monthlyTransfersOf({
+      from: startOfMonthKey(month),
+      to: ctx.today,
+      transfers: data.transfers,
+      linkedRows: transferFees,
+      categories: data.categories,
+      positions: data.positions,
+    }),
     income: currentMonthlyIncomeOf({
       month,
       today: plainDate(ctx.today),

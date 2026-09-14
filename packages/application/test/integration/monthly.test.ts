@@ -674,6 +674,13 @@ function countingDatabase(): { db: Database; transactions: () => number } {
 const KNOWN_EXPENSES_SCOPE = 1;
 
 /**
+ * The one user-scoped transaction Accounts' transfer maintenance adds to every
+ * kind of month: every row linked to the month's transfers, whatever its own
+ * date (ADR 0006 §7). Stated apart for the same reason as the scope above.
+ */
+const TRANSFERS_SCOPE = 1;
+
+/**
  * The transactions one run of the page's read opens. The FX service is built
  * over the same counting handle, so its reads are counted like any other.
  */
@@ -736,10 +743,10 @@ describe('the repository transaction count is bounded by a constant', () => {
     // Named, so a regression that adds a scope per account or per template is
     // visible rather than merely "the same as before": the range loader's seven,
     // the Income section's one, settings, the currency catalogue and the review —
-    // and the Known-expenses section's one on top. A euro-only month in a euro
-    // reporting currency needs no stored rate, so the rate read returns without
-    // opening one.
-    expect(small).toBe(11 + KNOWN_EXPENSES_SCOPE);
+    // and the Known-expenses section's one and the transfers' one on top. A
+    // euro-only month in a euro reporting currency needs no stored rate, so the
+    // rate read returns without opening one.
+    expect(small).toBe(11 + KNOWN_EXPENSES_SCOPE + TRANSFERS_SCOPE);
   });
 
   it('reads rates once for the whole month, however many currencies it holds', async () => {
@@ -751,10 +758,10 @@ describe('the repository transaction count is bounded by a constant', () => {
     }
     const two = await countTransactions(OCT_1);
     // The euro-only eleven, plus the one rate read reporting makes for every
-    // foreign currency together, plus the Known-expenses scope. Both buckets
-    // spent, so no missing-conversion signature exists and the diagnostic reads
-    // nothing.
-    expect(two).toBe(12 + KNOWN_EXPENSES_SCOPE);
+    // foreign currency together, plus the Known-expenses and transfer scopes.
+    // Both buckets spent, so no missing-conversion signature exists and the
+    // diagnostic reads nothing.
+    expect(two).toBe(12 + KNOWN_EXPENSES_SCOPE + TRANSFERS_SCOPE);
 
     for (const currency of ['GBP', 'CHF']) {
       const id = await makeAccount(`In ${currency}`, { currency });
@@ -785,12 +792,13 @@ describe('the repository transaction count is bounded by a constant', () => {
 
     expect(await countTransactions(SEPT_10)).toBe(small);
     // The month-to-date loader's five, the Income section's one, settings, the
-    // currency catalogue and the review, and the Known-expenses section's one;
-    // euro-only, so no rate read opens a scope. The Income scope runs several
-    // statements — the month's occurrence entries and skips, the active sources,
-    // everything resolved after today, the referenced sources and their terms —
-    // inside that one transaction, and the Known-expenses scope does the same.
-    expect(small).toBe(9 + KNOWN_EXPENSES_SCOPE);
+    // currency catalogue and the review, and the Known-expenses section's and the
+    // transfers' one each; euro-only, so no rate read opens a scope. The Income
+    // scope runs several statements — the month's occurrence entries and skips,
+    // the active sources, everything resolved after today, the referenced sources
+    // and their terms — inside that one transaction, and the Known-expenses scope
+    // does the same.
+    expect(small).toBe(9 + KNOWN_EXPENSES_SCOPE + TRANSFERS_SCOPE);
   });
 });
 
@@ -1526,7 +1534,7 @@ describe('the Accounts section reads nothing of its own', () => {
     const page = await completed();
     expect(page.accounts.accounts).toHaveLength(5);
     expect(await countTransactions(OCT_1)).toBe(small);
-    expect(small).toBe(11 + KNOWN_EXPENSES_SCOPE);
+    expect(small).toBe(11 + KNOWN_EXPENSES_SCOPE + TRANSFERS_SCOPE);
     expect(await countTransactions(SEPT_10)).toBe(smallCurrent);
   });
 });

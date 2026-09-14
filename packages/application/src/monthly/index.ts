@@ -8,4 +8,5 @@ export * from './income';
 export * from './income-loader';
 export * from './review-service';
 export * from './service';
+export * from './transfers';
 export * from './types';

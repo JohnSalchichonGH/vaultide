@@ -8,6 +8,7 @@ import {
   type ExpenseEntryRow,
   type IncomeEntryRow,
   type PositionRecord as PositionRow,
+  type TransferRow,
   type ValuationRow,
 } from '@vaultide/db';
 import {
@@ -80,6 +81,14 @@ export interface MonthToDateData {
    * own.
    */
   readonly categories: readonly CategoryRecord[];
+  /**
+   * The month's transfers so far as the rows they are, keyed on their
+   * **financial** date and running through today rather than through `D` —
+   * what Monthly's Accounts section lists as the month's transfers, with the
+   * description and version the engine input drops. Already read to build that
+   * input; no query of its own.
+   */
+  readonly transfers: readonly TransferRow[];
 }
 
 export async function loadMonthToDate(
@@ -130,5 +139,6 @@ export async function loadMonthToDate(
     income,
     expenses,
     categories,
+    transfers,
   };
 }

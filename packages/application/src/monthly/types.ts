@@ -628,6 +628,137 @@ export interface CurrentAccountsDto {
   readonly accounts: readonly CurrentAccountDto[];
 }
 
+/* -------------------------------------------------------------------------- */
+/* Transfers (15.3 section 4; ADR 0006)                                        */
+/* -------------------------------------------------------------------------- */
+
+/** One side of a cash transfer, as stored: the account it names and the native amount that moved. */
+export interface TransferLegDto {
+  /** `null` only in data written outside the product: a cash transfer names both sides (7.5). */
+  readonly positionId: string | null;
+  /** `null` when the side names no cash account of this user's. */
+  readonly accountName: string | null;
+  /** The leg's own currency, fixed when the transfer was recorded (ADR 0006 §3). */
+  readonly currency: string;
+  readonly amount: MoneyDto;
+}
+
+/** A row linked to a transfer as its fee, as stored (M14; ADR 0006 §4–§6). */
+export interface TransferFeeDto {
+  readonly feeId: string;
+  /** The version a correction of the fee must claim (20.3). */
+  readonly version: number;
+  readonly amount: MoneyDto;
+  readonly currency: string;
+  /** The fee's own financial date, which need not be the transfer's (ADR 0006 §5). */
+  readonly incurredOn: string;
+  /** `YYYY-MM` of `incurredOn`: the month whose figures count the fee. */
+  readonly incurredMonth: string;
+  readonly cashPositionId: string | null;
+  readonly cashAccountName: string | null;
+  /** The endpoint that pays it; `null` when its account is neither. */
+  readonly paidBy: 'from' | 'to' | null;
+}
+
+/**
+ * A transfer's fee: none, the one M14 allows, or more than one — which only
+ * data written outside the product can hold, and which is shown as it is rather
+ * than narrowed to one.
+ */
+export type TransferFeeStateDto =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'one'; readonly fee: TransferFeeDto }
+  | { readonly kind: 'multiple'; readonly fees: readonly TransferFeeDto[] };
+
+/**
+ * Why a transfer can be viewed and deleted but not corrected (M14; ADR 0006
+ * §6). The services refuse a correction in each case, and deletion still
+ * removes every linked row.
+ *
+ *  - `multiple_fees` — more than one row is linked to it;
+ *  - `fee_not_transfer_fee` — its linked row is not filed under the
+ *    `transfer_fee` kind;
+ *  - `fee_not_tracked_cash` — its linked row was not paid from a tracked account.
+ */
+export type TransferReadOnlyReasonDto =
+  | 'multiple_fees'
+  | 'fee_not_transfer_fee'
+  | 'fee_not_tracked_cash';
+
+/**
+ * A stored inconsistency a correction has to repair (8.1; ADR 0006 §3, §6).
+ *
+ * Never a reason to refuse editing: a correction that repairs it saves, and one
+ * that keeps it is refused. Nothing rewrites it on read.
+ *
+ *  - `endpoint_not_open` — the side's account is not open on the transfer's date;
+ *  - `endpoint_unavailable` — the side names no cash account in the leg's currency;
+ *  - `fee_payer_not_endpoint` — the fee's account is neither side of the transfer;
+ *  - `fee_payer_not_open` — the fee's account is not open on the fee's own date;
+ *  - `fee_currency` — the fee is recorded in a currency its account does not hold.
+ */
+export type TransferProblemDto =
+  | { readonly kind: 'endpoint_not_open'; readonly side: 'from' | 'to' }
+  | { readonly kind: 'endpoint_unavailable'; readonly side: 'from' | 'to' }
+  | { readonly kind: 'fee_payer_not_endpoint' }
+  | { readonly kind: 'fee_payer_not_open' }
+  | { readonly kind: 'fee_currency' };
+
+/** One cash transfer the displayed month owns (ADR 0006 §1). */
+export interface MonthlyTransferDto {
+  readonly transferId: string;
+  /** The version a correction must claim (20.3). */
+  readonly version: number;
+  /** The financial date, inside the month (6.2). */
+  readonly occurredOn: string;
+  readonly from: TransferLegDto;
+  readonly to: TransferLegDto;
+  readonly description: string | null;
+  /**
+   * For a transfer between two currencies, what its two native amounts imply:
+   * one unit sent bought `rate` units received. Derived from the saved facts on
+   * every read and never stored; not a market or reference rate, and nothing
+   * converts with it. `null` within one currency.
+   */
+  readonly achievedRate: { readonly rate: string; readonly from: string; readonly to: string } | null;
+  readonly fee: TransferFeeStateDto;
+  /** `null` when a correction may be saved. */
+  readonly readOnly: TransferReadOnlyReasonDto | null;
+  /** What a correction has to repair; empty when nothing does. */
+  readonly problems: readonly TransferProblemDto[];
+}
+
+/** A cash account a transfer may name, with the window its dates must fall in (8.1). */
+export interface TransferAccountDto {
+  readonly positionId: string;
+  readonly name: string;
+  readonly currency: string;
+  readonly openedOn: string | null;
+  readonly closedOn: string | null;
+  /** Offered all the same: recording a transfer clears dormancy (8.8). */
+  readonly dormant: boolean;
+}
+
+/**
+ * The cash transfers a month owns, maintained from Accounts (ADR 0006 §1, §7).
+ *
+ * A transfer belongs to the month holding its financial date — through today
+ * for the current month, since none can be dated later (M5). Each carries every
+ * row linked to it, whatever that row's own date, so a September transfer shows
+ * its October fee here while October's figures and Known expenses count it (ADR
+ * 0006 §5).
+ */
+export interface MonthlyTransfersDto {
+  /** By date, then id; each transfer once. */
+  readonly transfers: readonly MonthlyTransferDto[];
+  /**
+   * Cash accounts taking part in the month, in the user's order, from the rows
+   * the page already loaded. The services remain authoritative for ownership,
+   * currency and participation.
+   */
+  readonly cashAccounts: readonly TransferAccountDto[];
+}
+
 /** A completed month (`today > end(M)`). */
 export interface CompletedMonthlyPageDto extends MonthlyPageBase {
   readonly kind: 'completed';
@@ -639,6 +770,8 @@ export interface CompletedMonthlyPageDto extends MonthlyPageBase {
   readonly completeness: MonthCompletenessDto;
   /** The month's cash accounts, from the rows the reconciliation read. */
   readonly accounts: CompletedAccountsDto;
+  /** The month's cash transfers, each with every fee linked to it. */
+  readonly transfers: MonthlyTransfersDto;
   /** The month's income: its schedule, and the money that arrived in it. */
   readonly income: MonthlyIncomeDto;
   /** The month's known expenses: its expense schedule, and what was spent in it. */
@@ -657,6 +790,8 @@ export interface CurrentMonthlyPageDto extends MonthlyPageBase {
   readonly reporting: MonthToDateReportingCashFlowDto;
   /** The month's cash accounts, from the rows the month-to-date read loaded. */
   readonly accounts: CurrentAccountsDto;
+  /** The month's cash transfers so far, each with every fee linked to it. */
+  readonly transfers: MonthlyTransfersDto;
   /** The month's income so far, and the schedule it is being measured against. */
   readonly income: CurrentMonthlyIncomeDto;
   /**
