@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 
 /**
  * The first Monthly journey (blueprint 15.2 "Monthly", 15.3, 21.5).
@@ -85,12 +85,12 @@ async function onboard(page: Page, request: APIRequestContext, email: string): P
  */
 async function accountWithStatements(
   page: Page,
-  options: { name: string; type: 'checking' | 'savings'; august: string; september: string },
+  options: { name: string; type: 'checking' | 'savings'; august: string; september: string; currency?: string },
 ): Promise<void> {
   await page.goto('/accounts?tab=cash');
   await expect(page.getByTestId('account-submit')).toBeEnabled();
   await fillTestId(page, 'account-name', options.name);
-  await page.getByTestId('account-currency').selectOption('EUR');
+  await page.getByTestId('account-currency').selectOption(options.currency ?? 'EUR');
   await page.getByTestId('account-type').selectOption(options.type);
   await fillTestId(page, 'account-balance', options.august);
   await fillTestId(page, 'account-balance-date', '2026-08-31');
@@ -871,5 +871,299 @@ test.describe('two views of one known expense', () => {
 
     await page.reload();
     await expect(page.getByTestId('expense-amount')).toHaveValue('175.00');
+  });
+});
+
+/**
+ * Monthly cash transfers, maintained from Accounts (blueprint 7.5, 8.8, 15.3
+ * section 4, 20.3, 21.5; ADR 0006).
+ *
+ * Every record is written through the product's own pages. What each journey
+ * proves is what the server made of the transfer — the reconciliation's own
+ * lines, the Known-expenses rows, the balances an account now owes — never a
+ * figure the browser worked out.
+ */
+
+/** A statement balance on the account page the browser is on: a last-day snapshot, confirmed. */
+async function statementOn(page: Page, amount: string, lastDay: string): Promise<void> {
+  const month = lastDay.slice(0, 7);
+  await recordSnapshot(page, amount, lastDay);
+  await page.getByTestId(`confirm-statement-${month}`).click();
+  await expect(page.getByTestId(`month-end-${month}`)).toHaveCount(0);
+}
+
+async function openAddTransfer(page: Page): Promise<Locator> {
+  await page.getByTestId('transfer-add').click();
+  const dialog = page.getByTestId('transfer-dialog');
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+
+async function fillTransfer(
+  dialog: Locator,
+  values: { date: string; from: string; to: string; amount?: string; sent?: string; received?: string },
+): Promise<void> {
+  await dialog.getByTestId('transfer-date').fill(values.date);
+  await dialog.getByTestId('transfer-from').selectOption({ label: values.from });
+  await dialog.getByTestId('transfer-to').selectOption({ label: values.to });
+  if (values.amount !== undefined) await dialog.getByTestId('transfer-amount').fill(values.amount);
+  if (values.sent !== undefined) await dialog.getByTestId('transfer-amount-sent').fill(values.sent);
+  if (values.received !== undefined) await dialog.getByTestId('transfer-amount-received').fill(values.received);
+}
+
+const pageFitsItsViewport = (page: Page): Promise<boolean> =>
+  page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
+
+test.describe('monthly cash transfers', () => {
+  test('a person records a transfer between two euro accounts, corrects it, adds and removes its fee, and deletes it', async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(180_000);
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': '2026-10-06T10:00:00Z' });
+    await onboard(page, request, uniqueEmail('e2e-monthly-transfer'));
+    // Everyday lost 300 in September and Savings gained 200: 100 was spent,
+    // whichever way the 200 went.
+    await accountWithStatements(page, { name: 'Everyday', type: 'checking', august: '2000.00', september: '1700.00' });
+    await accountWithStatements(page, { name: 'Savings', type: 'savings', august: '10000.00', september: '10200.00' });
+
+    await page.goto('/monthly/2026-09');
+    const accounts = page.locator('section#accounts');
+    const bucket = page.getByTestId('bucket-EUR');
+    const known = page.getByTestId('monthly-known-expenses');
+    await expect(bucket.getByTestId('identity-tracked')).toContainText('€100.00');
+    await expect(accounts.getByTestId('transfers-empty')).toBeVisible();
+
+    const dialog = await openAddTransfer(page);
+    await fillTransfer(dialog, { date: '2026-09-20', from: 'Everyday (EUR)', to: 'Savings (EUR)', amount: '200.00' });
+    expect(await pageFitsItsViewport(page)).toBe(true);
+    await dialog.getByTestId('transfer-save').click();
+    await expect(page.getByTestId('transfer-status')).toHaveText('Transfer added.');
+
+    const item = accounts.getByTestId('transfer');
+    await expect(item).toHaveCount(1);
+    await expect(item.getByTestId('transfer-accounts')).toHaveText('Everyday → Savings');
+    await expect(item.getByTestId('transfer-amounts')).toContainText('€200.00');
+
+    // The server's reconciliation: two legs that cancel, and the same 100 spent.
+    await expect(bucket.getByTestId('identity-Nin')).toContainText('€200.00');
+    await expect(bucket.getByTestId('identity-Nout')).toContainText('€200.00');
+    await expect(bucket.getByTestId('identity-tracked')).toContainText('€100.00');
+    await expect(bucket.getByTestId('identity-unclassified')).toContainText('€100.00');
+    await expect(bucket.getByTestId('identity-K')).toContainText('€0.00');
+    // No expense stands for a transfer.
+    await expect(known.getByTestId('expense-direct-empty')).toBeVisible();
+
+    // Correct the amount, and add the fee the bank charged the same day.
+    await item.getByTestId('transfer-edit').click();
+    const edit = page.getByTestId('transfer-dialog');
+    await expect(edit.getByTestId('transfer-amount')).toHaveValue('200.00');
+    await expect(edit.getByTestId('transfer-save')).toBeDisabled();
+    await edit.getByTestId('transfer-amount').fill('250.00');
+    await edit.getByTestId('transfer-fee-toggle').check();
+    await expect(edit.getByTestId('transfer-fee-date')).toHaveValue('2026-09-20');
+    await expect(edit.getByTestId('transfer-fee-payer').locator('option:checked')).toHaveText('Everyday (EUR)');
+    await edit.getByTestId('transfer-fee-amount').fill('1.00');
+    await edit.getByTestId('transfer-save').click();
+    await expect(page.getByTestId('transfer-status')).toHaveText('Transfer saved.');
+    await expect(item.getByTestId('transfer-amounts')).toContainText('€250.00');
+    await expect(item.getByTestId('transfer-fee')).toContainText('€1.00');
+    await expect(bucket.getByTestId('identity-Nin')).toContainText('€250.00');
+    await expect(bucket.getByTestId('identity-K')).toContainText('€1.00');
+    await expect(bucket.getByTestId('identity-tracked')).toContainText('€100.00');
+    await expect(known.getByTestId('expense-read-only')).toHaveAttribute('data-reason', 'transfer_fee');
+
+    // Remove the fee and keep the transfer.
+    await item.getByTestId('transfer-edit').click();
+    await page.getByTestId('transfer-dialog').getByTestId('transfer-fee-toggle').uncheck();
+    await page.getByTestId('transfer-dialog').getByTestId('transfer-save').click();
+    await expect(page.getByTestId('transfer-status')).toHaveText('Transfer saved.');
+    await expect(item.getByTestId('transfer-fee')).toHaveCount(0);
+    await expect(bucket.getByTestId('identity-K')).toContainText('€0.00');
+    await expect(known.getByTestId('expense-direct-empty')).toBeVisible();
+
+    // Delete it: the legs go, and the spending stays what the balances say.
+    await item.getByTestId('transfer-edit').click();
+    await page.getByTestId('transfer-dialog').getByTestId('transfer-delete').click();
+    await expect(page.getByTestId('transfer-status')).toHaveText('Transfer deleted.');
+    await expect(accounts.getByTestId('transfers-empty')).toBeVisible();
+    await expect(bucket.getByTestId('identity-Nin')).toContainText('€0.00');
+    await expect(bucket.getByTestId('identity-tracked')).toContainText('€100.00');
+    expect(await pageFitsItsViewport(page)).toBe(true);
+  });
+
+  test('a transfer into dollars keeps its fee in the month the fee was charged, through correction and deletion', async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(240_000);
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': '2026-11-05T10:00:00Z' });
+    await onboard(page, request, uniqueEmail('e2e-monthly-transfer-fx'));
+    await accountWithStatements(page, { name: 'Everyday', type: 'checking', august: '2000.00', september: '1500.00' });
+    await statementOn(page, '1497.50', '2026-10-31');
+    await accountWithStatements(page, {
+      name: 'Dollars',
+      type: 'checking',
+      currency: 'USD',
+      august: '0.00',
+      september: '540.00',
+    });
+    await statementOn(page, '540.00', '2026-10-31');
+
+    // September's last day: 500 euros out, 540 dollars in, and a 2.50 fee the
+    // bank posted on 1 October.
+    await page.goto('/monthly/2026-09');
+    const dialog = await openAddTransfer(page);
+    await fillTransfer(dialog, {
+      date: '2026-09-30',
+      from: 'Everyday (EUR)',
+      to: 'Dollars (USD)',
+      sent: '500.00',
+      received: '540.00',
+    });
+    await dialog.getByTestId('transfer-fee-toggle').check();
+    await dialog.getByTestId('transfer-fee-amount').fill('2.50');
+    await dialog.getByTestId('transfer-fee-date').fill('2026-10-01');
+    await dialog.getByTestId('transfer-save').click();
+    await expect(page.getByTestId('transfer-status')).toHaveText('Transfer added.');
+
+    const item = page.locator('section#accounts').getByTestId('transfer');
+    await expect(item).toHaveCount(1);
+    await expect(item.getByTestId('transfer-amounts')).toContainText('€500.00');
+    await expect(item.getByTestId('transfer-amounts')).toContainText('540.00');
+    await expect(item.getByTestId('transfer-rate')).toContainText('1 EUR = 1.08 USD');
+    await expect(item.getByTestId('transfer-fee-date')).toContainText('1 Oct 2026');
+
+    // September holds the two legs, each in its own currency, and no fee.
+    await expect(page.getByTestId('bucket-EUR').getByTestId('identity-Nout')).toContainText('€500.00');
+    await expect(page.getByTestId('bucket-USD').getByTestId('identity-Nin')).toContainText('540.00');
+    await expect(page.getByTestId('bucket-EUR').getByTestId('identity-K')).toContainText('€0.00');
+    await expect(page.getByTestId('monthly-known-expenses').getByTestId('expense-direct-empty')).toBeVisible();
+
+    // October counts the fee, once, read-only, and says where its transfer lives.
+    await page.goto('/monthly/2026-10');
+    const known = page.getByTestId('monthly-known-expenses');
+    await expect(known.getByTestId('expense-entry')).toHaveCount(1);
+    await expect(known.getByTestId('expense-read-only')).toHaveAttribute('data-reason', 'transfer_fee');
+    await expect(known.getByTestId('expense-read-only')).toContainText('under Accounts in the month the transfer occurred');
+    await expect(page.getByTestId('bucket-EUR').getByTestId('identity-K')).toContainText('€2.50');
+    await expect(page.locator('section#accounts').getByTestId('transfers-empty')).toBeVisible();
+
+    // Correct the dollars received and the fee, from September.
+    await page.goto('/monthly/2026-09');
+    await item.getByTestId('transfer-edit').click();
+    const edit = page.getByTestId('transfer-dialog');
+    await expect(edit.getByTestId('transfer-fee-date')).toHaveValue('2026-10-01');
+    await edit.getByTestId('transfer-amount-received').fill('541.00');
+    await edit.getByTestId('transfer-fee-amount').fill('3.00');
+    await edit.getByTestId('transfer-save').click();
+    await expect(page.getByTestId('transfer-status')).toHaveText('Transfer saved.');
+    await expect(page.getByTestId('bucket-USD').getByTestId('identity-Nin')).toContainText('541.00');
+    await expect(page.getByTestId('bucket-EUR').getByTestId('identity-K')).toContainText('€0.00');
+    await page.goto('/monthly/2026-10');
+    await expect(page.getByTestId('bucket-EUR').getByTestId('identity-K')).toContainText('€3.00');
+
+    // Delete it from September: October's fee goes with it.
+    await page.goto('/monthly/2026-09');
+    await item.getByTestId('transfer-edit').click();
+    await page.getByTestId('transfer-dialog').getByTestId('transfer-delete').click();
+    await expect(page.getByTestId('transfer-status')).toHaveText('Transfer deleted.');
+    await expect(page.locator('section#accounts').getByTestId('transfers-empty')).toBeVisible();
+    await expect(page.getByTestId('bucket-USD').getByTestId('identity-Nin')).toContainText('0.00');
+    await page.goto('/monthly/2026-10');
+    await expect(page.getByTestId('monthly-known-expenses').getByTestId('expense-entry')).toHaveCount(0);
+    await expect(page.getByTestId('bucket-EUR').getByTestId('identity-K')).toContainText('€0.00');
+  });
+
+  test('a transfer into a dormant account wakes it, and its statement then explains the money', async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(180_000);
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': '2026-10-06T10:00:00Z' });
+    await onboard(page, request, uniqueEmail('e2e-monthly-transfer-dormant'));
+    await accountWithStatements(page, { name: 'Everyday', type: 'checking', august: '2000.00', september: '1800.00' });
+    await accountWithAugustStatement(page, { name: 'Savings', type: 'savings', august: '0.00' });
+    await expect(page.getByTestId('edit-submit')).toBeEnabled();
+    await page.getByTestId('edit-dormant').check();
+    await page.getByTestId('edit-submit').click();
+    await expect(page.getByTestId('accounts-success')).toHaveText('Saved.');
+
+    // Savings carries at zero, so Everyday's missing 200 reads as spending.
+    await page.goto('/monthly/2026-09');
+    const bucket = page.getByTestId('bucket-EUR');
+    const row = (name: string) => page.getByTestId('monthly-accounts').locator('tbody tr', { hasText: name });
+    await expect(bucket.getByTestId('identity-tracked')).toContainText('€200.00');
+    await expect(row('Savings').getByTestId('closing-amount')).toHaveCount(0);
+
+    const dialog = await openAddTransfer(page);
+    await fillTransfer(dialog, {
+      date: '2026-09-15',
+      from: 'Everyday (EUR)',
+      to: 'Savings (EUR · dormant)',
+      amount: '200.00',
+    });
+    await dialog.getByTestId('transfer-save').click();
+    await expect(page.getByTestId('transfer-status')).toHaveText('Transfer added.');
+
+    // Recording the transfer cleared dormancy (8.8): Savings now owes September a
+    // statement, and the month cannot reconcile without one.
+    await expect(row('Savings').getByTestId('closing-amount')).toBeVisible();
+    await expect(bucket).toContainText('Unavailable');
+
+    await row('Savings').getByTestId('closing-amount').fill('200.00');
+    await row('Savings').getByTestId('closing-amount').press('Tab');
+    await expect(row('Savings').getByTestId('save-status')).toHaveText('Saved.');
+
+    // With the statement, the transfer explains the money: nothing was spent.
+    await expect(bucket).toContainText('Reliable');
+    await expect(bucket.getByTestId('identity-Nin')).toContainText('€200.00');
+    await expect(bucket.getByTestId('identity-tracked')).toContainText('€0.00');
+  });
+
+  test('a correction saved from a stale view is refused, keeps what was typed, and Reload shows the server’s', async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(180_000);
+    const clock = '2026-10-06T10:00:00Z';
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': clock });
+    await onboard(page, request, uniqueEmail('e2e-monthly-transfer-conflict'));
+    await accountWithAugustStatement(page, { name: 'Everyday', type: 'checking', august: '1000.00' });
+    await accountWithAugustStatement(page, { name: 'Savings', type: 'savings', august: '0.00' });
+
+    await page.goto('/monthly/2026-10');
+    const dialog = await openAddTransfer(page);
+    await fillTransfer(dialog, { date: '2026-10-02', from: 'Everyday (EUR)', to: 'Savings (EUR)', amount: '100.00' });
+    await dialog.getByTestId('transfer-save').click();
+    await expect(page.getByTestId('transfer-status')).toHaveText('Transfer added.');
+
+    const stale = await page.context().newPage();
+    await stale.setExtraHTTPHeaders({ 'x-vaultide-test-clock': clock });
+    await stale.goto('/monthly/2026-10');
+    await stale.getByTestId('transfer-edit').click();
+    const staleDialog = stale.getByTestId('transfer-dialog');
+    await expect(staleDialog.getByTestId('transfer-amount')).toHaveValue('100.00');
+
+    await page.getByTestId('transfer-edit').click();
+    await page.getByTestId('transfer-dialog').getByTestId('transfer-amount').fill('150.00');
+    await page.getByTestId('transfer-dialog').getByTestId('transfer-save').click();
+    await expect(page.getByTestId('transfer-status')).toHaveText('Transfer saved.');
+
+    await staleDialog.getByTestId('transfer-amount').fill('175.00');
+    await staleDialog.getByTestId('transfer-save').click();
+    await expect(staleDialog.getByTestId('transfer-problem')).toContainText('Nothing was saved.');
+    // Nothing was stored, so 175 exists nowhere but here.
+    await expect(staleDialog.getByTestId('transfer-amount')).toHaveValue('175.00');
+
+    await staleDialog.getByTestId('transfer-reload').click();
+    await expect(staleDialog.getByTestId('transfer-amount')).toHaveValue('150.00');
+    await expect(staleDialog.getByTestId('transfer-problem')).toHaveCount(0);
+    await staleDialog.getByTestId('transfer-cancel').click();
+    await expect(stale.getByTestId('transfer').getByTestId('transfer-amounts')).toContainText('€150.00');
+    await stale.close();
+
+    await page.reload();
+    await expect(page.getByTestId('transfer').getByTestId('transfer-amounts')).toContainText('€150.00');
   });
 });
