@@ -21,12 +21,11 @@ import {
   addTransferAvailability,
   addTransferUnavailableText,
   adoptsNewerTransfer,
-  changeDraft,
+  changeForm,
   createTransferPayload,
-  draftFromInitialValues,
-  draftFromTransfer,
   draftProblems,
   draftUnchanged,
+  editorFormOf,
   endpointOptions,
   feeDateDiffers,
   payerOptions,
@@ -39,10 +38,9 @@ import {
   type DateRange,
   type DialogProblem,
   type DraftField,
-  type LegCurrencies,
   type TransferAccounts,
-  type TransferDraft,
   type TransferDraftChange,
+  type TransferEditorForm,
   type TransferInitialValues,
   type TransferOutcome,
 } from '@/features/monthly/transfers-presentation';
@@ -423,30 +421,25 @@ export function TransferEditor({
     feeDate: useId(),
   };
 
-  const formOf = (stored: MonthlyTransferDto | null) =>
-    stored === null
-      ? draftFromInitialValues(initial ?? {}, defaultDate)
-      : {
-          draft: draftFromTransfer(stored, accounts, formatting.minorUnitsByCurrency),
-          legCurrencies: { from: stored.from.currency, to: stored.to.currency },
-        };
+  const formOf = (stored: MonthlyTransferDto | null): TransferEditorForm =>
+    editorFormOf(stored, {
+      accounts,
+      minorUnitsByCurrency: formatting.minorUnitsByCurrency,
+      initial: initial ?? {},
+      defaultDate,
+    });
 
   // The stored transfer this draft was built from. A Save claims its versions,
   // whatever newer copy has reached the page since (20.3): a server action's
   // response can carry a fresh page, and a draft that quietly took the newer
   // versions would overwrite whatever changed elsewhere.
   const [base, setBase] = useState<MonthlyTransferDto | null>(transfer);
-  const [{ draft, legCurrencies }, setForm] = useState<{
-    readonly draft: TransferDraft;
-    readonly legCurrencies: LegCurrencies;
-  }>(() => formOf(transfer));
-  const [visited, setVisited] = useState<ReadonlySet<DraftField>>(() => new Set());
+  const [{ draft, legCurrencies, visited, edited }, setForm] = useState<TransferEditorForm>(() => formOf(transfer));
   const [problem, setProblem] = useState<DialogProblem | null>(null);
 
   const rebase = (stored: MonthlyTransferDto): void => {
     setBase(stored);
     setForm(formOf(stored));
-    setVisited(new Set());
     setProblem(null);
   };
 
@@ -456,7 +449,7 @@ export function TransferEditor({
     adoptsNewerTransfer({
       base,
       latest: transfer,
-      edited: visited.size > 0,
+      edited,
       refused: problem !== null,
       saving: pending,
     })
@@ -483,9 +476,8 @@ export function TransferEditor({
   const unchanged = base !== null && draftUnchanged(draft, base, accounts, legCurrencies);
   const canSave = !readOnly && !busy && firstProblem === undefined && !unchanged;
 
-  const change = (next: TransferDraftChange, field: DraftField | null): void => {
-    setForm((current) => ({ ...current, draft: changeDraft(current.draft, next, accounts) }));
-    if (field !== null) setVisited((current) => new Set(current).add(field));
+  const change = (next: TransferDraftChange): void => {
+    setForm((current) => changeForm(current, next, accounts));
   };
 
   const run = (send: () => Promise<TransferOutcome>, message: string): void => {
@@ -570,7 +562,7 @@ export function TransferEditor({
             disabled={disabled}
             error={shown('occurredOn')}
             onChange={(value) => {
-              change({ field: 'occurredOn', value }, 'occurredOn');
+              change({ field: 'occurredOn', value });
             }}
           />
           <div aria-hidden="true" className="hidden sm:block" />
@@ -583,7 +575,7 @@ export function TransferEditor({
             disabled={disabled}
             error={shown('fromPositionId')}
             onChange={(value) => {
-              change({ field: 'fromPositionId', value }, 'fromPositionId');
+              change({ field: 'fromPositionId', value });
             }}
           />
           <SelectField
@@ -595,7 +587,7 @@ export function TransferEditor({
             disabled={disabled}
             error={shown('toPositionId')}
             onChange={(value) => {
-              change({ field: 'toPositionId', value }, 'toPositionId');
+              change({ field: 'toPositionId', value });
             }}
           />
 
@@ -613,7 +605,7 @@ export function TransferEditor({
               disabled={disabled}
               error={shown('fromAmount')}
               onChange={(value) => {
-                change({ field: 'fromAmount', value }, 'fromAmount');
+                change({ field: 'fromAmount', value });
               }}
             />
           ) : (
@@ -627,7 +619,7 @@ export function TransferEditor({
                 disabled={disabled}
                 error={shown('fromAmount')}
                 onChange={(value) => {
-                  change({ field: 'fromAmount', value }, 'fromAmount');
+                  change({ field: 'fromAmount', value });
                 }}
               />
               <TextField
@@ -640,7 +632,7 @@ export function TransferEditor({
                 error={shown('toAmount')}
                 hint="Both amounts as your accounts show them. Neither is worked out from the other."
                 onChange={(value) => {
-                  change({ field: 'toAmount', value }, 'toAmount');
+                  change({ field: 'toAmount', value });
                 }}
               />
             </>
@@ -655,7 +647,7 @@ export function TransferEditor({
               disabled={disabled}
               error={shown('description')}
               onChange={(value) => {
-                change({ field: 'description', value }, 'description');
+                change({ field: 'description', value });
               }}
             />
           </div>
@@ -670,7 +662,7 @@ export function TransferEditor({
               data-testid="transfer-fee-toggle"
               checked={draft.fee.enabled}
               onChange={(event) => {
-                change({ field: 'feeEnabled', value: event.target.checked }, null);
+                change({ field: 'feeEnabled', value: event.target.checked });
               }}
             />
             The bank charged a fee for this transfer
@@ -692,7 +684,7 @@ export function TransferEditor({
                 disabled={disabled}
                 error={shown('fee.amount')}
                 onChange={(value) => {
-                  change({ field: 'feeAmount', value }, 'fee.amount');
+                  change({ field: 'feeAmount', value });
                 }}
               />
               <SelectField
@@ -704,7 +696,7 @@ export function TransferEditor({
                 disabled={disabled}
                 error={shown('fee.cashPositionId')}
                 onChange={(value) => {
-                  change({ field: 'feePayer', value }, 'fee.cashPositionId');
+                  change({ field: 'feePayer', value });
                 }}
               />
               <TextField
@@ -722,7 +714,7 @@ export function TransferEditor({
                     : 'The fee keeps its own date: changing the transfer’s date does not move it.'
                 }
                 onChange={(value) => {
-                  change({ field: 'feeDate', value }, 'fee.incurredOn');
+                  change({ field: 'feeDate', value });
                 }}
               />
             </div>
@@ -758,8 +750,8 @@ export function TransferEditor({
                 data-testid="transfer-reload"
                 className={ACTION}
                 onClick={() => {
-                  // The newest copy this page holds, and — while nothing is typed —
-                  // whatever newer one the refresh brings.
+                  // The newest copy this page holds, and — until the user changes
+                  // something — whatever newer one the refresh brings.
                   if (transfer === null) setProblem(null);
                   else rebase(transfer);
                   router.refresh();

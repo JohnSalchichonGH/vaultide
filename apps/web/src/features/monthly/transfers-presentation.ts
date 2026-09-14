@@ -303,6 +303,81 @@ export function changeDraft(
   }
 }
 
+/**
+ * What an open editor holds of its draft, and what the user has done to it.
+ *
+ * `edited` says the user has changed something since the editor opened or last
+ * took in a stored copy — any field, the fee box included — and is what keeps a
+ * newer copy from replacing the draft. `visited` only says which fields' problems
+ * are shown: ticking the fee box visits none, so a fee nobody has entered yet is
+ * not flagged before the user reaches it.
+ */
+export interface TransferEditorForm {
+  readonly draft: TransferDraft;
+  readonly legCurrencies: LegCurrencies;
+  readonly visited: ReadonlySet<DraftField>;
+  readonly edited: boolean;
+}
+
+/**
+ * The form an editor opens with, and takes in again from a stored copy: built
+ * from what is stored or prefilled, so nothing is visited and nothing edited.
+ */
+export function editorFormOf(
+  stored: MonthlyTransferDto | null,
+  args: {
+    readonly accounts: TransferAccounts;
+    readonly minorUnitsByCurrency: Readonly<Record<string, number>>;
+    readonly initial: TransferInitialValues;
+    readonly defaultDate: string | null;
+  },
+): TransferEditorForm {
+  const { draft, legCurrencies } =
+    stored === null
+      ? draftFromInitialValues(args.initial, args.defaultDate)
+      : {
+          draft: draftFromTransfer(stored, args.accounts, args.minorUnitsByCurrency),
+          legCurrencies: { from: stored.from.currency, to: stored.to.currency },
+        };
+  return { draft, legCurrencies, visited: new Set(), edited: false };
+}
+
+/** The field whose problems a change brings into view. Ticking the fee box enters nothing yet. */
+function fieldChangedBy(change: TransferDraftChange): DraftField | null {
+  switch (change.field) {
+    case 'feeEnabled':
+      return null;
+    case 'feeAmount':
+      return 'fee.amount';
+    case 'feePayer':
+      return 'fee.cashPositionId';
+    case 'feeDate':
+      return 'fee.incurredOn';
+    case 'occurredOn':
+    case 'fromPositionId':
+    case 'toPositionId':
+    case 'fromAmount':
+    case 'toAmount':
+    case 'description':
+      return change.field;
+  }
+}
+
+/** The form after the user changes its draft: always an edit, and a visit to the field it changed. */
+export function changeForm(
+  form: TransferEditorForm,
+  change: TransferDraftChange,
+  accounts: TransferAccounts,
+): TransferEditorForm {
+  const field = fieldChangedBy(change);
+  return {
+    ...form,
+    draft: changeDraft(form.draft, change, accounts),
+    visited: field === null ? form.visited : new Set(form.visited).add(field),
+    edited: true,
+  };
+}
+
 /* -------------------------------------------------------------------------- */
 /* Shape and choices                                                           */
 /* -------------------------------------------------------------------------- */
@@ -706,11 +781,11 @@ export function editorKeyOf(transfer: MonthlyTransferDto): string {
 /**
  * Whether an open editor takes in a newer stored copy of its transfer.
  *
- * Only while nothing has been typed, no save has been refused and none is
- * running. Otherwise the draft stays, and so do the versions a Save will claim,
- * until the user chooses Reload: a newer copy arriving is never a reason to
- * discard what was typed, and never a licence to save it over what changed
- * elsewhere (20.3).
+ * Only while the user has changed nothing since the editor opened or last took
+ * one in, no save has been refused and none is running. Otherwise the draft
+ * stays, and so does what a Save will claim, until the user chooses Reload: a
+ * newer copy arriving is never a reason to discard what the user changed, and
+ * never a licence to save it over what changed elsewhere (20.3).
  */
 export function adoptsNewerTransfer(args: {
   readonly base: MonthlyTransferDto;

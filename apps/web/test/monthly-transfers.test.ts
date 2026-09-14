@@ -25,11 +25,13 @@ const {
   addTransferAvailability,
   adoptsNewerTransfer,
   changeDraft,
+  changeForm,
   createTransferPayload,
   draftFromInitialValues,
   draftFromTransfer,
   draftProblems,
   draftUnchanged,
+  editorFormOf,
   editorKeyOf,
   endpointOptions,
   payerOptions,
@@ -40,6 +42,7 @@ const {
 const { TRANSFER_FEE_NOTE } = await import('@/features/monthly/expenses-presentation');
 
 type TransferDraft = ReturnType<typeof draftFromTransfer>;
+type TransferDraftChange = Parameters<typeof changeDraft>[1];
 
 /**
  * Monthly's transfer maintenance (blueprint 7.5, 8.1, 15.3 section 4, 16.6,
@@ -577,7 +580,7 @@ describe('after a Save', () => {
     expect(editorKeyOf(transfer({ fee: { kind: 'one', fee: fee({ version: 5 }) } }))).not.toBe(editorKeyOf(WITH_FEE));
   });
 
-  it('takes in a newer copy only while nothing is typed, refused or saving', () => {
+  it('takes in a newer copy only while nothing is edited, refused or saving', () => {
     const latest = { ...WITH_FEE, version: 4 };
     const quiet = { base: WITH_FEE, latest, edited: false, refused: false, saving: false };
     expect(adoptsNewerTransfer(quiet)).toBe(true);
@@ -592,6 +595,76 @@ describe('after a Save', () => {
   it('refreshes from the server rather than applying its own result', () => {
     const source = readFileSync(path.join(here, '..', 'src', 'features', 'monthly', 'transfers-editor.tsx'), 'utf8');
     expect(source).toContain('router.refresh()');
+  });
+});
+
+describe('what keeps an open draft when a newer copy arrives', () => {
+  const formFor = (stored: MonthlyTransferDto | null, initial: Parameters<typeof editorFormOf>[1]['initial'] = {}) =>
+    editorFormOf(stored, {
+      accounts: ACCOUNTS,
+      minorUnitsByCurrency: formatting.minorUnitsByCurrency,
+      initial,
+      defaultDate: '2026-09-30',
+    });
+  const adoptsNewer = (stored: MonthlyTransferDto, edited: boolean): boolean =>
+    adoptsNewerTransfer({
+      base: stored,
+      latest: { ...stored, version: stored.version + 1 },
+      edited,
+      refused: false,
+      saving: false,
+    });
+
+  it('counts ticking or unticking the fee as an edit, though no field’s problems are shown for it', () => {
+    for (const [stored, enabled] of [
+      [transfer(), true],
+      [WITH_FEE, false],
+    ] as const) {
+      const opened = formFor(stored);
+      expect(adoptsNewer(stored, opened.edited)).toBe(true);
+
+      const toggled = changeForm(opened, { field: 'feeEnabled', value: enabled }, ACCOUNTS);
+      expect(toggled.draft.fee.enabled).toBe(enabled);
+      expect(toggled.visited.size).toBe(0);
+      expect(toggled.edited).toBe(true);
+      // Taking the newer copy in would drop the fee just added, or bring back
+      // the one just removed.
+      expect(adoptsNewer(stored, toggled.edited)).toBe(false);
+    }
+  });
+
+  it('counts every other change the user makes as an edit', () => {
+    const changes: readonly TransferDraftChange[] = [
+      { field: 'occurredOn', value: '2026-09-13' },
+      { field: 'fromPositionId', value: 'pos-caixa' },
+      { field: 'toPositionId', value: 'pos-caixa' },
+      { field: 'fromAmount', value: '250.00' },
+      { field: 'toAmount', value: '250.00' },
+      { field: 'description', value: 'Rent' },
+      { field: 'feeAmount', value: '2.00' },
+      { field: 'feePayer', value: 'pos-savings' },
+      { field: 'feeDate', value: '2026-09-11' },
+    ];
+    for (const change of changes) {
+      const changed = changeForm(formFor(WITH_FEE), change, ACCOUNTS);
+      expect(changed.edited, change.field).toBe(true);
+      expect(adoptsNewer(WITH_FEE, changed.edited), change.field).toBe(false);
+    }
+  });
+
+  it('opens, or takes in a stored copy, with nothing edited or visited', () => {
+    // What the form fills in itself is not the user's doing: a prefilled new
+    // transfer, or a stored fee whose amount has to be entered again.
+    const prefilled = formFor(null, { from: { positionId: 'pos-bbva', amount: '200.00' }, to: { positionId: 'pos-savings' } });
+    const restated = formFor(
+      transfer({ fee: { kind: 'one', fee: fee({ currency: 'USD', amount: { amount: '1.5', currency: 'USD' } }) } }),
+    );
+    expect(prefilled.draft).toMatchObject({ fromPositionId: 'pos-bbva', fromAmount: '200.00' });
+    expect(restated.draft.fee.amount).toBe('');
+    for (const form of [prefilled, restated, formFor(WITH_FEE)]) {
+      expect(form.edited).toBe(false);
+      expect(form.visited.size).toBe(0);
+    }
   });
 });
 
