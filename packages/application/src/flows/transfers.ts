@@ -1,6 +1,7 @@
 import {
   deleteExpenseEntryIn,
   deleteTransferIn,
+  findCategoryIn,
   findTransfer,
   findTransferFeesIn,
   insertExpenseEntryIn,
@@ -9,6 +10,8 @@ import {
   updateTransferIn,
   withUser,
   type ExpenseEntryRow,
+  type PositionRecord as PositionRow,
+  type Transaction,
   type TransferRow,
 } from '@vaultide/db';
 import type { RequestContext } from '../context';
@@ -169,6 +172,47 @@ async function validateFee(
   assertAccountParticipates(account, occurredOn, 'occurredOn');
 }
 
+/**
+ * A linked row being edited as this transfer's fee has to be one, judged on
+ * the date it will carry (7.4, 8.1, M5, M14; ADR 0006 §5, §6).
+ *
+ * The fee's `incurred_on` is its own financial date, so it answers to the same
+ * rules as any other: its paying account must be open on it. The row must also
+ * still mean what a transfer fee means — a `transfer_fee` category and tracked
+ * cash — and a row that does not is refused rather than edited into looking
+ * like one. Nothing here reads the pool: the category is read inside the
+ * caller's transaction, and the payer must be one of the endpoint accounts the
+ * caller already loaded.
+ */
+async function assertEditableFee(
+  tx: Transaction,
+  fee: ExpenseEntryRow,
+  endpoints: readonly (PositionRow | null)[],
+  incurredOn: string,
+): Promise<void> {
+  const category = await findCategoryIn(tx, fee.categoryId);
+  if (category?.kind !== 'transfer_fee' || fee.settlement !== 'tracked_cash') {
+    throw new ImpossibleOperationError(
+      'The record linked to this transfer is not a transfer fee paid from a tracked account, so it cannot be edited as one.',
+    );
+  }
+
+  const payer = endpoints.find((account) => account !== null && account.id === fee.cashPositionId);
+  if (payer === undefined || payer === null) {
+    throw new ValidationError(
+      'The fee has to come out of one of the two accounts this transfer touches.',
+      { fee: ['Choose the account that paid the fee.'] },
+    );
+  }
+  if (payer.currency !== fee.currency) {
+    throw new ValidationError(
+      `The fee is charged in ${payer.currency} when it comes out of ${payer.name}.`,
+      { fee: [`Use ${payer.currency}.`] },
+    );
+  }
+  assertAccountParticipates(payer, incurredOn, 'fee.incurredOn');
+}
+
 export async function createCashTransfer(
   deps: FlowDependencies,
   ctx: RequestContext,
@@ -265,24 +309,23 @@ export async function updateCashTransfer(
   const occurredOn = args.occurredOn ?? existing.occurredOn;
   assertNotFuture(ctx, occurredOn, 'occurredOn');
 
+  // The date the fee will carry once this edit lands. It is the fee's own
+  // financial date, so an edit that sets it is held to M5 on it as well.
+  const feeIncurredOn = args.fee?.incurredOn ?? occurredOn;
+  if (args.fee !== undefined) assertNotFuture(ctx, feeIncurredOn, 'fee.incurredOn');
+
   const fromAmount = args.fromAmount ?? existing.fromAmount;
   const toAmount = args.toAmount ?? existing.toAmount;
   assertAmountsAgree(existing.fromCurrency, existing.toCurrency, fromAmount, toAmount);
 
-  if (existing.fromPositionId !== null) {
-    assertAccountParticipates(
-      await requireCashAccount(deps.db, ctx, existing.fromPositionId),
-      occurredOn,
-      'occurredOn',
-    );
-  }
-  if (existing.toPositionId !== null) {
-    assertAccountParticipates(
-      await requireCashAccount(deps.db, ctx, existing.toPositionId),
-      occurredOn,
-      'occurredOn',
-    );
-  }
+  const from =
+    existing.fromPositionId === null
+      ? null
+      : await requireCashAccount(deps.db, ctx, existing.fromPositionId);
+  const to =
+    existing.toPositionId === null ? null : await requireCashAccount(deps.db, ctx, existing.toPositionId);
+  if (from !== null) assertAccountParticipates(from, occurredOn, 'occurredOn');
+  if (to !== null) assertAccountParticipates(to, occurredOn, 'occurredOn');
 
   const audit = auditContextOf(ctx, args.reason);
   return withUser(deps.db, { userId: ctx.userId }, async (tx) => {
@@ -299,6 +342,11 @@ export async function updateCashTransfer(
         'This transfer has a fee dated with it. Move the fee to the new date in the same edit, or leave the date alone.',
         { occurredOn: ['The linked fee would be left on the old date.'] },
       );
+    }
+
+    // Judged before anything is written: the fee as this edit would leave it.
+    if (args.fee !== undefined && linkedFee !== null) {
+      await assertEditableFee(tx, linkedFee, [from, to], feeIncurredOn);
     }
 
     const transfer = await updateTransferIn(tx, audit, args.transferId, args.expectedVersion, {
@@ -322,7 +370,7 @@ export async function updateCashTransfer(
       }
       const updatedFee = await updateExpenseEntryIn(tx, audit, target.id, args.fee.expectedVersion, {
         ...(args.fee.amount === undefined ? {} : { amount: args.fee.amount }),
-        incurredOn: args.fee.incurredOn ?? occurredOn,
+        incurredOn: feeIncurredOn,
       });
       if (updatedFee === undefined) {
         throw new VersionConflictError('The fee changed while you were editing it.');
