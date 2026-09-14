@@ -346,7 +346,7 @@ export function expenseCrossMonthNotice(
 }
 
 export const TRANSFER_FEE_NOTE =
-  'Part of a transfer. This fee was recorded with the transfer it was charged on and changes only with it, so it cannot be edited or removed here.';
+  'Part of a transfer. This fee is maintained with the transfer it was charged on, under Accounts in the month the transfer occurred, so it cannot be edited or removed here.';
 
 /** Why a row filed by another workflow is shown but not changed here. */
 export function otherWorkflowNote(entry: Pick<MonthlyExpenseEntryDto, 'category'>): string {

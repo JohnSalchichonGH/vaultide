@@ -721,7 +721,8 @@ describe('a recorded direct expense', () => {
     for (const control of ['expense-amount', 'expense-delete', 'expense-category', 'expense-incurred-on']) {
       expect(has(html, control), control).toBe(false);
     }
-    // No transfer editor exists yet, so there is no link to one.
+    // The row does not say which month its transfer belongs to, so it links
+    // nowhere; the note says where the transfer is maintained.
     const row = /<tr[^>]*data-testid="expense-entry".*?<\/tr>/su.exec(html)?.[0] ?? '';
     expect(row).not.toContain('href=');
   });

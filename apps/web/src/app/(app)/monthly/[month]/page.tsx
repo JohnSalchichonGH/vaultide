@@ -16,6 +16,7 @@ import { CompletedAccountsEditor, CurrentAccountsEditor } from '@/features/month
 import { KnownExpensesSection } from '@/features/monthly/expenses-editor';
 import { IncomeSection } from '@/features/monthly/income-editor';
 import { MonthNavigation } from '@/features/monthly/month-navigation';
+import { MonthlyTransfersSection } from '@/features/monthly/transfers-editor';
 import { CompletedOverview, CurrentOverview } from '@/features/monthly/overview';
 import { IssuesPanel } from '@/features/monthly/issues';
 import { CompletedBucket, MonthToDateBucket } from '@/features/monthly/reconciliation';
@@ -227,6 +228,15 @@ export default async function MonthlyPage({ params }: { params: Promise<{ month:
             )}
           </CardContent>
         </Card>
+        <MonthlyTransfersSection
+          key={page.month}
+          transfers={page.transfers}
+          month={page.month}
+          monthName={monthName}
+          monthEndsOn={page.monthEndsOn}
+          today={page.today}
+          formatting={{ locale, minorUnitsByCurrency: page.minorUnitsByCurrency }}
+        />
       </section>
 
       <section id="reconciliation" aria-labelledby="reconciliation-heading" className="scroll-mt-20 space-y-6">
