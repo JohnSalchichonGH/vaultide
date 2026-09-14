@@ -145,12 +145,17 @@ function transferFee(today: string) {
  * looked at, never against a read the server takes for itself.
  *
  *  - `{ state: 'absent' }` — "there was no fee". A fee found now is a conflict.
- *  - `{ state: 'version', version }` — "there was this exact fee". A different
+ *  - `{ state: 'version', feeId, version }` — "there was this exact fee": that
+ *    row, at that version. Another row, even at the same version, a different
  *    version, or no fee at all, is a conflict.
+ *
+ * A version alone cannot say which row it counts. Removing a fee and adding
+ * another leaves the transfer's version where it was, and the new row starts
+ * again at the version the removed one had.
  */
 export const transferFeeExpectation = z.discriminatedUnion('state', [
   z.object({ state: z.literal('absent') }),
-  z.object({ state: z.literal('version'), version: z.number().int().positive() }),
+  z.object({ state: z.literal('version'), feeId: z.uuid(), version: z.number().int().positive() }),
 ]);
 
 /**

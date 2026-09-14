@@ -567,8 +567,9 @@ export function createTransferPayload(
 }
 
 /**
- * The correction action's input: the whole aggregate, with the versions the
- * dialog was opened on — never what the server may hold by now (20.3).
+ * The correction action's input: the whole aggregate, with what the dialog was
+ * opened on — the transfer's version, and its fee's id and version — never what
+ * the server may hold by now (20.3).
  */
 export function updateTransferPayload(
   draft: TransferDraft,
@@ -588,7 +589,7 @@ export function updateTransferPayload(
     fee: draft.fee.enabled ? feePayloadOf(draft.fee) : null,
     expectedFee:
       transfer.fee.kind === 'one'
-        ? { state: 'version' as const, version: transfer.fee.fee.version }
+        ? { state: 'version' as const, feeId: transfer.fee.fee.feeId, version: transfer.fee.fee.version }
         : { state: 'absent' as const },
   };
 }

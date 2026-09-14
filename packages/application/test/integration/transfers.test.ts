@@ -133,7 +133,7 @@ async function feesOf(transferId: string): Promise<StoredFee[]> {
   });
 }
 
-async function countRows(table: 'transfers' | 'expense_entries'): Promise<number> {
+async function countRows(table: 'transfers' | 'expense_entries' | 'audit_entries'): Promise<number> {
   return withUser(harness.db, { userId: USER_A }, async (tx) => {
     const result = await tx.execute(sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)}`);
     return (result.rows[0] as { n: number }).n;
@@ -269,7 +269,7 @@ function correction(saved: TransferWithFee, over: Partial<UpdateTransferArgs> = 
       fee === null
         ? null
         : { amount: fee.amount, cashPositionId: fee.cashPositionId as string, incurredOn: fee.incurredOn },
-    expectedFee: fee === null ? { state: 'absent' } : { state: 'version', version: fee.version },
+    expectedFee: fee === null ? { state: 'absent' } : { state: 'version', feeId: fee.id, version: fee.version },
     ...over,
   };
 }
@@ -712,16 +712,20 @@ describe('correcting a cash transfer as one aggregate', () => {
     await updateCashTransfer(deps(), SEPT_15, correction(saved, { fromAmount: '300.00', toAmount: '300.00' }));
     const [transferBefore, feesBefore] = [await storedTransfer(saved.transfer.id), await feesOf(saved.transfer.id)];
 
-    await expect(
-      updateCashTransfer(
-        deps(),
-        SEPT_15,
-        correction(saved, {
-          occurredOn: '2026-09-07',
-          fee: { amount: '2.00', cashPositionId: bbva, incurredOn: '2026-09-05' },
-        }),
-      ),
-    ).rejects.toMatchObject({ code: 'CONFLICT_VERSION' });
+    // Refused before any fee is written: an attempted fee update would raise
+    // here instead of the conflict.
+    await withBlockedWrite('expense_entries', 'UPDATE', async () => {
+      await expect(
+        updateCashTransfer(
+          deps(),
+          SEPT_15,
+          correction(saved, {
+            occurredOn: '2026-09-07',
+            fee: { amount: '2.00', cashPositionId: bbva, incurredOn: '2026-09-05' },
+          }),
+        ),
+      ).rejects.toMatchObject({ code: 'CONFLICT_VERSION' });
+    });
 
     expect(await storedTransfer(saved.transfer.id)).toEqual(transferBefore);
     expect(await feesOf(saved.transfer.id)).toEqual(feesBefore);
@@ -895,6 +899,59 @@ describe('the fee’s lifecycle inside a correction', () => {
     expect(await storedTransfer(saved.transfer.id)).toEqual(transferBefore);
   });
 
+  it('rolls the whole save back when the fee it saw was removed and another added in its place', async () => {
+    // 20.3's ABA case. Removing a fee and adding another are fee-only saves, so
+    // the transfer keeps its version, and the new row starts at the version the
+    // removed one had. Only the fee's id tells the two apart.
+    const saved = await eurTransfer();
+    const first = { id: saved.fee?.id as string, version: saved.fee?.version as number };
+    expect(first.version).toBe(1);
+
+    // What the stale view could send: a correction of the fee it saw, or its removal.
+    const staleSaves = [
+      correction(saved, {
+        description: 'Stale view',
+        fee: { amount: '9.00', cashPositionId: savings, incurredOn: '2026-09-04' },
+      }),
+      correction(saved, { description: 'Stale view', fee: null }),
+    ];
+    for (const stale of staleSaves) {
+      expect(stale).toMatchObject({
+        expectedVersion: saved.transfer.version,
+        expectedFee: { state: 'version', feeId: first.id, version: first.version },
+      });
+    }
+
+    const removed = await updateCashTransfer(deps(), SEPT_15, correction(saved, { fee: null }));
+    const replaced = await updateCashTransfer(
+      deps(),
+      SEPT_15,
+      correction(removed, { fee: { amount: '2.00', cashPositionId: bbva, incurredOn: '2026-09-05' } }),
+    );
+    const second = { id: replaced.fee?.id as string, version: replaced.fee?.version as number };
+    expect(second.id).not.toBe(first.id);
+    expect(second.version).toBe(first.version);
+
+    const [transferBefore, feesBefore] = [await storedTransfer(saved.transfer.id), await feesOf(saved.transfer.id)];
+    expect(transferBefore?.version).toBe(saved.transfer.version);
+    expect(feesBefore).toEqual([expect.objectContaining({ id: second.id, amount: '2.00000000', version: second.version })]);
+    const auditRowsBefore = await countRows('audit_entries');
+
+    for (const stale of staleSaves) {
+      await expect(updateCashTransfer(deps(), SEPT_15, stale)).rejects.toMatchObject({ code: 'CONFLICT_VERSION' });
+    }
+
+    // Nothing from either save: the transfer as it was, the new fee neither
+    // corrected nor removed, no fee beside it, and nothing audited.
+    expect(await storedTransfer(saved.transfer.id)).toEqual(transferBefore);
+    expect(await feesOf(saved.transfer.id)).toEqual(feesBefore);
+    expect(await countRows('expense_entries')).toBe(1);
+    expect(await countRows('audit_entries')).toBe(auditRowsBefore);
+    expect(await auditActions(saved.transfer.id)).toEqual(['insert']);
+    expect(await auditActions(first.id)).toEqual(['insert', 'delete']);
+    expect(await auditActions(second.id)).toEqual(['insert']);
+  });
+
   it('refuses a fee moved after today, and writes neither row', async () => {
     const saved = await eurTransfer();
     const [transferBefore, feesBefore] = [await storedTransfer(saved.transfer.id), await feesOf(saved.transfer.id)];
@@ -1003,7 +1060,7 @@ describe('existing data a correction must not normalize', () => {
         updateCashTransfer(
           deps(),
           SEPT_15,
-          correction(saved, { fee, expectedFee: { state: 'version', version: 1 } }),
+          correction(saved, { fee, expectedFee: { state: 'version', feeId: rowId, version: 1 } }),
         ),
       ).rejects.toMatchObject({ code: 'IMPOSSIBLE_OPERATION' });
     }
@@ -1015,7 +1072,7 @@ describe('existing data a correction must not normalize', () => {
   it('fails closed on a linked row somebody else paid', async () => {
     // A transfer fee is tracked cash leaving one of the transfer's own accounts
     // (ADR 0006 §6); a third-party row is no such fee.
-    const { saved } = await transferWithLinkedRow({
+    const { saved, rowId } = await transferWithLinkedRow({
       categoryId: transferFeeCategory,
       settlement: 'third_party',
       cashPositionId: null,
@@ -1029,7 +1086,7 @@ describe('existing data a correction must not normalize', () => {
         SEPT_15,
         correction(saved, {
           fee: { amount: '1.50', cashPositionId: bbva, incurredOn: '2026-09-05' },
-          expectedFee: { state: 'version', version: 1 },
+          expectedFee: { state: 'version', feeId: rowId, version: 1 },
         }),
       ),
     ).rejects.toMatchObject({ code: 'IMPOSSIBLE_OPERATION' });
@@ -1044,7 +1101,7 @@ describe('existing data a correction must not normalize', () => {
       cashPositionId: third,
       currency: 'EUR',
     });
-    const expectedFee = { state: 'version', version: row.version } as const;
+    const expectedFee = { state: 'version', feeId: row.id, version: row.version } as const;
 
     await expect(
       updateCashTransfer(
@@ -1071,14 +1128,14 @@ describe('existing data a correction must not normalize', () => {
       fromAmount: '200.00',
       toAmount: '200.00',
     });
-    await linkedRowOutOfBand(saved.transfer.id, {
+    const rowId = await linkedRowOutOfBand(saved.transfer.id, {
       categoryId: transferFeeCategory,
       settlement: 'tracked_cash',
       cashPositionId: opened,
       currency: 'EUR',
       incurredOn: '2026-09-01',
     });
-    const expectedFee = { state: 'version', version: 1 } as const;
+    const expectedFee = { state: 'version', feeId: rowId, version: 1 } as const;
 
     await expect(
       updateCashTransfer(
@@ -1097,7 +1154,7 @@ describe('existing data a correction must not normalize', () => {
   });
 
   it('files a restated fee in its payer’s currency, whatever currency the stored row claimed', async () => {
-    const { saved } = await transferWithLinkedRow({
+    const { saved, rowId } = await transferWithLinkedRow({
       categoryId: transferFeeCategory,
       settlement: 'tracked_cash',
       cashPositionId: bbva,
@@ -1109,7 +1166,7 @@ describe('existing data a correction must not normalize', () => {
       SEPT_15,
       correction(saved, {
         fee: { amount: '1.40', cashPositionId: bbva, incurredOn: '2026-09-05' },
-        expectedFee: { state: 'version', version: 1 },
+        expectedFee: { state: 'version', feeId: rowId, version: 1 },
       }),
     );
 

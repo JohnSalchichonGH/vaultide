@@ -461,7 +461,7 @@ describe('a fee’s draft', () => {
     );
     expect(updateTransferPayload(draft, WITH_FEE, ACCOUNTS, { from: 'EUR', to: 'EUR' })).toMatchObject({
       fee: null,
-      expectedFee: { state: 'version', version: 4 },
+      expectedFee: { state: 'version', feeId: 'fee-1', version: 4 },
     });
   });
 });
@@ -483,7 +483,7 @@ describe('what a Save sends, and when there is one to make', () => {
       toAmount: '250.00',
       description: 'Deposit',
       fee: { amount: '1.50', cashPositionId: 'pos-bbva', incurredOn: '2026-09-12' },
-      expectedFee: { state: 'version', version: 4 },
+      expectedFee: { state: 'version', feeId: 'fee-1', version: 4 },
     });
   });
 

@@ -831,7 +831,7 @@ describe('cash transfers and their fee', () => {
       ...aggregate,
       expectedVersion: transfer.version,
       fee: { amount: '1.50', cashPositionId: bbva, incurredOn: '2026-09-05' },
-      expectedFee: { state: 'version', version: fee?.version as number },
+      expectedFee: { state: 'version', feeId: fee?.id as string, version: fee?.version as number },
     });
     expect(moved.transfer.occurredOn).toBe('2026-09-06');
     expect(moved.fee).toMatchObject({ incurredOn: '2026-09-05', version: fee?.version });
@@ -840,7 +840,7 @@ describe('cash transfers and their fee', () => {
       ...aggregate,
       expectedVersion: moved.transfer.version,
       fee: { amount: '1.50', cashPositionId: bbva, incurredOn: '2026-09-06' },
-      expectedFee: { state: 'version', version: moved.fee?.version as number },
+      expectedFee: { state: 'version', feeId: moved.fee?.id as string, version: moved.fee?.version as number },
     });
     expect(both.fee?.incurredOn).toBe('2026-09-06');
   });
@@ -1836,7 +1836,7 @@ describe('a transfer with a corrupted number of fees fails closed', () => {
         toAmount: '210.00',
         description: null,
         fee: { amount: '1.50', cashPositionId: bbva, incurredOn: '2026-09-05' },
-        expectedFee: { state: 'version', version: fee?.version as number },
+        expectedFee: { state: 'version', feeId: fee?.id as string, version: fee?.version as number },
       }),
     ).rejects.toMatchObject({ code: 'IMPOSSIBLE_OPERATION' });
 

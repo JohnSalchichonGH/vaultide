@@ -113,14 +113,18 @@ export interface TransferWithFee {
 /**
  * What the caller saw of the fee when it began the edit (20.3).
  *
- * `absent` is "there was no fee"; `version` is "there was this exact row". A
- * correction is judged against it, never against a read the server takes for
- * itself, so two people editing the same transfer cannot both succeed with the
- * later save silently undoing the earlier one.
+ * `absent` is "there was no fee"; `version` is "there was this exact row": that
+ * id, at that version. A correction is judged against it, never against a read
+ * the server takes for itself, so two people editing the same transfer cannot
+ * both succeed with the later save silently undoing the earlier one.
+ *
+ * The id is needed because a version alone cannot say which row it counts.
+ * Removing a fee and adding another leaves the transfer's version where it was,
+ * and the new row starts again at the version the removed one had.
  */
 export type TransferFeeExpectation =
   | { readonly state: 'absent' }
-  | { readonly state: 'version'; readonly version: number };
+  | { readonly state: 'version'; readonly feeId: string; readonly version: number };
 
 export interface UpdateTransferArgs {
   readonly transferId: string;
@@ -326,7 +330,7 @@ function assertFeeAsExpected(
       'A fee was added to this transfer while you were editing it. Reload to see it.',
     );
   }
-  if (stored !== null && stored.version === expected.version) return;
+  if (stored !== null && stored.id === expected.feeId && stored.version === expected.version) return;
   throw new VersionConflictError(
     'This transfer’s fee changed while you were editing it. Reload to see the current values.',
   );

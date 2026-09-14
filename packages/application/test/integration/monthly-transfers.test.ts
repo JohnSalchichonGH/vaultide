@@ -272,7 +272,7 @@ describe('the transfers a month owns', () => {
       toAmount: '250.00',
       description: 'Rent share',
       fee: { amount: '1.50', cashPositionId: bbva, incurredOn: '2026-09-12' },
-      expectedFee: { state: 'version', version: saved.fee?.version as number },
+      expectedFee: { state: 'version', feeId: saved.fee?.id as string, version: saved.fee?.version as number },
     });
     expect(corrected.transfer.version).toBe(2);
 
