@@ -9,7 +9,7 @@ investments, other assets and liabilities, in as many currencies as you hold.
 
 The exact financial semantics live in
 [`docs/implementation-blueprint.md`](docs/implementation-blueprint.md) (frozen,
-v2.1.15). This README describes the product, its current status and how to
+v2.1.16). This README describes the product, its current status and how to
 work on the repository; it does not restate the blueprint's rules.
 
 ## Status
@@ -91,9 +91,14 @@ have no user interface yet.
 
 Phase 3 is **in progress**, and is neither accepted nor frozen. Still to do:
 
-- the Spending and Income pages;
-- bulk history entry and correction;
+- cash transfers in Monthly's Accounts section — designed, not yet built;
+- the standalone Spending page;
+- corrective actions on reconciliation issues;
+- historical correction;
+- bulk history entry;
+- the standalone Income pages;
 - the remaining end-to-end journeys and hardening;
+- a cold review of the whole phase;
 - Phase 3 acceptance, deployment and freeze.
 
 ## How Vaultide works
@@ -235,7 +240,7 @@ policy filtered can never pass verification. Restoring is documented in
 ## Design and engineering docs
 
 - **Semantic authority:** [`docs/implementation-blueprint.md`](docs/implementation-blueprint.md)
-  (frozen, v2.1.15). When the code and the blueprint disagree, the blueprint is
+  (frozen, v2.1.16). When the code and the blueprint disagree, the blueprint is
   corrected or the code is — never silently either.
 - **Implementation decisions:** [`docs/adr/`](docs/adr/) —
   [Phase 0](docs/adr/0001-phase-0-implementation-decisions.md),
@@ -243,7 +248,8 @@ policy filtered can never pass verification. Restoring is documented in
   [pre-Phase-2 gates](docs/adr/0003-pre-phase-2-security-and-cost-gates.md),
   [Phase 2](docs/adr/0004-phase-2-implementation-decisions.md),
   [Phase 3](docs/adr/0005-phase-3-implementation-decisions.md) (written against
-  blueprint v2.1.6 and deliberately left at that baseline).
+  blueprint v2.1.6 and deliberately left at that baseline),
+  [Phase 3 Monthly-transfer decisions](docs/adr/0006-phase-3-monthly-transfers.md).
 - **Evidence for frozen phases:**
   [`docs/phase-0-acceptance.md`](docs/phase-0-acceptance.md),
   [`docs/phase-1-acceptance.md`](docs/phase-1-acceptance.md),

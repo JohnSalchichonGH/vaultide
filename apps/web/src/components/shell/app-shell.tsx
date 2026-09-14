@@ -190,7 +190,7 @@ export function AppShell({
 
       <footer className="border-t">
         <div className="mx-auto max-w-[var(--container-content)] px-4 py-6 text-[length:var(--text-meta)] text-[var(--color-muted-foreground)] sm:px-6">
-          Vaultide · Phase 3 in progress · blueprint v2.1.15
+          Vaultide · Phase 3 in progress · blueprint v2.1.16
         </div>
       </footer>
     </div>

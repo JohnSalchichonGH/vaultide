@@ -19,7 +19,7 @@ logs into this file.
 
 ## Current checkpoint
 
-- **Blueprint:** v2.1.15.
+- **Blueprint:** v2.1.16.
 - **Current phase:** Phase 3.
 - **Phase 3 status:** in progress; the phase as a whole is **not accepted or
   frozen**.
@@ -130,20 +130,27 @@ Web surface of Phase 3:
 
 ## Next planned work
 
-The next planned Phase 3 area is the **standalone Spending page**.
+The next planned Phase 3 area is **Monthly cash transfers inside Monthly →
+Accounts**. Their design is locked by
+`docs/adr/0006-phase-3-monthly-transfers.md`; implementation has not begun.
 
-Remaining Phase 3 work, beginning with that page, includes:
+Remaining Phase 3 work, in the agreed order:
 
-- the standalone Spending page;
-- the standalone Income page;
-- bulk history entry and historical correction;
-- remaining end-to-end journeys and Phase 3 hardening;
-- a cold whole-Phase-3 review;
-- Phase 3 acceptance, production verification, and freeze.
+1. the Monthly cash-transfer UI;
+2. the standalone Spending page;
+3. reconciliation issue corrective actions;
+4. historical correction;
+5. bulk history entry;
+6. the standalone Income pages;
+7. the remaining end-to-end journeys and Phase 3 hardening, including the
+   server/domain enforcement of each currency's minor-unit scale for Phase 3
+   flows that acceptance still requires;
+8. a cold whole-Phase-3 review;
+9. Phase 3 acceptance, production verification, and freeze.
 
-The exact scope, subdivision or order of this work, the next area included, may
-be refined by a later reviewed task prompt. Do not infer that an item is
-implemented merely because it appears in this remaining-work list.
+The exact scope and subdivision of this work may still be refined by a later
+reviewed task prompt. Do not infer that an item is implemented merely because it
+appears in this remaining-work list.
 
 ## Maintenance rule
 
