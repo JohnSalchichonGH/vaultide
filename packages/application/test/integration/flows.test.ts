@@ -598,32 +598,29 @@ describe('explicit cash attribution is validated on every path', () => {
         toPositionId: savings,
         fromAmount: '200.00',
         toAmount: '200.00',
-        fee: {
-          amount: '1.50',
-          categoryId: transferFeeCategory,
-          cashPositionId: third.id,
-          currency: 'EUR',
-        },
+        fee: { amount: '1.50', cashPositionId: third.id, incurredOn: '2026-09-05' },
       }),
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
   });
 
-  it('refuses a fee in a currency the paying account does not hold', async () => {
-    await expect(
-      createCashTransfer(deps(), SEPT_15, {
-        occurredOn: '2026-09-05',
-        fromPositionId: bbva,
-        toPositionId: savings,
-        fromAmount: '200.00',
-        toAmount: '200.00',
-        fee: {
-          amount: '1.50',
-          categoryId: transferFeeCategory,
-          cashPositionId: bbva,
-          currency: 'USD',
-        },
-      }),
-    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  it('takes the fee’s currency from the account that paid it', async () => {
+    // A fee's currency is not an input (7.4; ADR 0006 §6): it is its payer's.
+    const dollars = await createCashAccount(harness.services.positions, SEPT_15, {
+      name: 'Dollars',
+      currency: 'USD',
+      accountType: 'checking',
+      openedOn: null,
+    });
+
+    const { fee } = await createCashTransfer(deps(), SEPT_15, {
+      occurredOn: '2026-09-05',
+      fromPositionId: bbva,
+      toPositionId: dollars.id,
+      fromAmount: '200.00',
+      toAmount: '216.45',
+      fee: { amount: '1.62', cashPositionId: dollars.id, incurredOn: '2026-09-05' },
+    });
+    expect(fee?.currency).toBe('USD');
   });
 });
 
@@ -709,12 +706,7 @@ describe('the protected transfer-fee category belongs to the transfer', () => {
       toPositionId: savings,
       fromAmount: '200.00',
       toAmount: '200.00',
-      fee: {
-        amount: '1.50',
-        categoryId: transferFeeCategory,
-        cashPositionId: bbva,
-        currency: 'EUR',
-      },
+      fee: { amount: '1.50', cashPositionId: bbva, incurredOn: '2026-09-05' },
     });
     expect(fee?.categoryId).toBe(transferFeeCategory);
   });
@@ -749,12 +741,7 @@ describe('cash transfers and their fee', () => {
       toPositionId: savings,
       fromAmount: '200.00',
       toAmount: '200.00',
-      fee: {
-        amount: '1.50',
-        categoryId: transferFeeCategory,
-        cashPositionId: bbva,
-        currency: 'EUR',
-      },
+      fee: { amount: '1.50', cashPositionId: bbva, incurredOn: '2026-09-05' },
     });
 
     expect(transfer.kind).toBe('cash_transfer');
@@ -777,11 +764,10 @@ describe('cash transfers and their fee', () => {
         toAmount: '200.00',
         fee: {
           amount: '1.50',
-          // An ordinary consumption category: a fee belongs in "Interest &
-          // fees", so filing it under groceries would move it into spending.
-          categoryId: groceries,
           cashPositionId: bbva,
-          currency: 'EUR',
+          // After today: the fee's own date answers to M5 whatever the
+          // transfer's date is (ADR 0006 §5).
+          incurredOn: '2026-09-16',
         },
       }),
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
@@ -819,37 +805,44 @@ describe('cash transfers and their fee', () => {
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
   });
 
-  it('refuses a date change that would strand the fee, and accepts an explicit one', async () => {
+  it('moves the transfer without moving its fee, and moves the fee only when told to', async () => {
     const { transfer, fee } = await createCashTransfer(deps(), SEPT_15, {
       occurredOn: '2026-09-05',
       fromPositionId: bbva,
       toPositionId: savings,
       fromAmount: '200.00',
       toAmount: '200.00',
-      fee: {
-        amount: '1.50',
-        categoryId: transferFeeCategory,
-        cashPositionId: bbva,
-        currency: 'EUR',
-      },
+      fee: { amount: '1.50', cashPositionId: bbva, incurredOn: '2026-09-05' },
     });
-
-    await expect(
-      updateCashTransfer(deps(), SEPT_15, {
-        transferId: transfer.id,
-        expectedVersion: transfer.version,
-        occurredOn: '2026-09-06',
-      }),
-    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
-
-    const moved = await updateCashTransfer(deps(), SEPT_15, {
+    const aggregate = {
       transferId: transfer.id,
-      expectedVersion: transfer.version,
       occurredOn: '2026-09-06',
-      fee: { expectedVersion: fee?.version as number, incurredOn: '2026-09-06' },
+      fromPositionId: bbva,
+      toPositionId: savings,
+      fromAmount: '200.00',
+      toAmount: '200.00',
+      description: null,
+    };
+
+    // The fee is its own source fact with its own date (ADR 0006 §5): a
+    // correction that moves the transfer and states the fee as it was leaves
+    // the fee where it was.
+    const moved = await updateCashTransfer(deps(), SEPT_15, {
+      ...aggregate,
+      expectedVersion: transfer.version,
+      fee: { amount: '1.50', cashPositionId: bbva, incurredOn: '2026-09-05' },
+      expectedFee: { state: 'version', version: fee?.version as number },
     });
     expect(moved.transfer.occurredOn).toBe('2026-09-06');
-    expect(moved.fee?.incurredOn).toBe('2026-09-06');
+    expect(moved.fee).toMatchObject({ incurredOn: '2026-09-05', version: fee?.version });
+
+    const both = await updateCashTransfer(deps(), SEPT_15, {
+      ...aggregate,
+      expectedVersion: moved.transfer.version,
+      fee: { amount: '1.50', cashPositionId: bbva, incurredOn: '2026-09-06' },
+      expectedFee: { state: 'version', version: moved.fee?.version as number },
+    });
+    expect(both.fee?.incurredOn).toBe('2026-09-06');
   });
 
   it('deletes the fee explicitly before the transfer, so both keep a before-image', async () => {
@@ -859,12 +852,7 @@ describe('cash transfers and their fee', () => {
       toPositionId: savings,
       fromAmount: '200.00',
       toAmount: '200.00',
-      fee: {
-        amount: '1.50',
-        categoryId: transferFeeCategory,
-        cashPositionId: bbva,
-        currency: 'EUR',
-      },
+      fee: { amount: '1.50', cashPositionId: bbva, incurredOn: '2026-09-05' },
     });
 
     const removed = await deleteCashTransfer(deps(), SEPT_15, { transferId: transfer.id });
@@ -888,12 +876,7 @@ describe('cash transfers and their fee', () => {
       toPositionId: savings,
       fromAmount: '200.00',
       toAmount: '200.00',
-      fee: {
-        amount: '1.50',
-        categoryId: transferFeeCategory,
-        cashPositionId: bbva,
-        currency: 'EUR',
-      },
+      fee: { amount: '1.50', cashPositionId: bbva, incurredOn: '2026-09-05' },
     });
     void transfer;
 
@@ -1823,12 +1806,7 @@ describe('a transfer with a corrupted number of fees fails closed', () => {
       toPositionId: savings,
       fromAmount: '200.00',
       toAmount: '200.00',
-      fee: {
-        amount: '1.50',
-        categoryId: transferFeeCategory,
-        cashPositionId: bbva,
-        currency: 'EUR',
-      },
+      fee: { amount: '1.50', cashPositionId: bbva, incurredOn: '2026-09-05' },
     });
 
     // Only an out-of-band write can produce this: `createExpenseEntry` has no
@@ -1845,14 +1823,20 @@ describe('a transfer with a corrupted number of fees fails closed', () => {
   }
 
   it('refuses to edit the aggregate rather than picking one fee', async () => {
-    const { transfer } = await transferWithTwoFees();
+    const { transfer, fee } = await transferWithTwoFees();
 
     await expect(
       updateCashTransfer(deps(), SEPT_15, {
         transferId: transfer.id,
         expectedVersion: transfer.version,
+        occurredOn: '2026-09-05',
+        fromPositionId: bbva,
+        toPositionId: savings,
         fromAmount: '210.00',
         toAmount: '210.00',
+        description: null,
+        fee: { amount: '1.50', cashPositionId: bbva, incurredOn: '2026-09-05' },
+        expectedFee: { state: 'version', version: fee?.version as number },
       }),
     ).rejects.toMatchObject({ code: 'IMPOSSIBLE_OPERATION' });
 

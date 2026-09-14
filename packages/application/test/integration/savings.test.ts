@@ -271,12 +271,7 @@ describe('expense kinds map to the 12.3 buckets exactly as 7.4 says', () => {
       toPositionId: b,
       fromAmount: '300.00',
       toAmount: '300.00',
-      fee: {
-        amount: '5.00',
-        categoryId: categoryOf('transfer_fee'),
-        cashPositionId: a,
-        currency: 'EUR',
-      },
+      fee: { amount: '5.00', cashPositionId: a, incurredOn: '2026-09-07' },
     });
     await statement(a, '2026-09-30', '695.00');
     await statement(b, '2026-09-30', '300.00');

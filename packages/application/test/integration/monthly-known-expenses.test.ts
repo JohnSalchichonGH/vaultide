@@ -840,12 +840,7 @@ describe('the categories Known expenses offers', () => {
       toPositionId: to,
       fromAmount: '300.00',
       toAmount: '300.00',
-      fee: {
-        amount: '5.00',
-        categoryId: await categoryId({ kind: 'transfer_fee' }),
-        cashPositionId: from,
-        currency: 'EUR',
-      },
+      fee: { amount: '5.00', cashPositionId: from, incurredOn: '2026-09-07' },
     });
 
     expect((await completed()).expenses.direct).toEqual([

@@ -560,6 +560,27 @@ export async function insertTransferIn(
   return created;
 }
 
+/**
+ * A transfer's row, locked for the rest of the caller's transaction.
+ *
+ * The aggregate's first lock (M14, 20.3): every transfer mutation takes it
+ * before it reads the linked fee rows, so a writer adding a fee and a writer
+ * deciding what to do with the fees it read queue behind one another instead
+ * of both going ahead.
+ */
+export async function lockTransferIn(
+  tx: Transaction,
+  transferId: string,
+): Promise<TransferRow | undefined> {
+  const [row] = await tx
+    .select()
+    .from(transfers)
+    .where(eq(transfers.id, transferId))
+    .limit(1)
+    .for('update');
+  return row;
+}
+
 export interface TransferPatch {
   occurredOn?: string;
   fromPositionId?: string | null;

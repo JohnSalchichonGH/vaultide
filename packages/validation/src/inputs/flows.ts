@@ -120,12 +120,47 @@ export const deleteExpenseEntryInput = z.object({
 /* ------------------------------------------------------------------------- */
 
 /**
+ * A transfer's fee, as the user states it (7.4, M14; ADR 0006 §5, §6).
+ *
+ * Three facts and no more: the amount, the endpoint that paid it, and the day
+ * it was charged — its own financial date, bound by today like any other. The
+ * category, currency, settlement and description are not inputs. A fee is
+ * tracked cash in its payer's currency, filed under the user's own
+ * `transfer_fee` category, and the service decides that rather than trusting a
+ * value it was sent; an unknown key is stripped here before it could matter.
+ */
+function transferFee(today: string) {
+  return z.object({
+    amount: moneyString({ positive: true }),
+    cashPositionId: z.uuid(),
+    incurredOn: plainDateNotAfter(today),
+  });
+}
+
+/**
+ * What the client saw of a transfer's fee when it began the edit (20.3).
+ *
+ * The same two states as `termExpectation`, for the same reason: whether the
+ * save inserts, updates or deletes the fee is decided against what the user
+ * looked at, never against a read the server takes for itself.
+ *
+ *  - `{ state: 'absent' }` — "there was no fee". A fee found now is a conflict.
+ *  - `{ state: 'version', version }` — "there was this exact fee". A different
+ *    version, or no fee at all, is a conflict.
+ */
+export const transferFeeExpectation = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('absent') }),
+  z.object({ state: z.literal('version'), version: z.number().int().positive() }),
+]);
+
+/**
  * A cash transfer, optionally with its fee (7.5, M13, M14).
  *
  * `kind` is not an input: Phase 3 writes `cash_transfer` and nothing else, so
  * offering the field would be offering seven values the services refuse.
  * `template_id` and `occurrence_date` are likewise absent — Phase 3 materializes
- * no recurring transfer occurrence, so both are always NULL.
+ * no recurring transfer occurrence, so both are always NULL. Each leg's currency
+ * is its account's, so neither is an input either.
  */
 export function createTransferInput(today: string) {
   return z.object({
@@ -136,39 +171,32 @@ export function createTransferInput(today: string) {
     toAmount: moneyString({ positive: true }),
     description: description.optional(),
     tags: tags.optional(),
-    fee: z
-      .object({
-        amount: moneyString({ positive: true }),
-        categoryId: z.uuid(),
-        cashPositionId: z.uuid(),
-        currency: currencyCode,
-        description: description.optional(),
-      })
-      .optional(),
+    fee: transferFee(today).optional(),
   });
 }
 
+/**
+ * Correcting a cash transfer: the whole aggregate, saved at once (ADR 0006 §2,
+ * §3).
+ *
+ * Every editable fact is required, so a correction states the transfer it should
+ * become rather than a patch whose gaps the server would fill: the date, both
+ * endpoints, both amounts, the description (`null` clears it) and the fee
+ * (`null` for none). The kind and the currency pair are fixed after creation,
+ * and tags are not edited here, so none of them is an input.
+ */
 export function updateTransferInput(today: string) {
   return z.object({
     transferId: z.uuid(),
     expectedVersion,
-    occurredOn: plainDateNotAfter(today).optional(),
-    fromAmount: moneyString({ positive: true }).optional(),
-    toAmount: moneyString({ positive: true }).optional(),
-    description: description.nullable().optional(),
-    tags: tags.optional(),
-    /**
-     * Present only when the edit changes the fee too. Absent means "leave the
-     * fee alone", and an edit that would leave it incompatible is refused
-     * rather than silently rewriting a source financial record (M14).
-     */
-    fee: z
-      .object({
-        expectedVersion,
-        amount: moneyString({ positive: true }).optional(),
-        incurredOn: plainDateNotAfter(today).optional(),
-      })
-      .optional(),
+    occurredOn: plainDateNotAfter(today),
+    fromPositionId: z.uuid(),
+    toPositionId: z.uuid(),
+    fromAmount: moneyString({ positive: true }),
+    toAmount: moneyString({ positive: true }),
+    description: description.nullable(),
+    fee: transferFee(today).nullable(),
+    expectedFee: transferFeeExpectation,
     reason: reason.optional(),
   });
 }
