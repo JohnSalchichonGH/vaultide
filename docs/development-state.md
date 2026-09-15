@@ -30,7 +30,7 @@ logs into this file.
   in force at the time, production-verified, and frozen as completed slice
   checkpoints. The Phase-3-reachable completed-month completeness report and
   read model (blueprint §12.6, §30.18) is also an accepted/frozen slice
-  checkpoint: independently reviewed, production-verified, and frozen. Four
+  checkpoint: independently reviewed, production-verified, and frozen. Five
   **Monthly** slices are likewise accepted, frozen and production-verified, each
   independently reviewed:
   - **Monthly foundation** — `/monthly/[yyyy-mm]` for completed and current
@@ -42,20 +42,26 @@ logs into this file.
   - **Monthly Income** — a month's recurring income occurrences and the money
     actually received in it;
   - **Monthly Known expenses** — a month's recurring expense occurrences and the
-    known expenses that financially belong to it.
+    known expenses that financially belong to it;
+  - **Monthly cash transfers** — maintaining transfers between the user's own
+    cash accounts from Monthly → Accounts, including same- and cross-currency
+    transfers and the linked transfer fee.
 
-  Together these slices make up the Monthly sections Phase 3 has built so far;
+  Together these slices make up the Monthly sections Phase 3 has built so far.
+  Cash transfers live inside Accounts and add no Monthly section of their own;
   later-phase Monthly sections remain outside this Phase 3 checkpoint.
 - **User-facing production:** Phases 0–2 remain the accepted/frozen user-facing
   foundation. Phase 3's Monthly page is in production with Overview, Income,
-  Known expenses, Accounts and Reconciliation; the rest of Phase 3 remains in
-  progress.
+  Known expenses, Accounts (including cash transfers) and Reconciliation; the
+  rest of Phase 3 remains in progress.
 - **Database migrations:** repository migrations run through
   `0007_phase3_privileges_and_triggers.sql`; the production release workflow
   applies migrations before deploying application code.
-- **Phase 3 ADR:** `docs/adr/0005-phase-3-implementation-decisions.md` is an
+- **Phase 3 ADRs:** `docs/adr/0005-phase-3-implementation-decisions.md` is an
   accepted record of the decisions it contains, written for the slices 1–5
   baseline. It is not a complete roll-up of later Phase 3 work.
+  `docs/adr/0006-phase-3-monthly-transfers.md` is the accepted record of the
+  Monthly cash-transfer design decisions.
 
 Freezing completed Phase 3 slices does not imply acceptance or freeze of Phase 3
 as a whole.
@@ -95,7 +101,10 @@ Monthly adds, on top of that backend:
 - **Overview** and **Reconciliation** for completed and current months;
 - **Accounts**: maintaining each cash account's balance for the month on
   screen — entering or correcting a statement balance, confirming a last-day
-  snapshot as one, confirming a month unchanged, and updating balances today;
+  snapshot as one, confirming a month unchanged, and updating balances today —
+  and the month's cash transfers between the user's own accounts: recording,
+  correcting or deleting a transfer within one currency or across two, with its
+  optional linked fee;
 - **Income**: the recurring income occurrences a month expected and what became
   of each, recording or skipping them and restoring a skip, recording an
   occurrence received early, changing what a source is worth from an occurrence
@@ -123,30 +132,27 @@ Web surface of Phase 3:
   presentation state. Month notes are not edited anywhere yet.
 - `apps/web/src/server/actions/flows.ts` and `recurring.ts` declare the Phase 3
   financial mutations with `financialAction` (ADR 0003). Monthly's Income and
-  Known expenses sections are their consumers; transfer editing still has no
-  dedicated user-facing workflow.
+  Known expenses sections are their consumers, and Monthly Accounts is the
+  user-facing consumer of the transfer flow path.
 - End-to-end coverage now also includes the Monthly journeys (`monthly`),
   alongside the Phase 0–2 journeys (`smoke`, `auth`, `accounts`).
 
 ## Next planned work
 
-The next planned Phase 3 area is **Monthly cash transfers inside Monthly →
-Accounts**. Their design is locked by
-`docs/adr/0006-phase-3-monthly-transfers.md`; implementation has not begun.
+The next planned Phase 3 area is the **standalone Spending page**.
 
 Remaining Phase 3 work, in the agreed order:
 
-1. the Monthly cash-transfer UI;
-2. the standalone Spending page;
-3. reconciliation issue corrective actions;
-4. historical correction;
-5. bulk history entry;
-6. the standalone Income pages;
-7. the remaining end-to-end journeys and Phase 3 hardening, including the
+1. the standalone Spending page;
+2. reconciliation issue corrective actions;
+3. historical correction;
+4. bulk history entry;
+5. the standalone Income pages;
+6. the remaining end-to-end journeys and Phase 3 hardening, including the
    server/domain enforcement of each currency's minor-unit scale for Phase 3
    flows that acceptance still requires;
-8. a cold whole-Phase-3 review;
-9. Phase 3 acceptance, production verification, and freeze.
+7. a cold whole-Phase-3 review;
+8. Phase 3 acceptance, production verification, and freeze.
 
 The exact scope and subdivision of this work may still be refined by a later
 reviewed task prompt. Do not infer that an item is implemented merely because it

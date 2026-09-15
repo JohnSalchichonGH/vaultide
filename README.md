@@ -42,7 +42,10 @@ progress, but Monthly is live. What is usable today:
     other known expenses, including how each one was paid;
   - **Accounts** — each cash account's balance for that month: entering or
     correcting a statement balance, confirming a last-day snapshot as one,
-    confirming a month unchanged, and updating balances today;
+    confirming a month unchanged, and updating balances today; and the month's
+    transfers between your own cash accounts: recording, correcting or deleting
+    one, within one currency or across two with each amount as your accounts
+    show it, and with an optional linked bank fee;
 - marking a completed month reviewed, and hiding an advisory for that month or
   showing it again. Hiding changes only what the page shows; it resolves
   nothing.
@@ -83,15 +86,16 @@ There are no corrective actions on an issue yet.
 
 In production, Monthly consumes this through one composite read: a month's
 reconciliation, reporting-currency figures and completeness, the cash balances
-it is measured from, the income it expected and received, and the expenses it
-expected and recorded. Transfers and the standalone Spending and Income pages
-have no user interface yet.
+it is measured from, the month's transfers between cash accounts, the income it
+expected and received, and the expenses it expected and recorded. Cash transfers
+are maintained inside Monthly's Accounts section, with no page of their own. The
+standalone Spending page, corrective actions on reconciliation issues and the
+standalone Income pages are not built yet.
 
 ### Remaining Phase 3
 
 Phase 3 is **in progress**, and is neither accepted nor frozen. Still to do:
 
-- cash transfers in Monthly's Accounts section — designed, not yet built;
 - the standalone Spending page;
 - corrective actions on reconciliation issues;
 - historical correction;
@@ -99,7 +103,7 @@ Phase 3 is **in progress**, and is neither accepted nor frozen. Still to do:
 - the standalone Income pages;
 - the remaining end-to-end journeys and hardening;
 - a cold review of the whole phase;
-- Phase 3 acceptance, deployment and freeze.
+- Phase 3 acceptance, production verification and freeze.
 
 ## How Vaultide works
 
