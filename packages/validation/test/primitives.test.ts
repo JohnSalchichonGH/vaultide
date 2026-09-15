@@ -30,6 +30,12 @@ describe('money strings', () => {
     expect(moneyString({ minorUnits: 0 }).safeParse('1.5').success).toBe(false);
     expect(moneyString({ minorUnits: 0 }).safeParse('1').success).toBe(true);
     expect(moneyString({ minorUnits: 4 }).safeParse('38123.4567').success).toBe(true);
+    // One decimal more is refused by the minor-unit rule, and by nothing else.
+    const fifthDecimal = moneyString({ minorUnits: 4 }).safeParse('38123.45678');
+    expect(fifthDecimal.success).toBe(false);
+    expect(fifthDecimal.error?.issues.map((issue) => issue.message)).toEqual([
+      'Use at most 4 decimals for this currency.',
+    ]);
     expect(moneyString({ minorUnits: 3 }).safeParse('1.234').success).toBe(true);
   });
 

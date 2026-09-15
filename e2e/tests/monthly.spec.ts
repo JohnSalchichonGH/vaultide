@@ -151,6 +151,22 @@ test.describe('the monthly page', () => {
     const email = uniqueEmail('e2e-monthly');
     await onboard(page, request, email);
 
+    // The signed-in shell's skip link (16.6), on the dashboard onboarding has
+    // just loaded: reachable, visible once focused, and first in tab order.
+    // Asserted structurally, as the smoke suite does for the anonymous shell,
+    // because Safari only tabs to links when "Press Tab to highlight each item"
+    // is enabled, which is off by default.
+    const skipLink = page.getByRole('link', { name: 'Skip to content' });
+    await skipLink.focus();
+    await expect(skipLink).toBeFocused();
+    await expect(skipLink).toBeInViewport();
+    const firstFocusable = await page.evaluate(() => {
+      const selector = 'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])';
+      const first = document.querySelector<HTMLElement>(selector);
+      return { tag: first?.tagName ?? null, text: first?.textContent?.trim() ?? null };
+    });
+    expect(firstFocusable).toEqual({ tag: 'A', text: 'Skip to content' });
+
     await accountWithStatements(page, { name: 'Everyday', type: 'checking', august: '2000.00', september: '1900.00' });
     await accountWithStatements(page, { name: 'Savings', type: 'savings', august: '10000.00', september: '10010.00' });
 

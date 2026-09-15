@@ -3,10 +3,20 @@ import { expect, test } from '@playwright/test';
 /**
  * Phase 0 smoke suite (blueprint Phase 0 testing, 21.5).
  *
- * Proves the two Phase 0 acceptance criteria that are only true in the running
- * product: the Vaultide shell renders, and money is formatted exactly — a
- * 19-digit amount in three locales, and a four-minor-unit currency (CLF) with
- * all four decimals intact.
+ * What only the running product can show. Besides the operational checks at the
+ * end, it looks at two pages:
+ *
+ *  - the public landing page `/`: the shell renders and offers the way in, the
+ *    theme control works, and status text keeps its contrast;
+ *  - `/test/foundations`, a test-only fixture behind the same gate as the
+ *    captured mailbox, so a production deployment answers 404: a real browser
+ *    formats a 19-digit amount exactly, and the four-minor-unit (CLF) money
+ *    input and the date input capped at today behave as a person finds them.
+ *
+ * The browser proves input and display, not storage. That a CLF amount is
+ * serialized and read back with all four decimals is proven by the finance
+ * tests, and that the currency catalogue keeps CLF's four minor units by the
+ * database tests.
  */
 
 const digitsOf = (text: string): string => [...text].filter((c) => c >= '0' && c <= '9').join('');
@@ -132,19 +142,48 @@ test.describe('Vaultide shell', () => {
   });
 });
 
-test.describe('exact money formatting', () => {
-  test('formats 12345678901234567.89 without losing a digit', async ({ page }) => {
-    await page.goto('/');
+/**
+ * The test-only Phase 0 browser fixture. It answers 404 wherever the test
+ * capabilities are off, a production deployment included.
+ */
+const FOUNDATIONS = '/test/foundations';
 
-    const values = page.getByTestId('money-text');
-    await expect(values.first()).toBeVisible();
+const FORMATTED_CURRENCIES = ['usd', 'eur', 'jpy', 'clf'] as const;
 
-    const usd = await values.nth(0).innerText();
-    const eur = await values.nth(1).innerText();
-    const jpy = await values.nth(2).innerText();
-    const clf = await values.nth(3).innerText();
+test.describe('exact money formatting in the browser', () => {
+  test('formats 12345678901234567.89 in the browser without losing a digit', async ({
+    page,
+    request,
+  }) => {
+    // Browser formatter evidence. The server's HTML holds the formatter pending:
+    // no ready marker, no row and no formatted amount. The rows appear only once
+    // React has hydrated and the browser has run the self-test, so every value
+    // asserted below was formatted by the browser itself.
+    const response = await request.get(FOUNDATIONS);
+    expect(response.status()).toBe(200);
+    const html = await response.text();
+    expect(html).toContain('data-testid="foundations-browser-pending"');
+    expect(html).not.toContain('foundations-browser-ready');
+    for (const currency of FORMATTED_CURRENCIES) {
+      expect(html).not.toContain(`foundations-browser-row-${currency}`);
+      expect(html).not.toContain(`foundations-browser-value-${currency}`);
+    }
+    expect(html).not.toMatch(/12[.,]345[.,]678[.,]901[.,]234[.,]56[78]/u);
 
-    // en-US and de-DE keep all 19 significant digits.
+    await page.goto(FOUNDATIONS);
+    await expect(page.getByTestId('foundations-browser-ready')).toBeVisible();
+    await expect(page.getByTestId('foundations-browser-pending')).toHaveCount(0);
+
+    const formatted = (currency: string) =>
+      page.getByTestId(`foundations-browser-value-${currency}`).innerText();
+    const usd = await formatted('usd');
+    const eur = await formatted('eur');
+    const jpy = await formatted('jpy');
+    const clf = await formatted('clf');
+
+    // en-US and de-DE keep all 19 significant digits. For de-DE the grouping and
+    // the decimal comma are asserted, not the spacing around the euro sign, whose
+    // Unicode whitespace differs between engines.
     expect(digitsOf(usd)).toBe('1234567890123456789');
     expect(usd).toBe('$12,345,678,901,234,567.89');
     expect(digitsOf(eur)).toBe('1234567890123456789');
@@ -156,20 +195,31 @@ test.describe('exact money formatting', () => {
     // CLF has four, and keeps them.
     expect(digitsOf(clf)).toBe('123456789012345678900');
 
-    // Every locale reports which formatting path it used, and that it was exact.
-    await expect(page.getByText('Intl string path').first()).toBeVisible();
-    await expect(page.getByText('Exact formatting verified')).toBeVisible();
+    // Every row reports that the browser's output kept its digits. Which path
+    // produced it — Intl's string path or the fallback assembler — is the
+    // runtime's choice, and either is correct.
+    for (const currency of FORMATTED_CURRENCIES) {
+      await expect(page.getByTestId(`foundations-browser-row-${currency}`)).toHaveAttribute(
+        'data-exact',
+        'true',
+      );
+    }
   });
 
-  test('round-trips a four-minor-unit currency through the money input', async ({ page }) => {
-    await page.goto('/');
+  test('validates a four-minor-unit MoneyInput in the browser', async ({ page }) => {
+    await page.goto(FOUNDATIONS);
+    // The inputs hydrate in the same pass as the formatter probe beside them, so
+    // once it is ready React owns the field and nothing typed is discarded.
+    await expect(page.getByTestId('foundations-browser-ready')).toBeVisible();
 
     const input = page.getByLabel('Balance (CLF)');
     await expect(input).toHaveValue('38123.4567');
     await expect(page.getByText('Up to 4 decimals.')).toBeVisible();
 
-    // The displayed value keeps all four decimals.
-    const displayed = page.getByTestId('money-text').last();
+    // The value shown beside the field keeps all four decimals. It is the
+    // fixture's only MoneyText (the formatter rows are plain cells), so the
+    // locator is strict rather than positional.
+    const displayed = page.getByTestId('money-text');
     expect(digitsOf(await displayed.innerText())).toBe('381234567');
 
     // A fifth decimal is rejected against the currency's minor units. Typed
@@ -178,9 +228,12 @@ test.describe('exact money formatting', () => {
     await input.click();
     await input.press('ControlOrMeta+a');
     await input.pressSequentially('38123.45678');
-    await expect(page.locator('p[role="alert"]')).toContainText('at most 4 decimals');
+    await expect(page.locator('p[role="alert"]')).toHaveText(
+      'Use at most 4 decimals for this currency.',
+    );
 
-    // A comma is accepted as the decimal separator (16.6).
+    // A comma is accepted as the decimal separator (16.6), and the displayed
+    // value follows what was typed.
     await input.press('ControlOrMeta+a');
     await input.pressSequentially('1234,5678');
     await expect(page.locator('p[role="alert"]')).toHaveCount(0);
@@ -190,13 +243,14 @@ test.describe('exact money formatting', () => {
 
 test.describe('dates are never in the future', () => {
   test('caps the date input at today and explains why', async ({ page }) => {
-    await page.goto('/');
+    await page.goto(FOUNDATIONS);
 
     const dateInput = page.getByLabel('Balance date');
     const max = await dateInput.getAttribute('max');
     expect(max).toMatch(/^\d{4}-\d{2}-\d{2}$/u);
+    // The explanation states the same today the field is capped at.
     await expect(
-      page.getByText(/Today is \d{4}-\d{2}-\d{2}\. Later dates are not accepted\./u),
+      page.getByText(`Today is ${max as string}. Later dates are not accepted.`, { exact: true }),
     ).toBeVisible();
 
     // The value the field starts with is today, never later.
