@@ -7,13 +7,15 @@ import { ReportingCurrencySelector } from '@/components/shell/reporting-currency
 import { UserMenu } from '@/components/shell/user-menu';
 
 /**
- * The Vaultide application shell (blueprint 15.1, 16.2).
+ * The Vaultide application shell (blueprint 15.1, 16.2), for a signed-in
+ * visitor: every page under `(app)` renders inside it, behind
+ * `requireSessionPage`. A visitor who is not signed in sees the public shell
+ * on the homepage instead, so this one always has a session.
  *
  * The navigation is the roadmap's own structure, and it is honest about what
  * exists: a section that has not been built yet is rendered as text with the
- * phase that brings it, not as a link to a page that would 404. Two things in
- * the header become real in Phase 1 — the reporting-currency selector and the
- * user menu — and both appear only for a signed-in visitor.
+ * phase that brings it, not as a link to a page that would 404. The header
+ * carries the reporting-currency selector and the user menu.
  */
 
 interface NavigationItem {
@@ -66,8 +68,8 @@ const NAVIGATION: readonly NavigationGroup[] = [
 
 export interface AppShellProps {
   readonly children: ReactNode;
-  /** Present when somebody is signed in; the header changes accordingly. */
-  readonly session?: SessionContext | undefined;
+  /** The signed-in visitor: the header and the Monthly link are theirs. */
+  readonly session: SessionContext;
   /** Supported currency codes for the selector, from the catalogue (10.4). */
   readonly currencies?: readonly { code: string; name: string }[];
   /** Hide the sidebar on pages that are a single flow, such as onboarding. */
@@ -78,10 +80,8 @@ export interface AppShellProps {
  * Where an item points for this visitor: its fixed page, or — for Monthly — the
  * current month from the session's own today (never the browser's clock).
  */
-function hrefOf(item: NavigationItem, session: SessionContext | undefined): Route | undefined {
-  if (item.currentMonth === true) {
-    return session === undefined ? undefined : (`/monthly/${session.today.slice(0, 7)}` as Route);
-  }
+function hrefOf(item: NavigationItem, session: SessionContext): Route | undefined {
+  if (item.currentMonth === true) return `/monthly/${session.today.slice(0, 7)}` as Route;
   return item.href;
 }
 
@@ -109,31 +109,12 @@ export function AppShell({
             Personal finance, reconciled monthly
           </span>
           <div className="ml-auto flex items-center gap-3">
-            {session === undefined ? (
-              <>
-                <Link
-                  href="/sign-in"
-                  className="rounded-[var(--radius-control)] border px-3 py-1.5 text-[length:var(--text-meta)]"
-                >
-                  Sign in
-                </Link>
-                <Link
-                  href="/sign-up"
-                  className="rounded-[var(--radius-control)] bg-[var(--color-accent)] px-3 py-1.5 text-[length:var(--text-meta)] text-[var(--color-accent-foreground)]"
-                >
-                  Create account
-                </Link>
-              </>
-            ) : (
-              <>
-                <ReportingCurrencySelector
-                  value={session.settings.reportingCurrency}
-                  version={session.settings.version}
-                  currencies={currencies}
-                />
-                <UserMenu email={session.email} name={session.name} />
-              </>
-            )}
+            <ReportingCurrencySelector
+              value={session.settings.reportingCurrency}
+              version={session.settings.version}
+              currencies={currencies}
+            />
+            <UserMenu email={session.email} name={session.name} />
             <ThemeToggle />
           </div>
         </div>

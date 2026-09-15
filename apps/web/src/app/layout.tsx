@@ -8,7 +8,7 @@ export const metadata: Metadata = {
     template: '%s · Vaultide',
   },
   description:
-    'Vaultide is a monthly, snapshot-driven personal finance platform: balances and known flows in, inferred spending, net worth and projections out.',
+    'Vaultide is personal finance, reconciled monthly. Enter your balances and the income, expenses and transfers you know; Vaultide works out spending and savings across currencies.',
   applicationName: 'Vaultide',
   robots: { index: false, follow: false },
 };

@@ -1,13 +1,14 @@
 import { expect, test } from '@playwright/test';
 
 /**
- * Phase 0 smoke suite (blueprint Phase 0 testing, 21.5).
+ * Smoke suite (blueprint Phase 0 testing, 21.5).
  *
  * What only the running product can show. Besides the operational checks at the
  * end, it looks at two pages:
  *
- *  - the public landing page `/`: the shell renders and offers the way in, the
- *    theme control works, and status text keeps its contrast;
+ *  - the public homepage `/`: the public shell renders around the product,
+ *    offers the way in, the theme control works, the page fits a phone without
+ *    sideways scrolling, and status text keeps its contrast;
  *  - `/test/foundations`, a test-only fixture behind the same gate as the
  *    captured mailbox, so a production deployment answers 404: a real browser
  *    formats a 19-digit amount exactly, and the four-minor-unit (CLF) money
@@ -21,23 +22,68 @@ import { expect, test } from '@playwright/test';
 
 const digitsOf = (text: string): string => [...text].filter((c) => c >= '0' && c <= '9').join('');
 
-test.describe('Vaultide shell', () => {
-  test('renders the application shell', async ({ page }) => {
+/** The root metadata description, as the homepage states it. */
+const DESCRIPTION =
+  'Vaultide is personal finance, reconciled monthly. Enter your balances and the income, expenses and transfers you know; Vaultide works out spending and savings across currencies.';
+
+/** Words that belong to the signed-in shell, the build or the test suite, never to the public page. */
+const INTERNAL_LANGUAGE = /\bPhase \d|\bP\d\b|[Bb]lueprint|\bv\d+\.\d+\.\d+\b|self-test|fixture/u;
+
+test.describe('the public homepage', () => {
+  test('renders the product in the public shell and offers the way in', async ({ page }) => {
     await page.goto('/');
 
     await expect(page).toHaveTitle('Vaultide');
-    await expect(page.getByRole('heading', { level: 1, name: 'Vaultide' })).toBeVisible();
+    await expect(page.locator('meta[name="description"]')).toHaveAttribute('content', DESCRIPTION);
+
+    // One H1, with the kicker above it. The kicker's words also close the
+    // footer line, so the match is exact.
+    await expect(page.getByRole('heading', { level: 1 })).toHaveCount(1);
     await expect(
-      page.getByText('Phase 2 — Accounts, balances and net worth', { exact: true }),
+      page.getByRole('heading', { level: 1, name: 'Make every month add up.' }),
     ).toBeVisible();
-    await expect(page.getByText('Blueprint v2.1.2').first()).toBeVisible();
-    await expect(page.getByRole('contentinfo')).toContainText('Vaultide');
+    await expect(
+      page.getByText('Personal finance, reconciled monthly', { exact: true }),
+    ).toBeVisible();
+
+    // The way in: the primary call to action in the hero and again at the end,
+    // both to sign-up; the secondary one is a same-page anchor to the roadmap.
+    const createAccount = page.getByRole('link', { name: 'Create account' });
+    await expect(createAccount).toHaveCount(2);
+    for (const link of await createAccount.all()) {
+      await expect(link).toHaveAttribute('href', '/sign-up');
+    }
+    await expect(page.getByRole('link', { name: "See what's available" })).toHaveAttribute(
+      'href',
+      '#roadmap',
+    );
+    await expect(page.locator('#roadmap')).toHaveCount(1);
+
+    // The header: the wordmark home, Sign in, and no second sign-up button.
+    const header = page.getByRole('banner');
+    await expect(header.getByRole('link', { name: 'Vaultide' })).toHaveAttribute('href', '/');
+    await expect(header.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/sign-in');
+    await expect(header.getByRole('link', { name: 'Create account' })).toHaveCount(0);
+
+    // Nothing of the signed-in shell: no reporting-currency selector, no
+    // navigation. Nothing internal either — no phase, version or fixture
+    // language anywhere, no link to the test fixture, and a footer that says
+    // only what the product is.
+    await expect(page.getByTestId('reporting-currency')).toHaveCount(0);
+    await expect(page.getByRole('navigation')).toHaveCount(0);
+    await expect(page.locator('a[href*="/test/foundations"]')).toHaveCount(0);
+    expect(await page.locator('body').innerText()).not.toMatch(INTERNAL_LANGUAGE);
+    await expect(page.getByRole('contentinfo')).toHaveText(
+      'Vaultide · Personal finance, reconciled monthly',
+    );
 
     // The skip link is present, reachable and becomes visible on focus (16.6).
     const skipLink = page.getByRole('link', { name: 'Skip to content' });
     await skipLink.focus();
     await expect(skipLink).toBeFocused();
     await expect(skipLink).toBeInViewport();
+    await expect(skipLink).toHaveAttribute('href', '#main');
+    await expect(page.locator('main#main')).toHaveCount(1);
 
     // …and it comes first in tab order. Asserted structurally rather than by
     // pressing Tab, because Safari only tabs to links when "Press Tab to
@@ -51,13 +97,96 @@ test.describe('Vaultide shell', () => {
     expect(firstFocusable).toEqual({ tag: 'A', text: 'Skip to content' });
   });
 
-  test('offers a way in, and the theme control', async ({ page }) => {
+  test('shows the example month and groups the roadmap by status, in words', async ({ page }) => {
     await page.goto('/');
-    // The reporting-currency selector became real in Phase 1 and belongs to a
-    // signed-in visitor; an anonymous one is offered the way in instead.
-    await expect(page.getByRole('link', { name: 'Sign in' }).first()).toBeVisible();
-    await expect(page.getByRole('link', { name: /Create an account|Create account/u }).first()).toBeVisible();
-    await expect(page.getByTestId('reporting-currency')).toHaveCount(0);
+
+    // The reconciliation example: the product's own data-quality words beside
+    // figures formatted from exact strings, and a missing month-end balance
+    // shown as unavailable with its reason — never as zero.
+    const example = page.getByTestId('example-month');
+    await expect(example.getByText('Example month · fictional figures')).toBeVisible();
+    await expect(example.getByText('Reliable', { exact: true })).toBeVisible();
+    await expect(example.getByText('€15,740.00')).toBeVisible();
+    await expect(example.getByText('€2,080.00')).toBeVisible();
+    await expect(example.getByText('€520.00')).toBeVisible();
+    await expect(example.getByText('Unavailable', { exact: true })).toBeVisible();
+    await expect(example.getByText('Month-end balance missing for Savings')).toBeVisible();
+    await expect(example.locator('table')).toHaveCount(0);
+
+    // Three status groups, named in text, in this order and with nothing that
+    // reads as progress: no phase, percentage, date, quarter or "in progress".
+    const roadmap = page.locator('#roadmap');
+    await expect(
+      roadmap.getByRole('heading', { level: 2, name: "What you can use today, and what's next" }),
+    ).toBeVisible();
+    const groups = roadmap.getByRole('heading', { level: 3 });
+    await expect(groups).toHaveText(['Available now', 'Next up', 'Planned']);
+
+    for (const entry of [
+      'Monthly reconciliation',
+      'Accounts & net worth',
+      'Income, expenses & transfers',
+      'Spending and income over time',
+      'Investments',
+      'Debts & mortgages',
+      'Property',
+      'Net worth, explained & export',
+      'Goals & projections',
+    ]) {
+      await expect(roadmap.getByText(entry, { exact: true })).toBeVisible();
+    }
+    // Planned work is described on the page, not behind a control.
+    await expect(
+      roadmap.getByText(
+        'Goals from actual data, deterministic projections, scenario comparison, and later probabilistic planning.',
+      ),
+    ).toBeVisible();
+    await expect(roadmap.locator('button, details, [role="tab"]')).toHaveCount(0);
+    const roadmapText = await roadmap.innerText();
+    expect(roadmapText).not.toMatch(/\bPhase\b|%|\bQ[1-4]\b|\b20\d\d\b|[Ii]n progress/u);
+  });
+
+  test('fits a 375 px phone without sideways scrolling', async ({ page }) => {
+    // The narrowest layout the page supports (16.5). Measured on the document
+    // once everything has rendered: a table with a minimum width, or a
+    // positioned element escaping its container, would widen it past the
+    // viewport even when nothing looks wrong.
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.goto('/');
+    await expect(page.getByTestId('theme-toggle')).toBeVisible();
+    await expect(page.getByRole('contentinfo')).toBeAttached();
+    await page.evaluate(() => document.fonts.ready);
+
+    const widths = await page.evaluate(() => {
+      const root = document.documentElement;
+      const roadmap = document.getElementById('roadmap');
+      return {
+        document: { scrollWidth: root.scrollWidth, clientWidth: root.clientWidth },
+        roadmap:
+          roadmap === null
+            ? null
+            : { scrollWidth: roadmap.scrollWidth, clientWidth: roadmap.clientWidth },
+      };
+    });
+    expect(widths.document.scrollWidth).toBeLessThanOrEqual(widths.document.clientWidth);
+    expect(widths.roadmap).not.toBeNull();
+    expect(widths.roadmap?.scrollWidth).toBeLessThanOrEqual(widths.roadmap?.clientWidth ?? 0);
+
+    // The header controls and the example card sit inside the viewport.
+    for (const locator of [
+      page.getByRole('banner').getByRole('link', { name: 'Sign in' }),
+      page.getByTestId('theme-toggle'),
+      page.getByTestId('example-month'),
+    ]) {
+      const box = await locator.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box?.x ?? -1).toBeGreaterThanOrEqual(0);
+      expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(375);
+    }
+  });
+
+  test('offers the theme control', async ({ page }) => {
+    await page.goto('/');
 
     // The theme control names the theme in effect, and its accessible name
     // contains that same word (WCAG 2.5.3) — asserted as such, not as one fixed
