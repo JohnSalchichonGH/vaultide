@@ -49,10 +49,86 @@ test.describe('Vaultide shell', () => {
     await expect(page.getByRole('link', { name: /Create an account|Create account/u }).first()).toBeVisible();
     await expect(page.getByTestId('reporting-currency')).toHaveCount(0);
 
-    const themeToggle = page.getByRole('button', { name: /Switch to (dark|light) theme/u });
+    // The theme control names the theme in effect, and its accessible name
+    // contains that same word (WCAG 2.5.3) — asserted as such, not as one fixed
+    // sentence. Each press moves one step through System, Dark and Light and
+    // back to System, which forgets the stored choice and leaves the document
+    // to the device's preference. A press changing the document is also what
+    // proves the page hydrated under the CSP (ADR 0001).
+    const themeToggle = page.getByTestId('theme-toggle');
+    const html = page.locator('html');
+    const storedTheme = () => page.evaluate(() => window.localStorage.getItem('vaultide-theme'));
+    const expectShowing = async (label: 'System' | 'Dark' | 'Light') => {
+      await expect(themeToggle).toHaveText(label);
+      await expect(themeToggle).toHaveAccessibleName(new RegExp(`\\b${label}\\b`, 'u'));
+    };
+
     await expect(themeToggle).toBeVisible();
+    await expect(themeToggle).toHaveRole('button');
+    await expectShowing('System');
+
     await themeToggle.click();
-    await expect(page.locator('html')).toHaveClass(/dark|light/u);
+    await expectShowing('Dark');
+    await expect(html).toContainClass('dark');
+    await expect.poll(storedTheme).toBe('dark');
+
+    // An explicit choice is remembered.
+    await page.reload();
+    await expectShowing('Dark');
+    await expect(html).toContainClass('dark');
+
+    await themeToggle.click();
+    await expectShowing('Light');
+    await expect(html).toContainClass('light');
+    await expect(html).not.toContainClass('dark');
+    await expect.poll(storedTheme).toBe('light');
+
+    await themeToggle.click();
+    await expectShowing('System');
+    await expect(html).not.toContainClass('light');
+    await expect(html).not.toContainClass('dark');
+    await expect.poll(storedTheme).toBeNull();
+  });
+
+  test('sets warning and unavailable text at 4.5:1 or more in the light theme', async ({ page }) => {
+    // Blueprint 16.2: text contrast of at least 4.5:1. Words in these two
+    // tones are set on the page background and on cards. The engine resolves
+    // each token and paints it into one canvas pixel, so the ratio is measured
+    // on the sRGB colour the browser actually draws.
+    await page.emulateMedia({ colorScheme: 'light' });
+    await page.goto('/');
+
+    const ratios = await page.evaluate(() => {
+      const context = document.createElement('canvas').getContext('2d');
+      if (context === null) throw new Error('No 2D canvas.');
+      const tokens = getComputedStyle(document.documentElement);
+      const luminance = (token: string): number => {
+        const value = tokens.getPropertyValue(token).trim();
+        context.fillStyle = '#010203';
+        context.fillStyle = value;
+        if (context.fillStyle === '#010203') throw new Error(`${token} is not a colour: "${value}".`);
+        context.fillRect(0, 0, 1, 1);
+        const pixel = context.getImageData(0, 0, 1, 1).data;
+        const linear = (index: number): number => {
+          const channel = (pixel[index] ?? Number.NaN) / 255;
+          return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+        };
+        return 0.2126 * linear(0) + 0.7152 * linear(1) + 0.0722 * linear(2);
+      };
+      const result: Record<string, number> = {};
+      for (const text of ['--color-warning', '--color-unavailable']) {
+        for (const surface of ['--color-background', '--color-surface']) {
+          const [a, b] = [luminance(text), luminance(surface)];
+          result[`${text} on ${surface}`] = (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+        }
+      }
+      return result;
+    });
+
+    expect(Object.keys(ratios)).toHaveLength(4);
+    for (const [pair, ratio] of Object.entries(ratios)) {
+      expect(ratio, pair).toBeGreaterThanOrEqual(4.5);
+    }
   });
 });
 
