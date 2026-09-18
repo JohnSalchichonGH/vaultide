@@ -266,6 +266,54 @@ describe('zero → dormant → active → zero → dormant', () => {
   });
 });
 
+describe('a balance from before the episode is never the episode’s evidence', () => {
+  /**
+   * Holiday read zero on 31 January, received 800 on 20 February, read zero
+   * again on 31 March and was marked dormant from that balance. Then the March
+   * balance was deleted. The wake that follows a deletion runs in its own
+   * transaction, so a read in between finds the account still dormant from 31
+   * March — with January's zero as the latest balance it has. February is
+   * exactly why that zero cannot speak for April.
+   */
+  const today = plainDate('2026-05-10');
+  const checking = cash('checking', 'Checking', [
+    monthEnd('checking', '2026-01-31', '3000'),
+    monthEnd('checking', '2026-02-28', '2200'),
+    monthEnd('checking', '2026-03-31', '2200'),
+    monthEnd('checking', '2026-04-30', '2200'),
+  ]);
+  const moved = [transfer('in', '2026-02-20', 'checking', 'holiday', '800')];
+  const january = monthEnd('holiday', '2026-01-31', '0');
+  const orphaned = [checking, cash('holiday', 'Holiday', [january], '2026-03-31')];
+  const intact = [
+    checking,
+    cash('holiday', 'Holiday', [january, monthEnd('holiday', '2026-03-31', '0')], '2026-03-31'),
+  ];
+
+  it('leaves April asking for a statement instead of calling it reliable on a stale zero', () => {
+    const april = read(M(4), today, orphaned, moved, 'holiday');
+    expect(april).toMatchObject({
+      status: 'unavailable',
+      open: 'carried',
+      close: 'carried',
+      dormant: false,
+      issues: ['missing_month_end'],
+      completeness: 'incomplete 1/2',
+    });
+    expect(april.tracked).toBeUndefined();
+  });
+
+  it('and carries April at zero once the episode’s own balance is there', () => {
+    expect(read(M(4), today, intact, moved, 'holiday')).toMatchObject({
+      status: 'reliable',
+      open: 'month_end',
+      close: 'dormant_zero',
+      dormant: true,
+      completeness: 'sufficient 1/1',
+    });
+  });
+});
+
 describe('month to date reads dormancy at D, not at today', () => {
   const today = plainDate('2026-09-18');
   const other = cash('other', 'Other', [

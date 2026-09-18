@@ -304,9 +304,11 @@ describe('dormancy is an episode with a start, not a flag (8.8, v2.1.17 30.20)',
   });
 
   describe('when the records contradict the episode, it asks for evidence instead of supplying a zero', () => {
-    // Neither state is reachable through a write — an episode starts on a zero
-    // balance and any non-zero balance after it ends it — so these pin what a
-    // defect on a write path would degrade into.
+    // No write leaves these states standing — an episode starts on a zero
+    // balance, and whatever contradicts it wakes the account. But a balance is
+    // written, corrected or deleted in one transaction and the wake follows in
+    // the next, so a read between the two sees exactly these rows, and a defect
+    // on a write path would leave them for good.
     it('has no balance on or before the date', () => {
       expect(isDormantZeroAt(account, [], on('2026-06-30'))).toBe(false);
       expect(cashCloseState(account, [], month(6))).toBe('missing');
@@ -318,6 +320,61 @@ describe('dormancy is an episode with a start, not a flag (8.8, v2.1.17 30.20)',
       expect(cashCloseState(account, contradicted, month(5))).toBe('carried');
       // April is still before the contradiction, and still covered.
       expect(cashCloseState(account, contradicted, month(4))).toBe('dormant_zero');
+    });
+
+    describe('has only a zero balance from before the episode', () => {
+      // Zero on 31 January, money through the account in February, zero again
+      // on 31 March and dormant from there — and then the March balance is
+      // deleted. Until the wake that follows commits, the account is dormant
+      // from 31 March with January's zero as its latest balance. That zero
+      // predates the episode and says nothing about it: February is why.
+      const stale = [monthEnd('d4', '2026-01-31', '0')];
+      const orphaned = position('Anchor deleted', { id: 'd4', dormantFrom: '2026-03-31' });
+
+      it('never lets a balance dated before `dormantFrom` stand as the episode’s evidence', () => {
+        expect(isDormantZeroAt(orphaned, stale, on('2026-03-31'))).toBe(false);
+        expect(isDormantZeroAt(orphaned, stale, on('2026-04-30'))).toBe(false);
+      });
+
+      it('so the month is carried, never `dormant_zero`', () => {
+        expect(cashCloseState(orphaned, stale, month(4))).toBe('carried');
+        expect(cashMonthState(orphaned, stale, month(5))).toMatchObject({
+          open: 'carried',
+          close: 'carried',
+          included: false,
+        });
+      });
+
+      it('and the same rows with the anchor balance in place are carried at zero as before', () => {
+        const intact = [...stale, monthEnd('d4', '2026-03-31', '0')];
+        expect(isDormantZeroAt(orphaned, intact, on('2026-03-31'))).toBe(true);
+        expect(isDormantZeroAt(orphaned, intact, on('2026-04-30'))).toBe(true);
+        expect(cashCloseState(orphaned, intact, month(4))).toBe('dormant_zero');
+      });
+
+      it('takes a later zero inside the episode as evidence from its own date, and moves no start', () => {
+        // A zero recorded while the account was dormant is a balance observed
+        // inside the episode. It supports the dates it is the latest balance
+        // for; it does not reach back to the missing anchor, and `dormantFrom`
+        // is not re-read from it.
+        const later = [...stale, monthEnd('d4', '2026-06-30', '0')];
+        expect(isDormantZeroAt(orphaned, later, on('2026-05-31'))).toBe(false);
+        expect(isDormantZeroAt(orphaned, later, on('2026-07-31'))).toBe(true);
+      });
+    });
+
+    it('reads dormancy from the flag and the date together, never from a stray date', () => {
+      // The database refuses the flag without the date and the date without
+      // the flag; this type does not, so the engine must not infer an episode
+      // from half of one.
+      const dated = position('Stray date', { id: 'd5', dormantFrom: '2026-03-31' });
+      const zero = [monthEnd('d5', '2026-03-31', '0')];
+      const { isDormant: _flag, ...unflagged } = dated;
+
+      expect(isDormantZeroAt(dated, zero, on('2026-04-30'))).toBe(true);
+      expect(isDormantZeroAt({ ...dated, isDormant: false }, zero, on('2026-04-30'))).toBe(false);
+      expect(isDormantZeroAt(unflagged, zero, on('2026-04-30'))).toBe(false);
+      expect(cashCloseState({ ...dated, isDormant: false }, zero, month(4))).toBe('carried');
     });
   });
 });

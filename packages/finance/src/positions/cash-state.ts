@@ -85,10 +85,23 @@ export function lastDaySnapshot(
  * current episode rests on, and only a date on or after it is covered. Before
  * it the ordinary `carried`/`missing` rules apply, as for any other account.
  *
- * The second condition is one the write rules already guarantee — an episode
- * starts on a zero balance, and any non-zero balance after it ends it. It is
- * stated anyway so that a defect on a write path degrades into a request for
+ * And the zero has to be **the episode's own evidence**: the latest balance on
+ * or before `date` must exist, be exactly zero, and be dated on or after
+ * `dormantFrom`. A balance from before the episode cannot support it, however
+ * zero it is — money may have moved through the account between that balance
+ * and the episode's start, which is the very thing the start date records.
+ *
+ * The write rules keep all of this true at rest: an episode starts on a zero
+ * balance, and a non-zero balance after it, or deleting or re-dating the
+ * balance it rests on, ends it. But a balance is written in one transaction and
+ * the wake follows in the next, so a read in between can find an episode whose
+ * anchor balance is already gone and an older zero as the latest row. That
+ * read, and any defect on a write path, must degrade into a request for
  * evidence and never into a zero nobody observed.
+ *
+ * Both fields are read, because this type can hold one without the other even
+ * though the database cannot: a date on an account that is not flagged dormant
+ * is not an episode.
  */
 export function isDormantZeroAt(
   position: PositionRecord,
@@ -96,8 +109,10 @@ export function isDormantZeroAt(
   date: PlainDate,
 ): boolean {
   const from = position.dormantFrom;
-  if (from === undefined || date < from) return false;
-  return latestOnOrBefore(valuations, date)?.amount.isZero() === true;
+  if (position.isDormant !== true || from === undefined || date < from) return false;
+
+  const latest = latestOnOrBefore(valuations, date);
+  return latest !== undefined && latest.valuedOn >= from && latest.amount.isZero();
 }
 
 /** `close(a, M)` exactly as 8.1 defines it, in the order 8.1 defines it. */
