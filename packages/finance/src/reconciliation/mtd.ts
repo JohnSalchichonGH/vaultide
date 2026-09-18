@@ -8,7 +8,7 @@ import {
   type PlainDate,
 } from '../dates/plain-date';
 import { currencyCode, type CurrencyCode } from '../money/types';
-import { cashCloseState, type CashOpenState } from '../positions/cash-state';
+import { cashCloseState, isDormantZeroAt, type CashOpenState } from '../positions/cash-state';
 import { valuationOn } from '../positions/valuation';
 import type { RoleLeg } from '../flows/roles';
 import { legsInRange, legsInScope, roleSums, scopeAccountIds, sumAmounts } from './scope';
@@ -56,7 +56,7 @@ export type MtdValueState =
   | 'snapshot'
   /** `closed_on ≤ D`: worth zero by definition. */
   | 'closed_zero'
-  /** Dormant and carried at zero (R22). */
+  /** The dormant episode covers `D`: carried at zero (R22, 30.20). */
   | 'dormant_zero'
   /** No evidence at `D`. Never part of the arithmetic. */
   | 'absent';
@@ -210,9 +210,11 @@ function structuralValueAt(
   account: CashAccountInput,
   d: PlainDate,
 ): 'closed_zero' | 'dormant_zero' | undefined {
-  const { closedOn, isDormant } = account.position;
+  const { closedOn } = account.position;
   if (closedOn !== null && closedOn <= d) return 'closed_zero';
-  if (isDormant === true) return 'dormant_zero';
+  // Asked of `d`, not of today: `D` may fall before the zero balance the
+  // episode starts from, and the account then owes a snapshot like any other.
+  if (isDormantZeroAt(account.position, account.valuations, d)) return 'dormant_zero';
   return undefined;
 }
 
@@ -338,7 +340,8 @@ function bucketOf(
         atAsOf,
         included,
         excludedFirstBalance: isExcluded,
-        dormant: account.position.isDormant === true,
+        // Dormant at `D`, which is what the row describes — not dormant today.
+        dormant: isDormantZeroAt(account.position, account.valuations, asOf),
         snapshotRequired,
         // 30.13 item 11: only an account that owed a snapshot at `D` can have
         // had newer evidence that failed to move it.

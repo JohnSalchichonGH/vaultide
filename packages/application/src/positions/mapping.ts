@@ -40,6 +40,9 @@ export function toPositionRecord(row: PositionRow): PositionRecord {
     openedOn: row.openedOn === null ? null : plainDate(row.openedOn),
     closedOn: row.closedOn === null ? null : plainDate(row.closedOn),
     ...(row.isDormant === undefined ? {} : { isDormant: row.isDormant }),
+    ...(row.dormantFrom === undefined || row.dormantFrom === null
+      ? {}
+      : { dormantFrom: plainDate(row.dormantFrom) }),
     ...(row.includeInFinancialNetWorth === undefined
       ? {}
       : { includeInFinancialNetWorth: row.includeInFinancialNetWorth }),

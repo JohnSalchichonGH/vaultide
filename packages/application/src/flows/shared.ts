@@ -1,7 +1,7 @@
 import {
+  clearCashDormancyIn,
   findPosition,
   hasParticipatingCashAccount,
-  updateCashDormantFlagIn,
   type Database,
   type PositionRecord as PositionRow,
   type Transaction,
@@ -153,12 +153,7 @@ export async function clearDormancyForFlowIn(
     // A null leg attributes to no account, so it clears nothing.
     if (positionId === null || seen.has(positionId)) continue;
     seen.add(positionId);
-    await updateCashDormantFlagIn(
-      tx,
-      { userId: ctx.userId, requestId: ctx.requestId },
-      positionId,
-      false,
-    );
+    await clearCashDormancyIn(tx, { userId: ctx.userId, requestId: ctx.requestId }, positionId);
   }
 }
 

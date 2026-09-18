@@ -32,7 +32,7 @@ function account(
   id: string,
   name: string,
   valuations: CashAccountInput['valuations'],
-  options: { currency?: string; openedOn?: string; closedOn?: string; isDormant?: boolean } = {},
+  options: { currency?: string; openedOn?: string; closedOn?: string; dormantFrom?: string } = {},
 ): CashAccountInput {
   return {
     position: position(name, {
@@ -40,7 +40,7 @@ function account(
       currency: options.currency ?? 'EUR',
       ...(options.openedOn === undefined ? {} : { openedOn: options.openedOn }),
       ...(options.closedOn === undefined ? {} : { closedOn: options.closedOn, status: 'closed' }),
-      ...(options.isDormant === undefined ? {} : { isDormant: options.isDormant }),
+      ...(options.dormantFrom === undefined ? {} : { dormantFrom: options.dormantFrom }),
     }),
     valuations,
     accountType: 'checking',
@@ -255,7 +255,7 @@ describe('E — a dormant account needs no snapshot', () => {
       input({
         cashAccounts: [
           account(A, 'BBVA', [opening(A, '1000'), snap(A, '2026-09-06', '1000')]),
-          account(B, 'Old account', [valuation(B, '2026-01-01', '0')], { isDormant: true }),
+          account(B, 'Old account', [valuation(B, '2026-01-01', '0')], { dormantFrom: '2026-01-01' }),
         ],
       }),
     );
@@ -335,7 +335,7 @@ describe('I — every included account structurally zero', () => {
       input({
         cashAccounts: [
           account(A, 'Closed', [opening(A, '0')], { closedOn: '2026-09-02' }),
-          account(B, 'Dormant', [valuation(B, '2026-01-01', '0')], { isDormant: true }),
+          account(B, 'Dormant', [valuation(B, '2026-01-01', '0')], { dormantFrom: '2026-01-01' }),
         ],
       }),
     );
@@ -802,7 +802,7 @@ describe('S — which accounts count as having newer balances', () => {
           account('dormant', 'Dormant', [
             valuation('dormant', '2026-01-01', '0'),
             snap('dormant', '2026-09-09', '0'),
-          ], { isDormant: true }),
+          ], { dormantFrom: '2026-01-01' }),
           // Opened after D: was not part of the interval at all.
           account('later', 'Opened later', [snap('later', '2026-09-09', '40')], {
             openedOn: '2026-09-08',

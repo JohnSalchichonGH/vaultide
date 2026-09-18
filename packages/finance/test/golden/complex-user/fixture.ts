@@ -23,9 +23,10 @@ export const REPORTING = 'EUR';
 
 const bbva = position('BBVA checking', { id: 'cx-bbva', currency: 'EUR' });
 
-/** Emptied and left open. Dormant accounts carry at zero without a monthly
- *  confirmation — the only automatic carry there is (R22, 8.1). */
-const oldBank = position('Old bank', { id: 'cx-old', currency: 'EUR', isDormant: true });
+/** Emptied on 30 June and left open. A dormant account carries at zero without
+ *  a monthly confirmation — the only automatic carry there is — from the zero
+ *  balance its episode rests on (R22, 8.1, 30.20). */
+const oldBank = position('Old bank', { id: 'cx-old', currency: 'EUR', dormantFrom: '2026-06-30' });
 
 /** Emptied and closed on 20 August: it contributes nothing after that (12.1). */
 const closedSavings = position('Closed savings', {

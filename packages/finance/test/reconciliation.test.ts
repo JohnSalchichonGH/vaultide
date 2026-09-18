@@ -37,7 +37,7 @@ function account(
   id: string,
   name: string,
   valuations: CashAccountInput['valuations'],
-  options: { currency?: string; openedOn?: string; closedOn?: string; isDormant?: boolean } = {},
+  options: { currency?: string; openedOn?: string; closedOn?: string; dormantFrom?: string } = {},
   accountType = 'checking',
 ): CashAccountInput {
   return {
@@ -46,7 +46,7 @@ function account(
       currency: options.currency ?? 'EUR',
       ...(options.openedOn === undefined ? {} : { openedOn: options.openedOn }),
       ...(options.closedOn === undefined ? {} : { closedOn: options.closedOn, status: 'closed' }),
-      ...(options.isDormant === undefined ? {} : { isDormant: options.isDormant }),
+      ...(options.dormantFrom === undefined ? {} : { dormantFrom: options.dormantFrom }),
     }),
     valuations,
     accountType,
@@ -466,7 +466,7 @@ describe('endpoint evidence', () => {
             monthEnd(BBVA, '2026-09-30', '100'),
           ]),
           account(SAVINGS, 'Old account', [valuation(SAVINGS, '2026-01-01', '0')], {
-            isDormant: true,
+            dormantFrom: '2026-01-01',
           }),
         ],
       }),

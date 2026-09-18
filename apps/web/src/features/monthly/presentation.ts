@@ -227,6 +227,24 @@ export const STATUS_MEANING: Readonly<Record<ReconciliationStatusDto, string>> =
   unresolved: 'The records and the balances contradict each other; see the issues.',
 };
 
+/**
+ * The completed month's status line.
+ *
+ * `STATUS_MEANING` for every month but one. A month no cash account took part
+ * in has no bucket at all (8.4, v2.1.17 30.20), so "at least one currency cannot
+ * be reconciled; see the issues" describes a currency and an issue that do not
+ * exist. It is unavailable for a plainer reason, and says so.
+ */
+export function completedStatusMeaning(
+  status: ReconciliationStatusDto,
+  bucketCount: number,
+  monthName: string,
+): string {
+  return bucketCount === 0
+    ? `No cash account took part in ${monthName}, so there is no tracked spending figure.`
+    : STATUS_MEANING[status];
+}
+
 /** Why one bucket could not be reconciled, as far as its own evidence says. */
 export type UnavailableCause =
   | 'missing_opening'

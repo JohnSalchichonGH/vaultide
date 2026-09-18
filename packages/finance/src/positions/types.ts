@@ -56,9 +56,17 @@ export interface PositionRecord {
   readonly openedOn: PlainDate | null;
   readonly closedOn: PlainDate | null;
   /**
-   * Cash only: carried at zero without a monthly confirmation (R22, 8.1).
+   * Cash only: the account is dormant **now** (R22, 8.8). Present-tense, and
+   * therefore not evidence about any earlier date; the engines read
+   * `dormantFrom` for that.
    */
   readonly isDormant?: boolean;
+  /**
+   * Cash only: where the current dormant episode starts — the date of the zero
+   * balance that justified it, absent when the account is not dormant (8.8,
+   * v2.1.17 30.20). A structural zero is permitted only on or after it.
+   */
+  readonly dormantFrom?: PlainDate;
   /**
    * Other assets only, and **the only inclusion preference that exists**
    * (M15, R18). It moves an asset in and out of *financial* net worth. It can

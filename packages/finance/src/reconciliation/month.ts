@@ -12,6 +12,7 @@ import { currencyCode, type CurrencyCode } from '../money/types';
 import {
   cashCloseState,
   cashOpenState,
+  isDormantZeroAt,
   monthEndBalance,
   participatesIn,
 } from '../positions/cash-state';
@@ -138,7 +139,10 @@ function accountMonthOf(account: CashAccountInput, month: MonthKey): AccountMont
       },
       included,
       excludedFirstBalance: open === 'first_balance',
-      dormant: account.position.isDormant === true,
+      // 8.4's "dormant, carried at 0" is a fact about this month's end, so it
+      // is asked of that date: an account marked dormant since is not dormant
+      // in a month its episode does not reach (30.20).
+      dormant: isDormantZeroAt(account.position, account.valuations, endOfMonthKey(month)),
     },
     openingAmount: opening.amount,
     closingAmount: closing.amount,
@@ -418,6 +422,13 @@ export function reconcileCompletedMonth(input: CompletedMonthInput): MonthReconc
   return {
     month: input.month,
     buckets,
-    monthStatus: worstStatus(buckets.map((bucket) => bucket.status)),
+    // 8.4, v2.1.17 30.20 items 10–11: a month with no bucket — no cash account
+    // took part and no null-leg flow is dated in it — observed no tracked-cash
+    // interval. The worst of no statuses would read `reliable`, and a reliable
+    // nothing is a zero nobody measured: it is what put the months before a user
+    // began tracking into their rolling averages. The same ruling as 8.6's empty
+    // inclusion set and 8.7's empty span, and no new status.
+    monthStatus:
+      buckets.length === 0 ? 'unavailable' : worstStatus(buckets.map((bucket) => bucket.status)),
   };
 }

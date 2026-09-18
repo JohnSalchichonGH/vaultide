@@ -7,6 +7,7 @@ import {
   cashMonthState,
   cashOpenState,
   firstValuation,
+  isDormantZeroAt,
   isMonthClosable,
   lastDaySnapshot,
   latestOnOrBefore,
@@ -184,10 +185,15 @@ describe('cash month states (8.1)', () => {
   });
 
   it('carries a dormant account at zero, and only a dormant one', () => {
-    const dormant = position('Old bank', { id: 'c3', isDormant: true });
+    // Emptied on 31 March, dormant since: August needs no statement.
+    const rows = [valuation('c3', '2026-03-31', '0')];
+    const dormant = position('Old bank', { id: 'c3', dormantFrom: '2026-03-31' });
     const ordinary = position('Old bank', { id: 'c4' });
-    expect(cashCloseState(dormant, [], august)).toBe('dormant_zero');
-    expect(cashCloseState(ordinary, [], august)).toBe('missing');
+    expect(cashCloseState(dormant, rows, august)).toBe('dormant_zero');
+    expect(cashOpenState(dormant, rows, august)).toBe('dormant_zero');
+    expect(cashMonthState(dormant, rows, august).included).toBe(true);
+    // The same zero balance on an account nobody called dormant is only carried.
+    expect(cashCloseState(ordinary, [valuation('c4', '2026-03-31', '0')], august)).toBe('carried');
   });
 
   it('closes at zero for an account closed inside the month', () => {
@@ -239,6 +245,80 @@ describe('cash month states (8.1)', () => {
     expect(participatesIn(openedLater, august)).toBe(false);
     expect(participatesIn(closedEarlier, august)).toBe(false);
     expect(participatesIn(live, august)).toBe(true);
+  });
+});
+
+describe('dormancy is an episode with a start, not a flag (8.8, v2.1.17 30.20)', () => {
+  /**
+   * Held 5,000 through January, has no February statement, was emptied in
+   * March and is dormant today. The flag is present-tense; read as history it
+   * closed February at zero and reported 5,000 as that month's spending.
+   */
+  const rows = [monthEnd('d1', '2026-01-31', '5000'), monthEnd('d1', '2026-03-31', '0')];
+  const account = position('Savings', { id: 'd1', dormantFrom: '2026-03-31' });
+  const month = (value: number) => monthKeyOf(2026, value);
+
+  it('leaves a month before the episode to ordinary evidence, however dormant the account is now', () => {
+    expect(cashCloseState(account, rows, month(2))).toBe('carried');
+    expect(cashMonthState(account, rows, month(2))).toMatchObject({
+      open: 'month_end',
+      close: 'carried',
+      included: false,
+    });
+    // March opens on February's close, which is still not a value.
+    expect(cashOpenState(account, rows, month(3))).toBe('carried');
+    expect(cashCloseState(account, rows, month(3))).toBe('month_end');
+  });
+
+  it('carries zero from the episode’s own date onward', () => {
+    expect(cashOpenState(account, rows, month(4))).toBe('month_end');
+    expect(cashCloseState(account, rows, month(4))).toBe('dormant_zero');
+    expect(cashMonthState(account, rows, month(5))).toMatchObject({
+      open: 'dormant_zero',
+      close: 'dormant_zero',
+      included: true,
+    });
+  });
+
+  it('never reads "no balance yet" as zero', () => {
+    // Nothing is known on or before 31 December; the first balance comes later.
+    expect(cashCloseState(account, rows, monthKeyOf(2025, 12))).toBe('missing');
+  });
+
+  it('starts on the day of the zero balance, whichever precision it has', () => {
+    const snapshot = [monthEnd('d2', '2026-01-31', '700'), valuation('d2', '2026-02-12', '0')];
+    const emptied = position('Emptied mid-month', { id: 'd2', dormantFrom: '2026-02-12' });
+    expect(isDormantZeroAt(emptied, snapshot, on('2026-02-11'))).toBe(false);
+    expect(isDormantZeroAt(emptied, snapshot, on('2026-02-12'))).toBe(true);
+    expect(cashCloseState(emptied, snapshot, month(2))).toBe('dormant_zero');
+  });
+
+  it('lets a statement balance speak for itself inside the episode', () => {
+    const withStatement = [...rows, monthEnd('d1', '2026-04-30', '0')];
+    expect(cashCloseState(account, withStatement, month(4))).toBe('month_end');
+  });
+
+  it('is not dormant at all without a date, and an account that is not dormant has none', () => {
+    const ordinary = position('Ordinary', { id: 'd3' });
+    expect(isDormantZeroAt(ordinary, [valuation('d3', '2026-01-31', '0')], on('2026-06-30'))).toBe(false);
+  });
+
+  describe('when the records contradict the episode, it asks for evidence instead of supplying a zero', () => {
+    // Neither state is reachable through a write — an episode starts on a zero
+    // balance and any non-zero balance after it ends it — so these pin what a
+    // defect on a write path would degrade into.
+    it('has no balance on or before the date', () => {
+      expect(isDormantZeroAt(account, [], on('2026-06-30'))).toBe(false);
+      expect(cashCloseState(account, [], month(6))).toBe('missing');
+    });
+
+    it('has a non-zero latest balance on or before the date', () => {
+      const contradicted = [...rows, valuation('d1', '2026-05-10', '250')];
+      expect(isDormantZeroAt(account, contradicted, on('2026-05-31'))).toBe(false);
+      expect(cashCloseState(account, contradicted, month(5))).toBe('carried');
+      // April is still before the contradiction, and still covered.
+      expect(cashCloseState(account, contradicted, month(4))).toBe('dormant_zero');
+    });
   });
 });
 

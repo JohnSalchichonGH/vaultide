@@ -300,9 +300,11 @@ describe('a completed month, from real rows', () => {
       on('2026-10-01', USER_B),
       SEPTEMBER,
     );
-    // No positions, no flows: no bucket at all, rather than someone else's.
+    // No positions, no flows: no bucket at all, rather than someone else's. And
+    // a month that observed no tracked cash is unavailable — the worst of no
+    // statuses is not `reliable` (8.4, v2.1.17 30.20).
     expect(result.buckets).toEqual([]);
-    expect(result.status).toBe('reliable');
+    expect(result.status).toBe('unavailable');
   });
 
   it('refuses a month that is not over', async () => {

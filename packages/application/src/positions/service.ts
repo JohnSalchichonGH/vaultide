@@ -2,12 +2,19 @@ import {
   countValuations,
   deletePosition,
   findLatestValuation,
+  findLatestValuationIn,
   findPosition,
   insertCashAccount,
   insertOtherAsset,
+  latestAttributedFlowDateIn,
+  lockCashPositionsIn,
   updatePosition,
+  updatePositionIn,
+  withUser,
+  type CashAccountPatch,
   type Database,
   type PositionRecord as PositionRow,
+  type Transaction,
 } from '@vaultide/db';
 import { Decimal, plainDate } from '@vaultide/finance';
 import { usableCurrencyCodes } from '../currencies/service';
@@ -198,45 +205,87 @@ export interface UpdateCashAccountArgs {
   readonly isDormant?: boolean | undefined;
 }
 
+/**
+ * What an edit does to the account's dormant episode (8.8, v2.1.17 30.20).
+ *
+ * Only a **transition** writes anything. The account form sends the checkbox
+ * with every save, so a rename of a dormant account arrives saying "dormant"
+ * again; that must not move the date the episode starts from.
+ *
+ * Starting an episode needs evidence, read here from rows the caller has
+ * already locked: the latest balance on or before today must be exactly zero,
+ * and no attributed flow may be dated after it — a zero that money has since
+ * moved past says nothing about the account now. A flow dated the same day is
+ * already reflected in that balance (8.1). The episode starts on that balance's
+ * date, not today: the carry is a statement about the balance, so it begins
+ * where the balance is known.
+ */
+async function dormancyTransitionIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  existing: PositionRow,
+  requested: boolean | undefined,
+): Promise<CashAccountPatch['dormancy']> {
+  if (requested === undefined || requested === (existing.isDormant === true)) return undefined;
+  if (!requested) return { isDormant: false, dormantFrom: null };
+
+  const latest = await findLatestValuationIn(tx, existing.id, ctx.today);
+  if (latest === undefined || !new Decimal(latest.amount).isZero()) {
+    throw new ImpossibleOperationError(
+      'An account can only be marked dormant once its balance is exactly zero. Record a zero balance first, or transfer what is left.',
+    );
+  }
+
+  const lastActivity = await latestAttributedFlowDateIn(tx, existing.id);
+  if (lastActivity !== undefined && lastActivity > latest.valuedOn) {
+    throw new ImpossibleOperationError(
+      `Money has moved through this account since its last balance, which is zero on ${latest.valuedOn}. Record a zero balance dated ${lastActivity} or later first, and then mark it dormant.`,
+    );
+  }
+
+  return { isDormant: true, dormantFrom: latest.valuedOn };
+}
+
 export async function updateCashAccount(
   deps: PositionDependencies,
   ctx: RequestContext,
   args: UpdateCashAccountArgs,
 ): Promise<PositionRow> {
-  const existing = await requirePosition(deps, ctx, args.positionId);
-  if (existing.kind !== 'cash') throw new NotFoundError('That account no longer exists.');
+  // One transaction, over the locked account (20.3, 30.20 item 5). The evidence
+  // for a dormant episode and the write that starts it must not come apart: a
+  // flow recorded between a check made out here and the update would leave an
+  // account dormant on a zero it had already moved past. `lockCashPositionsIn`
+  // holds the `positions` row a flow's foreign key needs and the `cash_accounts`
+  // row a wake locks, so such a flow either commits before the evidence is read
+  // or waits, and then wakes the account.
+  const updated = await withUser(deps.db, { userId: ctx.userId }, async (tx) => {
+    // Another user's id, a nonexistent one and a position of another kind are
+    // all simply absent from the locked set, and read the same (17.2, 17.3).
+    const [existing] = await lockCashPositionsIn(tx, [args.positionId]);
+    if (existing === undefined) throw new NotFoundError('That account no longer exists.');
 
-  if (args.isDormant === true) {
-    // 6.2: dormant is settable only while the latest balance is exactly zero.
-    // Otherwise a forgotten flag would assert "still zero" about an account
-    // that is not, and carry it silently through every month (R22).
-    const latest = await findLatestValuation(deps.db, ctx.userId, args.positionId, ctx.today);
-    if (latest === undefined || !new Decimal(latest.amount).isZero()) {
-      throw new ImpossibleOperationError(
-        'An account can only be marked dormant once its balance is exactly zero. Record a zero balance first, or transfer what is left.',
-      );
-    }
-  }
+    const dormancy = await dormancyTransitionIn(tx, ctx, existing, args.isDormant);
 
-  const updated = await updatePosition(
-    deps.db,
-    { userId: ctx.userId, requestId: ctx.requestId },
-    args.positionId,
-    args.expectedVersion,
-    {
-      ...(args.name === undefined ? {} : { name: args.name }),
-      ...(args.notes === undefined ? {} : { notes: args.notes }),
-    },
-    {
-      cash: {
-        ...(args.accountType === undefined
-          ? {}
-          : { accountType: args.accountType }),
-        ...(args.institution === undefined ? {} : { institution: args.institution }),
-        ...(args.isDormant === undefined ? {} : { isDormant: args.isDormant }),
+    return updatePositionIn(
+      tx,
+      { userId: ctx.userId, requestId: ctx.requestId },
+      args.positionId,
+      args.expectedVersion,
+      {
+        ...(args.name === undefined ? {} : { name: args.name }),
+        ...(args.notes === undefined ? {} : { notes: args.notes }),
       },
-    },
-  );
+      {
+        cash: {
+          ...(args.accountType === undefined
+            ? {}
+            : { accountType: args.accountType }),
+          ...(args.institution === undefined ? {} : { institution: args.institution }),
+          ...(dormancy === undefined ? {} : { dormancy }),
+        },
+      },
+    );
+  });
 
   if (updated === undefined) throw new VersionConflictError();
   return updated;

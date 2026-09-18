@@ -158,10 +158,15 @@ async function auditBefore(entityId: string, action: 'update' | 'delete'): Promi
   });
 }
 
-async function makeDormant(positionId: string): Promise<void> {
+/**
+ * A dormant episode rests on a zero balance that no attributed flow post-dates
+ * (8.8, v2.1.17 30.20), so an account that has already taken part in a transfer
+ * needs its zero dated on or after that transfer.
+ */
+async function makeDormant(positionId: string, zeroOn = '2026-09-01'): Promise<void> {
   await recordValuation(harness.services.positions, SEPT_15, {
     positionId,
-    valuedOn: '2026-09-01',
+    valuedOn: zeroOn,
     amount: '0',
     datePrecision: 'exact',
   });
@@ -1009,7 +1014,8 @@ describe('the fee’s lifecycle inside a correction', () => {
 
   it('rolls the transfer and fee writes back when the dormancy clear cannot be written', async () => {
     const saved = await eurTransfer();
-    await makeDormant(savings);
+    // The transfer is dated the 5th; a zero from the 1st would be stale.
+    await makeDormant(savings, '2026-09-06');
     const [transferBefore, feesBefore] = [await storedTransfer(saved.transfer.id), await feesOf(saved.transfer.id)];
 
     await withBlockedWrite('cash_accounts', 'UPDATE', async () => {

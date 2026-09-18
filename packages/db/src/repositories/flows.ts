@@ -1,4 +1,4 @@
-import { and, asc, between, eq, getTableColumns, isNotNull } from 'drizzle-orm';
+import { and, asc, between, eq, getTableColumns, isNotNull, sql } from 'drizzle-orm';
 import { expenseEntries } from '../schema/expense-entries';
 import { incomeEntries } from '../schema/income-entries';
 import { transfers } from '../schema/transfers';
@@ -701,4 +701,41 @@ export async function listTransfers(
       .where(between(transfers.occurredOn, from, to))
       .orderBy(asc(transfers.occurredOn), asc(transfers.id)),
   );
+}
+
+/* ------------------------------------------------------------------------- */
+/* Attributed activity                                                        */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * The latest date on which any flow is attributed to this cash account, or
+ * `undefined` when none is (blueprint 8.8, v2.1.17 30.20 item 5).
+ *
+ * An **attributed** flow is 8.8's: an income or an expense whose cash position
+ * is the account — a transfer fee is such an expense, so it needs no case of its
+ * own — or a transfer with the account on either side. A null-leg flow names no
+ * account and is not one.
+ *
+ * It answers one question, for one writer: may this account's latest zero
+ * balance start a dormant episode, or has money moved through it since? That is
+ * a date comparison, so this returns a date — one statement, no rows loaded, no
+ * balance reconstructed. It takes the caller's transaction because the answer
+ * is only worth having while the account's rows are locked.
+ */
+export async function latestAttributedFlowDateIn(
+  tx: Transaction,
+  positionId: string,
+): Promise<string | undefined> {
+  const result = await tx.execute<{ latest: string | null }>(sql`
+    SELECT max(d)::text AS latest FROM (
+      SELECT max(received_on) AS d FROM income_entries WHERE cash_position_id = ${positionId}
+      UNION ALL
+      SELECT max(incurred_on) FROM expense_entries WHERE cash_position_id = ${positionId}
+      UNION ALL
+      SELECT max(occurred_on) FROM transfers WHERE from_position_id = ${positionId}
+      UNION ALL
+      SELECT max(occurred_on) FROM transfers WHERE to_position_id = ${positionId}
+    ) AS activity
+  `);
+  return result.rows[0]?.latest ?? undefined;
 }

@@ -7,6 +7,7 @@ import { createCashAccount } from '../../src/positions/service';
 import { recordValuation } from '../../src/positions/valuations';
 import { listCategories } from '../../src/users/categories';
 import { createExpenseEntry } from '../../src/flows/expenses';
+import { createIncomeEntry } from '../../src/flows/income';
 import { createTemplate } from '../../src/recurring/templates';
 import { readSettings, setCountAdditionalSpending } from '../../src/settings/service';
 import { parseMonth } from '../../src/reconciliation/service';
@@ -208,6 +209,58 @@ describe('the eleven months before the first display month', () => {
     expect(window6(june)).toEqual({ amount: '10', count: 6 });
     expect(window3(june)).toEqual({ amount: '10', count: 3 });
     expect(june.reportingCurrency).toBe('EUR');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* A2. Months before tracking began are not observations (30.20)               */
+/* -------------------------------------------------------------------------- */
+
+describe('a user who began tracking five months ago', () => {
+  it('averages the months that were observed, and no zero for the months that were not', async () => {
+    // The first account opens on 1 July with a 1,000 salary; every month from
+    // July to November then spends exactly 10. Before July there is no cash
+    // account, so no bucket, so nothing was observed — not a spending of zero.
+    const created = await createCashAccount(harness.services.positions, DEC_1, {
+      name: 'BBVA',
+      currency: 'EUR',
+      accountType: 'checking',
+      openedOn: '2026-07-01',
+    });
+    await createIncomeEntry(deps(), DEC_1, {
+      kind: 'employment',
+      receivedOn: '2026-07-05',
+      netAmount: '1000.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId: created.id,
+    });
+    await statementsEachMonth(created.id, '2026-07', '2026-11', 990, 10);
+
+    const series = await getCompletedReportingCashFlowSeries(readDeps(), DEC_1, range('2026-05', '2026-11'));
+    expect(series.map((month) => [month.month, month.monthStatus, month.trackedTotalSpending.availability])).toEqual([
+      ['2026-05', 'unavailable', 'unavailable'],
+      ['2026-06', 'unavailable', 'unavailable'],
+      ['2026-07', 'reliable', 'available'],
+      ['2026-08', 'reliable', 'available'],
+      ['2026-09', 'reliable', 'available'],
+      ['2026-10', 'reliable', 'available'],
+      ['2026-11', 'reliable', 'available'],
+    ]);
+    expect(series[0]?.trackedTotalSpending.missing).toEqual([]);
+
+    const november = single(await getRollingTrackedSpendingSeries(readDeps(), DEC_1, range('2026-11', '2026-11')));
+    expect(window3(november)).toEqual({ amount: '10', count: 3 });
+    // June is in the six-month window and December 2025 … June 2026 in the
+    // twelve-month one. They keep their calendar seats and add nothing: the
+    // averages are over five observations, not six or twelve, and no earlier
+    // month is reached for to make up the number.
+    expect(window6(november)).toEqual({ amount: '10', count: 5 });
+    expect(window12(november)).toEqual({ amount: '10', count: 5 });
+
+    // A window that lies wholly before tracking has no average, not a zero one.
+    const june = single(await getRollingTrackedSpendingSeries(readDeps(), DEC_1, range('2026-06', '2026-06')));
+    expect([june.rolling3, june.rolling6, june.rolling12]).toEqual([null, null, null]);
   });
 });
 

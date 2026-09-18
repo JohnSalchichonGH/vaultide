@@ -25,7 +25,7 @@ function account(
   id: string,
   name: string,
   valuations: CashAccountInput['valuations'],
-  options: { currency?: string; openedOn?: string; closedOn?: string; isDormant?: boolean } = {},
+  options: { currency?: string; openedOn?: string; closedOn?: string; dormantFrom?: string } = {},
 ): CashAccountInput {
   return {
     position: position(name, {
@@ -33,7 +33,7 @@ function account(
       currency: options.currency ?? 'EUR',
       ...(options.openedOn === undefined ? {} : { openedOn: options.openedOn }),
       ...(options.closedOn === undefined ? {} : { closedOn: options.closedOn, status: 'closed' }),
-      ...(options.isDormant === undefined ? {} : { isDormant: options.isDormant }),
+      ...(options.dormantFrom === undefined ? {} : { dormantFrom: options.dormantFrom }),
     }),
     valuations,
     accountType: 'checking',
@@ -396,7 +396,7 @@ describe('I and J — structural zeros at an anchor', () => {
             ['2026-08-31', '1000'],
             ['2026-11-30', '900'],
           ]),
-          account(B, 'Old account', [valuation(B, '2026-01-01', '0')], { isDormant: true }),
+          account(B, 'Old account', [valuation(B, '2026-01-01', '0')], { dormantFrom: '2026-01-01' }),
         ],
       }),
     );

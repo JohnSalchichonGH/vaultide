@@ -19,6 +19,7 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn(), push: 
 
 const {
   STATUS_MEANING,
+  completedStatusMeaning,
   completenessMeaning,
   dayTitle,
   isEditableTarget,
@@ -205,6 +206,27 @@ describe('what an incomplete figure says', () => {
     expect(html).toContain('Unavailable');
     expect(html).toContain('a month-end balance is missing');
     expect(html).not.toContain('0.00');
+  });
+
+  it('shows a figure of a month nobody observed as a dash, with no missing currency to blame', () => {
+    // 8.4, 12.5, v2.1.17 30.20: no cash account took part, so nothing is missing —
+    // there was no observation. The month's own status line says why.
+    const html = render(amount({ availability: 'unavailable', missing: [] }));
+    expect(html).toContain('Unavailable');
+    expect(html).not.toContain('Why:');
+    expect(html).not.toContain('0.00');
+    expect(savingsRateReason('not_applicable', 'no cash account took part in this month')).toBe(
+      'No cash account took part in this month.',
+    );
+  });
+
+  it('says why a month with no bucket is unavailable, instead of pointing at issues it does not have', () => {
+    expect(completedStatusMeaning('unavailable', 0, 'March 2026')).toBe(
+      'No cash account took part in March 2026, so there is no tracked spending figure.',
+    );
+    // Every other month keeps the status's own meaning.
+    expect(completedStatusMeaning('unavailable', 1, 'March 2026')).toBe(STATUS_MEANING.unavailable);
+    expect(completedStatusMeaning('reliable', 2, 'March 2026')).toBe(STATUS_MEANING.reliable);
   });
 
   it('shows a partial figure with its amount and what is not inside it', () => {

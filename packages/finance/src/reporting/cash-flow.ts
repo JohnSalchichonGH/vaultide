@@ -1,10 +1,12 @@
-import type { Decimal } from '../decimal';
+import { Decimal } from '../decimal';
 import { endOfMonthKey } from '../dates/plain-date';
 import { convert } from '../fx/convert';
 import type { FxTable } from '../fx/types';
+import { money } from '../money/money';
 import type { CurrencyCode } from '../money/types';
 import { isUnavailable, unavailable, type Unavailable } from '../unavailable';
 import {
+  EXACT_PROVENANCE,
   addAmounts,
   missingAmount,
   statedAmount,
@@ -190,6 +192,81 @@ export function reportSourceOnly(
     reportingCurrency: input.reportingCurrency,
     additionalSpending: field('additionalSpending'),
     thirdPartyPaid: field('thirdPartyPaid'),
+  };
+}
+
+/**
+ * A tracked figure of a month in which no tracked cash was observed.
+ *
+ * `unavailable`, with **nothing missing**. `missing` names contributions that
+ * exist and could not be stated — a currency with no rate, a bucket with no
+ * residual. Here there is no such contribution: no cash account took part, so
+ * no tracked scope exists for the figure to be a sum over, and inventing a
+ * missing currency to fill the list would report a gap that is not there. The
+ * value is the type's placeholder and is never a figure; `unavailable` is what
+ * a reader acts on.
+ *
+ * Private, and never an operand. `aggregate`'s algebra decides availability from
+ * the missing list, so an amount that is unavailable with an empty list would
+ * come out of `addAmounts` looking complete. It is only ever a finished figure.
+ */
+function unobservedAmount(reporting: CurrencyCode): ReportingAmount {
+  return {
+    value: money(new Decimal(0), reporting),
+    availability: 'unavailable',
+    missing: [],
+    statedCount: 0,
+    provenance: EXACT_PROVENANCE,
+  };
+}
+
+export interface UnobservedMonthReportingInput extends SourceOnlyReportingInput {
+  /** Carried through so a reader can label the (unavailable) rate as usual. */
+  readonly countAdditionalSpending: boolean;
+}
+
+/**
+ * A **completed** month with no reconciliation bucket (8.4, 12.5, v2.1.17 30.20
+ * items 10–12): no cash account took part in it and no null-leg flow is dated in
+ * it, so no tracked-cash interval was observed.
+ *
+ * Every figure 12.5 defines over the tracked scope is unavailable — not zero,
+ * and not partial. Summing an empty contribution list instead yields fifteen
+ * exact zeroes, a `TotalSpending` equal to the additional spending and a
+ * negative `PersonalSavings`: assertions a month nobody observed cannot make,
+ * and the zero tracked spending among them is what let months before a user
+ * began tracking into their rolling averages.
+ *
+ * The two untracked settlements carry no cash role and needed no tracked cash,
+ * so they are computed exactly as `reportSourceOnly` computes them for a current
+ * month with no `D`, and stand as their own facts. `TotalSpending` stays
+ * unavailable all the same: it exists only when tracked spending does (30.15
+ * item 1). The shape is `ReportingCashFlow`, so every reader of a completed
+ * month handles this one through the availability it already reads.
+ */
+export function reportUnobservedMonth(input: UnobservedMonthReportingInput): ReportingCashFlow {
+  const reporting = input.reportingCurrency;
+  const sourceOnly = reportSourceOnly(input);
+  const unobserved = unobservedAmount(reporting);
+
+  return {
+    reportingCurrency: reporting,
+    externalIncome: unobserved,
+    knownConsumption: unobserved,
+    propertyOperatingCosts: unobserved,
+    interestAndFees: unobserved,
+    transactionCosts: unobserved,
+    externalOutflows: unobserved,
+    unclassified: unobserved,
+    additionalSpending: sourceOnly.additionalSpending,
+    thirdPartyPaid: sourceOnly.thirdPartyPaid,
+    consumption: unobserved,
+    trackedTotalSpending: unobserved,
+    trackedSavingsFromIncome: unobserved,
+    personalSavings: unobserved,
+    totalSpending: unobserved,
+    savingsRate: unavailable('not_applicable', 'no cash account took part in this month'),
+    countsAdditionalSpending: input.countAdditionalSpending,
   };
 }
 

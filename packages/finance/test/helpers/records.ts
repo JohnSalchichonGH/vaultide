@@ -24,7 +24,12 @@ export interface PositionOptions {
   readonly status?: PositionRecord['status'];
   readonly openedOn?: string | null;
   readonly closedOn?: string | null;
-  readonly isDormant?: boolean;
+  /**
+   * Dormant, from this date: the zero balance the current episode rests on
+   * (8.8, 30.20). The flag and the date are one fact — the database refuses one
+   * without the other — so a fixture names the date and gets both.
+   */
+  readonly dormantFrom?: string;
   readonly includeInFinancialNetWorth?: boolean;
 }
 
@@ -41,7 +46,9 @@ export function position(name: string, options: PositionOptions = {}): PositionR
     closedOn: options.closedOn === undefined || options.closedOn === null
       ? null
       : plainDate(options.closedOn),
-    ...(options.isDormant === undefined ? {} : { isDormant: options.isDormant }),
+    ...(options.dormantFrom === undefined
+      ? {}
+      : { isDormant: true, dormantFrom: plainDate(options.dormantFrom) }),
     ...(options.includeInFinancialNetWorth === undefined
       ? {}
       : { includeInFinancialNetWorth: options.includeInFinancialNetWorth }),

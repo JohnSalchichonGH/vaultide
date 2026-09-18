@@ -408,6 +408,80 @@ describe('a currency with only untracked rows', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/* A completed month that observed no tracked cash (8.4, 12.5, 30.20)          */
+/* -------------------------------------------------------------------------- */
+
+describe('a completed month no cash account took part in', () => {
+  const TRACKED = [
+    'externalIncome',
+    'knownConsumption',
+    'propertyOperatingCosts',
+    'interestAndFees',
+    'transactionCosts',
+    'externalOutflows',
+    'unclassified',
+    'consumption',
+    'trackedTotalSpending',
+    'trackedSavingsFromIncome',
+    'personalSavings',
+    'totalSpending',
+  ] as const satisfies readonly (keyof ReportingCashFlowFiguresDto)[];
+
+  it('reports the two untracked settlements and no tracked figure — not even a zero', async () => {
+    // No cash account at all: 50 paid by the user from outside tracked cash, and
+    // 80 paid by somebody else. Summing nothing used to make this a reliable
+    // month with a tracked spending of 0, a total of 50 and savings of −50.
+    await expense(OCT_1, { kind: 'food', incurredOn: '2026-09-13', amount: '50.00', settlement: 'untracked_self' });
+    await expense(OCT_1, { kind: 'food', incurredOn: '2026-09-14', amount: '80.00', settlement: 'third_party' });
+
+    const result = await getMonthReportingCashFlow(readDeps(), OCT_1, SEPTEMBER);
+
+    expect(result.monthStatus).toBe('unavailable');
+    for (const key of TRACKED) {
+      // Unavailable, and naming no missing currency: none is missing.
+      expect(result[key]).toMatchObject({ availability: 'unavailable', missing: [] });
+    }
+    expect(result.additionalSpending).toMatchObject({ availability: 'available', value: { amount: '50', currency: 'EUR' } });
+    expect(result.thirdPartyPaid).toMatchObject({ availability: 'available', value: { amount: '80', currency: 'EUR' } });
+    expect(result.savingsRate).toMatchObject({ kind: 'unavailable', reason: 'not_applicable' });
+  });
+
+  it('is the month before the first account opened, as well as the month with no account', async () => {
+    const created = await createCashAccount(harness.services.positions, OCT_1, {
+      name: 'Opened later',
+      currency: 'EUR',
+      accountType: 'checking',
+      openedOn: '2026-09-20',
+    });
+    expect(created.openedOn).toBe('2026-09-20');
+
+    const august = await getMonthReportingCashFlow(readDeps(), OCT_1, parseMonth('2026-08'));
+    expect(august.monthStatus).toBe('unavailable');
+    expect(august.trackedTotalSpending).toMatchObject({ availability: 'unavailable', missing: [] });
+  });
+
+  it('lets a source-only figure answer for its own missing rate, and only that figure', async () => {
+    await expense(OCT_1, { kind: 'food', incurredOn: '2026-09-13', amount: '50.00', settlement: 'untracked_self', currency: 'GBP' });
+    await forgetRates();
+
+    const result = await getMonthReportingCashFlow(readDeps(), OCT_1, SEPTEMBER);
+    expect(result.additionalSpending.availability).toBe('unavailable');
+    expect(result.additionalSpending.missing[0]?.currency).toBe('GBP');
+    expect(result.trackedTotalSpending.missing).toEqual([]);
+  });
+
+  it('leaves a month that was observed at zero exactly what it was', async () => {
+    const a = await makeAccount('BBVA');
+    await statement(a, '2026-08-31', '1000.00');
+    await statement(a, '2026-09-30', '1000.00');
+
+    const result = await getMonthReportingCashFlow(readDeps(), OCT_1, SEPTEMBER);
+    expect(result.monthStatus).toBe('reliable');
+    expect(result.trackedTotalSpending).toMatchObject({ availability: 'available', value: { amount: '0' } });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /* The current month                                                          */
 /* -------------------------------------------------------------------------- */
 

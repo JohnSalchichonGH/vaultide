@@ -12,8 +12,8 @@ import {
   COMPLETENESS_LABEL,
   COMPLETENESS_TONE,
   STATUS_LABEL,
-  STATUS_MEANING,
   STATUS_TONE,
+  completedStatusMeaning,
   completenessMeaning,
   dayTitle,
   savingsRateReason,
@@ -207,7 +207,7 @@ export function CompletedOverview({
           <div className="flex flex-wrap items-center gap-3" data-testid="reconciliation-status">
             <Badge tone={STATUS_TONE[status]}>{STATUS_LABEL[status]}</Badge>
             <span className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">
-              {STATUS_MEANING[status]}
+              {completedStatusMeaning(status, reconciliation.buckets.length, monthName)}
             </span>
           </div>
           <IssueCounts issues={issues} />

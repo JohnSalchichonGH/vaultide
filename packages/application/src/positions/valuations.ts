@@ -1,5 +1,8 @@
 import {
+  clearCashDormancy,
   deleteValuation,
+  findLatestValuation,
+  findLatestValuationIn,
   findPosition,
   findValuation,
   findValuationOn,
@@ -11,7 +14,6 @@ import {
   listValuations,
   lockCashPositionsIn,
   quickUpdateValuations,
-  updateCashDormantFlag,
   updateValuation,
   withUser,
   QuickUpdateConflictError,
@@ -23,6 +25,7 @@ import {
   Decimal,
   addMonths,
   endOfMonthKey,
+  isDormantZeroAt,
   isMonthClosable,
   monthKey,
   monthKeyOf,
@@ -39,6 +42,7 @@ import {
   ValidationError,
   VersionConflictError,
 } from '../errors';
+import { toPositionRecord, toValuationRecord } from './mapping';
 import type { PositionDependencies } from './service';
 
 /**
@@ -172,8 +176,50 @@ async function clearDormantIfNonZero(
 ): Promise<void> {
   if (position.kind !== 'cash' || position.isDormant !== true) return;
   if (new Decimal(amount).isZero()) return;
-  await updateCashDormantFlag(db, { userId: ctx.userId, requestId: ctx.requestId }, position.id, false);
+  await clearCashDormancy(db, { userId: ctx.userId, requestId: ctx.requestId }, position.id);
 }
+
+/**
+ * Removing or re-dating the balance a dormant episode starts from ends the
+ * episode (8.8, v2.1.17 30.20 item 6).
+ *
+ * `dormant_from` is that balance's date, so once the row is gone from it the
+ * episode rests on a record that no longer exists. The account wakes, exactly
+ * as it does for any other conflicting record: no other zero is searched for
+ * and nothing is re-anchored, because only the user can say the account is
+ * dormant again — and marking it re-reads the evidence when they do.
+ */
+async function wakeIfAnchorRemoved(
+  db: Database,
+  ctx: RequestContext,
+  position: PositionRow,
+  removedFrom: string,
+): Promise<void> {
+  if (position.kind !== 'cash' || position.dormantFrom !== removedFrom) return;
+  await clearCashDormancy(db, { userId: ctx.userId, requestId: ctx.requestId }, position.id);
+}
+
+/**
+ * Does the account's dormant episode already carry `end` at zero (8.1)?
+ *
+ * Finance's own rule, asked with the one row it consults — the latest balance
+ * on or before the date — so "confirm unchanged" and the month's closing state
+ * can never disagree about whether a month needs a confirmation at all.
+ */
+function carriedByDormancy(
+  position: PositionRow,
+  latest: ValuationRow | undefined,
+  end: string,
+): boolean {
+  return isDormantZeroAt(
+    toPositionRecord(position),
+    latest === undefined ? [] : [toValuationRecord(latest)],
+    plainDate(end),
+  );
+}
+
+const dormantCarryMessage = (name: string): string =>
+  `${name} is dormant over this month, so it carries at zero without a monthly confirmation. Nothing was confirmed.`;
 
 export async function recordValuation(
   deps: PositionDependencies,
@@ -265,6 +311,9 @@ export async function correctValuation(
   if (updated === undefined) throw new VersionConflictError();
 
   await clearDormantIfNonZero(deps.db, ctx, position, args.amount);
+  if (args.valuedOn !== existing.valuedOn) {
+    await wakeIfAnchorRemoved(deps.db, ctx, position, existing.valuedOn);
+  }
   await deps.fx.ensureHistory(position.currency, args.valuedOn);
   return updated;
 }
@@ -292,6 +341,8 @@ export async function removeValuation(
   );
   /* v8 ignore next -- the row was read a line above, inside the same session. */
   if (deleted === undefined) throw new NotFoundError('That balance no longer exists.');
+
+  await wakeIfAnchorRemoved(deps.db, ctx, position, existing.valuedOn);
   return deleted;
 }
 
@@ -354,6 +405,15 @@ export async function confirmUnchanged(
       'This month has not ended yet. Confirm it from the first day of the next month.',
       { month: ['This month has not ended yet.'] },
     );
+  }
+
+  // 30.20 item 8: a month the account's dormant episode covers carries at zero
+  // and needs no confirmation — and writing one could put a non-zero statement
+  // inside the episode. A month **before** `dormant_from` is an ordinary month:
+  // the flag is present-tense and says nothing about it.
+  const latest = await findLatestValuation(deps.db, ctx.userId, args.positionId, end);
+  if (carriedByDormancy(position, latest, end)) {
+    throw new ImpossibleOperationError(dormantCarryMessage(position.name));
   }
 
   const previousMonth = monthKey(addMonths(startOfMonth(end), -1));
@@ -445,9 +505,11 @@ const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/u;
  *  - every requested id must resolve to a cash account of this user. Another
  *    user's id, a nonexistent one and a position of another kind are all simply
  *    absent from the locked set and read the same (17.2, 17.3);
- *  - an account that is dormant, not yet open by `end(M)` or closed by then is
- *    refused rather than skipped: dormancy carries at zero without a
- *    confirmation (R22), and a request naming one was not built from this page;
+ *  - an account whose dormant episode covers `end(M)`, or that is not yet open
+ *    by then or closed by then, is refused rather than skipped: dormancy carries
+ *    at zero without a confirmation (R22), and a request naming one was not
+ *    built from this page. A month before `dormant_from` is an ordinary month
+ *    (v2.1.17 30.20 item 8);
  *  - the previous statement is read and held (`FOR SHARE`), so the figure
  *    carried forward is still that statement when the confirmation commits;
  *  - an existing balance on `end(M)` is never rewritten, whatever it is. A
@@ -504,10 +566,8 @@ export async function confirmUnchangedBatch(
       for (const positionId of requested) {
         const position = byId.get(positionId);
         if (position === undefined) throw new NotFoundError('That account no longer exists.');
-        if (position.isDormant === true) {
-          throw new ImpossibleOperationError(
-            `${position.name} is dormant, so it carries at zero without a monthly confirmation. Nothing was confirmed.`,
-          );
+        if (carriedByDormancy(position, await findLatestValuationIn(tx, position.id, end), end)) {
+          throw new ImpossibleOperationError(dormantCarryMessage(position.name));
         }
         if (position.openedOn !== null && position.openedOn > end) {
           throw new ValidationError(`${position.name} opened after ${monthName(month)}. Nothing was confirmed.`);

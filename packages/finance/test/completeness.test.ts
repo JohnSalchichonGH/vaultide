@@ -38,7 +38,7 @@ const FIRST_OF_OCTOBER = plainDate('2026-10-01');
 function cash(
   id: string,
   valuations: PositionWithValuations['valuations'],
-  options: { currency?: string; openedOn?: string; closedOn?: string; isDormant?: boolean } = {},
+  options: { currency?: string; openedOn?: string; closedOn?: string; dormantFrom?: string } = {},
 ): PositionWithValuations {
   return entry(
     position(id.toUpperCase(), {
@@ -46,11 +46,19 @@ function cash(
       currency: options.currency ?? 'EUR',
       ...(options.openedOn === undefined ? {} : { openedOn: options.openedOn }),
       ...(options.closedOn === undefined ? {} : { closedOn: options.closedOn, status: 'closed' }),
-      ...(options.isDormant === undefined ? {} : { isDormant: options.isDormant }),
+      ...(options.dormantFrom === undefined ? {} : { dormantFrom: options.dormantFrom }),
     }),
     valuations,
   );
 }
+
+/**
+ * An account emptied on 31 March and dormant since: the zero balance its
+ * episode rests on is dated well before September, so it is dormant at the
+ * month's end and brings no valuation into the month (8.8, 30.20).
+ */
+const dormant = (): PositionWithValuations =>
+  cash('dormant', [valuation('dormant', '2026-03-31', '0')], { dormantFrom: '2026-03-31' });
 
 /** A Phase 2 other asset — a car — with whatever valuations it has. */
 function car(valuations: PositionWithValuations['valuations']): PositionWithValuations {
@@ -164,7 +172,7 @@ describe('cash items (12.6 row 1, 8.1)', () => {
 
   it('leaves a dormant account out of the count, rather than counting it satisfied', () => {
     const result = judge({
-      positions: [closedMonth('bbva'), cash('dormant', [], { isDormant: true })],
+      positions: [closedMonth('bbva'), dormant()],
     });
     expect(result.cashAccounts.map((item) => item.positionId)).toEqual(['bbva']);
     expect(result.required).toBe(1);
@@ -172,12 +180,36 @@ describe('cash items (12.6 row 1, 8.1)', () => {
   });
 
   it('leaves a dormant account out even when it has a statement for M', () => {
-    // 12.6 counts non-dormant accounts. The flag decides that, not whether the
-    // account happens to hold evidence.
+    // 12.6 counts accounts not dormant at `end(M)`. Dormancy at that date
+    // decides it, not whether the account happens to hold evidence.
     const result = judge({
-      positions: [closedMonth('bbva'), cash('dormant', [monthEnd('dormant', '2026-09-30', '0')], { isDormant: true })],
+      positions: [
+        closedMonth('bbva'),
+        cash('dormant', [monthEnd('dormant', '2026-09-30', '0')], { dormantFrom: '2026-09-30' }),
+      ],
     });
     expect(result.required).toBe(1);
+  });
+
+  it('counts an account that only became dormant after M, because dormant today is not the question', () => {
+    // v2.1.17 30.20: emptied and marked dormant in October. September still
+    // owed its statement, and marking the account dormant since must not
+    // quietly turn an incomplete month into a sufficient one.
+    const later = cash(
+      'later',
+      [monthEnd('later', '2026-08-31', '500'), monthEnd('later', '2026-10-31', '0')],
+      { dormantFrom: '2026-10-31' },
+    );
+    const result = completedMonthCompleteness({
+      month: SEPTEMBER,
+      today: plainDate('2026-11-05'),
+      positions: [closedMonth('bbva'), later],
+      templates: [],
+      resolvedOccurrences: new Set(),
+    });
+    expect(result.cashAccounts.map((item) => item.positionId)).toEqual(['bbva', 'later']);
+    expect(result.cashAccounts[1]).toMatchObject({ satisfied: false, closeState: 'carried' });
+    expect(result).toMatchObject({ state: 'incomplete', satisfied: 1, required: 2 });
   });
 
   describe('which accounts take part, by 8.1 participation', () => {
@@ -381,7 +413,7 @@ describe('the stale state (30.18 items 1–3)', () => {
 
   it('outranks partial: no cash requirement, a missing occurrence, nothing valued inside M', () => {
     const result = judge({
-      positions: [cash('dormant', [], { isDormant: true }), car([valuation('car', '2026-08-10', '9000')])],
+      positions: [dormant(), car([valuation('car', '2026-08-10', '9000')])],
       templates: [template('salary')],
     });
     expect(result.state).toBe('stale');
@@ -405,7 +437,7 @@ describe('the stale state (30.18 items 1–3)', () => {
 
   it('is prevented by an other asset valued inside M, and the state then resolves normally', () => {
     const over = {
-      positions: [cash('dormant', [], { isDormant: true }), car([valuation('car', '2026-09-10', '9000')])],
+      positions: [dormant(), car([valuation('car', '2026-09-10', '9000')])],
       templates: [template('salary')],
     };
     expect(judge(over).state).toBe('partial');
@@ -460,13 +492,13 @@ describe('the stale state (30.18 items 1–3)', () => {
 
 describe('nothing required (30.18 items 4–5)', () => {
   it('is stale with a null ratio when nothing was valued either', () => {
-    const result = judge({ positions: [cash('dormant', [], { isDormant: true })] });
+    const result = judge({ positions: [dormant()] });
     expect(result).toMatchObject({ state: 'stale', satisfied: 0, required: 0, ratio: null });
   });
 
   it('is sufficient with a null ratio when something was valued inside M', () => {
     const result = judge({
-      positions: [cash('dormant', [], { isDormant: true }), car([valuation('car', '2026-09-10', '9000')])],
+      positions: [dormant(), car([valuation('car', '2026-09-10', '9000')])],
     });
     expect(result).toMatchObject({ state: 'sufficient', satisfied: 0, required: 0, ratio: null });
   });

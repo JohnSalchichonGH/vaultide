@@ -1,5 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import { Decimal } from '../../src/decimal';
 import { monthKeyOf, plainDate } from '../../src/dates/plain-date';
 import { currencyCode } from '../../src/money/types';
 import type { PositionWithValuations, ValuationRecord } from '../../src/positions/types';
@@ -47,20 +48,26 @@ const cashArb = (id: string): fc.Arbitrary<PositionWithValuations> =>
     .record({
       openedOn: fc.constantFrom(null, '2026-08-01', '2026-09-10', '2026-10-05'),
       closedOn: fc.constantFrom(null, '2026-08-20', '2026-09-01', '2026-09-15'),
-      isDormant: fc.boolean(),
+      dormant: fc.boolean(),
       valuations: valuationsArb(id),
     })
-    .map(({ openedOn, closedOn, isDormant, valuations }) =>
-      entry(
+    .map(({ openedOn, closedOn, dormant, valuations }) => {
+      // A dormant account is one whose latest balance is zero, dormant from that
+      // balance's date (8.8, 30.20) — the only dormant state a write can produce.
+      // The date falls before, inside or after September, so the generator also
+      // covers an account that became dormant only once the month was over.
+      const latest = [...valuations].sort((a, b) => (a.valuedOn < b.valuedOn ? -1 : 1)).at(-1);
+      const anchor = dormant ? latest : undefined;
+      return entry(
         position(id, {
           id,
           openedOn,
           closedOn: closedOn !== null && openedOn !== null && closedOn < openedOn ? null : closedOn,
-          isDormant,
+          ...(anchor === undefined ? {} : { dormantFrom: anchor.valuedOn }),
         }),
-        valuations,
-      ),
-    );
+        valuations.map((row) => (row === anchor ? { ...row, amount: new Decimal(0) } : row)),
+      );
+    });
 
 const otherAssetArb = (id: string): fc.Arbitrary<PositionWithValuations> =>
   valuationsArb(id).map((valuations) => entry(position(id, { id, kind: 'other_asset' }), valuations));

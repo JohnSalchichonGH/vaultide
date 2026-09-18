@@ -3,6 +3,7 @@ import {
   addDays,
   addMonths,
   endOfMonthKey,
+  isDormantZeroAt,
   isUnavailable,
   latestOnOrBefore,
   monthEndBalance,
@@ -168,7 +169,8 @@ export function completedAccountsOf(
         positionId: position.id,
         name: position.name,
         currency: position.currency,
-        dormant: position.isDormant === true,
+        // Dormant at the end of the month on screen, not dormant today (30.20).
+        dormant: isDormantZeroAt(position, entry.valuations, endOfMonthKey(month)),
         state,
         opening: openingDto(
           {

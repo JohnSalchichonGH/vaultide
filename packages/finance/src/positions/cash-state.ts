@@ -29,7 +29,7 @@ export type CashCloseState =
   | 'month_end'
   /** The account closed inside M: its balance is zero by definition. */
   | 'closed_zero'
-  /** Flagged dormant with no month-end balance: carried at zero (R22). */
+  /** Covered by the current dormant episode, with no month-end balance: carried at zero (R22, 30.20). */
   | 'dormant_zero'
   /** A valuation ≤ end(M) exists, but it is not M's statement balance. */
   | 'carried'
@@ -72,6 +72,34 @@ export function lastDaySnapshot(
   return candidate !== undefined && candidate.datePrecision === 'exact' ? candidate : undefined;
 }
 
+/**
+ * May the account be carried at zero on `date` because it is dormant (8.8,
+ * v2.1.17 30.20)?
+ *
+ * The one place the rule lives, for a month end, a span anchor and the
+ * month-to-date date alike. `isDormant` says the account is dormant *now*, and a
+ * present-tense flag is not evidence about the past: read on its own it let
+ * marking an account dormant today close an earlier month at zero that had held
+ * money, and report the whole balance as that month's spending. So the question
+ * is asked of the **episode**: `dormantFrom` is the date of the zero balance the
+ * current episode rests on, and only a date on or after it is covered. Before
+ * it the ordinary `carried`/`missing` rules apply, as for any other account.
+ *
+ * The second condition is one the write rules already guarantee — an episode
+ * starts on a zero balance, and any non-zero balance after it ends it. It is
+ * stated anyway so that a defect on a write path degrades into a request for
+ * evidence and never into a zero nobody observed.
+ */
+export function isDormantZeroAt(
+  position: PositionRecord,
+  valuations: readonly ValuationRecord[],
+  date: PlainDate,
+): boolean {
+  const from = position.dormantFrom;
+  if (from === undefined || date < from) return false;
+  return latestOnOrBefore(valuations, date)?.amount.isZero() === true;
+}
+
 /** `close(a, M)` exactly as 8.1 defines it, in the order 8.1 defines it. */
 export function cashCloseState(
   position: PositionRecord,
@@ -87,7 +115,7 @@ export function cashCloseState(
     return 'closed_zero';
   }
 
-  if (position.isDormant === true) return 'dormant_zero';
+  if (isDormantZeroAt(position, valuations, end)) return 'dormant_zero';
 
   return latestOnOrBefore(valuations, end) === undefined ? 'missing' : 'carried';
 }

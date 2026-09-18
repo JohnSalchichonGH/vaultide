@@ -8,7 +8,7 @@ import {
   type PlainDate,
 } from '../dates/plain-date';
 import { currencyCode, type CurrencyCode } from '../money/types';
-import { monthEndBalance } from '../positions/cash-state';
+import { isDormantZeroAt, monthEndBalance } from '../positions/cash-state';
 import type { RoleLeg } from '../flows/roles';
 import type { ExpenseFlow, IncomeFlow, TransferFlow } from '../flows/types';
 import { legsInRange, legsInScope, roleSums, scopeAccountIds, sumAmounts } from './scope';
@@ -175,18 +175,23 @@ type AnchorValue =
  * What `account` was worth at `end(M)`, when that is known (8.7, 30.14 item 1).
  *
  * The states are 8.1's, not a set invented here: a statement month-end balance,
- * zero because the account had closed, or zero because it is dormant. A
+ * zero because the account had closed, or zero because its dormant episode
+ * covers that date (30.20) — which keeps an anchor intrinsic to the date and the
+ * rows: marking an account dormant later cannot complete a month end it had
+ * left open, and so cannot remove the span across it. A
  * `carried` or `missing` end is not a value, and an ordinary snapshot dated the
  * last day is not a month-end balance (8.8).
  */
 function valueAtMonthEnd(account: CashAccountInput, month: MonthKey): AnchorValue {
   const end = endOfMonthKey(month);
-  const { closedOn, isDormant } = account.position;
+  const { closedOn } = account.position;
 
   const balance = monthEndBalance(account.valuations, month);
   if (balance !== undefined) return { state: 'month_end', amount: balance.amount };
   if (closedOn !== null && closedOn <= end) return { state: 'closed_zero', amount: new Decimal(0) };
-  if (isDormant === true) return { state: 'dormant_zero', amount: new Decimal(0) };
+  if (isDormantZeroAt(account.position, account.valuations, end)) {
+    return { state: 'dormant_zero', amount: new Decimal(0) };
+  }
   return undefined;
 }
 

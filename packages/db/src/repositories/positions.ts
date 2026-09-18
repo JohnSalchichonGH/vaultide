@@ -43,6 +43,8 @@ export interface PositionRecord {
   readonly accountType?: CashAccountRow['accountType'];
   readonly institution?: string | null;
   readonly isDormant?: boolean;
+  /** Where the current dormant episode starts; NULL exactly when not dormant (8.8, 30.20). */
+  readonly dormantFrom?: string | null;
   /** Other assets only. */
   readonly assetType?: OtherAssetRow['assetType'];
   readonly acquisitionDate?: string | null;
@@ -66,6 +68,7 @@ const selection = {
   accountType: cashAccounts.accountType,
   institution: cashAccounts.institution,
   isDormant: cashAccounts.isDormant,
+  dormantFrom: cashAccounts.dormantFrom,
   assetType: otherAssets.assetType,
   acquisitionDate: otherAssets.acquisitionDate,
   acquisitionValue: otherAssets.acquisitionValue,
@@ -99,6 +102,7 @@ function toRecord(row: SelectedRow): PositionRecord {
       accountType: row.accountType as CashAccountRow['accountType'],
       institution: row.institution as string | null,
       isDormant: row.isDormant as boolean,
+      dormantFrom: row.dormantFrom as string | null,
     };
   }
   if (base.kind === 'other_asset') {
@@ -325,7 +329,13 @@ export interface PositionPatch {
 export interface CashAccountPatch {
   accountType?: CashAccountRow['accountType'];
   institution?: string | null;
-  isDormant?: boolean;
+  /**
+   * The flag and its date, written together or not at all: the database
+   * refuses one without the other (`cash_accounts_dormant_anchor`). A dormant
+   * account names the zero balance its episode starts from; a woken one names
+   * nothing (8.8, v2.1.17 30.20).
+   */
+  dormancy?: { isDormant: true; dormantFrom: string } | { isDormant: false; dormantFrom: null };
 }
 
 export interface OtherAssetPatch {
@@ -349,46 +359,70 @@ export async function updatePosition(
   patch: PositionPatch,
   subtype?: { cash?: CashAccountPatch; otherAsset?: OtherAssetPatch },
 ): Promise<PositionRecord | undefined> {
-  return withUser(db, { userId: ctx.userId }, async (tx) => {
-    const before = await loadForUpdate(tx, positionId);
-    if (before === undefined) return undefined;
+  return withUser(db, { userId: ctx.userId }, async (tx) =>
+    updatePositionIn(tx, ctx, positionId, expectedVersion, patch, subtype),
+  );
+}
 
-    const [updated] = await tx
-      .update(positions)
-      .set({ ...patch, version: expectedVersion + 1 })
-      .where(and(eq(positions.id, positionId), eq(positions.version, expectedVersion)))
-      .returning();
-    if (updated === undefined) return undefined;
+/**
+ * The same update, inside a caller's transaction.
+ *
+ * Marking a cash account dormant needs this: the evidence that permits it — a
+ * zero latest balance that no attributed flow post-dates — has to be read from
+ * rows the transaction has already locked, and the flag written before that
+ * lock is released, or a flow could arrive between the check and the write
+ * (20.3, v2.1.17 30.20 item 5).
+ */
+export async function updatePositionIn(
+  tx: Transaction,
+  ctx: AuditContext,
+  positionId: string,
+  expectedVersion: number,
+  patch: PositionPatch,
+  subtype?: { cash?: CashAccountPatch; otherAsset?: OtherAssetPatch },
+): Promise<PositionRecord | undefined> {
+  const before = await loadForUpdate(tx, positionId);
+  if (before === undefined) return undefined;
 
-    let subtypeAfter: Record<string, unknown> | undefined;
-    if (subtype?.cash !== undefined && Object.keys(subtype.cash).length > 0) {
+  const [updated] = await tx
+    .update(positions)
+    .set({ ...patch, version: expectedVersion + 1 })
+    .where(and(eq(positions.id, positionId), eq(positions.version, expectedVersion)))
+    .returning();
+  if (updated === undefined) return undefined;
+
+  let subtypeAfter: Record<string, unknown> | undefined;
+  if (subtype?.cash !== undefined) {
+    const { dormancy, ...columns } = subtype.cash;
+    const values = { ...columns, ...dormancy };
+    if (Object.keys(values).length > 0) {
       const [row] = await tx
         .update(cashAccounts)
-        .set(subtype.cash)
+        .set(values)
         .where(eq(cashAccounts.positionId, positionId))
         .returning();
       subtypeAfter = row;
     }
-    if (subtype?.otherAsset !== undefined && Object.keys(subtype.otherAsset).length > 0) {
-      const [row] = await tx
-        .update(otherAssets)
-        .set(subtype.otherAsset)
-        .where(eq(otherAssets.positionId, positionId))
-        .returning();
-      subtypeAfter = row;
-    }
+  }
+  if (subtype?.otherAsset !== undefined && Object.keys(subtype.otherAsset).length > 0) {
+    const [row] = await tx
+      .update(otherAssets)
+      .set(subtype.otherAsset)
+      .where(eq(otherAssets.positionId, positionId))
+      .returning();
+    subtypeAfter = row;
+  }
 
-    await recordAudit(tx, ctx, {
-      entityTable: 'positions',
-      entityId: positionId,
-      action: 'update',
-      before: before.image,
-      after: { ...(updated as Record<string, unknown>), ...(subtypeAfter ?? before.subtype) },
-    });
-
-    const rows = await positionQuery(tx).where(eq(positions.id, positionId)).limit(1);
-    return toRecord(rows[0] as SelectedRow);
+  await recordAudit(tx, ctx, {
+    entityTable: 'positions',
+    entityId: positionId,
+    action: 'update',
+    before: before.image,
+    after: { ...(updated as Record<string, unknown>), ...(subtypeAfter ?? before.subtype) },
   });
+
+  const rows = await positionQuery(tx).where(eq(positions.id, positionId)).limit(1);
+  return toRecord(rows[0] as SelectedRow);
 }
 
 /** The current position and subtype rows, locked for the rest of the transaction. */
@@ -457,7 +491,7 @@ export async function deletePosition(
  *
  * The two rows a cash account's lifecycle lives in are locked together, because
  * two different writers change it: `updatePosition` — closing, marking dormant,
- * editing — locks the `positions` row, while `updateCashDormantFlagIn` locks the
+ * editing — locks the `positions` row, while `clearCashDormancyIn` locks the
  * `cash_accounts` row alone to clear dormancy for a flow or a balance. A caller
  * that validates eligibility from these rows and then writes in the same
  * transaction therefore cannot have either changed underneath it.
@@ -634,21 +668,25 @@ export async function positionCurrencies(db: Database, userId: string): Promise<
 }
 
 /**
- * Turn a cash account's dormant flag off (or on) on its own.
+ * Wake a cash account — end its dormant episode — on its own.
  *
  * Separate from `updatePosition` because it is not a user edit and must not
  * consume the position's optimistic version: recording a non-zero balance
- * clears the flag as a consequence (6.2, R22), and doing so must not invalidate
- * an account form somebody has open.
+ * wakes the account as a consequence (6.2, R22), and doing so must not
+ * invalidate an account form somebody has open.
+ *
+ * It only ever clears. Starting an episode needs a date and the evidence for
+ * it, which is the service's transaction to run (`updatePositionIn`); a
+ * function that set the flag alone could only ever violate
+ * `cash_accounts_dormant_anchor`.
  */
-export async function updateCashDormantFlag(
+export async function clearCashDormancy(
   db: Database,
   ctx: AuditContext,
   positionId: string,
-  isDormant: boolean,
 ): Promise<void> {
   await withUser(db, { userId: ctx.userId }, async (tx) =>
-    updateCashDormantFlagIn(tx, ctx, positionId, isDormant),
+    clearCashDormancyIn(tx, ctx, positionId),
   );
 }
 
@@ -660,11 +698,10 @@ export async function updateCashDormantFlag(
  * come apart — a recorded flow with the account still flagged dormant would let
  * a month carry at zero against evidence that it did not.
  */
-export async function updateCashDormantFlagIn(
+export async function clearCashDormancyIn(
   tx: Transaction,
   ctx: AuditContext,
   positionId: string,
-  isDormant: boolean,
 ): Promise<void> {
   const [before] = await tx
     .select()
@@ -672,11 +709,13 @@ export async function updateCashDormantFlagIn(
     .where(eq(cashAccounts.positionId, positionId))
     .limit(1)
     .for('update');
-  if (before === undefined || before.isDormant === isDormant) return;
+  if (before === undefined || !before.isDormant) return;
 
+  // The flag and the date of the episode it ends, in one statement. Every wake
+  // comes through here, so neither can outlive the other (30.20 item 6).
   const [after] = await tx
     .update(cashAccounts)
-    .set({ isDormant })
+    .set({ isDormant: false, dormantFrom: null })
     .where(eq(cashAccounts.positionId, positionId))
     .returning();
 

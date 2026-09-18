@@ -99,19 +99,26 @@ export async function findLatestValuation(
   positionId: string,
   onOrBefore: string,
 ): Promise<ValuationRow | undefined> {
-  const [row] = await withUser(db, { userId }, async (tx) =>
-    tx
-      .select()
-      .from(positionValuations)
-      .where(
-        and(
-          eq(positionValuations.positionId, positionId),
-          lte(positionValuations.valuedOn, onOrBefore),
-        ),
-      )
-      .orderBy(desc(positionValuations.valuedOn))
-      .limit(1),
-  );
+  return withUser(db, { userId }, async (tx) => findLatestValuationIn(tx, positionId, onOrBefore));
+}
+
+/** The same read, inside a caller's transaction — for a decision its write depends on. */
+export async function findLatestValuationIn(
+  tx: Transaction,
+  positionId: string,
+  onOrBefore: string,
+): Promise<ValuationRow | undefined> {
+  const [row] = await tx
+    .select()
+    .from(positionValuations)
+    .where(
+      and(
+        eq(positionValuations.positionId, positionId),
+        lte(positionValuations.valuedOn, onOrBefore),
+      ),
+    )
+    .orderBy(desc(positionValuations.valuedOn))
+    .limit(1);
   return row;
 }
 

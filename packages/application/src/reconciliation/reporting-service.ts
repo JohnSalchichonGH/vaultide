@@ -9,6 +9,7 @@ import {
   reconcileMonthToDate,
   reportCashFlow,
   reportSourceOnly,
+  reportUnobservedMonth,
   startOfMonthKey,
   untrackedContributions,
   type BucketResult,
@@ -262,6 +263,34 @@ export function monthReportingFrom(
 ): MonthReportingCashFlowDto {
   const month = data.input.month;
   const result = reconcileCompletedMonth(data.input);
+
+  // A month with no bucket observed no tracked cash (8.4, v2.1.17 30.20). The
+  // engine owns what that means for each figure; this only recognises the month
+  // and hands over the two settlements that never needed tracked cash, exactly
+  // as the current month does without a `D`. Building it through
+  // `reportCashFlow` would state a tracked spending of zero.
+  if (result.buckets.length === 0) {
+    return {
+      month: (month as string).slice(0, 7),
+      monthStatus: result.monthStatus,
+      ...cashFlowDto(
+        reportUnobservedMonth({
+          reportingCurrency: reporting,
+          fx,
+          contributions: [...currenciesOf(data.input)].flatMap((currency) =>
+            untrackedContributions(
+              data.input.expenses,
+              currency as CurrencyCode,
+              startOfMonthKey(month),
+              endOfMonthKey(month),
+            ),
+          ),
+          countAdditionalSpending,
+        }),
+      ),
+    };
+  }
+
   const built = buildMonth(
     data.input,
     result.buckets,

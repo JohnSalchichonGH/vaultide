@@ -571,6 +571,7 @@ export interface CompletedAccountDto {
   readonly positionId: string;
   readonly name: string;
   readonly currency: string;
+  /** Dormant at the end of this month — not "dormant today" (8.8, v2.1.17 30.20). */
   readonly dormant: boolean;
   /** Exactly the month state the Accounts pages read, from the same helper (8.1). */
   readonly state: CashMonthStateDto;

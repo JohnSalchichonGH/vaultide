@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { boolean, check, foreignKey, index, pgEnum, pgTable, text, uuid } from 'drizzle-orm/pg-core';
+import { boolean, check, date, foreignKey, index, pgEnum, pgTable, text, uuid } from 'drizzle-orm/pg-core';
 import { cashAccountTypes } from '@vaultide/validation';
 import { authUser } from './auth';
 import { timestamps } from './columns';
@@ -37,10 +37,24 @@ export const cashAccounts = pgTable(
      * "still zero" about an account that is not.
      */
     isDormant: boolean('is_dormant').notNull().default(false),
+    /**
+     * Where the **current** dormant episode starts (8.8, v2.1.17 30.20, ADR
+     * 0007): the `valued_on` of the zero balance that justified it — never the
+     * day the flag was set. `is_dormant` says the account is dormant now; this
+     * says from when, and a structural zero is permitted only on or after it.
+     * An ended episode is not remembered: waking clears both columns.
+     */
+    dormantFrom: date('dormant_from'),
     ...timestamps,
   },
   (table) => [
     check('cash_accounts_kind_is_cash', sql`${table.kind} = 'cash'`),
+    // The flag and the date are one fact in two columns, and neither may be
+    // written without the other.
+    check(
+      'cash_accounts_dormant_anchor',
+      sql`${table.isDormant} = (${table.dormantFrom} IS NOT NULL)`,
+    ),
     foreignKey({
       name: 'cash_accounts_position_fk',
       columns: [table.positionId, table.userId, table.kind],

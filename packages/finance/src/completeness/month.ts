@@ -5,7 +5,7 @@ import {
   startOfMonthKey,
   type MonthKey,
 } from '../dates/plain-date';
-import { cashCloseState, participatesIn } from '../positions/cash-state';
+import { cashCloseState, isDormantZeroAt, participatesIn } from '../positions/cash-state';
 import type { PositionWithValuations } from '../positions/types';
 import { scheduledOccurrences } from '../reconciliation/completeness';
 import { MonthNotCompletedError } from '../reconciliation/types';
@@ -25,9 +25,12 @@ import type {
  * domain it has built. Phase 3 has two:
  *
  *  - **cash** — every cash account that participates in M under 8.1 and is not
- *    dormant, satisfied by a `month_end` or `closed_zero` closing. Participation
- *    and the closing state are 8.1's own functions, not a second definition of
- *    either; a dormant account is outside the count rather than a satisfied item;
+ *    dormant at `end(M)`, satisfied by a `month_end` or `closed_zero` closing.
+ *    Participation, the closing state and dormancy at a date are 8.1's own
+ *    functions, not a second definition of any of them; an account dormant at
+ *    `end(M)` is outside the count rather than a satisfied item. Dormant *today*
+ *    is not the question: an account marked dormant since still owed this month
+ *    its statement (30.20);
  *  - **recurring** — every occurrence a template's schedule placed in M, of every
  *    kind, satisfied by a flow or a skip carrying its identity. Archive state and
  *    terms take no part (30.10).
@@ -51,8 +54,8 @@ function cashRequirement(entry: PositionWithValuations, month: MonthKey): CashAc
   if (closeState === 'month_end' || closeState === 'closed_zero') {
     return { ...base, satisfied: true, closeState };
   }
-  /* v8 ignore next 3 -- unreachable: `dormant_zero` needs `is_dormant`, and a
-     dormant account is never a requirement. */
+  /* v8 ignore next 3 -- unreachable: `dormant_zero` needs the account to be
+     dormant at `end(M)`, and such an account is never a requirement. */
   if (closeState === 'dormant_zero') {
     throw new Error(`cash account ${position.id} is dormant and cannot be a requirement`);
   }
@@ -96,7 +99,7 @@ export function completedMonthCompleteness(
       (entry) =>
         entry.position.kind === 'cash' &&
         participatesIn(entry.position, month) &&
-        entry.position.isDormant !== true,
+        !isDormantZeroAt(entry.position, entry.valuations, endOfMonthKey(month)),
     )
     .sort((a, b) => a.position.id.localeCompare(b.position.id))
     .map((entry) => cashRequirement(entry, month));

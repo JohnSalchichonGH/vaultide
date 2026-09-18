@@ -556,8 +556,8 @@ export interface RollingTrackedSpendingPointDto {
 export type CompletenessStateDto = 'stale' | 'incomplete' | 'partial' | 'sufficient';
 
 /**
- * One required cash item: a participating, non-dormant cash account (12.6,
- * 30.18 item 6). Satisfied by a statement balance or by closing inside M, and
+ * One required cash item: a participating cash account that is not dormant at
+ * the month's end (12.6, 30.18 item 6, 30.20). Satisfied by a statement balance or by closing inside M, and
  * the closing state that decided it is carried beside the verdict.
  */
 export type CashAccountRequirementDto = {
