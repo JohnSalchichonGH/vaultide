@@ -50,7 +50,7 @@ export interface ReportingCashFlowInput {
   readonly countAdditionalSpending: boolean;
 }
 
-/** The nine primitives and the six figures 12.5 derives from them. */
+/** The nine primitives and the seven figures derived from them (12.5, 8.2). */
 export interface ReportingCashFlow {
   readonly reportingCurrency: CurrencyCode;
 
@@ -66,6 +66,20 @@ export interface ReportingCashFlow {
 
   readonly consumption: ReportingAmount;
   readonly trackedTotalSpending: ReportingAmount;
+  /**
+   * `ΣK` in the reporting currency: the five known cost buckets together —
+   * known consumption, property costs, interest and fees, transaction costs and
+   * external outflows — with no residual in it (8.2, 12.5, 30.15 item 10).
+   *
+   * Derived from the five primitives rather than summed again from rows, so it
+   * cannot disagree with them about which contributions it holds, and it takes
+   * 7.6's availability from exactly those five: an unresolved or unavailable
+   * bucket's missing residual never reaches it, because no known expense is a
+   * residual. When everything is complete, `trackedTotalSpending =
+   * knownTrackedSpending + unclassified` — exactly with no rate involved, and to
+   * the 40th digit otherwise (ADR 0004 §1).
+   */
+  readonly knownTrackedSpending: ReportingAmount;
   readonly trackedSavingsFromIncome: ReportingAmount;
   readonly personalSavings: ReportingAmount;
   readonly totalSpending: ReportingAmount;
@@ -80,8 +94,13 @@ export interface ReportingCashFlow {
   readonly countsAdditionalSpending: boolean;
 }
 
-/** One converted contribution, or the reason it could not be converted. */
-function convertContribution(
+/**
+ * One converted contribution, or the reason it could not be converted.
+ *
+ * Exported for the known-spending breakdown, which must convert each row by
+ * exactly this rule so its category totals sum to the figures computed here.
+ */
+export function convertContribution(
   contribution: ReportingContribution,
   reporting: CurrencyCode,
   fx: FxTable,
@@ -262,6 +281,7 @@ export function reportUnobservedMonth(input: UnobservedMonthReportingInput): Rep
     thirdPartyPaid: sourceOnly.thirdPartyPaid,
     consumption: unobserved,
     trackedTotalSpending: unobserved,
+    knownTrackedSpending: unobserved,
     trackedSavingsFromIncome: unobserved,
     personalSavings: unobserved,
     totalSpending: unobserved,
@@ -301,6 +321,14 @@ export function reportCashFlow(input: ReportingCashFlowInput): ReportingCashFlow
     externalOutflows,
   ].reduce(addAmounts, consumption);
 
+  // The same five buckets without the residual: what the user identified.
+  const knownTrackedSpending = [
+    propertyOperatingCosts,
+    interestAndFees,
+    transactionCosts,
+    externalOutflows,
+  ].reduce(addAmounts, knownConsumption);
+
   // 12.5 subtracts four of the five buckets and not `ExternalOutflows`: that one
   // is settled in the allocation identity instead, so subtracting it here would
   // take the same cost out twice — and it is why a missing rate for an external
@@ -331,6 +359,7 @@ export function reportCashFlow(input: ReportingCashFlowInput): ReportingCashFlow
     thirdPartyPaid,
     consumption,
     trackedTotalSpending,
+    knownTrackedSpending,
     trackedSavingsFromIncome,
     personalSavings,
     totalSpending,

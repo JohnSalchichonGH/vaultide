@@ -136,6 +136,12 @@ export interface SpanInput {
    * Absent means every span the evidence supports.
    */
   readonly from?: MonthKey | undefined;
+  /**
+   * The latest month the caller wants returned; see `SpanDiscoveryInput`. Only
+   * the returned intervals are reconciled, so a caller that bounds both sides
+   * need only have read the flows of the spans it asked for.
+   */
+  readonly through?: MonthKey | undefined;
 }
 
 /**
@@ -150,6 +156,15 @@ export interface SpanDiscoveryInput {
   readonly today: PlainDate;
   readonly cashAccounts: readonly CashAccountInput[];
   readonly from?: MonthKey | undefined;
+  /**
+   * The latest month the caller wants **returned**, the other side of `from`.
+   *
+   * Like `from`, it filters the result and never the search: a span returned for
+   * overlapping `[start(from), end(through)]` comes back whole, closing anchor
+   * included, however far past `through` that anchor lies. Absent means every
+   * span up to the last completed month.
+   */
+  readonly through?: MonthKey | undefined;
 }
 
 /** One discovered interval, before any flow has been looked at. */
@@ -462,6 +477,7 @@ export function findSpanIntervals(input: SpanDiscoveryInput): SpanInterval[] {
   const lastCompleted = monthKey(addMonths(startOfMonthKey(monthKey(input.today)), -1));
 
   const windowStart = input.from === undefined ? undefined : startOfMonthKey(input.from);
+  const windowEnd = input.through === undefined ? undefined : endOfMonthKey(input.through);
   const currencies = [...new Set(cash.map((account) => account.position.currency))].sort();
   const intervals: SpanInterval[] = [];
 
@@ -489,15 +505,19 @@ export function findSpanIntervals(input: SpanDiscoveryInput): SpanInterval[] {
       // Overlap, not containment, and never a clip. A span that reaches into
       // the window is the answer to "what happened from `from` onwards", even
       // when most of it happened earlier; one that ended before the window
-      // began answers a question nobody asked. The other side needs no test:
-      // every interval ends at or before `end(M_last)`, and so does the window.
+      // began answers a question nobody asked. Without `through` the other side
+      // needs no test: every interval ends at or before `end(M_last)`, and so
+      // does the window. With it, a span that begins after the window ends is
+      // left out the same way, and one that begins inside it is kept whole.
       if (windowStart !== undefined && to < windowStart) continue;
+      const from = startOfMonthKey(first);
+      if (windowEnd !== undefined && from > windowEnd) continue;
 
       intervals.push({
         currency,
         openingAnchor,
         closingAnchor,
-        from: startOfMonthKey(first),
+        from,
         to,
         months: monthsBetween(first, closingAnchor),
       });

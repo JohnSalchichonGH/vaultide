@@ -108,6 +108,7 @@ function cashFlowDto(flow: ReportingCashFlow): ReportingCashFlowFiguresDto {
     unclassified: amountDto(flow.unclassified),
     consumption: amountDto(flow.consumption),
     trackedTotalSpending: amountDto(flow.trackedTotalSpending),
+    knownTrackedSpending: amountDto(flow.knownTrackedSpending),
     additionalSpending: amountDto(flow.additionalSpending),
     thirdPartyPaid: amountDto(flow.thirdPartyPaid),
     trackedSavingsFromIncome: amountDto(flow.trackedSavingsFromIncome),

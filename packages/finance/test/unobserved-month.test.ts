@@ -177,6 +177,7 @@ describe('reporting a month nobody observed', () => {
     'unclassified',
     'consumption',
     'trackedTotalSpending',
+    'knownTrackedSpending',
     'trackedSavingsFromIncome',
     'personalSavings',
     'totalSpending',
