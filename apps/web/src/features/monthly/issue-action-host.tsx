@@ -384,9 +384,9 @@ export function IssueActionControls({ actions }: { readonly actions: readonly Is
   if (actions.length === 0) return null;
 
   return (
-    <ul className="space-y-2" data-testid="issue-actions">
+    <ul className="space-y-3" data-testid="issue-actions">
       {actions.map((action) => (
-        <li key={action.id} className="space-y-1">
+        <li key={action.id} className="space-y-1.5">
           {action.target.kind === 'anchor' ? (
             <a
               href={action.target.anchor}

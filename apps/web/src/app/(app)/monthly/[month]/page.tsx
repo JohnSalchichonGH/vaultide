@@ -22,7 +22,6 @@ import { IssuesPanel } from '@/features/monthly/issues';
 import { IssueActionHost } from '@/features/monthly/issue-action-host';
 import { issueActionContextOf, issueActions } from '@/features/monthly/issue-actions';
 import { CompletedBucket, MonthToDateBucket } from '@/features/monthly/reconciliation';
-import { QuickUpdate } from '@/features/accounts/quick-update';
 import { quickUpdatePositionsOf } from '@/features/monthly/accounts-presentation';
 import {
   defaultPickerCurrency,
@@ -324,16 +323,6 @@ export default async function MonthlyPage({ params }: { params: Promise<{ month:
                 same date to calculate month-to-date spending.
               </CardDescription>
             </CardHeader>
-            {/* 15.3 item 8: the message offers the action, where the message is. */}
-            <CardContent>
-              <QuickUpdate
-                positions={quickUpdatePositions}
-                today={page.today}
-                locale={locale}
-                monthEndsOn={page.monthEndsOn}
-                label="Update all today"
-              />
-            </CardContent>
           </Card>
         ) : page.monthToDate.buckets.length === 0 ? (
           <EmptyReconciliation monthName={monthName} />

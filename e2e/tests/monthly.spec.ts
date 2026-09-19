@@ -380,15 +380,20 @@ test.describe('the monthly page', () => {
       ),
     ).toBe(true);
 
-    // Update all today: every account gets an exact balance dated today.
-    await expect(page.getByTestId('quick-update-open')).toHaveText('Update all today');
-    await page.getByTestId('quick-update-open').click();
+    // Update all today: every account gets an exact balance dated today. The
+    // Accounts section's own control — Reconciliation offers the same modal
+    // beside the month-to-date issue that asks for it (30.21).
+    const accountsSection = page.locator('#accounts');
+    await expect(accountsSection.getByTestId('quick-update-open')).toHaveText('Update all today');
+    await accountsSection.getByTestId('quick-update-open').click();
     const dialog = page.locator('dialog[open]');
     await dialog.getByLabel(/^Everyday/u).fill('1870.00');
     await dialog.getByLabel(/^Savings/u).fill('10010.00');
     await dialog.getByLabel(/^Cash box/u).fill('50.00');
-    await page.getByTestId('quick-update-save').click();
-    await expect(page.getByTestId('quick-update-saved')).toContainText('Saved 3 balances dated 2026-10-06');
+    await accountsSection.getByTestId('quick-update-save').click();
+    await expect(accountsSection.getByTestId('quick-update-saved')).toContainText(
+      'Saved 3 balances dated 2026-10-06',
+    );
 
     // Month to date now runs through today, over the balances just entered.
     await expect(page.getByTestId('mtd-as-of')).toContainText('6 Oct 2026');
