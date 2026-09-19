@@ -19,6 +19,9 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from '@
  *    account turns the same month into missing evidence;
  *  - the current month is provisional through its common date, and without one
  *    keeps only what needs no date.
+ *
+ * Before any of that, a visitor who is not signed in is sent to sign-in with the
+ * whole path, month included, kept as the way back (17.2).
  */
 
 const PASSWORD = 'correct-horse-battery-staple-2026';
@@ -193,6 +196,17 @@ async function fitsItsViewport(page: Page): Promise<void> {
 }
 
 test.describe('the Spending page', () => {
+  test('a visitor who is not signed in goes to sign-in and keeps the way back, month included', async ({ page }) => {
+    // The (app) layout refuses too, but only the proxy remembers where the
+    // visitor was going; without it the month, Spending's URL state, is lost.
+    for (const destination of ['/expenses', '/expenses?month=2026-08']) {
+      await page.goto(destination);
+      const landed = new URL(page.url());
+      expect(landed.pathname).toBe('/sign-in');
+      expect(landed.searchParams.get('next')).toBe(destination);
+    }
+  });
+
   test('a new person finds the empty state, moves between months, and cannot open a month that is not one', async ({
     page,
     request,

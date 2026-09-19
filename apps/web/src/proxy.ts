@@ -20,7 +20,7 @@ import { getSessionCookie } from 'better-auth/cookies';
  */
 
 /** Prefixes that require a session. Everything else is public. */
-const PROTECTED_PREFIXES = ['/settings', '/onboarding', '/dashboard', '/monthly', '/accounts'];
+const PROTECTED_PREFIXES = ['/settings', '/onboarding', '/dashboard', '/monthly', '/accounts', '/expenses'];
 
 function requiresSession(pathname: string): boolean {
   return PROTECTED_PREFIXES.some(
