@@ -19,7 +19,16 @@ import { MonthNavigation } from '@/features/monthly/month-navigation';
 import { MonthlyTransfersSection } from '@/features/monthly/transfers-editor';
 import { CompletedOverview, CurrentOverview } from '@/features/monthly/overview';
 import { IssuesPanel } from '@/features/monthly/issues';
+import { IssueActionHost } from '@/features/monthly/issue-action-host';
+import { issueActionContextOf, issueActions } from '@/features/monthly/issue-actions';
 import { CompletedBucket, MonthToDateBucket } from '@/features/monthly/reconciliation';
+import { QuickUpdate } from '@/features/accounts/quick-update';
+import { quickUpdatePositionsOf } from '@/features/monthly/accounts-presentation';
+import {
+  defaultPickerCurrency,
+  ownedEntryDateBounds,
+  pickerCurrencies,
+} from '@/features/monthly/income-presentation';
 import { dayTitle, monthTitle, presentIssues } from '@/features/monthly/presentation';
 
 export const metadata: Metadata = { title: 'Monthly' };
@@ -81,6 +90,39 @@ export default async function MonthlyPage({ params }: { params: Promise<{ month:
   const presentation = presentIssues(issuesOf(page), page.review.dismissedIssueKeys);
   const context = { locale, minorUnitsByCurrency: page.minorUnitsByCurrency, names: namesOf(page) };
   const { navigation } = page;
+
+  // The corrective actions, from the same read everything else on the page uses
+  // (30.21; ADR 0009 §16). The model is pure and runs here; the host below owns
+  // the one dialog they open.
+  const previousMonthName = monthTitle(page.accounts.previousMonth, locale);
+  const actionContext = issueActionContextOf(page, {
+    monthName,
+    previousMonthName,
+    formatDay: (iso) => dayTitle(iso, locale),
+  });
+  const offeredActionIds = issuesOf(page)
+    .flatMap((issue) => issueActions(issue, actionContext))
+    .map((action) => action.id);
+  const currencies = pickerCurrencies(page.selectableCurrencyCodes, session.reportingCurrency);
+  const quickUpdatePositions =
+    page.kind === 'current'
+      ? quickUpdatePositionsOf(page.accounts.accounts, page.minorUnitsByCurrency)
+      : [];
+  const actionResources = {
+    month: page.month,
+    monthName,
+    monthEndsOn: page.monthEndsOn,
+    today: page.today,
+    formatting: { locale, minorUnitsByCurrency: page.minorUnitsByCurrency },
+    currencies,
+    defaultCurrency: defaultPickerCurrency(currencies, session.reportingCurrency),
+    incomeAccounts: page.income.cashAccounts,
+    expenseAccounts: page.expenses.cashAccounts,
+    eligibleCategories: page.expenses.eligibleCategories,
+    transferAccounts: page.transfers.cashAccounts,
+    quickUpdatePositions,
+    bounds: ownedEntryDateBounds(page),
+  };
 
   return (
     <div className="space-y-6">
@@ -250,7 +292,15 @@ export default async function MonthlyPage({ params }: { params: Promise<{ month:
           </p>
         </div>
 
-        <IssuesPanel presentation={presentation} month={page.month} monthName={monthName} context={context} />
+        <IssueActionHost resources={actionResources} offeredActionIds={offeredActionIds}>
+          <IssuesPanel
+            presentation={presentation}
+            month={page.month}
+            monthName={monthName}
+            context={context}
+            actionContext={actionContext}
+          />
+        </IssueActionHost>
 
         {page.kind === 'completed' ? (
           page.reconciliation.buckets.length === 0 ? (
@@ -274,6 +324,16 @@ export default async function MonthlyPage({ params }: { params: Promise<{ month:
                 same date to calculate month-to-date spending.
               </CardDescription>
             </CardHeader>
+            {/* 15.3 item 8: the message offers the action, where the message is. */}
+            <CardContent>
+              <QuickUpdate
+                positions={quickUpdatePositions}
+                today={page.today}
+                locale={locale}
+                monthEndsOn={page.monthEndsOn}
+                label="Update all today"
+              />
+            </CardContent>
           </Card>
         ) : page.monthToDate.buckets.length === 0 ? (
           <EmptyReconciliation monthName={monthName} />

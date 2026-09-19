@@ -14,6 +14,8 @@ import {
   type IssuePresentation,
 } from '@/features/monthly/presentation';
 import { DismissAdvisoryButton, RestoreAdvisoryButton } from '@/features/monthly/review-controls';
+import { IssueActionControls } from '@/features/monthly/issue-action-host';
+import { issueActions, type IssueAction, type IssueActionContext } from '@/features/monthly/issue-actions';
 
 /**
  * The month's issues (blueprint 8.5, 15.3 sections 1 and 8).
@@ -26,6 +28,11 @@ import { DismissAdvisoryButton, RestoreAdvisoryButton } from '@/features/monthly
  * The details are the ones the engine attached — an account, an amount, a
  * template and its occurrence, conversion candidates, the accounts with newer
  * balances. Nothing here decides whether an issue applies.
+ *
+ * Beside each instance are its corrective actions (15.3 section 8, 30.21),
+ * taken from the pure model in `issue-actions`: this file renders them and
+ * chooses none. A conversion candidate keeps its own control, so the suggestion
+ * and the transfer it would record read as one thing.
  */
 
 interface IssueContext {
@@ -46,9 +53,17 @@ function Money({ value, context }: { readonly value: { amount: string; currency:
   );
 }
 
-function Candidate({ candidate, context }: { readonly candidate: ConversionCandidateDto; readonly context: IssueContext }) {
+function Candidate({
+  candidate,
+  context,
+  action,
+}: {
+  readonly candidate: ConversionCandidateDto;
+  readonly context: IssueContext;
+  readonly action: IssueAction | undefined;
+}) {
   return (
-    <li>
+    <li className="space-y-1">
       {candidate.destinationCurrency} gained <Money value={candidate.destinationAmount} context={context} /> that
       nothing records, and {candidate.sourceCurrency} lost <Money value={candidate.sourceAmount} context={context} />{' '}
       of unexplained spending — close to <Money value={candidate.comparisonAmount} context={context} /> at the
@@ -59,6 +74,7 @@ function Candidate({ candidate, context }: { readonly candidate: ConversionCandi
         locale: context.locale,
       })}
       ).
+      {action === undefined ? null : <IssueActionControls actions={[action]} />}
     </li>
   );
 }
@@ -66,13 +82,16 @@ function Candidate({ candidate, context }: { readonly candidate: ConversionCandi
 function InstanceDetail({
   issue,
   context,
+  actionContext,
   ownReading,
 }: {
   readonly issue: ReconciliationIssueDto;
   readonly context: IssueContext;
+  readonly actionContext: IssueActionContext;
   /** Say which reading this instance is, because its group's words cover more than one. */
   readonly ownReading: boolean;
 }) {
+  const actions = issueActions(issue, actionContext);
   const account =
     issue.positionName ?? (issue.positionId === null ? null : (context.names.get(issue.positionId) ?? null));
   const parts: ReactNode[] = [];
@@ -117,21 +136,32 @@ function InstanceDetail({
         </p>
       ) : null}
       {issue.candidates === undefined ? null : (
-        <ul className="list-disc space-y-1 pl-5 text-[length:var(--text-table)]">
-          {issue.candidates.map((candidate) => (
+        <ul className="list-disc space-y-3 pl-5 text-[length:var(--text-table)]">
+          {issue.candidates.map((candidate, index) => (
             <Candidate
               key={`${candidate.sourceCurrency}-${candidate.destinationCurrency}`}
               candidate={candidate}
               context={context}
+              action={actions[index]}
             />
           ))}
         </ul>
       )}
+      {/* A candidate carries its own control; everything else lists them here. */}
+      {issue.candidates === undefined ? <IssueActionControls actions={actions} /> : null}
     </li>
   );
 }
 
-function GroupBody({ group, context }: { readonly group: IssueGroup; readonly context: IssueContext }) {
+function GroupBody({
+  group,
+  context,
+  actionContext,
+}: {
+  readonly group: IssueGroup;
+  readonly context: IssueContext;
+  readonly actionContext: IssueActionContext;
+}) {
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
@@ -150,6 +180,7 @@ function GroupBody({ group, context }: { readonly group: IssueGroup; readonly co
             key={String(index)}
             issue={issue}
             context={context}
+            actionContext={actionContext}
             ownReading={group.variantsDiffer}
           />
         ))}
@@ -163,11 +194,13 @@ export function IssuesPanel({
   month,
   monthName,
   context,
+  actionContext,
 }: {
   readonly presentation: IssuePresentation;
   readonly month: string;
   readonly monthName: string;
   readonly context: IssueContext;
+  readonly actionContext: IssueActionContext;
 }) {
   return (
     <Card id="issues" data-testid="issues">
@@ -187,7 +220,7 @@ export function IssuesPanel({
           <ul className="space-y-6">
             {presentation.active.map((group) => (
               <li key={group.key} className="space-y-2" data-testid={`issue-group-${group.key}`}>
-                <GroupBody group={group} context={context} />
+                <GroupBody group={group} context={context} actionContext={actionContext} />
                 {group.dismissable ? (
                   <div className="space-y-1">
                     <DismissAdvisoryButton
@@ -216,7 +249,7 @@ export function IssuesPanel({
             <ul className="mt-4 space-y-6">
               {presentation.dismissed.map((group) => (
                 <li key={group.key} className="space-y-2" data-testid={`dismissed-group-${group.key}`}>
-                  <GroupBody group={group} context={context} />
+                  <GroupBody group={group} context={context} actionContext={actionContext} />
                   <RestoreAdvisoryButton month={month} issueKey={group.key} title={group.title} />
                 </li>
               ))}

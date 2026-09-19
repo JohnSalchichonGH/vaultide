@@ -16,6 +16,39 @@ vi.mock('@/server/actions/monthly', () => ({
   restoreMonthAdvisoryAction: vi.fn(),
 }));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }) }));
+// The corrective actions' dialogs reach the flow, recurring and position
+// actions; this file is about the panel's words and grouping, and the model
+// behind the controls has its own suite.
+vi.mock('@/server/actions/flows', () => ({
+  acceptAdjustmentAction: vi.fn(),
+  createIncomeEntryAction: vi.fn(),
+  updateIncomeEntryAction: vi.fn(),
+  deleteIncomeEntryAction: vi.fn(),
+  createExpenseEntryAction: vi.fn(),
+  updateExpenseEntryAction: vi.fn(),
+  deleteExpenseEntryAction: vi.fn(),
+  createTransferAction: vi.fn(),
+  updateTransferAction: vi.fn(),
+  deleteTransferAction: vi.fn(),
+}));
+vi.mock('@/server/actions/recurring', () => ({
+  acceptSuggestionAction: vi.fn(),
+  skipSuggestionAction: vi.fn(),
+  unskipSuggestionAction: vi.fn(),
+  setTemplateTermAction: vi.fn(),
+  createTemplateAction: vi.fn(),
+  updateTemplateAction: vi.fn(),
+  archiveTemplateAction: vi.fn(),
+  unarchiveTemplateAction: vi.fn(),
+}));
+vi.mock('@/server/actions/positions', () => ({
+  quickUpdateAction: vi.fn(),
+  recordValuationAction: vi.fn(),
+  correctValuationAction: vi.fn(),
+  confirmMonthEndAction: vi.fn(),
+  confirmUnchangedAction: vi.fn(),
+  confirmUnchangedBatchAction: vi.fn(),
+}));
 
 const {
   STATUS_MEANING,
@@ -34,6 +67,8 @@ const {
   unavailableCauseOf,
 } = await import('@/features/monthly/presentation');
 const { IssuesPanel } = await import('@/features/monthly/issues');
+const { IssueActionHost } = await import('@/features/monthly/issue-action-host');
+const { issueActions } = await import('@/features/monthly/issue-actions');
 const { ReportingFigure } = await import('@/features/monthly/reporting-figure');
 const { CompletedBucket, MonthToDateBucket } = await import('@/features/monthly/reconciliation');
 
@@ -80,6 +115,46 @@ const salary = (date: string, templateId: string) =>
     occurrenceDate: date,
     expectedAmount: { amount: '2100', currency: 'EUR' },
   });
+
+/** The smallest host the panel can render inside: nothing of its own to read. */
+function testActionResources() {
+  return {
+    month: '2026-09',
+    monthName: 'September 2026',
+    monthEndsOn: '2026-09-30',
+    today: '2026-10-01',
+    formatting: { locale: 'en-GB', minorUnitsByCurrency: { EUR: 2, USD: 2 } },
+    currencies: ['EUR'],
+    defaultCurrency: 'EUR',
+    incomeAccounts: [],
+    expenseAccounts: [],
+    eligibleCategories: [],
+    transferAccounts: [],
+    quickUpdatePositions: [],
+    bounds: { min: '2026-09-01', max: '2026-09-30' },
+  };
+}
+
+function testActionContext() {
+  return {
+    shape: 'completed' as const,
+    month: '2026-09',
+    previousMonth: '2026-08',
+    monthName: 'September 2026',
+    previousMonthName: 'August 2026',
+    monthEndsOn: '2026-09-30',
+    today: '2026-10-01',
+    asOf: null,
+    accounts: new Map([
+      ['p1', { name: 'BBVA', openState: 'month_end', closeState: 'missing' }],
+      ['p2', { name: 'Savings', openState: 'first_balance', closeState: 'month_end' }],
+    ]),
+    participatingCurrencies: ['EUR'],
+    incomeAnchors: new Map<string, string>(),
+    expenseAnchors: new Map<string, string>(),
+    formatDay: (iso: string) => iso,
+  };
+}
 
 describe('grouping the month’s issues', () => {
   it('puts every instance of a key in one group, blocking first, and keeps each class’s order', () => {
@@ -251,15 +326,24 @@ describe('what an incomplete figure says', () => {
 });
 
 describe('the issues panel', () => {
-  const panel = (issues: readonly ReconciliationIssueDto[], dismissed: readonly string[]) =>
-    renderToStaticMarkup(
-      createElement(IssuesPanel, {
-        presentation: presentIssues(issues, dismissed),
-        month: '2026-09',
-        monthName: 'September 2026',
-        context: { locale: 'en-GB', minorUnitsByCurrency: { EUR: 2 }, names: new Map([['p1', 'BBVA']]) },
+  const panel = (issues: readonly ReconciliationIssueDto[], dismissed: readonly string[]) => {
+    const actionContext = testActionContext();
+    return renderToStaticMarkup(
+      createElement(IssueActionHost, {
+        resources: testActionResources(),
+        offeredActionIds: issues.flatMap((row) =>
+          issueActions(row, actionContext).map((action) => action.id),
+        ),
+        children: createElement(IssuesPanel, {
+          presentation: presentIssues(issues, dismissed),
+          month: '2026-09',
+          monthName: 'September 2026',
+          context: { locale: 'en-GB', minorUnitsByCurrency: { EUR: 2 }, names: new Map([['p1', 'BBVA']]) },
+          actionContext,
+        }),
       }),
     );
+  };
 
   it('gives blocking and informational issues no control, and one advisory key one control', () => {
     const html = panel([missingEnd, firstBalance, salary('2026-09-01', 't1'), salary('2026-09-25', 't2')], []);
@@ -474,11 +558,16 @@ describe('an issue key raised with two readings in one month', () => {
 
   it('renders one group with no per-reading control, and each instance says which reading it is', () => {
     const html = renderToStaticMarkup(
-      createElement(IssuesPanel, {
-        presentation: presentIssues([grew, exceeded], []),
-        month: '2026-09',
-        monthName: 'September 2026',
-        context: { locale: 'en-GB', minorUnitsByCurrency: { EUR: 2, USD: 2 }, names: new Map() },
+      createElement(IssueActionHost, {
+        resources: testActionResources(),
+        offeredActionIds: [],
+        children: createElement(IssuesPanel, {
+          presentation: presentIssues([grew, exceeded], []),
+          month: '2026-09',
+          monthName: 'September 2026',
+          context: { locale: 'en-GB', minorUnitsByCurrency: { EUR: 2, USD: 2 }, names: new Map() },
+          actionContext: testActionContext(),
+        }),
       }),
     );
     expect(html.match(/data-testid="issue-group-unexplained_inflow"/gu)).toHaveLength(1);
