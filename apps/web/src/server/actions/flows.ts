@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import {
+  acceptUnexplainedInflowAsAdjustment,
   createCashTransfer,
   createExpenseEntry,
   createIncomeEntry,
@@ -9,6 +10,7 @@ import {
   deleteExpenseEntry,
   deleteIncomeEntry,
   getServices,
+  parseMonth,
   updateCashTransfer,
   updateExpenseEntry,
   updateIncomeEntry,
@@ -161,5 +163,33 @@ export const deleteTransferAction = financialAction({
     const removed = await deleteCashTransfer(getServices().flows, ctx, input);
     refreshFlowViews();
     return { id: removed.transfer.id, feesRemoved: removed.fees.length };
+  },
+});
+
+/* ------------------------------------------------------------------------- */
+/* Reconciliation adjustments                                                 */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * "Accept as adjustment" for an `unexplained_inflow` (8.5, 30.21; ADR 0009 §5).
+ *
+ * The thinnest wrapper in this file on purpose. The input carries the bucket
+ * the user was looking at, the amount they saw and an optional note; the
+ * service recomputes the month, refuses a stale view, and derives the row's
+ * kind, amount, settlement, null cash leg and date itself. Nothing about the
+ * record comes from the browser.
+ */
+export const acceptAdjustmentAction = financialAction({
+  name: 'flows.acceptAdjustment',
+  input: flowInput.acceptAdjustmentInput,
+  async handler({ input, ctx }) {
+    const created = await acceptUnexplainedInflowAsAdjustment(getServices().flows, ctx, {
+      month: parseMonth(input.month),
+      currency: input.currency,
+      expectedAmount: input.expectedAmount,
+      note: input.note,
+    });
+    refreshFlowViews();
+    return { id: created.id, receivedOn: created.receivedOn, amount: created.netAmount };
   },
 });

@@ -7,3 +7,4 @@ export * from './shared';
 export * from './income';
 export * from './expenses';
 export * from './transfers';
+export * from './adjustments';

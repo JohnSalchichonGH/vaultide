@@ -9,6 +9,7 @@ import {
 import { currencyCode } from '../primitives/currency';
 import { moneyString } from '../primitives/money';
 import { plainDate, plainDateNotAfter } from '../primitives/date';
+import { monthParam } from './monthly';
 
 /**
  * Phase 3 flow inputs (blueprint 6.2, 7.4, 20.1, M5, v2.1.6 §30.9).
@@ -209,6 +210,29 @@ export function updateTransferInput(today: string) {
 export const deleteTransferInput = z.object({
   transferId: z.uuid(),
   reason: reason.optional(),
+});
+
+/* ------------------------------------------------------------------------- */
+/* Reconciliation adjustments                                                 */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * Accepting an unexplained inflow as a reconciliation adjustment (8.5, 30.21).
+ *
+ * Deliberately the smallest input in this file. The row's kind, settlement,
+ * amount, cash leg and financial date are **not** here: the service recomputes
+ * the month's reconciliation and derives every one of them from the discrepancy
+ * it finds, because an adjustment exists only for as long as that discrepancy
+ * does. What the browser sends is which bucket it was looking at, the amount it
+ * displayed — so a stale view can be refused rather than recorded — and an
+ * optional note.
+ */
+export const acceptAdjustmentInput = z.object({
+  month: monthParam,
+  currency: currencyCode,
+  /** The unexplained amount the user saw, compared against the server's own. */
+  expectedAmount: moneyString({ positive: true }),
+  note: z.string().trim().max(200, 'That note is too long.').optional(),
 });
 
 /* ------------------------------------------------------------------------- */
