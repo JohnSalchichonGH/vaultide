@@ -288,39 +288,22 @@ export function IssueActionHost({
                 onBusyChange={setBusy}
               />
             ) : (
-              <div className="max-h-[75vh] space-y-3 overflow-y-auto px-4 py-4 sm:px-6">
-                {stale ? (
-                  <p role="alert" className={NEGATIVE} data-testid="issue-action-stale">
-                    This issue is no longer raised for {resources.monthName}. Anything you record
-                    here is an ordinary record, not a correction of it.
+              <>
+                {/* What the correction is, above whichever editor it opens. */}
+                <div className="space-y-2 border-b px-4 py-3 sm:px-6">
+                  {stale ? (
+                    <p role="alert" className={NEGATIVE} data-testid="issue-action-stale">
+                      This issue is no longer raised for {resources.monthName}. Anything you record
+                      here is an ordinary record, not a correction of it.
+                    </p>
+                  ) : null}
+                  <p className={META} data-testid="issue-dialog-hint">
+                    {open.hint}
                   </p>
-                ) : null}
-                <p className={META} data-testid="issue-dialog-hint">
-                  {open.hint}
-                </p>
-                {open.target.kind === 'add_income' ? (
-                  <AddIncomeForm
-                    accounts={resources.incomeAccounts}
-                    currencies={resources.currencies}
-                    bounds={open.target.dates}
-                    defaultCurrency={resources.defaultCurrency}
-                    initial={open.target.initial}
-                    onSaved={close}
-                  />
-                ) : null}
-                {open.target.kind === 'add_expense' ? (
-                  <AddExpenseForm
-                    accounts={resources.expenseAccounts}
-                    eligibleCategories={resources.eligibleCategories}
-                    currencies={resources.currencies}
-                    bounds={resources.bounds}
-                    defaultCurrency={resources.defaultCurrency}
-                    formatting={resources.formatting}
-                    initial={open.target.initial}
-                    onSaved={close}
-                  />
-                ) : null}
+                </div>
                 {open.target.kind === 'transfer' ? (
+                  // The transfer editor brings its own scrolling body and its
+                  // own Save and Cancel, so it is not wrapped again.
                   <TransferEditor
                     accounts={resources.transferAccounts}
                     range={resources.bounds}
@@ -334,8 +317,34 @@ export function IssueActionHost({
                     onCancel={close}
                     onBusyChange={setBusy}
                   />
-                ) : null}
-              </div>
+                ) : (
+                  <div className="max-h-[70vh] overflow-y-auto px-4 py-4 sm:px-6">
+                    {open.target.kind === 'add_income' ? (
+                      <AddIncomeForm
+                        accounts={resources.incomeAccounts}
+                        currencies={resources.currencies}
+                        bounds={open.target.dates}
+                        defaultCurrency={resources.defaultCurrency}
+                        initial={open.target.initial}
+                        onSaved={close}
+                      />
+                    ) : (
+                      <AddExpenseForm
+                        accounts={resources.expenseAccounts}
+                        eligibleCategories={resources.eligibleCategories}
+                        currencies={resources.currencies}
+                        bounds={resources.bounds}
+                        defaultCurrency={resources.defaultCurrency}
+                        formatting={resources.formatting}
+                        initial={
+                          open.target.kind === 'add_expense' ? open.target.initial : undefined
+                        }
+                        onSaved={close}
+                      />
+                    )}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </Modal>

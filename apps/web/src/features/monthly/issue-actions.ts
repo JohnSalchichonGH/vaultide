@@ -183,7 +183,10 @@ const missingMonthEnd: Handler = (issue, context) => {
   const name = issue.positionName ?? state?.name ?? 'this account';
   const actions: IssueAction[] = [];
 
-  if (state?.closeState === undefined || UNSETTLED_ENDPOINTS.includes(state.closeState ?? '')) {
+  // No state for the account at all is the defensive case: offer this month's
+  // row rather than nothing.
+  const closing = state === undefined ? 'missing' : state.closeState;
+  if (closing !== null && UNSETTLED_ENDPOINTS.includes(closing)) {
     actions.push(
       action(issue, 'closing', {
         label: 'Enter the closing balance',
@@ -261,10 +264,13 @@ const firstBalance: Handler = (issue, context) => {
  * issue names.
  */
 const flowWithoutCashAccount: Handler = (issue, context) => {
+  // Every instance of this key names its currency; the empty case only keeps
+  // the sentence readable if one ever does not.
+  const inCurrency = issue.currency === null ? '' : `${issue.currency} `;
   const actions: IssueAction[] = [
     action(issue, 'add-account', {
-      label: `Add a ${issue.currency ?? 'cash'} cash account`,
-      hint: `No ${issue.currency ?? 'matching'} account took part in ${context.monthName}, so this record has nothing to reconcile against. Add the account it went through.`,
+      label: `Add a ${inCurrency}cash account`,
+      hint: `No ${inCurrency}account took part in ${context.monthName}, so this record has nothing to reconcile against. Add the account it went through.`,
       emphasis: 'primary',
       target: { kind: 'link', href: '/accounts' },
     }),
@@ -304,10 +310,16 @@ const unexplainedInflow: Handler = (issue, context) => {
   const currency = issue.currency ?? '';
   const dates = correctionDates(context);
   const amount = issue.amount;
+  // Where a correction for *this* figure may be dated: the current month's
+  // reconciliation stops at `D`, so a record dated later would not touch it.
+  const within =
+    context.shape === 'current'
+      ? `on or before ${context.formatDay(dates.max)}, where month to date stops`
+      : `inside ${context.monthName}`;
 
   const addIncome = action(issue, 'add-income', {
     label: 'Add missing income',
-    hint: `Money that arrived and nothing records. The amount starts at the unexplained difference — change it to what actually arrived, and date it inside ${context.monthName}.`,
+    hint: `Money that arrived and nothing records. The amount starts at the unexplained difference — change it to what actually arrived, and date it ${within}.`,
     emphasis: 'secondary',
     target: {
       kind: 'add_income',
@@ -335,30 +347,28 @@ const unexplainedInflow: Handler = (issue, context) => {
     target: { kind: 'anchor', anchor: '#accounts' },
   });
 
-  const actions: IssueAction[] = [];
-  if (issue.variant === 'b') {
-    actions.push(reviewExpenses, addIncome);
-  } else {
-    actions.push(addIncome, reviewExpenses);
-  }
-
   // A transfer can only explain this bucket when another currency's account
   // takes part: within one currency its two legs cancel (7.4, 8.2).
-  if (context.participatingCurrencies.some((code) => code !== currency)) {
-    actions.push(
-      action(issue, 'transfer', {
+  const transfer = context.participatingCurrencies.some((code) => code !== currency)
+    ? action(issue, 'transfer', {
         label: 'Record a transfer',
-        hint: 'Money moved in from another of your accounts is neither income nor spending.',
+        hint: `Money moved in from another of your accounts is neither income nor spending. Date it ${within}.`,
         emphasis: 'secondary',
         target: {
           kind: 'transfer',
           initial: { occurredOn: null, to: { currency } },
         },
-      }),
-    );
-  }
+      })
+    : undefined;
 
-  actions.push(reviewBalances);
+  // Variant A is cash that grew beyond the records, so the missing inflow leads;
+  // variant B is known expenses beyond the cash that left, so how they were paid
+  // does. Everything else follows in the order each reading makes likely.
+  const ordered =
+    issue.variant === 'b'
+      ? [reviewExpenses, addIncome, transfer, reviewBalances]
+      : [addIncome, transfer, reviewBalances, reviewExpenses];
+  const actions: IssueAction[] = ordered.filter((row): row is IssueAction => row !== undefined);
 
   if (amount !== null) {
     actions.push(

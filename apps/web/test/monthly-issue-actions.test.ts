@@ -249,9 +249,9 @@ describe('an unexplained inflow', () => {
   it('leads with the missing income when cash grew beyond the records', () => {
     expect(labelsOf(inflow('a'))).toEqual([
       'Add missing income',
-      'Review how expenses were paid',
       'Record a transfer',
       'Review balances',
+      'Review how expenses were paid',
       'Record reconciliation adjustment',
     ]);
   });
