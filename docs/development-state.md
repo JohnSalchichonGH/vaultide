@@ -19,7 +19,7 @@ logs into this file.
 
 ## Current checkpoint
 
-- **Blueprint:** v2.1.16.
+- **Blueprint:** v2.1.17.
 - **Current phase:** Phase 3.
 - **Phase 3 status:** in progress; the phase as a whole is **not accepted or
   frozen**.
@@ -50,18 +50,31 @@ logs into this file.
   Together these slices make up the Monthly sections Phase 3 has built so far.
   Cash transfers live inside Accounts and add no Monthly section of their own;
   later-phase Monthly sections remain outside this Phase 3 checkpoint.
+
+  The **pre-Spending reconciliation-evidence correction** (blueprint §30.20,
+  ADR 0007) is likewise independently reviewed, production-verified and frozen
+  as a completed correction checkpoint. It corrects engines already delivered
+  and is not a user-facing Phase 3 feature slice:
+  - cash-account dormancy is dated to the evidenced current dormant episode, so
+    an account being dormant today cannot rewrite its earlier history;
+  - a completed month with no tracked-cash observation is unavailable rather
+    than a reliable zero, so it never becomes a rolling observation.
+
+  It reopens no accepted phase and rewrites no historical acceptance record.
 - **User-facing production:** Phases 0–2 remain the accepted/frozen user-facing
   foundation. Phase 3's Monthly page is in production with Overview, Income,
   Known expenses, Accounts (including cash transfers) and Reconciliation; the
   rest of Phase 3 remains in progress.
 - **Database migrations:** repository migrations run through
-  `0007_phase3_privileges_and_triggers.sql`; the production release workflow
+  `0008_dormant_anchor.sql`; the production release workflow
   applies migrations before deploying application code.
 - **Phase 3 ADRs:** `docs/adr/0005-phase-3-implementation-decisions.md` is an
   accepted record of the decisions it contains, written for the slices 1–5
   baseline. It is not a complete roll-up of later Phase 3 work.
   `docs/adr/0006-phase-3-monthly-transfers.md` is the accepted record of the
   Monthly cash-transfer design decisions.
+  `docs/adr/0007-dormant-anchor.md` is the accepted record of the pre-Spending
+  dormant-anchor correction.
 
 Freezing completed Phase 3 slices does not imply acceptance or freeze of Phase 3
 as a whole.
@@ -82,8 +95,14 @@ The backend currently includes:
 - `large_unclassified` diagnostics and advisory output;
 - `possible_missing_conversion` diagnostics and advisory output;
 - global completed-month completeness: state and counts over the Phase 3
-  requirements (participating non-dormant cash accounts and scheduled recurring
-  occurrences), exposed through its own read model.
+  requirements (participating cash accounts not dormant at the month's end, and
+  scheduled recurring occurrences), exposed through its own read model;
+- dated dormant-episode evidence for cash accounts: a structural zero applies
+  only from the evidenced start of the account's current dormant episode, so a
+  present dormant flag never supplies one to earlier history;
+- completed months with no reconciliation bucket reported as unavailable
+  tracked observations rather than zeros, so the rolling tracked-spending
+  windows count only months that actually qualified.
 
 The recurring missing-income machinery remains part of the backend and shares
 its occurrence schedule with completeness: `scheduledOccurrences` in
