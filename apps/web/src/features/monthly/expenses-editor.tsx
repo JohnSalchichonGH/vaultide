@@ -41,13 +41,13 @@ import {
   startsInThePast,
 } from '@/features/monthly/income-presentation';
 import {
+  CONSUMPTION_GROUP_LABEL,
   EXPENSE_FREQUENCIES,
   EXPENSE_HISTORICAL_START_NOTE,
   EXPENSE_SKIP_REASON_LABEL,
   MONEY_OUT_GROUP_LABEL,
   MONEY_OUT_NOTE,
   NO_ACCOUNT,
-  SPENDING_GROUP_LABEL,
   TRANSFER_FEE_NOTE,
   accountAfterChange,
   accountChoices,
@@ -336,7 +336,7 @@ function CategorySelect({
           </option>
         )}
         {groups.spending.length === 0 ? null : (
-          <optgroup label={SPENDING_GROUP_LABEL}>
+          <optgroup label={CONSUMPTION_GROUP_LABEL}>
             {groups.spending.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}

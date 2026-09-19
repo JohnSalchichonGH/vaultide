@@ -861,10 +861,21 @@ describe('adding a known expense by hand', () => {
     expect(addExpense()).not.toContain('Deducted');
   });
 
-  it('groups money out of tracked accounts apart from spending', () => {
+  it('groups money out of tracked accounts apart from consumption', () => {
     const picker = selectMarkup(addExpense(), 'expense-add-category');
-    expect(picker).toMatch(/<optgroup label="Spending">.*Groceries.*Subscriptions.*<\/optgroup>/su);
-    expect(picker).toMatch(/<optgroup label="Not spending"><option value="cat-out">Money out of tracked accounts<\/option><\/optgroup>/u);
+    expect(picker).toMatch(/<optgroup label="Consumption">.*Groceries.*Subscriptions.*<\/optgroup>/su);
+    expect(picker).toMatch(/<optgroup label="Not consumption"><option value="cat-out">Money out of tracked accounts<\/option><\/optgroup>/u);
+    expect(picker).not.toContain('Not spending');
+  });
+
+  it('says money out of tracked accounts is tracked spending, not consumption, and not subtracted from savings — without claiming one causes the other', () => {
+    expect(MONEY_OUT_NOTE).toContain('somewhere Vaultide doesn’t track');
+    expect(MONEY_OUT_NOTE).toContain('counts in tracked spending because the cash left');
+    expect(MONEY_OUT_NOTE).toContain('isn’t consumption and isn’t subtracted from what you saved from income');
+    expect(MONEY_OUT_NOTE).toContain('Recorded as paid from a tracked account.');
+    // Fees are not consumption either and are subtracted, so no causal link.
+    expect(MONEY_OUT_NOTE).not.toMatch(/because it isn.t consumption|not consumption, so/u);
+    expect(MONEY_OUT_NOTE).not.toContain('without being spending');
   });
 
   it('offers every supported currency, and the tracked accounts of the chosen one', () => {
