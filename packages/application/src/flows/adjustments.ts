@@ -90,7 +90,7 @@ const MONTH_NAMES = [
 function monthLabel(month: MonthKey): string {
   const [year, index] = (month as string).slice(0, 7).split('-');
   const name = MONTH_NAMES[Number.parseInt(index as string, 10) - 1];
-  return name === undefined ? (month as string) : `${name} ${year as string}`;
+  return name === undefined || year === undefined ? month : `${name} ${year}`;
 }
 
 /**

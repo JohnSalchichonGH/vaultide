@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useRef, useState, useTransition, type ReactNode } from 'react';
+import { useId, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import type { MonthlyTransferDto, MonthlyTransfersDto, TransferLegDto } from '@vaultide/application';
 import {
@@ -9,6 +9,7 @@ import {
   updateTransferAction,
 } from '@/server/actions/flows';
 import { Card, CardContent } from '@/components/ui/card';
+import { Modal } from '@/components/ui/modal';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { MoneyText } from '@/components/finance/money-text';
@@ -220,48 +221,6 @@ function TransferItem({
 /* -------------------------------------------------------------------------- */
 /* The dialog                                                                  */
 /* -------------------------------------------------------------------------- */
-
-function TransferDialog({
-  title,
-  busy,
-  onClose,
-  children,
-}: {
-  readonly title: string;
-  readonly busy: boolean;
-  readonly onClose: () => void;
-  readonly children: ReactNode;
-}) {
-  const ref = useRef<HTMLDialogElement>(null);
-  const headingId = useId();
-
-  useEffect(() => {
-    const element = ref.current;
-    if (element !== null && !element.open) element.showModal();
-  }, []);
-
-  return (
-    <dialog
-      ref={ref}
-      aria-labelledby={headingId}
-      data-testid="transfer-dialog"
-      // `m-auto` centres the modal again after Tailwind's preflight resets the
-      // user agent's `margin: auto`, as in Quick update.
-      className="m-auto w-[min(40rem,92vw)] rounded-[var(--radius-surface)] border bg-[var(--color-surface)] p-0 text-[var(--color-foreground)] backdrop:bg-black/40"
-      onCancel={(event) => {
-        if (busy) event.preventDefault();
-      }}
-      onClose={onClose}
-    >
-      <div className="border-b px-4 py-3 sm:px-6">
-        <h3 id={headingId} className="text-[length:var(--text-section)] font-semibold">
-          {title}
-        </h3>
-      </div>
-      {children}
-    </dialog>
-  );
-}
 
 function FieldMessage({ id, error, hint }: { readonly id: string; readonly error?: string | undefined; readonly hint?: string | undefined }) {
   if (error === undefined && hint === undefined) return null;
@@ -902,7 +861,7 @@ export function MonthlyTransfersSection({
         ) : null}
 
         {dialog === null || gone ? null : (
-          <TransferDialog
+          <Modal
             title={
               editing === undefined
                 ? 'Add transfer'
@@ -911,6 +870,7 @@ export function MonthlyTransfersSection({
                   : 'Transfer'
             }
             busy={busy}
+            testId="transfer-dialog"
             onClose={close}
           >
             <TransferEditor
@@ -927,7 +887,7 @@ export function MonthlyTransfersSection({
               onCancel={close}
               onBusyChange={setBusy}
             />
-          </TransferDialog>
+          </Modal>
         )}
       </CardContent>
     </Card>
