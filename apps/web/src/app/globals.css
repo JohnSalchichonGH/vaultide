@@ -112,6 +112,18 @@
     outline-offset: 2px;
   }
 
+  /*
+   * Below the desktop breakpoint the signed-in shell's bottom tabs are fixed
+   * over the page (15.1). Scrolling something into view — a focused field, a
+   * followed anchor — keeps it above them rather than behind them (16.6,
+   * WCAG 2.2 "Focus Not Obscured").
+   */
+  @media (width < 64rem) {
+    html:has([data-mobile-navigation]) {
+      scroll-padding-bottom: calc(4rem + env(safe-area-inset-bottom));
+    }
+  }
+
   /* Every numeric cell uses tabular figures. */
   .tabular {
     font-variant-numeric: tabular-nums;
