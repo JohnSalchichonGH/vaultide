@@ -356,6 +356,33 @@ describe('the largest known rows', () => {
     ]);
   });
 
+  it('applies the limit to each native currency on its own when no cross-currency order exists (ADR 0008 §6)', () => {
+    // Six EUR rows, all converted, and seven USD rows, two of them without a
+    // rate: no reporting order exists, so no global five can be chosen, and
+    // each currency keeps its own five largest by native amount.
+    const eur = ['40', '75', '10', '90', '55', '20'].map((amount, index) =>
+      row(`eur-${String(index)}`, amount, EUR, '2026-09-10', amount),
+    );
+    const usd = ['300', '15', '120', '800', '60', '450', '5'].map((amount, index) =>
+      row(`usd-${String(index)}`, amount, USD, '2026-09-11', index % 3 === 0 ? null : new Decimal(amount).dividedBy(2).toString()),
+    );
+    // Interleaved, so neither the grouping nor the order can come from arrival.
+    const candidates = [...eur, ...usd].sort((a, b) => a.sourceId.localeCompare(b.sourceId)).reverse();
+
+    const ranking = rankKnownSpending(candidates, 5);
+
+    expect(ranking.mode).toBe('per_native_currency');
+    expect(ranking.groups.map((group) => group.currency)).toEqual([EUR, USD]);
+    const amounts = (currency: typeof EUR) =>
+      ranking.groups
+        .find((group) => group.currency === currency)
+        ?.items.map((item) => item.native.amount.toString());
+    expect(amounts(EUR)).toEqual(['90', '75', '55', '40', '20']);
+    expect(amounts(USD)).toEqual(['800', '450', '300', '120', '60']);
+    // The limit is per group, so the fallback shows ten rows here, not five.
+    expect(ranking.groups.map((group) => group.items.length)).toEqual([5, 5]);
+  });
+
   it('keeps the top rows only, per group', () => {
     const rows = Array.from({ length: 8 }, (_, index) =>
       row(`r${String(index)}`, String(10 + index), EUR, '2026-09-10', String(10 + index)),

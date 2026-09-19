@@ -227,7 +227,9 @@ function byDateThenId(a: KnownSpendingItem, b: KnownSpendingItem): number {
 }
 
 /**
- * The `limit` largest rows (15.2 "largest known").
+ * The `limit` largest rows (15.2 "largest known"): `limit` in all when one
+ * reporting-currency order exists, and `limit` per native currency when it does
+ * not (ADR 0008 §6).
  *
  * A reporting-currency ranking exists only when every candidate converted. With
  * one unconverted row the reporting values are not comparable to it — `$500`

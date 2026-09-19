@@ -142,7 +142,18 @@ In the current month with a common date `D`, every row stops at `D`. Without
 today may then be shown on its own, and it is never ranked against a tracked
 interval that does not exist.
 
-The largest-known list has five rows by default.
+The largest-known list is limited to five rows, and how the limit applies
+depends on whether the rows can be compared (§7):
+
+- when a reporting-currency ranking exists, it shows **up to five rows in all**;
+- when a cross-currency ranking is impossible, it shows **up to five rows per
+  native currency**, each currency ranked on its own.
+
+With incomparable currencies there is no truthful global five to choose.
+Keeping five rows after joining the groups, or ranking across them by nominal
+amount, would make the currency listed first, or the one with larger numbers,
+look like the larger spending. The page says that each currency is ranked
+separately.
 
 ## 7. A missing rate prevents a false cross-currency order
 
@@ -174,10 +185,13 @@ never a rolling observation, and never drawn to the monthly chart's
 reporting-currency scale. The chart marks the covered months with a bracket
 labelled in the span's own currency.
 
-## 9. The visualization is hand-written SVG and CSS
+## 9. The visualization is hand-written HTML and CSS
 
-**Decision.** Spending gets one restrained history chart, drawn in SVG with
-the existing design tokens. It has:
+**Decision.** Spending gets one restrained, Spending-specific history chart.
+It is built from ordinary HTML elements laid out with CSS grid and styled with
+the existing design tokens. Its geometry (bar heights, bracket spans) is
+computed in the component and applied as inline CSS. There are no SVG elements
+and no chart library. It has:
 
 - stacked known and unclassified tracked spending;
 - estimated months hatched;
@@ -188,9 +202,11 @@ the existing design tokens. It has:
 - span brackets.
 
 It has an accessible summary, and the history table is its exact-data
-alternative. Category bars are plain CSS. No charting dependency is added.
-Recharts and the richer chart layer that 16.3 describes stay with Phase 8's
-analytics. The net-worth chart already follows the same precedent.
+alternative. Category bars are plain CSS. No charting dependency and no generic
+chart framework are added. Recharts and the richer chart layer that 16.3
+describes stay with Phase 8's analytics. The net-worth chart is the precedent
+for drawing without a chart dependency; it renders its line in SVG, so the two
+share that decision but not a rendering primitive.
 
 ## 10. Spending ships as one complete product slice
 
