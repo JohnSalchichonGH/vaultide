@@ -5,7 +5,7 @@ import { monthKeyOf, plainDate, type MonthKey } from '../src/dates/plain-date';
 import { createFxTable, type FxRateRecord, type FxTable } from '../src/fx/index';
 import { currencyCode, type CurrencyCode } from '../src/money/index';
 import { monthEnd, position, valuation } from './helpers/records';
-import type { ExpenseFlow, IncomeFlow } from '../src/flows/types';
+import { CATEGORY_KINDS, type ExpenseFlow, type IncomeFlow } from '../src/flows/types';
 import {
   reconcileCompletedMonth,
   reconcileMonthToDate,
@@ -19,6 +19,7 @@ import {
   rankKnownSpending,
   reportCashFlow,
   sumKnownSpending,
+  trackedKindOfCategory,
   untrackedContributions,
   type KnownSpendingItem,
   type ReportingCashFlow,
@@ -452,3 +453,20 @@ describe('the rows add back to the figures for any month', () => {
     );
   });
 });
+
+describe('a category keeps the group its tracked rows are in', () => {
+  it('names every kind the way the breakdown classifies a tracked expense filed under it', () => {
+    for (const kind of CATEGORY_KINDS) {
+      // A capital improvement is `Nout` (7.4): it never becomes a known row, so it
+      // has no tracked row to agree with.
+      if (kind === 'capital_improvement') continue;
+      const input = completed({
+        cashAccounts: [account(A, 'BBVA', [monthEnd(A, '2026-08-31', '1000'), monthEnd(A, '2026-09-30', '800')])],
+        expenses: [expense({ categoryKind: kind, amount: new Decimal('10') })],
+      });
+      const [only] = items(input);
+      expect(only?.kind).toBe(trackedKindOfCategory(kind));
+    }
+  });
+});
+

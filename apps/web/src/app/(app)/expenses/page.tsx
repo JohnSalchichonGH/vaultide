@@ -10,6 +10,7 @@ import { AddExpenseForm } from '@/features/monthly/expenses-editor';
 import { defaultPickerCurrency, pickerCurrencies } from '@/features/monthly/income-presentation';
 import { MonthNavigation } from '@/features/monthly/month-navigation';
 import { dayTitle, monthTitle } from '@/features/monthly/presentation';
+import { Categories, LargestKnown } from '@/features/spending/breakdown';
 import { META } from '@/features/spending/figure';
 import { CombinedPeriods, HistoryTable, RollingCards } from '@/features/spending/history';
 import { hasTrackedEvidence, monthlyHref } from '@/features/spending/presentation';
@@ -171,6 +172,22 @@ export default async function SpendingPage({
 
       <Section id="combined" title="Combined periods">
         <CombinedPeriods spans={page.spans} formatting={formatting} />
+      </Section>
+
+      <Section
+        id="categories"
+        title="Categories"
+        description={`Where ${monthName}’s known spending went: tracked known expenses and spending paid from outside tracked accounts, each by its category. Paid by others is not included.`}
+      >
+        <Categories categories={page.categories} formatting={formatting} />
+      </Section>
+
+      <Section
+        id="largest"
+        title="Largest known"
+        description="The biggest expenses you recorded in this period, tracked and additional. Paid by others is not included."
+      >
+        <LargestKnown largest={page.largestKnown} formatting={formatting} />
       </Section>
 
       <Section
