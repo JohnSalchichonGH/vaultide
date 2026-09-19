@@ -1,6 +1,17 @@
 import type { MoneyDto } from '@vaultide/finance';
 
 /**
+ * The issue catalogue itself, re-exported for the interfaces that present it.
+ *
+ * 8.5's keys and classes are the engine's, and a reader that offers a
+ * correction for an issue has to be checked against the same list the engine
+ * raises from — otherwise a key added later simply has no interaction and
+ * nobody notices. The web may not import `finance` directly (19), so the
+ * catalogue reaches it through here, exactly as the DTOs do.
+ */
+export { ISSUE_CLASS, type IssueClass, type IssueKey } from '@vaultide/finance';
+
+/**
  * Completed-month reconciliation DTOs (blueprint 8.9).
  *
  * Serializable, native-currency and honest about what is unknown: a figure the

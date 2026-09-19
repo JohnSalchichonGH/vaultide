@@ -27,6 +27,28 @@ import { decideOnBlur, type BlurDecision } from '@/features/monthly/autosave';
  * all arrive decided in the read.
  */
 
+/**
+ * The anchor a scheduled expense occurrence's row carries, from its own
+ * identity — the same shape income uses (6.2, 30.21). A corrective action links
+ * to the row itself rather than to the top of a section.
+ */
+export const expenseOccurrenceAnchorId = (templateId: string, occurrenceDate: string): string =>
+  `expense-occurrence-${templateId}-${occurrenceDate}`;
+
+/**
+ * What a caller may prefill when it opens the known-expense form (30.21).
+ *
+ * The form's own contract, like income's: a currency a caller knows, and a date
+ * where one is evidenced. `incurredOn: null` leaves the date empty and
+ * required; omitting it keeps the form's ordinary default. Nothing else is
+ * prefilled from a diagnostic — an advisory about a month's unexplained
+ * spending says nothing about one expense's amount, category or payment method.
+ */
+export interface AddExpenseInitialValues {
+  readonly currency?: string | undefined;
+  readonly incurredOn?: string | null | undefined;
+}
+
 /* -------------------------------------------------------------------------- */
 /* How it was paid                                                             */
 /* -------------------------------------------------------------------------- */

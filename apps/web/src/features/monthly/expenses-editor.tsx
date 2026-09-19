@@ -33,7 +33,7 @@ import { MoneyText } from '@/components/finance/money-text';
 import { normalizeMoneyInput } from '@/lib/money-input';
 import { useHydrated } from '@/lib/use-hydrated';
 import { cn } from '@/lib/utils';
-import { dayTitle, monthTitle } from '@/features/monthly/presentation';
+import { dayTitle, expenseEntryAnchorId, monthTitle } from '@/features/monthly/presentation';
 import {
   defaultPickerCurrency,
   ownedEntryDateBounds,
@@ -41,7 +41,9 @@ import {
   startsInThePast,
 } from '@/features/monthly/income-presentation';
 import {
+  type AddExpenseInitialValues,
   CONSUMPTION_GROUP_LABEL,
+  expenseOccurrenceAnchorId,
   EXPENSE_FREQUENCIES,
   EXPENSE_HISTORICAL_START_NOTE,
   EXPENSE_SKIP_REASON_LABEL,
@@ -143,6 +145,8 @@ const FIELD =
 const SELECT =
   'w-full rounded-[var(--radius-control)] border bg-[var(--color-surface)] px-2 py-1.5 text-[length:var(--text-table)]';
 const ROW = 'border-b align-top last:border-0';
+/** A row a corrective action links to clears the sticky header when it lands (16.5). */
+const ANCHORED = 'scroll-mt-24';
 const NAME_CELL =
   'sticky left-0 z-10 bg-[var(--color-surface)] py-2 pr-2 text-left font-normal sm:pr-4';
 
@@ -1467,7 +1471,8 @@ function OccurrenceRow({
 
   return (
     <tr
-      className={ROW}
+      className={cn(ROW, ANCHORED)}
+      id={expenseOccurrenceAnchorId(occurrence.templateId, occurrence.occurrenceDate)}
       data-testid="expense-occurrence"
       data-template-id={occurrence.templateId}
       data-occurrence-date={occurrence.occurrenceDate}
@@ -1857,7 +1862,12 @@ function EntryRow({
   const day = (date: string): string => dayTitle(date, formatting.locale);
 
   return (
-    <tr className={ROW} data-testid="expense-entry" data-entry-id={entry.entryId}>
+    <tr
+      className={cn(ROW, ANCHORED)}
+      id={expenseEntryAnchorId(entry.entryId)}
+      data-testid="expense-entry"
+      data-entry-id={entry.entryId}
+    >
       <th scope="row" className={NAME_CELL}>
         <span className="font-medium">
           {entry.occurrence === null ? entry.category.name : entry.occurrence.templateName}
@@ -1920,6 +1930,8 @@ export function AddExpenseForm({
   bounds,
   defaultCurrency,
   formatting,
+  initial,
+  onSaved,
 }: {
   readonly accounts: CashAccounts;
   readonly eligibleCategories: readonly ExpenseCategoryDto[];
@@ -1927,6 +1939,10 @@ export function AddExpenseForm({
   readonly bounds: Bounds;
   readonly defaultCurrency: string;
   readonly formatting: Formatting;
+  /** What a caller already knows (30.21); absent in ordinary use. */
+  readonly initial?: AddExpenseInitialValues | undefined;
+  /** Told after a save lands, for a caller that owns something around the form. */
+  readonly onSaved?: (() => void) | undefined;
 }) {
   const router = useRouter();
   const ids = {
@@ -1940,9 +1956,11 @@ export function AddExpenseForm({
     oneOff: useId(),
   };
   const [categoryId, setCategoryId] = useState(defaultCategoryId(eligibleCategories));
-  const [incurredOn, setIncurredOn] = useState(bounds.max);
+  const [incurredOn, setIncurredOn] = useState(
+    initial?.incurredOn === null ? '' : (initial?.incurredOn ?? bounds.max),
+  );
   const [amount, setAmount] = useState('');
-  const [currency, setCurrency] = useState(defaultCurrency);
+  const [currency, setCurrency] = useState(initial?.currency ?? defaultCurrency);
   const [payment, setPayment] = useState('tracked_cash');
   const [account, setAccount] = useState(NO_ACCOUNT);
   const [description, setDescription] = useState('');
@@ -1973,6 +1991,14 @@ export function AddExpenseForm({
           setError(problem);
           return;
         }
+        if (incurredOn === '') {
+          setError('Choose the day it happened.');
+          return;
+        }
+        if (incurredOn < bounds.min || incurredOn > bounds.max) {
+          setError(`Choose a day from ${bounds.min} to ${bounds.max}.`);
+          return;
+        }
 
         startTransition(async () => {
           const result = await createExpenseEntryAction({
@@ -1995,6 +2021,7 @@ export function AddExpenseForm({
           setDescription('');
           setIsOneOff(false);
           router.refresh();
+          onSaved?.();
         });
       }}
     >

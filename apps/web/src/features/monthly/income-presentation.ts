@@ -11,6 +11,25 @@ import { allowedIncomeSettlements, rentalOnlySkipReasons, skipReasons } from '@v
  * than an authority (20.1).
  */
 
+/**
+ * What a caller may prefill when it opens the income form (30.21; ADR 0009 §4).
+ *
+ * The form's own contract, with no issue in it: a caller that knows something
+ * — a currency, an account a residual belongs to, an amount worth starting
+ * from — says so, and the form behaves exactly as it always has for everything
+ * else. `receivedOn: null` leaves the date **empty and required**, which is how
+ * a caller says "the day is not evidenced"; omitting it keeps the form's
+ * ordinary default.
+ */
+export interface AddIncomeInitialValues {
+  readonly kind?: string | undefined;
+  readonly currency?: string | undefined;
+  /** A starting amount, always editable: a suggestion is not a fact. */
+  readonly netAmount?: string | undefined;
+  readonly cashPositionId?: string | null | undefined;
+  readonly receivedOn?: string | null | undefined;
+}
+
 export const INCOME_KIND_LABEL: Readonly<Record<string, string>> = {
   employment: 'Salary',
   freelance: 'Freelance',

@@ -31,7 +31,7 @@ import { MoneyText } from '@/components/finance/money-text';
 import { normalizeMoneyInput } from '@/lib/money-input';
 import { useHydrated } from '@/lib/use-hydrated';
 import { cn } from '@/lib/utils';
-import { dayTitle, monthTitle } from '@/features/monthly/presentation';
+import { dayTitle, incomeEntryAnchorId, monthTitle } from '@/features/monthly/presentation';
 import {
   HISTORICAL_START_WARNING,
   SCHEDULABLE_INCOME_KINDS,
@@ -42,6 +42,7 @@ import {
   pickerCurrencies,
   incomeKindLabel,
   occurrenceAnchorId,
+  type AddIncomeInitialValues,
   occurrenceStateLabel,
   ownsEntry,
   settlementOptions,
@@ -115,6 +116,8 @@ const PRIMARY = cn(
 const FIELD =
   'tabular h-9 w-28 rounded-[var(--radius-control)] border bg-[var(--color-surface)] px-2 text-right text-[length:var(--text-table)] aria-[invalid=true]:border-[var(--color-negative)]';
 const ROW = 'border-b align-top last:border-0';
+/** A row a corrective action links to clears the sticky header when it lands (16.5). */
+const ANCHORED = 'scroll-mt-24';
 const NAME_CELL =
   'sticky left-0 z-10 bg-[var(--color-surface)] py-2 pr-2 text-left font-normal sm:pr-4';
 
@@ -1292,7 +1295,7 @@ function OccurrenceRow({
 
   return (
     <tr
-      className={ROW}
+      className={cn(ROW, ANCHORED)}
       id={occurrenceAnchorId(occurrence.templateId, occurrence.occurrenceDate)}
       data-testid="income-occurrence"
       data-template-id={occurrence.templateId}
@@ -1628,7 +1631,12 @@ function EntryRow({
   const owns = ownsEntry(entry, month);
 
   return (
-    <tr className={ROW} data-testid="income-entry" data-entry-id={entry.entryId}>
+    <tr
+      className={cn(ROW, ANCHORED)}
+      id={incomeEntryAnchorId(entry.entryId)}
+      data-testid="income-entry"
+      data-entry-id={entry.entryId}
+    >
       <th scope="row" className={NAME_CELL}>
         <span className="font-medium">
           {entry.occurrence === null
@@ -1713,11 +1721,20 @@ export function AddIncomeForm({
   currencies,
   bounds,
   defaultCurrency,
+  initial,
+  onSaved,
 }: {
   readonly accounts: MonthlyIncomeDto['cashAccounts'];
   readonly currencies: readonly string[];
   readonly bounds: { readonly min: string; readonly max: string };
   readonly defaultCurrency: string;
+  /**
+   * What a caller already knows (30.21). Absent everywhere the section itself
+   * renders the form, so its ordinary behaviour is untouched.
+   */
+  readonly initial?: AddIncomeInitialValues | undefined;
+  /** Told after a save lands, for a caller that owns something around the form. */
+  readonly onSaved?: (() => void) | undefined;
 }) {
   const router = useRouter();
   const ids = {
@@ -1730,13 +1747,17 @@ export function AddIncomeForm({
     account: useId(),
     description: useId(),
   };
-  const [kind, setKind] = useState<string>('other');
-  const [receivedOn, setReceivedOn] = useState(bounds.max);
-  const [net, setNet] = useState('');
+  const [kind, setKind] = useState<string>(initial?.kind ?? 'other');
+  // `null` means the day is not evidenced: the field starts empty and the save
+  // asks for it, rather than defaulting to a date nobody stated (ADR 0009 §11).
+  const [receivedOn, setReceivedOn] = useState(
+    initial?.receivedOn === null ? '' : (initial?.receivedOn ?? bounds.max),
+  );
+  const [net, setNet] = useState(initial?.netAmount ?? '');
   const [gross, setGross] = useState('');
-  const [currency, setCurrency] = useState(defaultCurrency);
+  const [currency, setCurrency] = useState(initial?.currency ?? defaultCurrency);
   const [settlement, setSettlement] = useState('tracked_cash');
-  const [account, setAccount] = useState(NO_ACCOUNT);
+  const [account, setAccount] = useState(initial?.cashPositionId ?? NO_ACCOUNT);
   const [description, setDescription] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
@@ -1759,6 +1780,14 @@ export function AddIncomeForm({
         const amount = normalizeMoneyInput(net);
         if (amount === '') {
           setError('Enter the amount that arrived.');
+          return;
+        }
+        if (receivedOn === '') {
+          setError('Choose the day it arrived.');
+          return;
+        }
+        if (receivedOn < bounds.min || receivedOn > bounds.max) {
+          setError(`Choose a day from ${bounds.min} to ${bounds.max}.`);
           return;
         }
         const grossAmount = normalizeMoneyInput(gross);
@@ -1784,6 +1813,7 @@ export function AddIncomeForm({
           setGross('');
           setDescription('');
           router.refresh();
+          onSaved?.();
         });
       }}
     >

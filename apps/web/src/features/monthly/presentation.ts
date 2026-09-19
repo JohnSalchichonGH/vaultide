@@ -23,6 +23,22 @@ import type {
 
 export type IssueClass = ReconciliationIssueDto['class'];
 
+/* -------------------------------------------------------------------------- */
+/* Anchors                                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Where a corrective action lands (30.21; ADR 0009 §1).
+ *
+ * One identity per row, built from the row's own id, so a link from an issue
+ * reaches the exact account, income entry or expense it is about rather than
+ * the top of a long section. `occurrenceAnchorId` in `income-presentation`
+ * does the same for a scheduled occurrence, from its `(template, date)` pair.
+ */
+export const accountAnchorId = (positionId: string): string => `account-${positionId}`;
+export const incomeEntryAnchorId = (entryId: string): string => `income-${entryId}`;
+export const expenseEntryAnchorId = (entryId: string): string => `expense-${entryId}`;
+
 /** One advisory, blocking or informational key, with every instance raised this month. */
 export interface IssueGroup {
   readonly key: string;

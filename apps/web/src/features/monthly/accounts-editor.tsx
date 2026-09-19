@@ -25,7 +25,7 @@ import { QuickUpdate } from '@/features/accounts/quick-update';
 import { normalizeMoneyInput } from '@/lib/money-input';
 import { useHydrated } from '@/lib/use-hydrated';
 import { cn } from '@/lib/utils';
-import { dayTitle } from '@/features/monthly/presentation';
+import { accountAnchorId, dayTitle } from '@/features/monthly/presentation';
 import {
   accountStatus,
   anyUnchangedEligible,
@@ -327,6 +327,8 @@ function Table({
 }
 
 const ROW = 'border-b align-top last:border-0';
+/** A row a corrective action links to clears the sticky header when it lands (16.5). */
+const ANCHORED = 'scroll-mt-24';
 const NAME_CELL =
   'sticky left-0 z-10 bg-[var(--color-surface)] py-2 pr-2 text-left font-normal sm:pr-4';
 
@@ -402,7 +404,12 @@ function CompletedAccountRow({
   const busy = !hydrated || state.kind === 'saving';
 
   return (
-    <tr className={ROW} data-testid="monthly-account" data-position-id={positionId}>
+    <tr
+      className={cn(ROW, ANCHORED)}
+      id={accountAnchorId(positionId)}
+      data-testid="monthly-account"
+      data-position-id={positionId}
+    >
       <th scope="row" className={NAME_CELL}>
         <AccountName name={account.name} currency={currency} dormant={account.dormant} />
       </th>
@@ -686,7 +693,12 @@ function CurrentAccountRow({
   };
 
   return (
-    <tr className={ROW} data-testid="monthly-account" data-position-id={positionId}>
+    <tr
+      className={cn(ROW, ANCHORED)}
+      id={accountAnchorId(positionId)}
+      data-testid="monthly-account"
+      data-position-id={positionId}
+    >
       <th scope="row" className={NAME_CELL}>
         <AccountName name={account.name} currency={currency} dormant={account.dormant} />
       </th>
