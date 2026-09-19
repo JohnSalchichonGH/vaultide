@@ -155,6 +155,7 @@ const mortgage: RoleLeg[] = [
     amount: new Decimal('235.00'),
     cashPositionId: ids.bbva,
     on: plainDate('2026-09-01'),
+    sourceKind: 'liability_payment',
     sourceId: 'golden-sep-mortgage',
   },
   {
@@ -163,6 +164,7 @@ const mortgage: RoleLeg[] = [
     amount: new Decimal('111.00'),
     cashPositionId: ids.bbva,
     on: plainDate('2026-09-01'),
+    sourceKind: 'liability_payment',
     sourceId: 'golden-sep-mortgage',
   },
 ];

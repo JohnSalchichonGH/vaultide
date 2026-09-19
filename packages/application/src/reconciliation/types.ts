@@ -43,6 +43,20 @@ export interface ConversionCandidateDto {
   readonly rateSource: string;
 }
 
+/**
+ * The record an issue is about (8.5, 30.21).
+ *
+ * `flow_without_cash_account` carries it: under that trigger no cash account of
+ * the currency takes part, so the useful thing to say is which record holds the
+ * unattributed leg. `kind` is the record's own table — `income`, `expense`,
+ * `transfer`, or a kind a later phase adds — and `on` is its financial date.
+ */
+export interface ReconciliationIssueSourceDto {
+  readonly kind: string;
+  readonly id: string;
+  readonly on: string;
+}
+
 export interface ReconciliationIssueDto {
   readonly key: string;
   readonly class: IssueClassDto;
@@ -69,6 +83,11 @@ export interface ReconciliationIssueDto {
    * source currency code ascending. Present on that key alone, never empty.
    */
   readonly candidates?: readonly ConversionCandidateDto[];
+  /**
+   * `flow_without_cash_account`: the record whose leg names no account (30.21).
+   * Present on that key alone, and always present there.
+   */
+  readonly source?: ReconciliationIssueSourceDto;
 }
 
 export interface ReconciliationAccountDto {

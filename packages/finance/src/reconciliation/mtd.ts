@@ -357,10 +357,17 @@ function bucketOf(
     .map((state) => issue('first_balance', { currency, positionId: state.positionId }));
 
   // 8.3, applied to the MTD interval: a currency present only through a
-  // null-leg flow has nothing to reconcile against.
+  // null-leg flow has nothing to reconcile against. Each issue names the record
+  // its leg came from, exactly as the completed-month engine does (30.21).
   if (accounts.length === 0) {
     for (const leg of scopeLegs.filter((l) => l.cashPositionId === null)) {
-      issues.push(issue('flow_without_cash_account', { currency, amount: leg.amount }));
+      issues.push(
+        issue('flow_without_cash_account', {
+          currency,
+          amount: leg.amount,
+          source: { kind: leg.sourceKind, id: leg.sourceId, on: leg.on },
+        }),
+      );
     }
     return {
       currency,

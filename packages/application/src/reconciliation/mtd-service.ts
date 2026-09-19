@@ -50,6 +50,10 @@ function issueDto(issue: Issue, fallbackCurrency: string | null): Reconciliation
     occurrenceDate: null,
     expectedAmount: null,
     positionIds: issue.positionIds === undefined ? null : [...issue.positionIds],
+    // `flow_without_cash_account` names its record here too (30.21).
+    ...(issue.source === undefined
+      ? {}
+      : { source: { kind: issue.source.kind, id: issue.source.id, on: issue.source.on } }),
   };
 }
 

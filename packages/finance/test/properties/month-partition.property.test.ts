@@ -154,6 +154,9 @@ function build(
         amount,
         cashPositionId: account,
         on: dayOf(current, index),
+        // A record of the table that role would come from: an inflow is income,
+        // a known outflow an expense, a non-expense movement a transfer.
+        sourceKind: role === 'I' ? 'income' : role === 'K' ? 'expense' : 'transfer',
         sourceId: `${current}-${role}`,
       });
     };

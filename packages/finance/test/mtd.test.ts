@@ -523,6 +523,14 @@ describe('J4 — a null leg in a currency with no participating account at all',
     expect(usdBucket?.totals.unclassified).toBeUndefined();
     expect(result.status).toBe('unavailable');
   });
+
+  it('names the record the leg came from, as the completed month does (30.21)', () => {
+    const raised = usdBucket?.issues.find((i) => i.key === 'flow_without_cash_account');
+    expect(raised?.source?.kind).toBe('income');
+    expect(raised?.source?.on).toBe(plainDate('2026-09-04'));
+    // The id is the record's own, so a reader never has to match an amount.
+    expect(raised?.source?.id).toMatch(/^income-/u);
+  });
 });
 
 describe('K — a missing opening in one currency', () => {

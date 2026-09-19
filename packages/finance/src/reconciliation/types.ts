@@ -4,7 +4,7 @@ import type { CurrencyCode } from '../money/types';
 import type { CashOpenState, CashCloseState } from '../positions/cash-state';
 import type { PositionRecord, ValuationRecord } from '../positions/types';
 import type { ExpenseFlow, IncomeFlow, TransferFlow } from '../flows/types';
-import type { RoleLeg } from '../flows/roles';
+import type { FlowSourceKind, RoleLeg } from '../flows/roles';
 import type { RecurrenceSchedule } from '../recurring/occurrences';
 
 /**
@@ -128,6 +128,24 @@ export interface ConversionCandidate {
   readonly rateSource: string;
 }
 
+/**
+ * The record an issue is about, where the issue is about one record (30.21).
+ *
+ * `flow_without_cash_account` is that issue: under its own trigger no cash
+ * account of the currency takes part, so there is nothing to choose until one
+ * exists, and the useful thing to say is *which* record has the unattributed
+ * leg. The identity comes from the leg the issue was raised from — the record's
+ * own table, id and financial date — and never from matching an amount.
+ *
+ * It is metadata beside the issue: no sum, status, residual or trigger reads it.
+ */
+export interface IssueSource {
+  readonly kind: FlowSourceKind;
+  readonly id: string;
+  /** The record's financial date: `received_on`, `incurred_on`, `occurred_on`. */
+  readonly on: PlainDate;
+}
+
 export interface Issue {
   readonly key: IssueKey;
   readonly class: IssueClass;
@@ -159,6 +177,11 @@ export interface Issue {
    * key alone, and never empty there — no candidate means no advisory.
    */
   readonly candidates?: readonly ConversionCandidate[];
+  /**
+   * `flow_without_cash_account`: the record whose leg names no account (30.21).
+   * Present on that key alone, and always present there.
+   */
+  readonly source?: IssueSource;
 }
 
 /** One account's contribution to a bucket (8.9). */

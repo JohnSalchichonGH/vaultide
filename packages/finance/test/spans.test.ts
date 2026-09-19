@@ -140,10 +140,10 @@ describe('A — the §8.10 span golden', () => {
       transfer({ kind: 'contribution', occurredOn: plainDate('2026-10-10'), fromPositionId: BBVA, toPositionId: SP500, fromAmount: new Decimal('1000.00'), toAmount: new Decimal('1000.00') }),
     ],
     preClassifiedLegs: [
-      { role: 'Nout', currency: EUR, amount: new Decimal('235.00'), cashPositionId: BBVA, on: plainDate('2026-09-01'), sourceId: 'mortgage-sep' },
-      { role: 'K', currency: EUR, amount: new Decimal('111.00'), cashPositionId: BBVA, on: plainDate('2026-09-01'), sourceId: 'mortgage-sep' },
-      { role: 'Nout', currency: EUR, amount: new Decimal('235.00'), cashPositionId: BBVA, on: plainDate('2026-10-01'), sourceId: 'mortgage-oct' },
-      { role: 'K', currency: EUR, amount: new Decimal('111.00'), cashPositionId: BBVA, on: plainDate('2026-10-01'), sourceId: 'mortgage-oct' },
+      { role: 'Nout', currency: EUR, amount: new Decimal('235.00'), cashPositionId: BBVA, on: plainDate('2026-09-01'), sourceKind: 'liability_payment', sourceId: 'mortgage-sep' },
+      { role: 'K', currency: EUR, amount: new Decimal('111.00'), cashPositionId: BBVA, on: plainDate('2026-09-01'), sourceKind: 'liability_payment', sourceId: 'mortgage-sep' },
+      { role: 'Nout', currency: EUR, amount: new Decimal('235.00'), cashPositionId: BBVA, on: plainDate('2026-10-01'), sourceKind: 'liability_payment', sourceId: 'mortgage-oct' },
+      { role: 'K', currency: EUR, amount: new Decimal('111.00'), cashPositionId: BBVA, on: plainDate('2026-10-01'), sourceKind: 'liability_payment', sourceId: 'mortgage-oct' },
     ],
   });
 

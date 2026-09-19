@@ -3,7 +3,7 @@ import { sql, withUser, withoutUser } from '@vaultide/db';
 import { createHarness, type Harness } from '../helpers/harness';
 import { testContext, type RequestContext } from '../../src/context';
 import { provisionUser } from '../../src/users/provisioning';
-import { createCashAccount } from '../../src/positions/service';
+import { createCashAccount, removePosition } from '../../src/positions/service';
 import { correctValuation, recordValuation } from '../../src/positions/valuations';
 import { listCategories } from '../../src/users/categories';
 import { createExpenseEntry } from '../../src/flows/expenses';
@@ -453,6 +453,63 @@ describe('a forgotten salary', () => {
     const issue = bucket?.issues.find((i) => i.key === 'unexplained_inflow');
     expect(issue?.amount?.amount).toBe('1702');
     expect(issue?.class).toBe('blocking');
+  });
+});
+
+describe('a flow with no cash account to reconcile against', () => {
+  /**
+   * The read-side case of 8.3, reached the only way a user can reach it: a
+   * dollar income recorded without naming an account — which the write path
+   * allows only while a dollar account exists — and then that account, which had
+   * no balances of its own, deleted (6.3).
+   */
+  async function strandedDollarIncome(): Promise<string> {
+    const dollars = await createCashAccount(harness.services.positions, OCTOBER_1, {
+      name: 'Dollars',
+      currency: 'USD',
+      accountType: 'checking',
+      openedOn: null,
+    });
+    const income = await createIncomeEntry(deps(), on('2026-09-12'), {
+      kind: 'employment',
+      receivedOn: '2026-09-12',
+      netAmount: '400.00',
+      currency: 'USD',
+      settlement: 'tracked_cash',
+      cashPositionId: null,
+    });
+    await removePosition(harness.services.positions, OCTOBER_1, dollars.id);
+    return income.id;
+  }
+
+  it('names the record the issue is about, so it can be reviewed (30.21)', async () => {
+    await recordSeptember();
+    const entryId = await strandedDollarIncome();
+
+    const result = await getMonthReconciliation(readDeps(), OCTOBER_1, SEPTEMBER);
+    const usd = result.buckets.find((b) => b.currency === 'USD');
+    const issue = usd?.issues.find((i) => i.key === 'flow_without_cash_account');
+
+    expect(issue?.source).toEqual({ kind: 'income', id: entryId, on: '2026-09-12' });
+    expect(issue?.amount).toEqual({ amount: '400', currency: 'USD' });
+    expect(usd?.status).toBe('unavailable');
+    // Metadata beside the issue: the euro month is exactly what it was.
+    const eur = result.buckets.find((b) => b.currency === 'EUR');
+    expect(eur?.status).toBe('reliable');
+    expect(eur?.totals.unclassified?.amount).toBe('398');
+  });
+
+  it('carries no source on the issues that are not about one record', async () => {
+    await recordSeptember();
+    await strandedDollarIncome();
+
+    const result = await getMonthReconciliation(readDeps(), OCTOBER_1, SEPTEMBER);
+    for (const bucket of result.buckets) {
+      for (const issue of bucket.issues) {
+        if (issue.key === 'flow_without_cash_account') continue;
+        expect(issue.source).toBeUndefined();
+      }
+    }
   });
 });
 

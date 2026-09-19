@@ -852,6 +852,7 @@ describe('roles, inside the identity', () => {
             amount: new Decimal('111'),
             cashPositionId: BBVA,
             on: plainDate('2026-08-01'),
+            sourceKind: 'liability_payment',
             sourceId: 'outside',
           },
         ],
@@ -916,6 +917,86 @@ describe('flows with no cash account named', () => {
     // The month takes the worst of its buckets (8.4).
     expect(result.buckets.find((b) => b.currency === 'EUR')?.status).toBe('reliable');
     expect(result.monthStatus).toBe('unavailable');
+  });
+
+  /**
+   * The record behind the leg travels with the issue (30.21).
+   *
+   * Under this trigger no account of the currency takes part, so there is
+   * nothing to choose; what a person needs is which record has the
+   * unattributed leg. The identity is the leg's own — table, id and financial
+   * date — so nothing has to match an amount against a list to find it.
+   */
+  it('names the record each unattributed leg came from', () => {
+    const stray = income({
+      id: 'income-stray',
+      cashPositionId: null,
+      currency: USD,
+      receivedOn: plainDate('2026-09-12'),
+      netAmount: new Decimal('400'),
+    });
+    const usd = reconcileCompletedMonth(
+      input({ cashAccounts: [oneAccount('0')], income: [stray] }),
+    ).buckets.find((b) => b.currency === 'USD');
+
+    const [issue, ...rest] = usd?.issues.filter((i) => i.key === 'flow_without_cash_account') ?? [];
+    expect(rest).toEqual([]);
+    expect(issue?.source).toEqual({ kind: 'income', id: 'income-stray', on: plainDate('2026-09-12') });
+    // Metadata only: the trigger, class and amount are what they always were.
+    expect(issue?.class).toBe('blocking');
+    expect(issue?.amount?.toString()).toBe('400');
+    expect(usd?.totals.externalInflows.toString()).toBe('400');
+    expect(usd?.totals.cashDelta).toBeUndefined();
+  });
+
+  it('tells two unattributed records apart, each by its own table and date', () => {
+    const usd = reconcileCompletedMonth(
+      input({
+        cashAccounts: [oneAccount('0')],
+        income: [
+          income({
+            id: 'income-stray',
+            cashPositionId: null,
+            currency: USD,
+            receivedOn: plainDate('2026-09-03'),
+            netAmount: new Decimal('400'),
+          }),
+        ],
+        expenses: [
+          expense({
+            id: 'expense-stray',
+            cashPositionId: null,
+            currency: USD,
+            incurredOn: plainDate('2026-09-21'),
+            amount: new Decimal('75'),
+          }),
+        ],
+      }),
+    ).buckets.find((b) => b.currency === 'USD');
+
+    expect(
+      usd?.issues
+        .filter((i) => i.key === 'flow_without_cash_account')
+        .map((i) => [i.source?.kind, i.source?.id, i.source?.on, i.amount?.toString()]),
+    ).toEqual([
+      ['income', 'income-stray', plainDate('2026-09-03'), '400'],
+      ['expense', 'expense-stray', plainDate('2026-09-21'), '75'],
+    ]);
+  });
+
+  it('gives an attributed record no source, because no issue is about one', () => {
+    const result = reconcileCompletedMonth(
+      input({
+        cashAccounts: [oneAccount('0')],
+        income: [income({ cashPositionId: null, currency: USD })],
+      }),
+    );
+    for (const bucket of result.buckets) {
+      for (const issue of bucket.issues) {
+        if (issue.key === 'flow_without_cash_account') continue;
+        expect(issue.source).toBeUndefined();
+      }
+    }
   });
 });
 

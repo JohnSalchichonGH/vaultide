@@ -126,6 +126,10 @@ function issueDto(
     expectedAmount: term === undefined ? null : moneyDto(term.amount.toString(), currency),
     // Present on `possible_missing_conversion` alone, as on the engine's issue.
     ...(issue.candidates === undefined ? {} : { candidates: issue.candidates.map(candidateDto) }),
+    // Present on `flow_without_cash_account` alone, likewise (30.21).
+    ...(issue.source === undefined
+      ? {}
+      : { source: { kind: issue.source.kind, id: issue.source.id, on: issue.source.on } }),
   };
 }
 

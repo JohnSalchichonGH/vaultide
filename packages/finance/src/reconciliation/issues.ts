@@ -83,12 +83,22 @@ export function detectIssues(input: IssueInput): Issue[] {
   // A null-leg flow in a currency no account takes part in (8.5). The flow is
   // never dropped and never given an account: it is reported, and the bucket
   // stays unavailable until somebody says where the money went.
+  //
+  // Each leg carries the record it came from, so the issue names it (30.21):
+  // there is no account to choose under this trigger, and "which record is
+  // this about" is the question the user actually has.
   if (input.noParticipatingAccount) {
     const nullLeg = input.legs.filter(
       (leg) => leg.currency === currency && leg.cashPositionId === null,
     );
     for (const leg of nullLeg) {
-      issues.push(issue('flow_without_cash_account', { currency, amount: leg.amount }));
+      issues.push(
+        issue('flow_without_cash_account', {
+          currency,
+          amount: leg.amount,
+          source: { kind: leg.sourceKind, id: leg.sourceId, on: leg.on },
+        }),
+      );
     }
   }
 

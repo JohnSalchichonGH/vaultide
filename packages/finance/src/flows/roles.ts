@@ -39,6 +39,17 @@ import type {
 /** `I` external inflow · `Nin`/`Nout` non-income/non-expense · `K` known expense. */
 export type FlowRole = 'I' | 'Nin' | 'Nout' | 'K' | 'none';
 
+/**
+ * Which kind of record a leg came from.
+ *
+ * The record's own table, never a guess from its role or its sign: a `K` leg is
+ * an expense entry or a liability payment's interest part, and only the record
+ * knows which. Phase 3 produces the first three; `liability_payment` exists
+ * because 8.10's own worked example contains one and the pre-classified legs of
+ * `CompletedMonthInput` carry it.
+ */
+export type FlowSourceKind = 'income' | 'expense' | 'transfer' | 'liability_payment';
+
 export interface RoleLeg {
   readonly role: FlowRole;
   readonly currency: CurrencyCode;
@@ -47,6 +58,14 @@ export interface RoleLeg {
   readonly cashPositionId: string | null;
   /** The date the leg falls on, for the month and the MTD cut-off. */
   readonly on: PlainDate;
+  /**
+   * The record behind the leg, as its own table names it (30.21).
+   *
+   * Carried so an issue about a leg can say which record it is about —
+   * `flow_without_cash_account` is the one that needs it — rather than leaving
+   * an interface to match an amount against a list and hope.
+   */
+  readonly sourceKind: FlowSourceKind;
   readonly sourceId: string;
 }
 
@@ -125,6 +144,7 @@ export function transferLegs(transfer: TransferFlow): RoleLeg[] {
       amount: transfer.fromAmount,
       cashPositionId: transfer.fromPositionId,
       on: transfer.occurredOn,
+      sourceKind: 'transfer',
       sourceId: transfer.id,
     });
     legs.push({
@@ -133,6 +153,7 @@ export function transferLegs(transfer: TransferFlow): RoleLeg[] {
       amount: transfer.toAmount,
       cashPositionId: transfer.toPositionId,
       on: transfer.occurredOn,
+      sourceKind: 'transfer',
       sourceId: transfer.id,
     });
   }
@@ -150,6 +171,7 @@ export function incomeLeg(income: IncomeFlow): RoleLeg | undefined {
     amount: income.netAmount,
     cashPositionId: income.cashPositionId,
     on: income.receivedOn,
+    sourceKind: 'income',
     sourceId: income.id,
   };
 }
@@ -164,6 +186,7 @@ export function expenseLeg(expense: ExpenseFlow): RoleLeg | undefined {
     amount: expense.amount,
     cashPositionId: expense.cashPositionId,
     on: expense.incurredOn,
+    sourceKind: 'expense',
     sourceId: expense.id,
   };
 }
