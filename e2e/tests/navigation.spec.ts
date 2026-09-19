@@ -6,8 +6,8 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from '@
  * "Mobile: bottom tabs Dashboard · Monthly · Investments · Analytics · More."
  * Below the desktop breakpoint the sidebar is not there, so these tabs are the
  * only way between sections. A person on a 375 px phone reaches every section
- * that exists — Dashboard and Monthly from the tabs, Accounts and Settings from
- * More — finds the ones that do not exist yet named with the phase that brings
+ * that exists — Dashboard and Monthly from the tabs, Accounts, Spending and
+ * Settings from More — finds the ones that do not exist yet named with the phase that brings
  * them and leading nowhere, and never loses the page's end behind the bar. At
  * the desktop breakpoint the sidebar takes over and the tabs are gone.
  *
@@ -176,10 +176,10 @@ test.describe('the signed-in navigation', () => {
     await expect(more).toHaveAttribute('aria-expanded', 'true');
 
     await expect(sheet.getByRole('link', { name: 'Accounts', exact: true })).toHaveAttribute('href', '/accounts');
+    await expect(sheet.getByRole('link', { name: 'Spending', exact: true })).toHaveAttribute('href', '/expenses');
     await expect(sheet.getByRole('link', { name: 'Settings', exact: true })).toHaveAttribute('href', '/settings/profile');
     for (const [key, label, phase] of [
       ['income', 'Income', 3],
-      ['spending', 'Spending', 3],
       ['real-estate', 'Real Estate', 6],
       ['debts', 'Debts', 5],
       ['projections', 'Projections', 10],
@@ -191,11 +191,22 @@ test.describe('the signed-in navigation', () => {
       await expect(entry).toContainText(`Phase ${String(phase)}`);
       await expect(sheet.getByRole('link', { name: new RegExp(label, 'u') })).toHaveCount(0);
     }
-    // Spending is not a page yet, so nothing anywhere leads to it.
-    await expect(page.locator('a[href^="/expenses"]')).toHaveCount(0);
     await fitsItsViewport(page);
 
+    // --- Spending through More ----------------------------------------------
+    await sheet.getByRole('link', { name: 'Spending', exact: true }).click();
+    await expect(page).toHaveURL(/\/expenses$/u);
+    await expect(page.getByTestId('spending-title')).toHaveText('Spending');
+    await expect(sheet).toBeHidden();
+    // Spending lives in More, so More is the current tab on it.
+    await expect(more).toHaveAttribute('aria-current', 'true');
+    await expect(dashboard).not.toHaveAttribute('aria-current', /.*/u);
+    await fitsItsViewport(page);
+    await footerClearsTheTabs(page, tabs);
+
     // --- Accounts through More ----------------------------------------------
+    await more.click();
+    await expect(sheet).toBeVisible();
     await sheet.getByRole('link', { name: 'Accounts', exact: true }).click();
     await expect(page).toHaveURL(/\/accounts$/u);
     await expect(sheet).toBeHidden();
@@ -269,6 +280,9 @@ test.describe('the signed-in navigation', () => {
       await expect(tabs).toBeHidden();
       await expect(page.getByTestId('mobile-tab-more')).toBeHidden();
       await expect(sidebar.getByRole('link', { name: 'Monthly', exact: true })).toHaveAttribute('href', CURRENT_MONTH);
+      await sidebar.getByRole('link', { name: 'Spending', exact: true }).click();
+      await expect(page).toHaveURL(/\/expenses$/u);
+      await expect(page.getByTestId('spending-title')).toHaveText('Spending');
       await sidebar.getByRole('link', { name: 'Accounts', exact: true }).click();
       await expect(page).toHaveURL(/\/accounts$/u);
     }

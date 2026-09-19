@@ -27,9 +27,17 @@ export interface MonthNavigationProps {
   readonly current: string;
   readonly previousLabel: string;
   readonly nextLabel: string | null;
+  /**
+   * Which page's months these are. Monthly addresses a month in its path, the
+   * Spending page in `?month=` (ADR 0008 §1); the months reachable are the same.
+   */
+  readonly section?: 'monthly' | 'spending';
 }
 
-const monthHref = (month: string): Route => `/monthly/${month}` as Route;
+const HREF_OF = {
+  monthly: (month: string): Route => `/monthly/${month}` as Route,
+  spending: (month: string): Route => `/expenses?month=${month}` as Route,
+} as const;
 
 export function MonthNavigation({
   month,
@@ -38,7 +46,9 @@ export function MonthNavigation({
   current,
   previousLabel,
   nextLabel,
+  section = 'monthly',
 }: MonthNavigationProps) {
+  const monthHref = HREF_OF[section];
   const router = useRouter();
   const hydrated = useHydrated();
   const inputId = useId();
@@ -61,7 +71,7 @@ export function MonthNavigation({
     return () => {
       window.removeEventListener('keydown', onKey);
     };
-  }, [router, previous, next]);
+  }, [router, previous, next, monthHref]);
 
   const go = () => {
     const trimmed = value.trim();

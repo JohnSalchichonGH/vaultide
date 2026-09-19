@@ -89,7 +89,10 @@ unchanged. On the Spending page:
 - a `Partial` **spending** figure is shown as `≥ €X`, because every missing
   contribution to it is non-negative (expense amounts are positive, and a
   reconciled residual is not negative). The word "known" is added only to the
-  known-tracked figure itself;
+  known-tracked figure itself. One case reads `—` instead: when nothing above
+  zero could be stated. A month missing its evidence, with no known expense
+  recorded, has tracked spending `Partial` at an exact zero. That is a true
+  bound, but `≥ €0` says nothing, and it would sit where a reliable zero sits;
 - a `Partial` **saved from income**, **personal savings** or **savings rate**
   is shown as `—` with the reason. A missing spending contribution would make
   the partial value overstate the user's savings, so the partial value is not a
