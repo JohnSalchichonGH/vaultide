@@ -177,8 +177,15 @@ export const spendingHref = (month: string): Route => `/expenses?month=${month}`
 /** Where in Monthly a month is maintained: its Accounts, its Reconciliation, or its top. */
 export type MonthlyAnchor = 'accounts' | 'reconciliation' | 'known-expenses' | null;
 
-export const monthlyHref = (month: string, anchor: MonthlyAnchor = null): Route =>
-  (anchor === null ? `/monthly/${month}` : `/monthly/${month}#${anchor}`) as Route;
+/**
+ * Monthly for a month, at a section when one is named. Each branch casts on its
+ * own, like `spendingHref`: a cast around the whole conditional reads as
+ * unnecessary to lint on a checkout with no generated route types.
+ */
+export function monthlyHref(month: string, anchor: MonthlyAnchor = null): Route {
+  if (anchor === null) return `/monthly/${month}` as Route;
+  return `/monthly/${month}#${anchor}` as Route;
+}
 
 /** The section of Monthly that holds what the focus month is missing. */
 export function focusAnchorOf(focus: SpendingFocusDto): MonthlyAnchor {
