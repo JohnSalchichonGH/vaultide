@@ -18,6 +18,7 @@ import {
   type MonthKey,
   type PlainDate,
   type SpanInput,
+  type SpanInterval,
   type SpanResult,
 } from '@vaultide/finance';
 import type { RequestContext } from '../context';
@@ -75,6 +76,39 @@ export interface SpanQuery {
    * anchor lies.
    */
   readonly from?: MonthKey | undefined;
+}
+
+/**
+ * The spans a caller asks for, from rows it already holds (8.7).
+ *
+ * `input.from`/`input.through` select which discovered intervals come back, and
+ * only those are reconciled. The caller owns the one precondition discovery
+ * cannot check: the flows it passes must cover every returned interval from its
+ * own `from` — which `spanFlowRange` states, and `getSpans` and the Spending read
+ * both satisfy before calling this.
+ */
+export function spansFrom(input: SpanInput): SpanDto[] {
+  return findSpans(input).map(spanDto);
+}
+
+/**
+ * The flow interval the given spans need: from the earliest `from` to the latest
+ * `to`, or nothing when there are none. A span is reconciled over its whole
+ * interval, so a flow read starting any later would give a plausible and wrong
+ * answer (ADR 0004 §3, ADR 0008 §8).
+ */
+export function spanFlowRange(
+  intervals: readonly Pick<SpanInterval, 'from' | 'to'>[],
+): { readonly from: PlainDate; readonly to: PlainDate } | null {
+  const [first, ...rest] = intervals;
+  if (first === undefined) return null;
+  let from = first.from;
+  let to = first.to;
+  for (const interval of rest) {
+    if (interval.from < from) from = interval.from;
+    if (interval.to > to) to = interval.to;
+  }
+  return { from, to };
 }
 
 function spanDto(span: SpanResult): SpanDto {
@@ -167,5 +201,5 @@ export async function getSpans(
     from,
   };
 
-  return findSpans(input).map(spanDto);
+  return spansFrom(input);
 }

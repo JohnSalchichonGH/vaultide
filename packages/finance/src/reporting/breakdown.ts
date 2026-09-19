@@ -1,4 +1,5 @@
 import type { PlainDate } from '../dates/plain-date';
+import type { CategoryKind } from '../flows/types';
 import type { FxTable } from '../fx/types';
 import type { CurrencyCode, Money } from '../money/types';
 import {
@@ -8,6 +9,7 @@ import {
   type FlowRecords,
   type ScopeAccount,
 } from '../reconciliation/scope';
+import { costBucket } from '../savings/classify';
 import { sumAmountsOf, type ReportingAmount } from './aggregate';
 import { convertContribution } from './cash-flow';
 import {
@@ -148,6 +150,27 @@ export function knownSpendingItems(input: KnownSpendingInput): KnownSpendingItem
   }
 
   return items;
+}
+
+/**
+ * What a tracked expense filed under this category kind is: the same bucket
+ * `contributionOfFact` puts it in (`costBucket`, 7.4, 12.5), named for the page.
+ * A category keeps one answer whatever its rows' settlement, so a category with
+ * only additional rows still sits in the group its kind belongs to.
+ */
+export function trackedKindOfCategory(
+  categoryKind: CategoryKind,
+): Exclude<KnownSpendingKind, 'additional'> {
+  switch (costBucket(categoryKind)) {
+    case 'consumption':
+      return 'consumption';
+    case 'external_outflows':
+      return 'money_out';
+    case 'property_operating':
+    case 'interest_and_fees':
+    case 'transaction_costs':
+      return 'cost';
+  }
 }
 
 /** Whether a row explains tracked spending (rather than additional). */

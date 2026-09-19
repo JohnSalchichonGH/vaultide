@@ -19,6 +19,8 @@ import {
   type IssueKey,
   type MissingContributionInput,
   type MonthKey,
+  type MonthReconciliation,
+  type MonthToDateResult,
   type MtdBucketResult,
   type PlainDate,
   type ReportingAmount,
@@ -70,7 +72,8 @@ export interface ReportingDependencies extends MonthDataDependencies {
 /** The ten days `rateOn` may look back, so the earliest flow can find its rate. */
 const FX_LEAD_DAYS = 10;
 
-const amountDto = (
+/** One reporting figure as the DTO carries it: value, availability, what is missing, how rates were found. */
+export const reportingAmountDto = (
   amount: ReportingAmount,
 ): ReportingAmountDto => ({
   value: moneyDto(amount.value.amount.toString(), amount.value.currency),
@@ -90,8 +93,8 @@ const amountDto = (
 function sourceOnlyDto(figures: SourceOnlyReportingFigures): SourceOnlyReportingFiguresDto {
   return {
     reportingCurrency: figures.reportingCurrency,
-    additionalSpending: amountDto(figures.additionalSpending),
-    thirdPartyPaid: amountDto(figures.thirdPartyPaid),
+    additionalSpending: reportingAmountDto(figures.additionalSpending),
+    thirdPartyPaid: reportingAmountDto(figures.thirdPartyPaid),
   };
 }
 
@@ -99,21 +102,21 @@ function cashFlowDto(flow: ReportingCashFlow): ReportingCashFlowFiguresDto {
   const rate = flow.savingsRate;
   return {
     reportingCurrency: flow.reportingCurrency,
-    externalIncome: amountDto(flow.externalIncome),
-    knownConsumption: amountDto(flow.knownConsumption),
-    propertyOperatingCosts: amountDto(flow.propertyOperatingCosts),
-    interestAndFees: amountDto(flow.interestAndFees),
-    transactionCosts: amountDto(flow.transactionCosts),
-    externalOutflows: amountDto(flow.externalOutflows),
-    unclassified: amountDto(flow.unclassified),
-    consumption: amountDto(flow.consumption),
-    trackedTotalSpending: amountDto(flow.trackedTotalSpending),
-    knownTrackedSpending: amountDto(flow.knownTrackedSpending),
-    additionalSpending: amountDto(flow.additionalSpending),
-    thirdPartyPaid: amountDto(flow.thirdPartyPaid),
-    trackedSavingsFromIncome: amountDto(flow.trackedSavingsFromIncome),
-    personalSavings: amountDto(flow.personalSavings),
-    totalSpending: amountDto(flow.totalSpending),
+    externalIncome: reportingAmountDto(flow.externalIncome),
+    knownConsumption: reportingAmountDto(flow.knownConsumption),
+    propertyOperatingCosts: reportingAmountDto(flow.propertyOperatingCosts),
+    interestAndFees: reportingAmountDto(flow.interestAndFees),
+    transactionCosts: reportingAmountDto(flow.transactionCosts),
+    externalOutflows: reportingAmountDto(flow.externalOutflows),
+    unclassified: reportingAmountDto(flow.unclassified),
+    consumption: reportingAmountDto(flow.consumption),
+    trackedTotalSpending: reportingAmountDto(flow.trackedTotalSpending),
+    knownTrackedSpending: reportingAmountDto(flow.knownTrackedSpending),
+    additionalSpending: reportingAmountDto(flow.additionalSpending),
+    thirdPartyPaid: reportingAmountDto(flow.thirdPartyPaid),
+    trackedSavingsFromIncome: reportingAmountDto(flow.trackedSavingsFromIncome),
+    personalSavings: reportingAmountDto(flow.personalSavings),
+    totalSpending: reportingAmountDto(flow.totalSpending),
     savingsRate: isUnavailable(rate)
       ? { kind: 'unavailable', reason: rate.reason, ...(rate.detail === undefined ? {} : { detail: rate.detail }) }
       : { kind: 'ratio', value: rate.toString() },
@@ -242,8 +245,13 @@ function buildMonth(
   return { contributions, missing, currencies };
 }
 
-/** One FX table for every currency and every date the month could need. */
-async function loadRates(
+/**
+ * One FX table for every currency and every date the month could need.
+ *
+ * Stored rates only (10.5). Exported so a composite read spanning several months
+ * can take one table for all of them instead of one per month.
+ */
+export async function loadReportingRates(
   deps: ReportingDependencies,
   currencies: ReadonlySet<string>,
   reporting: string,
@@ -262,8 +270,28 @@ export function monthReportingFrom(
   reporting: CurrencyCode,
   countAdditionalSpending: boolean,
 ): MonthReportingCashFlowDto {
-  const month = data.input.month;
-  const result = reconcileCompletedMonth(data.input);
+  return monthReportingOf(
+    data.input,
+    reconcileCompletedMonth(data.input),
+    fx,
+    reporting,
+    countAdditionalSpending,
+  );
+}
+
+/**
+ * A completed month's cash flow from its input and the reconciliation already
+ * run over it — for a reader that needs the buckets as well, and would otherwise
+ * reconcile the same month twice.
+ */
+export function monthReportingOf(
+  input: CompletedMonthData['input'],
+  result: MonthReconciliation,
+  fx: FxTable,
+  reporting: CurrencyCode,
+  countAdditionalSpending: boolean,
+): MonthReportingCashFlowDto {
+  const month = input.month;
 
   // A month with no bucket observed no tracked cash (8.4, v2.1.17 30.20). The
   // engine owns what that means for each figure; this only recognises the month
@@ -278,9 +306,9 @@ export function monthReportingFrom(
         reportUnobservedMonth({
           reportingCurrency: reporting,
           fx,
-          contributions: [...currenciesOf(data.input)].flatMap((currency) =>
+          contributions: [...currenciesOf(input)].flatMap((currency) =>
             untrackedContributions(
-              data.input.expenses,
+              input.expenses,
               currency as CurrencyCode,
               startOfMonthKey(month),
               endOfMonthKey(month),
@@ -293,7 +321,7 @@ export function monthReportingFrom(
   }
 
   const built = buildMonth(
-    data.input,
+    input,
     result.buckets,
     month,
     startOfMonthKey(month),
@@ -316,7 +344,7 @@ export function monthReportingFrom(
 }
 
 /** The currencies a month could need converted, without loading any rate. */
-function currenciesOf(
+export function currenciesOf(
   input: CompletedMonthData['input'] | MonthToDateData['input'],
 ): Set<string> {
   const currencies = new Set<string>();
@@ -350,7 +378,7 @@ export async function completedReportingFrom(
   today: PlainDate,
 ): Promise<MonthReportingCashFlowDto> {
   const month = data.input.month;
-  const fx = await loadRates(
+  const fx = await loadReportingRates(
     deps,
     currenciesOf(data.input),
     settings.reportingCurrency,
@@ -429,13 +457,35 @@ export async function monthToDateReportingFrom(
 ): Promise<MonthToDateReportingCashFlowDto> {
   const month = monthKey(today);
   const from = startOfMonthKey(month);
-  const key = (month as string).slice(0, 7);
   const result = reconcileMonthToDate(data.input);
+  const reporting = settings.reportingCurrency as CurrencyCode;
+  const currencies =
+    result.asOf === null
+      ? currenciesOf(data.input)
+      : buildMonth(data.input, result.buckets, month, from, result.asOf).currencies;
+  const fx = await loadReportingRates(deps, currencies, reporting, from, result.asOf ?? today, today);
+  return monthToDateReportingOf(data.input, result, fx, settings, today);
+}
+
+/**
+ * The current month's cash flow from its input, the month-to-date result
+ * already computed over it, and a rate table that covers it — the synchronous
+ * half of `monthToDateReportingFrom`, for a reader that holds all three.
+ */
+export function monthToDateReportingOf(
+  input: MonthToDateData['input'],
+  result: MonthToDateResult,
+  fx: FxTable,
+  settings: ReportingSettings,
+  today: PlainDate,
+): MonthToDateReportingCashFlowDto {
+  const month = monthKey(today);
+  const from = startOfMonthKey(month);
+  const key = (month as string).slice(0, 7);
   const reporting = settings.reportingCurrency as CurrencyCode;
 
   if (result.asOf === null) {
-    const currencies = currenciesOf(data.input);
-    const fx = await loadRates(deps, currencies, reporting, from, today, today);
+    const currencies = currenciesOf(input);
     return {
       kind: 'no_tracked_interval',
       month: key,
@@ -448,7 +498,7 @@ export async function monthToDateReportingFrom(
           reportingCurrency: reporting,
           fx,
           contributions: [...currencies].flatMap((currency) =>
-            untrackedContributions(data.input.expenses, currency as CurrencyCode, from, today),
+            untrackedContributions(input.expenses, currency as CurrencyCode, from, today),
           ),
         }),
       ),
@@ -456,8 +506,7 @@ export async function monthToDateReportingFrom(
   }
 
   const asOf = result.asOf;
-  const built = buildMonth(data.input, result.buckets, month, from, asOf);
-  const fx = await loadRates(deps, built.currencies, reporting, from, asOf, today);
+  const built = buildMonth(input, result.buckets, month, from, asOf);
 
   return {
     kind: 'tracked_interval',
@@ -507,7 +556,7 @@ export async function getCompletedReportingCashFlowSeries(
     for (const code of currenciesOf(input)) currencies.add(code);
   }
 
-  const fx = await loadRates(
+  const fx = await loadReportingRates(
     deps,
     currencies,
     settings.reportingCurrency,

@@ -20,4 +20,5 @@ export * from './positions/index';
 export * from './reconciliation/index';
 export * from './recurring/index';
 export * from './settings/index';
+export * from './spending/index';
 export * from './users/index';

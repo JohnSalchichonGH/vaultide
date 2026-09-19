@@ -9,6 +9,7 @@ import {
   loadTermsForRange,
   type ExpenseEntryRow,
   type IncomeEntryRow,
+  type PositionRecord as PositionRow,
   type TransferRow,
   type ValuationRow,
 } from '@vaultide/db';
@@ -21,8 +22,12 @@ import {
   startOfMonthKey,
   type CashAccountInput,
   type CompletedMonthInput,
+  type CompletenessTemplate,
+  type ExpenseFlow,
+  type IncomeFlow,
   type MonthKey,
   type PositionWithValuations,
+  type TransferFlow,
 } from '@vaultide/finance';
 import { toPositionRecord, toValuationRecord } from '../positions/mapping';
 import {
@@ -97,6 +102,72 @@ export function monthsInRange(from: MonthKey, to: MonthKey): MonthKey[] {
   return months;
 }
 
+/** What `completedMonthInputsOf` slices: the range's rows, already mapped for the engine. */
+export interface CompletedMonthInputRows {
+  readonly months: readonly MonthKey[];
+  readonly today: string;
+  readonly cashAccounts: readonly CashAccountInput[];
+  readonly income: readonly IncomeFlow[];
+  readonly expenses: readonly ExpenseFlow[];
+  readonly transfers: readonly TransferFlow[];
+  readonly templates: readonly CompletenessTemplate[];
+  readonly resolvedOccurrences: ReadonlySet<string>;
+}
+
+/**
+ * One engine input per completed month, sliced from rows read once over the
+ * whole range.
+ *
+ * Every month gets the whole valuation evidence and the flows dated inside it,
+ * which is what the single-month loader would have read for it. Shared by the
+ * range loader and the Spending page's loader, so a month is sliced one way
+ * wherever it is read (ADR 0008 §3).
+ */
+export function completedMonthInputsOf(rows: CompletedMonthInputRows): Map<MonthKey, CompletedMonthInput> {
+  const inputs = new Map<MonthKey, CompletedMonthInput>();
+  for (const month of rows.months) {
+    const start = startOfMonthKey(month);
+    const end = endOfMonthKey(month);
+    const within = (on: string): boolean => on >= start && on <= end;
+
+    inputs.set(month, {
+      month,
+      today: plainDate(rows.today),
+      cashAccounts: rows.cashAccounts,
+      income: rows.income.filter((flow) => within(flow.receivedOn)),
+      expenses: rows.expenses.filter((flow) => within(flow.incurredOn)),
+      transfers: rows.transfers.filter((flow) => within(flow.occurredOn)),
+      // The engine filters a template against the month by its own schedule, so
+      // the range's templates go to every month unchanged and each one sees the
+      // same set the single-month path would have loaded for it.
+      templates: rows.templates,
+      resolvedOccurrences: rows.resolvedOccurrences,
+    });
+  }
+  return inputs;
+}
+
+/** Each cash account with its own valuations, from one window's rows. */
+export function cashAccountInputsOf(
+  positions: readonly PositionRow[],
+  valuations: readonly ValuationRow[],
+): CashAccountInput[] {
+  const valuationsByPosition = new Map<string, ReturnType<typeof toValuationRecord>[]>();
+  for (const row of valuations) {
+    const list = valuationsByPosition.get(row.positionId);
+    const record = toValuationRecord(row);
+    if (list === undefined) valuationsByPosition.set(row.positionId, [record]);
+    else list.push(record);
+  }
+  return positions
+    .filter((row) => row.kind === 'cash')
+    .map((row) => ({
+      position: toPositionRecord(row),
+      valuations: valuationsByPosition.get(row.id) ?? [],
+      accountType: row.accountType ?? 'checking',
+    }));
+}
+
 export async function loadCompletedRange(
   deps: MonthDataDependencies,
   userId: string,
@@ -145,34 +216,18 @@ export async function loadCompletedRange(
     }));
 
   const kindOf = new Map(categories.map((category) => [category.id, category.kind]));
-  const completenessTemplates = templates.map(toCompletenessTemplate);
-  const incomeFlows = income.map(toIncomeFlow);
-  const expenseFlows = expenses.map((row) => toExpenseFlow(row, kindOf));
-  const transferFlows = transfers.map(toTransferFlow);
-  const resolvedKeys = new Set(
-    resolved.map((row) => occurrenceKey(row.templateId, row.occurrenceDate)),
-  );
-
-  const inputs = new Map<MonthKey, CompletedMonthInput>();
-  for (const month of months) {
-    const start = startOfMonthKey(month);
-    const end = endOfMonthKey(month);
-    const within = (on: string): boolean => on >= start && on <= end;
-
-    inputs.set(month, {
-      month,
-      today: plainDate(today),
-      cashAccounts,
-      income: incomeFlows.filter((flow) => within(flow.receivedOn)),
-      expenses: expenseFlows.filter((flow) => within(flow.incurredOn)),
-      transfers: transferFlows.filter((flow) => within(flow.occurredOn)),
-      // The engine filters a template against the month by its own schedule, so
-      // the range's templates go to every month unchanged and each one sees the
-      // same set the single-month path would have loaded for it.
-      templates: completenessTemplates,
-      resolvedOccurrences: resolvedKeys,
-    });
-  }
+  const inputs = completedMonthInputsOf({
+    months,
+    today,
+    cashAccounts,
+    income: income.map(toIncomeFlow),
+    expenses: expenses.map((row) => toExpenseFlow(row, kindOf)),
+    transfers: transfers.map(toTransferFlow),
+    templates: templates.map(toCompletenessTemplate),
+    resolvedOccurrences: new Set(
+      resolved.map((row) => occurrenceKey(row.templateId, row.occurrenceDate)),
+    ),
+  });
 
   return {
     months,

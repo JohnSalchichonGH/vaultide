@@ -57,7 +57,7 @@ const averageDto = (average: RollingAverage | null): RollingAverageDto | null =>
  * Nothing else on the month — additional spending, the savings rate, a memo's
  * missing rate — is carried, so nothing else can reach the decision.
  */
-function observationOf(month: MonthReportingCashFlowDto): RollingTrackedSpendingObservation {
+export function rollingObservationOf(month: MonthReportingCashFlowDto): RollingTrackedSpendingObservation {
   return {
     month: parseMonth(month.month),
     monthStatus: month.monthStatus,
@@ -91,9 +91,23 @@ export async function getRollingTrackedSpendingSeries(
   const [first] = series;
   /* v8 ignore next -- a non-inverted range always yields at least one month. */
   if (first === undefined) return [];
-  const reportingCurrency = first.reportingCurrency;
+  return rollingPointsFrom(series, range, first.reportingCurrency);
+}
 
-  const points = buildRollingTrackedSpendingSeries(series.map(observationOf), range);
+/**
+ * Rolling points from a completed reporting series already in hand.
+ *
+ * `series` must hold the eleven completed months before `range.from` as well —
+ * the calculation window 30.15 defines — or the first points average over fewer
+ * calendar seats than their windows have. `getRollingTrackedSpendingSeries`
+ * reads exactly that; the Spending read already holds it.
+ */
+export function rollingPointsFrom(
+  series: readonly MonthReportingCashFlowDto[],
+  range: { readonly from: MonthKey; readonly to: MonthKey },
+  reportingCurrency: string,
+): RollingTrackedSpendingPointDto[] {
+  const points = buildRollingTrackedSpendingSeries(series.map(rollingObservationOf), range);
   return points.map((point) => ({
     month: (point.month as string).slice(0, 7),
     reportingCurrency,
