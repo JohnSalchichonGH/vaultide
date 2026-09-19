@@ -10,7 +10,9 @@ import { AddExpenseForm } from '@/features/monthly/expenses-editor';
 import { defaultPickerCurrency, pickerCurrencies } from '@/features/monthly/income-presentation';
 import { MonthNavigation } from '@/features/monthly/month-navigation';
 import { dayTitle, monthTitle } from '@/features/monthly/presentation';
+import { SpendingChart } from '@/components/charts/spending-chart';
 import { Categories, LargestKnown } from '@/features/spending/breakdown';
+import { spendingChartModel } from '@/features/spending/chart-model';
 import { META } from '@/features/spending/figure';
 import { CombinedPeriods, HistoryTable, RollingCards } from '@/features/spending/history';
 import { hasTrackedEvidence, monthlyHref } from '@/features/spending/presentation';
@@ -165,8 +167,18 @@ export default async function SpendingPage({
       <Section
         id="history"
         title="Month by month"
-        description="Tracked spending as known and unclassified parts, with additional spending beside it, one row per month."
+        description="Tracked spending as known and unclassified parts, with additional spending and paid-by-others beside it. The table below the chart is its exact data."
       >
+        <SpendingChart
+          {...spendingChartModel({
+            history: page.history,
+            spans: page.spans,
+            focusMonth: page.month,
+            reportingCurrency: page.reportingCurrency,
+            locale,
+            minorUnitsByCurrency: page.minorUnitsByCurrency,
+          })}
+        />
         <HistoryTable history={page.history} focusMonth={page.month} formatting={formatting} />
       </Section>
 
