@@ -61,10 +61,23 @@ logs into this file.
     than a reliable zero, so it never becomes a rolling observation.
 
   It reopens no accepted phase and rewrites no historical acceptance record.
+
+  The **standalone Spending page** is likewise an independently reviewed,
+  production-verified and frozen completed Phase 3 slice checkpoint:
+  - `/expenses` is the cross-month Spending view. It opens on the last
+    completed month, and the current month stays selectable;
+  - it shows tracked, known, unclassified, additional and total spending only as
+    far as the evidence supports, and every status and availability is the
+    existing engines' own;
+  - the fixed 3-, 6- and 12-month tracked-spending rolling windows, and
+    reconciliation spans as combined periods, are user-facing here;
+  - the focus month's category breakdown and largest known expenses explain the
+    known part;
+  - Add known expense is Monthly's own, reused.
 - **User-facing production:** Phases 0–2 remain the accepted/frozen user-facing
   foundation. Phase 3's Monthly page is in production with Overview, Income,
-  Known expenses, Accounts (including cash transfers) and Reconciliation; the
-  rest of Phase 3 remains in progress.
+  Known expenses, Accounts (including cash transfers) and Reconciliation, and so
+  is the standalone Spending page; the rest of Phase 3 remains in progress.
 - **Database migrations:** repository migrations run through
   `0008_dormant_anchor.sql`; the production release workflow
   applies migrations before deploying application code.
@@ -75,6 +88,8 @@ logs into this file.
   Monthly cash-transfer design decisions.
   `docs/adr/0007-dormant-anchor.md` is the accepted record of the pre-Spending
   dormant-anchor correction.
+  `docs/adr/0008-standalone-spending.md` is the accepted record of the
+  standalone Spending implementation decisions.
 
 Freezing completed Phase 3 slices does not imply acceptance or freeze of Phase 3
 as a whole.
@@ -137,41 +152,58 @@ Monthly adds, on top of that backend:
 - MonthReview state: a completed month can be marked reviewed;
 - advisory dismissal and restoration, applied only as presentation state.
 
+Spending adds, on top of the same backend:
+
+- one composite Spending read (`getSpendingPage`, in
+  `packages/application/src/spending/`) over the existing authoritative
+  completed-month, month-to-date, reporting, rolling and span models;
+- `/expenses`, focused on the last completed month or any month through the
+  current one, with the surrounding completed months and each month's status;
+- the rolling 3-, 6- and 12-month tracked-spending windows;
+- reconciliation spans as combined periods in their native currency;
+- the focus month's categories and largest known expenses, from a pure
+  breakdown of the reporting figures' own contributions;
+- Monthly's Add known expense, reused;
+- Spending in the desktop and mobile navigation.
+
 Web surface of Phase 3:
 
 - Monthly (`/monthly/[yyyy-mm]`) is a production route with Overview, Income,
   Known expenses, Accounts and Reconciliation. It consumes the existing
   reconciliation, reporting, completeness, month-to-date and recurring
-  machinery through the Monthly composite read. Spans and rolling averages are
-  not wired to any page yet. Future UI work should reuse these existing reads
-  rather than build parallel ones.
+  machinery through the Monthly composite read.
+- Spending (`/expenses`) is a production route and the user-facing consumer of
+  spans and rolling averages, through the Spending composite read over the same
+  engines. Future UI work should keep reusing these existing reads rather than
+  build parallel reads or parallel finance logic.
 - MonthReview has repository, application and action paths
   (`apps/web/src/server/actions/monthly.ts`), used by Monthly to mark a
   completed month reviewed and to dismiss or restore an advisory as
   presentation state. Month notes are not edited anywhere yet.
 - `apps/web/src/server/actions/flows.ts` and `recurring.ts` declare the Phase 3
   financial mutations with `financialAction` (ADR 0003). Monthly's Income and
-  Known expenses sections are their consumers, and Monthly Accounts is the
-  user-facing consumer of the transfer flow path.
-- End-to-end coverage now also includes the Monthly journeys (`monthly`),
-  alongside the Phase 0–2 journeys (`smoke`, `auth`, `accounts`).
+  Known expenses sections are their consumers, as is Spending's reused Add known
+  expense, and Monthly Accounts is the user-facing consumer of the transfer flow
+  path.
+- End-to-end coverage now also includes the Monthly and Spending journeys
+  (`monthly`, `spending`), alongside the Phase 0–2 journeys (`smoke`, `auth`,
+  `accounts`).
 
 ## Next planned work
 
-The next planned Phase 3 area is the **standalone Spending page**.
+The next planned Phase 3 area is **reconciliation issue corrective actions**.
 
 Remaining Phase 3 work, in the agreed order:
 
-1. the standalone Spending page;
-2. reconciliation issue corrective actions;
-3. historical correction;
-4. bulk history entry;
-5. the standalone Income pages;
-6. the remaining end-to-end journeys and Phase 3 hardening, including the
+1. reconciliation issue corrective actions;
+2. historical correction;
+3. bulk history entry;
+4. the standalone Income pages;
+5. the remaining end-to-end journeys and Phase 3 hardening, including the
    server/domain enforcement of each currency's minor-unit scale for Phase 3
    flows that acceptance still requires;
-7. a cold whole-Phase-3 review;
-8. Phase 3 acceptance, production verification, and freeze.
+6. a cold whole-Phase-3 review;
+7. Phase 3 acceptance, production verification, and freeze.
 
 The exact scope and subdivision of this work may still be refined by a later
 reviewed task prompt. Do not infer that an item is implemented merely because it

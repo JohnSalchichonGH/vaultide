@@ -99,6 +99,10 @@ export const ROADMAP = {
           title: 'Income, expenses & transfers',
           text: 'One-off and recurring income and known expenses, plus transfers between your own accounts, including cross-currency transfers and linked fees.',
         },
+        {
+          title: 'Spending over time',
+          text: 'A dedicated cross-month view of total and tracked spending, known vs unclassified amounts, recent averages, combined periods where balances have gaps, categories and the largest known expenses.',
+        },
       ],
     },
     {
@@ -106,8 +110,8 @@ export const ROADMAP = {
       label: 'Next up',
       entries: [
         {
-          title: 'Spending and income over time',
-          text: 'Dedicated cross-month Spending and Income views, historical corrections, and faster bulk entry for past months.',
+          title: 'Corrections and income over time',
+          text: 'Resolve reconciliation issues, correct past months, enter older history faster, and see your income across months in a dedicated view.',
         },
       ],
     },

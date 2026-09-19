@@ -17,7 +17,7 @@ work on the repository; it does not restate the blueprint's rules.
 ### User-facing production
 
 Phases 0–2 are accepted, frozen and production-verified. Phase 3 is still in
-progress, but Monthly is live. What is usable today:
+progress, but Monthly and Spending are live. What is usable today:
 
 - account creation, email verification, sign-in, and an optional second factor;
 - settings: base and reporting currencies, timezone and locale;
@@ -48,7 +48,12 @@ progress, but Monthly is live. What is usable today:
     show it, and with an optional linked bank fee;
 - marking a completed month reviewed, and hiding an advisory for that month or
   showing it again. Hiding changes only what the page shows; it resolves
-  nothing.
+  nothing;
+- Spending across months: total and tracked spending, how much of it is known
+  and how much unclassified, spending outside tracked accounts, and how reliable
+  each month is, with fixed three-, six- and twelve-month averages of tracked
+  spending, combined periods where month-end balances are missing, and the
+  month's categories and largest known expenses.
 
 ### Phase 3 implementation
 
@@ -89,14 +94,15 @@ reconciliation, reporting-currency figures and completeness, the cash balances
 it is measured from, the month's transfers between cash accounts, the income it
 expected and received, and the expenses it expected and recorded. Cash transfers
 are maintained inside Monthly's Accounts section, with no page of their own. The
-standalone Spending page, corrective actions on reconciliation issues and the
-standalone Income pages are not built yet.
+standalone Spending page reads the same reconciliation, reporting, rolling and
+span machinery through its own composite read and reports spending across
+months; it is not a transaction ledger. Corrective actions on reconciliation
+issues and the standalone Income pages are not built yet.
 
 ### Remaining Phase 3
 
 Phase 3 is **in progress**, and is neither accepted nor frozen. Still to do:
 
-- the standalone Spending page;
 - corrective actions on reconciliation issues;
 - historical correction;
 - bulk history entry;
@@ -135,8 +141,9 @@ reconciliation identities, rate selection and every edge case.
 ```text
 apps/web             Next.js App Router: auth pages, onboarding, settings, shell,
                      dashboard, accounts and account detail, Monthly overview,
-                     income, known expenses, accounts and reconciliation;
-                     /api/auth, /api/cron/fx-refresh, /api/health
+                     income, known expenses, accounts and reconciliation,
+                     standalone Spending; /api/auth, /api/cron/fx-refresh,
+                     /api/health
 packages/finance     pure engines — money, dates, FX, Unavailable/Partial,
                      positions and net worth, flow roles, recurrence,
                      completed-month, month-to-date and span reconciliation,
@@ -149,12 +156,12 @@ packages/application use cases: auth and sessions, mailer, settings, FX service,
                      positions and valuations, quick update, net-worth reads,
                      flows, recurring templates and suggestions, every
                      reconciliation, completeness, savings, reporting and
-                     rolling read, and the Monthly composite read with its
-                     review state
+                     rolling read, the Monthly composite read with its review
+                     state, and the Spending composite read
 packages/config      tsconfig, ESLint (incl. the money-coercion rule), boundaries
 e2e                  Playwright: smoke, the auth and settings flow, the
                      accounts, balances and net-worth journey, and the Monthly
-                     journey
+                     and Spending journeys
 scripts/db           role bootstrap, local PostgreSQL, currency reconciliation,
                      live environment and financial-invariant checks
 scripts/backup       dump → verify → encrypt
@@ -254,7 +261,8 @@ policy filtered can never pass verification. Restoring is documented in
   [Phase 3](docs/adr/0005-phase-3-implementation-decisions.md) (written against
   blueprint v2.1.6 and deliberately left at that baseline),
   [Phase 3 Monthly-transfer decisions](docs/adr/0006-phase-3-monthly-transfers.md),
-  [the dormant anchor](docs/adr/0007-dormant-anchor.md).
+  [the dormant anchor](docs/adr/0007-dormant-anchor.md),
+  [standalone Spending](docs/adr/0008-standalone-spending.md).
 - **Evidence for frozen phases:**
   [`docs/phase-0-acceptance.md`](docs/phase-0-acceptance.md),
   [`docs/phase-1-acceptance.md`](docs/phase-1-acceptance.md),
