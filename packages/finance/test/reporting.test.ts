@@ -843,3 +843,102 @@ describe('the reporting cost partition holds exactly', () => {
     expect(amount(result.totalSpending)).toBe('51');
   });
 });
+
+describe('known tracked spending is ΣK in the reporting currency', () => {
+  it('is the five known buckets, with no residual in it, and tracked is known plus unclassified', () => {
+    // Every amount in the reporting currency: no division, so the identity is exact.
+    const result = flow(
+      [
+        dated('externalIncome', '2131', EUR, '2026-09-25'),
+        dated('knownConsumption', '300', EUR, '2026-09-12'),
+        dated('propertyOperatingCosts', '10', EUR, '2026-09-13'),
+        dated('interestAndFees', '111', EUR, '2026-09-01'),
+        dated('transactionCosts', '5', EUR, '2026-09-17'),
+        dated('externalOutflows', '40', EUR, '2026-09-20'),
+        residualContribution(new Decimal('429'), EUR, SEPTEMBER, 'reliable'),
+        untrackedContribution('additionalSpending', new Decimal('50'), EUR, plainDate('2026-09-13'), 'e1'),
+        untrackedContribution('thirdPartyPaid', new Decimal('80'), EUR, plainDate('2026-09-14'), 'e2'),
+      ],
+      { rows: [] },
+    );
+
+    expect(amount(result.knownTrackedSpending)).toBe('466');
+    expect(result.knownTrackedSpending.availability).toBe('available');
+    expect(
+      result.knownTrackedSpending.value.amount
+        .plus(result.unclassified.value.amount)
+        .equals(result.trackedTotalSpending.value.amount),
+    ).toBe(true);
+    // Neither untracked settlement is a known *tracked* expense.
+    expect(amount(result.trackedTotalSpending)).toBe('895');
+  });
+
+  it('counts an external outflow as known tracked spending, while savings never subtract it', () => {
+    const without = flow([dated('externalIncome', '1000', EUR, '2026-09-25')], { rows: [] });
+    const withOutflow = flow(
+      [
+        dated('externalIncome', '1000', EUR, '2026-09-25'),
+        dated('externalOutflows', '200', EUR, '2026-09-20'),
+      ],
+      { rows: [] },
+    );
+
+    expect(amount(withOutflow.knownTrackedSpending)).toBe('200');
+    expect(amount(withOutflow.trackedTotalSpending)).toBe('200');
+    // Not consumption, and not subtracted from saved-from-income (12.5).
+    expect(amount(withOutflow.consumption)).toBe('0');
+    expect(amount(withOutflow.trackedSavingsFromIncome)).toBe(amount(without.trackedSavingsFromIncome));
+  });
+
+  it('is untouched by a residual that is not a spending figure', () => {
+    // An unresolved bucket: the residual is missing, every known expense is exact.
+    const result = flow(
+      [
+        dated('externalIncome', '100', EUR, '2026-09-01'),
+        dated('knownConsumption', '500', EUR, '2026-09-15'),
+      ],
+      {
+        rows: [],
+        missing: [{ field: 'unclassified', currency: EUR, reason: 'not_applicable', detail: 'unresolved' }],
+      },
+    );
+
+    expect(result.knownTrackedSpending.availability).toBe('available');
+    expect(amount(result.knownTrackedSpending)).toBe('500');
+    // Tracked spending is partial at the known amount: 8.4's "spending ≥ known".
+    expect(result.trackedTotalSpending.availability).toBe('partial');
+    expect(amount(result.trackedTotalSpending)).toBe('500');
+  });
+
+  it('degrades with its own contributions only', () => {
+    const noGbp = USD_RATES;
+    const result = flow(
+      [
+        dated('knownConsumption', '50', USD, '2026-09-15'),
+        dated('externalOutflows', '30', GBP, '2026-09-22'),
+        residualContribution(new Decimal('20'), USD, SEPTEMBER, 'reliable'),
+        untrackedContribution('thirdPartyPaid', new Decimal('9'), GBP, plainDate('2026-09-22'), 'e3'),
+      ],
+      { rows: noGbp },
+    );
+
+    expect(result.knownTrackedSpending.availability).toBe('partial');
+    expect(result.knownTrackedSpending.missing.map((item) => item.currency)).toEqual([GBP]);
+    expect(amount(result.knownTrackedSpending)).toBe('20');
+  });
+
+  it('holds tracked = known + unclassified across a conversion to 10⁻²⁵ (ADR 0004 §1)', () => {
+    const result = flow([
+      dated('knownConsumption', '33.33', USD, '2026-09-15'),
+      dated('interestAndFees', '7.77', USD, '2026-09-10'),
+      dated('externalOutflows', '1.01', USD, '2026-09-20'),
+      residualContribution(new Decimal('12.34'), USD, SEPTEMBER, 'reliable'),
+    ]);
+    const gap = result.knownTrackedSpending.value.amount
+      .plus(result.unclassified.value.amount)
+      .minus(result.trackedTotalSpending.value.amount)
+      .abs();
+    expect(gap.lessThan(new Decimal('1e-25'))).toBe(true);
+  });
+});
+

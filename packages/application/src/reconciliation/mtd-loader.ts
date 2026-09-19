@@ -91,6 +91,27 @@ export interface MonthToDateData {
   readonly transfers: readonly TransferRow[];
 }
 
+/**
+ * The current month's engine input from rows that may reach further back.
+ *
+ * The flows are kept to `[start(M), today]` — exactly what `loadMonthToDate`
+ * reads, so on its own rows this changes nothing. A composite read that loaded
+ * a longer range (the Spending page) gets the same input the month-to-date read
+ * would have built (ADR 0008 §3). The valuations are the whole window, as always
+ * (ADR 0004 §3).
+ */
+export function monthToDateInputOf(rows: MonthToDateInput): MonthToDateInput {
+  const from = startOfMonthKey(monthKey(rows.today));
+  const within = (on: string): boolean => on >= from && on <= rows.today;
+  return {
+    today: rows.today,
+    cashAccounts: rows.cashAccounts,
+    income: rows.income.filter((flow) => within(flow.receivedOn)),
+    expenses: rows.expenses.filter((flow) => within(flow.incurredOn)),
+    transfers: rows.transfers.filter((flow) => within(flow.occurredOn)),
+  };
+}
+
 export async function loadMonthToDate(
   deps: MonthDataDependencies,
   userId: string,
@@ -127,13 +148,13 @@ export async function loadMonthToDate(
   const kindOf = new Map(categories.map((category) => [category.id, category.kind]));
 
   return {
-    input: {
+    input: monthToDateInputOf({
       today: plainDate(today),
       cashAccounts,
       income: income.map(toIncomeFlow),
       expenses: expenses.map((row) => toExpenseFlow(row, kindOf)),
       transfers: transfers.map(toTransferFlow),
-    },
+    }),
     positions: window.positions,
     valuations: window.valuations,
     income,

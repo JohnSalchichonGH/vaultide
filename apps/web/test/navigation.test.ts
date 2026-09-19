@@ -75,8 +75,14 @@ function itemWith(markup: string, testId: string): string {
 const tabElement = (markup: string, key: string): string => itemWith(tabsOf(markup), `mobile-tab-${key}`);
 
 /** Every section that exists today, and nothing else. */
-const LIVE = { dashboard: '/dashboard', monthly: '/monthly/2026-10', accounts: '/accounts', settings: '/settings/profile' };
-const NOT_BUILT = ['income', 'spending', 'investments', 'real-estate', 'debts', 'analytics', 'projections', 'goals'];
+const LIVE = {
+  dashboard: '/dashboard',
+  monthly: '/monthly/2026-10',
+  accounts: '/accounts',
+  spending: '/expenses',
+  settings: '/settings/profile',
+};
+const NOT_BUILT = ['income', 'investments', 'real-estate', 'debts', 'analytics', 'projections', 'goals'];
 
 /**
  * The signed-in shell's navigation (blueprint 15.1).
@@ -150,14 +156,21 @@ describe('which section a page belongs to', () => {
     ['/accounts/5f1c', 'more'],
     ['/settings/profile', 'more'],
     ['/settings/security', 'more'],
+    ['/expenses', 'more'],
   ] as const)('%s belongs to the %s tab', (pathname, tab) => {
     expect(activeMobileTab(pathname, groups)).toBe(tab);
+  });
+
+  it('makes Spending a live section of More, owning /expenses and its months', () => {
+    expect(sectionOwning('/expenses', groups)).toMatchObject({ key: 'spending', href: '/expenses' });
+    // A month in the query string is still the same page and the same section.
+    expect(sectionOwning('/expenses', groups)?.section).toBe('/expenses');
+    expect(activeMobileTab('/expensesx', groups)).toBeNull();
   });
 
   it.each([
     ['/investments/abc', 'investments'],
     ['/analytics/cash-flow', 'analytics'],
-    ['/expenses', 'more'],
     ['/income/sources/abc', 'more'],
     ['/real-estate', 'more'],
     ['/debts/abc', 'more'],
@@ -187,7 +200,7 @@ describe('the shell', () => {
 
   it('links nowhere a section has not been built', () => {
     const markup = shellAt('/dashboard');
-    for (const route of ['/income', '/expenses', '/investments', '/real-estate', '/debts', '/analytics', '/projections', '/goals']) {
+    for (const route of ['/income', '/investments', '/real-estate', '/debts', '/analytics', '/projections', '/goals']) {
       expect(markup).not.toContain(`href="${route}`);
     }
   });
@@ -208,7 +221,6 @@ describe('the shell', () => {
     const more = moreOf(shellAt('/dashboard'));
     for (const [key, label, phase] of [
       ['income', 'Income', 3],
-      ['spending', 'Spending', 3],
       ['real-estate', 'Real Estate', 6],
       ['debts', 'Debts', 5],
       ['projections', 'Projections', 10],
@@ -221,6 +233,7 @@ describe('the shell', () => {
       expect(item).toContain(`arrives in Phase ${String(phase)}`);
     }
     expect(itemWith(more, 'more-item-accounts')).toMatch(/^<a href="\/accounts"/u);
+    expect(itemWith(more, 'more-item-spending')).toMatch(/^<a href="\/expenses"/u);
     expect(itemWith(more, 'more-item-settings')).toMatch(/^<a href="\/settings\/profile"/u);
   });
 
@@ -234,7 +247,11 @@ describe('the shell', () => {
     expect(tabElement(monthly, 'monthly')).toContain('aria-current="page"');
     expect(tabElement(monthly, 'dashboard')).not.toContain('aria-current');
 
-    for (const [pathname, key] of [['/accounts', 'accounts'], ['/settings/security', 'settings']] as const) {
+    for (const [pathname, key] of [
+      ['/accounts', 'accounts'],
+      ['/settings/security', 'settings'],
+      ['/expenses', 'spending'],
+    ] as const) {
       const markup = shellAt(pathname);
       expect(tabElement(markup, 'more')).toContain('aria-current="true"');
       expect(tabElement(markup, 'dashboard')).not.toContain('aria-current');

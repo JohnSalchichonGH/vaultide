@@ -149,6 +149,33 @@ function categoryDtoOf(row: CategoryRecord): ExpenseCategoryDto {
   };
 }
 
+/**
+ * What an Add-known-expense form offers (15.3 section 3): the live `spending`
+ * and `money_out` categories in the user's order, and every cash account with
+ * the window a flow's date must fall in (8.1).
+ *
+ * One statement shared by Monthly's Known expenses and the Spending page, so the
+ * two forms can never offer different things. The services remain authoritative
+ * for all of it.
+ */
+export function expenseFormOptionsOf(
+  categories: readonly CategoryRecord[],
+  positions: readonly PositionRow[],
+): Pick<MonthlyExpensesDto, 'eligibleCategories' | 'cashAccounts'> {
+  return {
+    eligibleCategories: categories.map(categoryDtoOf).filter((row) => row.selectable),
+    cashAccounts: positions
+      .filter((row) => row.kind === 'cash')
+      .map((row) => ({
+        positionId: row.id,
+        name: row.name,
+        currency: row.currency,
+        openedOn: row.openedOn,
+        closedOn: row.closedOn,
+      })),
+  };
+}
+
 /** Capital allocation, never a known expense (7.4). */
 const isCapitalImprovement = (category: ExpenseCategoryDto): boolean =>
   category.kind === 'capital_improvement';
@@ -256,15 +283,7 @@ function build(input: MonthlyExpensesInput): { dto: MonthlyExpensesDto; context:
     return found;
   };
 
-  const cashAccounts = input.positions
-    .filter((row) => row.kind === 'cash')
-    .map((row) => ({
-      positionId: row.id,
-      name: row.name,
-      currency: row.currency,
-      openedOn: row.openedOn,
-      closedOn: row.closedOn,
-    }));
+  const { eligibleCategories, cashAccounts } = expenseFormOptionsOf(input.categories, input.positions);
   const accountNames = new Map(cashAccounts.map((account) => [account.positionId, account.name]));
   const accountName = (positionId: string): string | null => accountNames.get(positionId) ?? null;
 
@@ -434,7 +453,7 @@ function build(input: MonthlyExpensesInput): { dto: MonthlyExpensesDto; context:
       occurrences,
       otherRecurring: remaining.filter((row) => row.templateId !== null).map(entry),
       direct: remaining.filter((row) => row.templateId === null).map(entry),
-      eligibleCategories: categoryRows.filter((row) => row.selectable),
+      eligibleCategories,
       cashAccounts,
     },
     context: { category, source, termsOf },

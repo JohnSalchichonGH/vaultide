@@ -120,11 +120,23 @@ export function paymentMethodChoice(args: {
 /* Categories                                                                  */
 /* -------------------------------------------------------------------------- */
 
-export const SPENDING_GROUP_LABEL = 'Spending';
-export const MONEY_OUT_GROUP_LABEL = 'Not spending';
+/**
+ * The picker's two groups. The first holds only consumption kinds; the second
+ * holds `external_outflow`, which is tracked spending but not consumption (7.4,
+ * 12.5). The old "Spending" / "Not spending" labels called an item of tracked
+ * spending "not spending".
+ */
+export const CONSUMPTION_GROUP_LABEL = 'Consumption';
+export const MONEY_OUT_GROUP_LABEL = 'Not consumption';
 
+/**
+ * Three independent facts, stated side by side. It is not consumption; it counts
+ * in tracked spending because the cash left; and 12.5 does not subtract external
+ * outflows from saved-from-income. The last does **not** follow from the first:
+ * fees and transaction costs are not consumption either, and they are subtracted.
+ */
 export const MONEY_OUT_NOTE =
-  'Money that left your tracked accounts without being spending. It is recorded as paid from a tracked account.';
+  'Money that left your tracked accounts for somewhere Vaultide doesn’t track. It counts in tracked spending because the cash left, but it isn’t consumption and isn’t subtracted from what you saved from income. Recorded as paid from a tracked account.';
 
 interface Option {
   readonly value: string;
@@ -134,7 +146,7 @@ interface Option {
 export interface CategoryOptionGroups {
   /** Consumption categories: ordinary spending. */
   readonly spending: readonly Option[];
-  /** `external_outflow`, apart from spending so the picker never calls it consumption. */
+  /** `external_outflow`, apart from consumption so the picker never calls it consumption. */
   readonly moneyOut: readonly Option[];
   /**
    * The row's own category when the picker would not offer it — archived, or a

@@ -440,6 +440,11 @@ export interface ReportingCashFlowFiguresDto extends SourceOnlyReportingFiguresD
   readonly unclassified: ReportingAmountDto;
   readonly consumption: ReportingAmountDto;
   readonly trackedTotalSpending: ReportingAmountDto;
+  /**
+   * `ΣK` in the reporting currency — the five known buckets, no residual. With
+   * everything complete, tracked spending is this plus `unclassified`.
+   */
+  readonly knownTrackedSpending: ReportingAmountDto;
   readonly trackedSavingsFromIncome: ReportingAmountDto;
   readonly personalSavings: ReportingAmountDto;
   readonly totalSpending: ReportingAmountDto;

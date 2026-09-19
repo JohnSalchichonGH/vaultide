@@ -1068,6 +1068,62 @@ describe('W — the requested window bounds the answer, never the search', () =>
       expect(JSON.stringify(windowed)).toBe(JSON.stringify(expected));
     }
   });
+
+  it('W7 — `through` bounds the other side the same way: it selects, and never clips', () => {
+    // Spans: Feb–May, Jun–Aug and Sep–Nov. A window of May–June keeps the first
+    // two — each overlaps it — whole, and leaves out the one that begins after it.
+    const cashAccounts = [
+      withEnds(A, 'BBVA', [
+        ['2026-01-31', '1000'],
+        ['2026-05-31', '900'],
+        ['2026-08-31', '800'],
+        ['2026-11-30', '700'],
+      ]),
+    ];
+    const whole = findSpans(input({ cashAccounts }));
+
+    const windowed = findSpans(
+      input({
+        cashAccounts,
+        from: monthKey(plainDate('2026-05-01')),
+        through: monthKey(plainDate('2026-06-01')),
+      }),
+    );
+    expect(windowed.map((span) => [span.from, span.to])).toEqual([
+      [plainDate('2026-02-01'), plainDate('2026-05-31')],
+      [plainDate('2026-06-01'), plainDate('2026-08-31')],
+    ]);
+    expect(JSON.stringify(windowed)).toBe(JSON.stringify(whole.slice(0, 2)));
+  });
+
+  it('W8 — a span returned for `through` reconciles only from its own flows, so none after it are needed', () => {
+    // The caller asks up to June and holds only the flows through August — the
+    // end of the one span it asked for. The later span is not reconciled at all,
+    // so its missing October flows cannot produce a wrong figure anywhere.
+    const cashAccounts = [
+      withEnds(A, 'BBVA', [
+        ['2026-05-31', '900'],
+        ['2026-08-31', '800'],
+        ['2026-11-30', '700'],
+      ]),
+    ];
+    const expenses = [
+      expense({ incurredOn: plainDate('2026-07-15'), amount: new Decimal('40') }),
+      expense({ incurredOn: plainDate('2026-10-15'), amount: new Decimal('30') }),
+    ];
+    const bounded = findSpans(
+      input({
+        cashAccounts,
+        expenses: expenses.filter((row) => row.incurredOn <= plainDate('2026-08-31')),
+        from: monthKey(plainDate('2026-06-01')),
+        through: monthKey(plainDate('2026-06-01')),
+      }),
+    );
+    const full = findSpans(input({ cashAccounts, expenses }));
+
+    expect(bounded).toHaveLength(1);
+    expect(JSON.stringify(bounded[0])).toBe(JSON.stringify(full[0]));
+  });
 });
 
 describe('X — the leading span of an account with a known opening date', () => {
