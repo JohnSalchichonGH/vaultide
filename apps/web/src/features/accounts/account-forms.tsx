@@ -16,6 +16,8 @@ import { Label } from '@/components/ui/label';
 import { normalizeMoneyInput } from '@/lib/money-input';
 import { useHydrated } from '@/lib/use-hydrated';
 import { cn } from '@/lib/utils';
+import { CorrectionHost } from '@/features/corrections/host';
+import { useCorrection } from '@/features/corrections/use-correction';
 
 /**
  * Account and asset forms (blueprint 15.2, 16.6, 20.1, 20.3).
@@ -466,6 +468,7 @@ export function CreateOtherAssetForm({
 export function EditPositionForm({ position, today }: { position: PositionDto; today: string }) {
   const router = useRouter();
   const nameId = useId();
+  const correction = useCorrection();
   const [name, setName] = useState(position.name);
   const [include, setInclude] = useState(position.includeInFinancialNetWorth === true);
   const [dormant, setDormant] = useState(position.isDormant === true);
@@ -484,19 +487,38 @@ export function EditPositionForm({ position, today }: { position: PositionDto; t
         setError(null);
         setSaved(null);
         startTransition(async () => {
-          const result = isCash
-            ? await updateCashAccountAction({
-                positionId: position.id,
-                expectedVersion: position.version,
-                name,
-                isDormant: dormant,
-              })
-            : await updateOtherAssetAction({
-                positionId: position.id,
-                expectedVersion: position.version,
-                name,
-                includeInFinancialNetWorth: include,
-              });
+          if (isCash) {
+            const args = {
+              positionId: position.id,
+              expectedVersion: position.version,
+              name,
+              isDormant: dormant,
+            };
+            // The name is ordinary account housekeeping. The dormant checkbox
+            // is not: the episode it starts or ends is dated evidence, and one
+            // whose date reaches a month that has closed reinterprets that
+            // month (30.22 item 1; §10). Only the server can tell which this
+            // save is, so it is asked before anything is written.
+            const attempted = await correction.attempt(
+              { kind: 'cash_account_update', ...args },
+              () => updateCashAccountAction(args),
+            );
+            if (attempted.kind === 'review') return;
+            if (!attempted.result.ok) {
+              setError(attempted.result.error.message);
+              return;
+            }
+            setSaved('Saved.');
+            router.refresh();
+            return;
+          }
+
+          const result = await updateOtherAssetAction({
+            positionId: position.id,
+            expectedVersion: position.version,
+            name,
+            includeInFinancialNetWorth: include,
+          });
           if (!result.ok) {
             setError(result.error.message);
             return;
@@ -572,6 +594,19 @@ export function EditPositionForm({ position, today }: { position: PositionDto; t
         </Submit>
         <PositionLifecycleButtons position={position} today={today} />
       </div>
+
+      <CorrectionHost
+        flow={correction}
+        labels={{
+          accounts: { [position.id]: position.name },
+          categories: {},
+          locale: 'en-GB',
+        }}
+        onCommitted={() => {
+          setSaved('Saved.');
+          router.refresh();
+        }}
+      />
     </form>
   );
 }

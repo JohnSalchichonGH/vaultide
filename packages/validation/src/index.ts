@@ -7,6 +7,7 @@ export * from './primitives/currency';
 export * from './primitives/date';
 export * from './primitives/money';
 export * as authInput from './inputs/auth';
+export * as correctionInput from './inputs/corrections';
 export * as flowInput from './inputs/flows';
 export * as monthlyInput from './inputs/monthly';
 export * as positionInput from './inputs/positions';

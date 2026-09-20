@@ -5,6 +5,7 @@ import Link from 'next/link';
 import type { Route } from 'next';
 import { useRouter } from 'next/navigation';
 import type {
+  CorrectionDraft,
   CurrentMonthlyIncomeDto,
   EarlyReceiptCandidateDto,
   IncomeOccurrenceDto,
@@ -32,12 +33,23 @@ import { normalizeMoneyInput } from '@/lib/money-input';
 import { useHydrated } from '@/lib/use-hydrated';
 import { cn } from '@/lib/utils';
 import { dayTitle, incomeEntryAnchorId, monthTitle } from '@/features/monthly/presentation';
+import type { IncomeKind, IncomeSettlement } from '@vaultide/validation';
+import { CorrectionHost } from '@/features/corrections/host';
+import { runCorrectableSave } from '@/features/corrections/save';
+import { useCorrection } from '@/features/corrections/use-correction';
+import {
+  DestructiveConfirm,
+  HISTORICAL_CREATION_NOTE,
+  addsToCompletedMonth,
+  isHistorical,
+} from '@/features/corrections/delete-confirm';
 import {
   HISTORICAL_START_WARNING,
   SCHEDULABLE_INCOME_KINDS,
   accountForCurrency,
   defaultPickerCurrency,
   crossMonthNotice,
+  correctableDateBounds,
   ownedEntryDateBounds,
   pickerCurrencies,
   incomeKindLabel,
@@ -859,6 +871,7 @@ interface EntryDrafts extends Readonly<Record<string, unknown>> {
  */
 function useEntrySave(entry: MonthlyIncomeEntryDto) {
   const router = useRouter();
+  const correction = useCorrection();
   const [state, setState] = useState<SaveState>(IDLE);
   const [drafts, setDrafts] = useState<EntryDrafts>({});
   // Bumped by `reload`, and used as the amount inputs' key. Their draft is
@@ -887,7 +900,13 @@ function useEntrySave(entry: MonthlyIncomeEntryDto) {
     if (!canWrite(state)) return state;
     setDraft(draft);
     const fields = Object.keys(draft);
-    const final = await runSave(
+    // Every save asks the same question first: does this rewrite a month that
+    // is already closed? A current-month correction saves as it always did; a
+    // historical one opens Review → Confirm with the draft still in the field
+    // (§25, §67).
+    const final = await runCorrectableSave(
+      correction,
+      incomeUpdateDraft(entry, patch),
       () =>
         updateIncomeEntryAction({
           entryId: entry.entryId,
@@ -924,7 +943,9 @@ function useEntrySave(entry: MonthlyIncomeEntryDto) {
     if (!canWrite(state)) return state;
     // The version this row was rendered at (6.3, 20.3): an entry corrected
     // elsewhere refuses rather than being deleted by a stale request.
-    return runSave(
+    return runCorrectableSave(
+      correction,
+      { kind: 'income_delete', entryId: entry.entryId, expectedVersion: entry.version },
       () =>
         deleteIncomeEntryAction({
           entryId: entry.entryId,
@@ -943,11 +964,34 @@ function useEntrySave(entry: MonthlyIncomeEntryDto) {
     drafts,
     busy,
     generation,
+    correction,
     setDraft,
     clearDraft,
     commit,
     reload,
     remove,
+  };
+}
+
+/** One patch, as the correction draft that describes the same edit. */
+function incomeUpdateDraft(entry: MonthlyIncomeEntryDto, patch: EntryPatch): CorrectionDraft {
+  return {
+    kind: 'income_update',
+    entryId: entry.entryId,
+    expectedVersion: entry.version,
+    // The two loose strings on the patch come from the row's own pickers,
+    // whose options are the validation enums. The server parses the draft with
+    // those enums again and refuses anything else, so narrowing here describes
+    // the same values rather than trusting them.
+    ...(patch.kind === undefined ? {} : { incomeKind: patch.kind as IncomeKind }),
+    ...(patch.settlement === undefined
+      ? {}
+      : { settlement: patch.settlement as IncomeSettlement }),
+    ...(patch.netAmount === undefined ? {} : { netAmount: patch.netAmount }),
+    ...(patch.grossAmount === undefined ? {} : { grossAmount: patch.grossAmount }),
+    ...(patch.receivedOn === undefined ? {} : { receivedOn: patch.receivedOn }),
+    ...(patch.cashPositionId === undefined ? {} : { cashPositionId: patch.cashPositionId }),
+    ...(patch.description === undefined ? {} : { description: patch.description }),
   };
 }
 
@@ -1043,23 +1087,35 @@ function EntryFields({
   entry,
   accounts,
   formatting,
-  bounds,
+  today,
   editableIdentity,
 }: {
   readonly entry: MonthlyIncomeEntryDto;
   readonly accounts: MonthlyIncomeDto['cashAccounts'];
   readonly formatting: Formatting;
-  readonly bounds: { readonly min: string; readonly max: string };
+  readonly today: string;
   /** Direct rows only: a scheduled occurrence's kind is its source's (7.4). */
   readonly editableIdentity: boolean;
 }) {
   const statusId = useId();
   const ids = { account: useId(), date: useId(), description: useId() };
-  const { state, setState, drafts, busy, generation, setDraft, clearDraft, commit, reload, remove } =
-    useEntrySave(entry);
+  const {
+    state,
+    setState,
+    drafts,
+    busy,
+    generation,
+    correction,
+    setDraft,
+    clearDraft,
+    commit,
+    reload,
+    remove,
+  } = useEntrySave(entry);
   const hydrated = useHydrated();
   const minorUnits = minorUnitsOf(formatting, entry.currency);
   const disabled = !hydrated || busy;
+  const dateBounds = correctableDateBounds(today);
 
   const settlement = drafts.settlement ?? entry.settlement;
   const cashPositionId =
@@ -1131,17 +1187,19 @@ function EntryFields({
             data-testid="entry-received-on"
             type="date"
             value={drafts.receivedOn ?? entry.receivedOn}
-            min={bounds.min}
-            max={bounds.max}
+            min={dateBounds.min}
+            max={dateBounds.max}
             disabled={disabled}
             className="tabular"
             onChange={(event) => {
               const receivedOn = event.target.value;
-              // Inside this month only. The occurrence this row materializes
-              // keeps its own scheduled date whatever happens here.
-              if (receivedOn < bounds.min || receivedOn > bounds.max) {
+              // The money's date may leave this month — that is a Historical
+              // Correction, and the review shows both months before it is
+              // saved (§67). The occurrence this row materializes keeps its own
+              // scheduled date whatever happens here (§30.9 item 2).
+              if (receivedOn < dateBounds.min || receivedOn > dateBounds.max) {
                 setDraft({ receivedOn });
-                onInvalid(`Choose a date between ${bounds.min} and ${bounds.max}.`);
+                onInvalid(`Choose a date on or before ${dateBounds.max}.`);
                 return;
               }
               void commit({ receivedOn }, { receivedOn });
@@ -1223,18 +1281,31 @@ function EntryFields({
             Reload
           </button>
         ) : null}
-        <button
-          type="button"
-          data-testid="entry-delete"
-          className={ACTION}
+        <DestructiveConfirm
+          testId="entry-delete"
+          label="Delete"
+          question="Delete this income entry?"
           disabled={disabled}
-          onClick={() => {
+          /* A historical delete is a correction, and its review is the
+             confirmation. A current one gets the short one (§71). */
+          skipConfirmation={isHistorical(entry.receivedOn, today)}
+          onConfirm={() => {
             void remove();
           }}
-        >
-          Delete
-        </button>
+        />
       </div>
+
+      <CorrectionHost
+        flow={correction}
+        labels={{
+          accounts: Object.fromEntries(
+            accounts.map((account) => [account.positionId, account.name]),
+          ),
+          categories: {},
+          locale: formatting.locale,
+        }}
+        onCommitted={reload}
+      />
     </div>
   );
 }
@@ -1269,14 +1340,12 @@ function OccurrenceRow({
   formatting,
   month,
   today,
-  bounds,
 }: {
   readonly occurrence: IncomeOccurrenceDto;
   readonly accounts: MonthlyIncomeDto['cashAccounts'];
   readonly formatting: Formatting;
   readonly month: string;
   readonly today: string;
-  readonly bounds: { readonly min: string; readonly max: string };
 }) {
   const router = useRouter();
   const [panel, setPanel] = useState<OpenPanel>(null);
@@ -1486,7 +1555,7 @@ function OccurrenceRow({
                 entry={occurrenceState.entry}
                 accounts={accounts}
                 formatting={formatting}
-                bounds={bounds}
+                today={today}
                 // The occurrence fixes what this row is; the date the money
                 // arrived is a separate fact, and this month owns it.
                 editableIdentity={false}
@@ -1628,14 +1697,14 @@ function EntryRow({
   accounts,
   formatting,
   month,
-  bounds,
+  today,
   editableIdentity,
 }: {
   readonly entry: MonthlyIncomeEntryDto;
   readonly accounts: MonthlyIncomeDto['cashAccounts'];
   readonly formatting: Formatting;
   readonly month: string;
-  readonly bounds: { readonly min: string; readonly max: string };
+  readonly today: string;
   readonly editableIdentity: boolean;
 }) {
   const owns = ownsEntry(entry, month);
@@ -1699,7 +1768,7 @@ function EntryRow({
             entry={entry}
             accounts={accounts}
             formatting={formatting}
-            bounds={bounds}
+            today={today}
             editableIdentity={editableIdentity}
           />
         ) : (
@@ -1730,6 +1799,7 @@ export function AddIncomeForm({
   accounts,
   currencies,
   bounds,
+  today,
   defaultCurrency,
   initial,
   onSaved,
@@ -1737,6 +1807,11 @@ export function AddIncomeForm({
   readonly accounts: MonthlyIncomeDto['cashAccounts'];
   readonly currencies: readonly string[];
   readonly bounds: { readonly min: string; readonly max: string };
+  /**
+   * The day the page is being read on, where the caller knows it. Only the
+   * completed-month note reads it (§107).
+   */
+  readonly today?: string | undefined;
   readonly defaultCurrency: string;
   /**
    * What a caller already knows (30.21). Absent everywhere the section itself
@@ -1827,6 +1902,11 @@ export function AddIncomeForm({
         });
       }}
     >
+      {today !== undefined && addsToCompletedMonth({ max: bounds.max, today }) ? (
+        <p className={META} data-testid="add-income-historical-note">
+          {HISTORICAL_CREATION_NOTE}
+        </p>
+      ) : null}
       <div className="grid gap-3 sm:grid-cols-3">
         <Select
           id={ids.kind}
@@ -2313,7 +2393,6 @@ export function IncomeSection({
                 formatting={formatting}
                 month={month}
                 today={today}
-                bounds={bounds}
               />
             ))}
           </Table>
@@ -2371,7 +2450,7 @@ export function IncomeSection({
                 accounts={income.cashAccounts}
                 formatting={formatting}
                 month={month}
-                bounds={bounds}
+                today={today}
                 // Recurring: its kind and settlement are its source's.
                 editableIdentity={false}
               />
@@ -2406,7 +2485,7 @@ export function IncomeSection({
                 accounts={income.cashAccounts}
                 formatting={formatting}
                 month={month}
-                bounds={bounds}
+                today={today}
                 // Nothing scheduled it, so it has no source identity to keep.
                 editableIdentity
               />
@@ -2421,6 +2500,7 @@ export function IncomeSection({
             accounts={income.cashAccounts}
             currencies={currencies}
             bounds={bounds}
+            today={today}
             defaultCurrency={defaultCurrency}
           />
         </Disclosure>

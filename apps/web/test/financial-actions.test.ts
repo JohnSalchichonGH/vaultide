@@ -43,7 +43,23 @@ const MONTH_REVIEW_ACTIONS = [
   'restoreMonthAdvisoryAction',
 ] as const;
 
+/**
+ * Historical Correction's **preview** (30.22 item 12; ADR 0010 §8).
+ *
+ * It reads. It opens a `repeatable read, read only` transaction, takes no
+ * financial mutex, and writes no source row, audit row, review row or exchange
+ * rate — the application suite asserts every one of those directly. What it
+ * returns is a derivation of records the reader already owns, and RLS scopes it
+ * to them, so a session revoked inside the five-minute cookie window can at
+ * most see figures it could already see.
+ *
+ * Its Confirm is the financial half and is declared with the financial wrapper
+ * below, like every other mutation.
+ */
+const CORRECTION_PREVIEW_ACTION = 'previewHistoricalCorrectionAction';
+
 const NON_FINANCIAL_ACTIONS = new Set<string>([
+  CORRECTION_PREVIEW_ACTION,
   'updateSettingsAction',
   'setReportingCurrencyAction',
   'createCategoryAction',
@@ -123,6 +139,7 @@ describe('financial server actions authorize against the session store', () => {
     // savings (12.5) — so it moved to its own action here, and this asserts it
     // did not drift back onto the cheap path (v2.1.6 §30.9).
     const expected = [
+      'corrections.confirm',
       'flows.createIncomeEntry',
       'flows.updateIncomeEntry',
       'flows.deleteIncomeEntry',
@@ -144,7 +161,7 @@ describe('financial server actions authorize against the session store', () => {
     ];
 
     const declared = new Set<string>();
-    for (const file of ['flows.ts', 'recurring.ts']) {
+    for (const file of ['corrections.ts', 'flows.ts', 'recurring.ts']) {
       const source = readFileSync(path.join(actionsDir, file), 'utf8');
       for (const match of source.matchAll(/name:\s*'([^']+)'/gu)) declared.add(match[1] as string);
     }

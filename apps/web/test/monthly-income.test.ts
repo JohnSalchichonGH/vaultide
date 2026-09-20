@@ -26,6 +26,15 @@ vi.mock('@/server/actions/recurring', () => ({
   skipSuggestionAction: vi.fn(),
   unskipSuggestionAction: vi.fn(),
 }));
+// Every editor now asks the server whether a save rewrites completed history
+// before it writes (30.22 item 1). These suites are about markup and rules, and
+// the ceremony has its own; the two actions are stubbed like the rest.
+vi.mock('@/server/actions/corrections', () => ({
+  previewHistoricalCorrectionAction: vi.fn(() =>
+    Promise.resolve({ ok: true, data: { status: 'not_required' } }),
+  ),
+  confirmHistoricalCorrectionAction: vi.fn(),
+}));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }) }));
 vi.mock('next/link', () => ({
   default: ({ href, children, ...rest }: { href: string; children: ReactNode }) =>
@@ -49,6 +58,8 @@ const {
   crossMonthNotice,
   occurrenceAnchorId,
   occurrenceStateLabel,
+  EARLIEST_CORRECTABLE_DATE,
+  correctableDateBounds,
   ownedEntryDateBounds,
   pickerCurrencies,
   ownsEntry,
@@ -262,10 +273,9 @@ describe('a scheduled occurrence', () => {
     expect(has(html, 'entry-gross')).toBe(true);
     expect(has(html, 'entry-delete')).toBe(true);
     // The date the money arrived is a financial fact this month owns, so it is
-    // correctable — bounded to the month, never out of it.
+    // correctable — into another month too, which the review then shows (§67).
     expect(has(html, 'entry-received-on')).toBe(true);
-    expect(html).toContain('min="2026-09-01"');
-    expect(html).toContain('max="2026-09-30"');
+    expect(html).toContain('max="2026-10-01"');
     // What is identity stays fixed: the scheduled date is not a field at all,
     // and the source decides the kind and the settlement.
     expect(html).toContain('data-occurrence-date="2026-09-25"');
@@ -470,17 +480,20 @@ describe('a recorded income row', () => {
     expect(has(recurring, 'entry-settlement')).toBe(false);
   });
 
-  it('keeps a direct row’s date inside the month on screen', () => {
+  it('lets a recorded row’s date leave the month on screen, but never pass today', () => {
+    // 31 August → 15 September is edited here, in the editor the user already
+    // knows; the review then shows both months (§67). M5 is the only bound the
+    // control keeps.
     const html = render(income({ direct: [entry({ kind: 'other' })] }), {
       month: '2026-09',
       monthEndsOn: '2026-09-30',
       today: '2026-10-15',
     });
-    expect(html).toContain('min="2026-09-01"');
-    expect(html).toContain('max="2026-09-30"');
+    expect(html).toContain('max="2026-10-15"');
+    expect(html).not.toContain('min="2026-09-01"');
   });
 
-  it('stops a current month’s date at today rather than at the month’s end', () => {
+  it('stops a current month’s date at today', () => {
     const html = render(income({ direct: [entry({ receivedOn: '2026-09-04' })] }), {
       month: '2026-09',
       monthEndsOn: '2026-09-30',
@@ -601,13 +614,26 @@ describe('what a control may offer', () => {
     expect(crossMonthNotice('2026-10-02', '2026-09', name)).toContain('September');
   });
 
-  it('bounds an owned row by the month, and by today inside it', () => {
+  it('bounds a record **added** here by the month, and by today inside it', () => {
+    // "Add income" on September's page adds September's income. It is not a
+    // way to file something in August without meaning to.
     expect(
       ownedEntryDateBounds({ month: '2026-09', monthEndsOn: '2026-09-30', today: '2026-10-05' }),
-    ).toEqual({ min: '2026-09-01', max: '2026-09-30' });
+    ).toEqual({ min: '2026-09-01', max: '2026-09-30', today: '2026-10-05' });
     expect(
       ownedEntryDateBounds({ month: '2026-09', monthEndsOn: '2026-09-30', today: '2026-09-08' }),
-    ).toEqual({ min: '2026-09-01', max: '2026-09-08' });
+    ).toEqual({ min: '2026-09-01', max: '2026-09-08', today: '2026-09-08' });
+  });
+
+  it('lets an existing row’s date be corrected into another month, up to today', () => {
+    // Moving a recorded row from 31 August to 15 September is the Historical
+    // Correction 15.3 describes: the user edits the date here, and the review
+    // shows both months before anything is written (30.22 item 1; §67). The
+    // only rule the control itself keeps is M5's — never after today.
+    expect(correctableDateBounds('2026-10-05')).toEqual({
+      min: EARLIEST_CORRECTABLE_DATE,
+      max: '2026-10-05',
+    });
   });
 
   it('offers every schedulable income kind and nothing a schedule cannot promise', () => {

@@ -18,6 +18,15 @@ vi.mock('@/server/actions/flows', () => ({
   deleteTransferAction: vi.fn(),
   updateTransferAction: vi.fn(),
 }));
+// Every editor now asks the server whether a save rewrites completed history
+// before it writes (30.22 item 1). These suites are about markup and rules, and
+// the ceremony has its own; the two actions are stubbed like the rest.
+vi.mock('@/server/actions/corrections', () => ({
+  previewHistoricalCorrectionAction: vi.fn(() =>
+    Promise.resolve({ ok: true, data: { status: 'not_required' } }),
+  ),
+  confirmHistoricalCorrectionAction: vi.fn(),
+}));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }) }));
 
 const { MonthlyTransfersSection, TransferEditor } = await import('@/features/monthly/transfers-editor');

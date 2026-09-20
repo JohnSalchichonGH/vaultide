@@ -143,23 +143,47 @@ export function crossMonthNotice(
 }
 
 /**
- * The dates a row this page owns may carry.
+ * The dates a record **added** on this page may carry.
  *
- * The month on screen, never past today. `received_on` is a financial fact and
- * is corrected here — including on a materialized recurring occurrence, whose
- * `occurrence_date` is the identity and does not move with it (§30.9 item 2).
- * What stays out is moving a recorded row to a **different** month: that is the
- * historical correction that shows every month and span it affects (15.3).
+ * The month on screen, never past today: a page for September adds September's
+ * records, and "Add income" here is not a way to file something in August
+ * without meaning to.
+ *
+ * Correcting an existing row's date is a different question, and its answer is
+ * `correctableDateBounds` below: a recorded row's financial date may be moved
+ * into another month, which is a Historical Correction and shows every month it
+ * affects before it is saved (15.3, 30.22 item 1; §67).
  */
 export function ownedEntryDateBounds(page: {
   readonly month: string;
   readonly monthEndsOn: string;
   readonly today: string;
-}): { readonly min: string; readonly max: string } {
+}): { readonly min: string; readonly max: string; readonly today: string } {
   return {
     min: `${page.month}-01`,
     max: page.monthEndsOn < page.today ? page.monthEndsOn : page.today,
+    today: page.today,
   };
+}
+
+/**
+ * A floor for a date **input**, not a product rule.
+ *
+ * An existing record's financial date has no lower bound in the domain — a
+ * balance from 2004 is a balance from 2004 — so the only real rule is M5's "not
+ * after today", which is the `max`. This exists so the control refuses a
+ * typo-shaped year rather than accepting `0020-01-01`; everything that actually
+ * decides whether the date is allowed — the account's own window, the future
+ * rule, the month-end rule — is the server's, and is checked there.
+ */
+export const EARLIEST_CORRECTABLE_DATE = '1900-01-01';
+
+/** The dates an existing row's financial date may be corrected to (§67). */
+export function correctableDateBounds(today: string): {
+  readonly min: string;
+  readonly max: string;
+} {
+  return { min: EARLIEST_CORRECTABLE_DATE, max: today };
 }
 
 /**

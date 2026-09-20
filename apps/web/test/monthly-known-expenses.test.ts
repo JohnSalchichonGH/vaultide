@@ -31,6 +31,15 @@ vi.mock('@/server/actions/recurring', () => ({
   unskipSuggestionAction: vi.fn(),
   updateTemplateAction: vi.fn(),
 }));
+// Every editor now asks the server whether a save rewrites completed history
+// before it writes (30.22 item 1). These suites are about markup and rules, and
+// the ceremony has its own; the two actions are stubbed like the rest.
+vi.mock('@/server/actions/corrections', () => ({
+  previewHistoricalCorrectionAction: vi.fn(() =>
+    Promise.resolve({ ok: true, data: { status: 'not_required' } }),
+  ),
+  confirmHistoricalCorrectionAction: vi.fn(),
+}));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }) }));
 vi.mock('next/link', () => ({
   default: ({ href, children, ...rest }: { href: string; children: ReactNode }) =>
@@ -321,9 +330,9 @@ describe('a scheduled expense occurrence', () => {
     for (const control of ['expense-category', 'expense-payment', 'expense-one-off', 'expense-apply-classification']) {
       expect(has(html, control), control).toBe(false);
     }
-    // Owner month, never past it.
-    expect(html).toContain('min="2026-09-01"');
-    expect(html).toContain('max="2026-09-30"');
+    // The date is correctable into another month — a Historical Correction the
+    // review shows both months for (§67) — and never past today.
+    expect(html).toContain('max="2026-10-01"');
     expect(html).toContain('data-occurrence-date="2026-09-15"');
     expect(has(html, 'expense-record')).toBe(false);
   });
@@ -636,10 +645,10 @@ describe('a recorded direct expense', () => {
     expect(html).not.toContain('data-testid="expense-currency"');
   });
 
-  it('bounds its date to the owner month, and to today inside a current month', () => {
+  it('bounds its date only by today: it may be corrected into another month', () => {
     const completedHtml = render(expenses({ direct: [entry()] }), { today: '2026-10-15' });
-    expect(completedHtml).toContain('min="2026-09-01"');
-    expect(completedHtml).toContain('max="2026-09-30"');
+    expect(completedHtml).toContain('max="2026-10-15"');
+    expect(completedHtml).not.toContain('min="2026-09-01"');
 
     const currentHtml = render(expenses({ direct: [entry({ incurredOn: '2026-09-04' })] }), {
       today: '2026-09-10',

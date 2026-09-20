@@ -2,7 +2,12 @@
 
 import { useId, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import type { MonthlyTransferDto, MonthlyTransfersDto, TransferLegDto } from '@vaultide/application';
+import type {
+  CorrectionDraft,
+  MonthlyTransferDto,
+  MonthlyTransfersDto,
+  TransferLegDto,
+} from '@vaultide/application';
 import {
   createTransferAction,
   deleteTransferAction,
@@ -46,6 +51,8 @@ import {
   type TransferInitialValues,
   type TransferOutcome,
 } from '@/features/monthly/transfers-presentation';
+import { CorrectionHost } from '@/features/corrections/host';
+import { useCorrection } from '@/features/corrections/use-correction';
 
 /**
  * Transfers between the user's own cash accounts, maintained from Monthly →
@@ -367,6 +374,7 @@ export function TransferEditor({
 }: TransferEditorProps) {
   const router = useRouter();
   const hydrated = useHydrated();
+  const correction = useCorrection();
   const [pending, startTransition] = useTransition();
   const ids = {
     date: useId(),
@@ -440,13 +448,32 @@ export function TransferEditor({
     setForm((current) => changeForm(current, next, accounts));
   };
 
-  const run = (send: () => Promise<TransferOutcome>, message: string): void => {
+  /**
+   * One save of the aggregate, asking first whether it rewrites closed history.
+   *
+   * A transfer is judged on **every** date it carries — its own, and its fee's,
+   * which is its own fact and may fall in another month (ADR 0006 §5, §14). So
+   * an edit whose visible date is this month can still be a correction, and the
+   * server is the only thing that can say so.
+   */
+  const run = (
+    correctionDraft: CorrectionDraft,
+    send: () => Promise<TransferOutcome>,
+    message: string,
+  ): void => {
     setProblem(null);
     onBusyChange?.(true);
     startTransition(async () => {
       let outcome: TransferOutcome;
       try {
-        outcome = await send();
+        const attempted = await correction.attempt(correctionDraft, send);
+        if (attempted.kind === 'review') {
+          // Nothing was written, and the form keeps every value the user typed
+          // so Back returns them to it (§67).
+          onBusyChange?.(false);
+          return;
+        }
+        outcome = attempted.result;
       } catch {
         outcome = { ok: false, error: { code: 'INTERNAL', message: UNREACHABLE } };
       }
@@ -465,18 +492,19 @@ export function TransferEditor({
 
   const save = (): void => {
     if (!canSave) return;
-    run(
-      () =>
-        base === null
-          ? createTransferAction(createTransferPayload(draft, accounts, legCurrencies))
-          : updateTransferAction(updateTransferPayload(draft, base, accounts, legCurrencies)),
-      base === null ? 'Transfer added.' : 'Transfer saved.',
-    );
+    if (base === null) {
+      const payload = createTransferPayload(draft, accounts, legCurrencies);
+      run({ kind: 'transfer_create', ...payload }, () => createTransferAction(payload), 'Transfer added.');
+      return;
+    }
+    const payload = updateTransferPayload(draft, base, accounts, legCurrencies);
+    run({ kind: 'transfer_update', ...payload }, () => updateTransferAction(payload), 'Transfer saved.');
   };
 
   const remove = (): void => {
     if (base === null || busy) return;
-    run(() => deleteTransferAction(deleteTransferPayload(base)), 'Transfer deleted.');
+    const payload = deleteTransferPayload(base);
+    run({ kind: 'transfer_delete', ...payload }, () => deleteTransferAction(payload), 'Transfer deleted.');
   };
 
   const payer = accounts.find((row) => row.positionId === draft.fee.payerId);
@@ -738,6 +766,21 @@ export function TransferEditor({
           )}
         </div>
       </div>
+
+      <CorrectionHost
+        flow={correction}
+        labels={{
+          accounts: Object.fromEntries(
+            accounts.map((account) => [account.positionId, account.name]),
+          ),
+          categories: {},
+          locale: formatting.locale,
+        }}
+        onCommitted={() => {
+          onDone('Transfer saved.');
+          router.refresh();
+        }}
+      />
     </form>
   );
 }

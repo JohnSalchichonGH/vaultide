@@ -340,6 +340,7 @@ export function IssueActionHost({
                         accounts={resources.incomeAccounts}
                         currencies={resources.currencies}
                         bounds={open.target.dates}
+                        today={resources.today}
                         defaultCurrency={resources.defaultCurrency}
                         initial={open.target.initial}
                         onSaved={close}
@@ -350,6 +351,7 @@ export function IssueActionHost({
                         eligibleCategories={resources.eligibleCategories}
                         currencies={resources.currencies}
                         bounds={resources.bounds}
+                        today={resources.today}
                         defaultCurrency={resources.defaultCurrency}
                         formatting={resources.formatting}
                         initial={

@@ -8,6 +8,7 @@ import type {
   AccountOpeningDto,
   CompletedAccountDto,
   CompletedAccountsDto,
+  CorrectionDraft,
   CurrentAccountDto,
   CurrentAccountsDto,
 } from '@vaultide/application';
@@ -35,6 +36,10 @@ import {
   structuralClosingText,
   untouchedUnchangedTargets,
 } from '@/features/monthly/accounts-presentation';
+import { CorrectionHost } from '@/features/corrections/host';
+import type { CorrectionLabels } from '@/features/corrections/presentation';
+import { runCorrectableSave } from '@/features/corrections/save';
+import { useCorrection, type CorrectionFlow } from '@/features/corrections/use-correction';
 import {
   IDLE,
   decideOnBlur,
@@ -332,6 +337,23 @@ const ANCHORED = 'scroll-mt-24';
 const NAME_CELL =
   'sticky left-0 z-10 bg-[var(--color-surface)] py-2 pr-2 text-left font-normal sm:pr-4';
 
+/**
+ * The names a review dialog uses for readability (§75).
+ *
+ * Identity is the id everywhere that matters; this is only what the reader
+ * sees, which is why renaming an account changes no consent.
+ */
+function correctionLabels(
+  accounts: readonly { readonly positionId: string; readonly name: string }[],
+  formatting: Formatting,
+): CorrectionLabels {
+  return {
+    accounts: Object.fromEntries(accounts.map((account) => [account.positionId, account.name])),
+    categories: {},
+    locale: formatting.locale,
+  };
+}
+
 /* -------------------------------------------------------------------------- */
 /* A completed month                                                           */
 /* -------------------------------------------------------------------------- */
@@ -348,6 +370,7 @@ interface CompletedRowProps {
   readonly previousMonthName: string;
   readonly formatting: Formatting;
   readonly hydrated: boolean;
+  readonly correction: CorrectionFlow;
   readonly onTouched: (positionId: string) => void;
 }
 
@@ -359,6 +382,7 @@ function CompletedAccountRow({
   previousMonthName,
   formatting,
   hydrated,
+  correction,
   onTouched,
 }: CompletedRowProps) {
   const router = useRouter();
@@ -379,18 +403,50 @@ function CompletedAccountRow({
   // (8.1). A missing one is created; an existing row — a statement, or the
   // last-day snapshot the typed figure replaces — is corrected against the
   // version the edit started from.
-  const commit = (amount: string, target: ClosingTarget): Promise<SaveState> =>
-    run(() =>
+  //
+  // The month is over, so **correcting** one rewrites closed history and goes
+  // through Review → Confirm (30.22 item 1). Entering a missing one is a first
+  // assertion and saves normally — unless it would wake an account out of a
+  // dormant period, which is the server's answer to give, not this field's
+  // (§25, §72). Both ask, and only one of them usually opens a dialog.
+  const commit = (amount: string, target: ClosingTarget): Promise<SaveState> => {
+    const draft: CorrectionDraft =
       target.kind === 'record'
-        ? recordValuationAction({ positionId, valuedOn: monthEndsOn, amount, datePrecision: 'month_end' })
-        : correctValuationAction({
+        ? {
+            kind: 'valuation_create',
+            positionId,
+            valuedOn: monthEndsOn,
+            amount,
+            datePrecision: 'month_end',
+          }
+        : {
+            kind: 'valuation_update',
             valuationId: target.valuationId,
             expectedVersion: target.version,
             valuedOn: monthEndsOn,
             amount,
             datePrecision: 'month_end',
-          }),
+          };
+
+    return runCorrectableSave(
+      correction,
+      draft,
+      () =>
+        target.kind === 'record'
+          ? recordValuationAction({ positionId, valuedOn: monthEndsOn, amount, datePrecision: 'month_end' })
+          : correctValuationAction({
+              valuationId: target.valuationId,
+              expectedVersion: target.version,
+              valuedOn: monthEndsOn,
+              amount,
+              datePrecision: 'month_end',
+            }),
+      setState,
+      () => {
+        router.refresh();
+      },
     );
+  };
 
   const reload = () => {
     setState(IDLE);
@@ -548,8 +604,10 @@ export function CompletedAccountsEditor({
   const router = useRouter();
   const hydrated = useHydrated();
   const batchStatusId = useId();
+  const correction = useCorrection();
   const [touched, setTouched] = useState<ReadonlySet<string>>(() => new Set());
   const [batch, setBatch] = useState<SaveState>(IDLE);
+  const labels = correctionLabels(accounts.accounts, formatting);
 
   const targets = untouchedUnchangedTargets(accounts.accounts, touched);
   const markTouched = (positionId: string) => {
@@ -596,10 +654,19 @@ export function CompletedAccountsEditor({
             previousMonthName={previousMonthName}
             formatting={formatting}
             hydrated={hydrated}
+            correction={correction}
             onTouched={markTouched}
           />
         ))}
       </Table>
+
+      <CorrectionHost
+        flow={correction}
+        labels={labels}
+        onCommitted={() => {
+          router.refresh();
+        }}
+      />
 
       {anyUnchangedEligible(accounts.accounts) || batch.kind !== 'idle' ? (
         <div className="space-y-1" data-testid="confirm-all-unchanged-panel">
@@ -641,6 +708,7 @@ interface CurrentRowProps {
   readonly previousMonthName: string;
   readonly formatting: Formatting;
   readonly hydrated: boolean;
+  readonly correction: CorrectionFlow;
 }
 
 function CurrentAccountRow({
@@ -650,6 +718,7 @@ function CurrentAccountRow({
   previousMonthName,
   formatting,
   hydrated,
+  correction,
 }: CurrentRowProps) {
   const router = useRouter();
   const statusId = useId();
@@ -672,13 +741,16 @@ function CurrentAccountRow({
       setState(conflict);
       return Promise.resolve(conflict);
     }
-    return runSave(
-      () =>
-        quickUpdateAction({
-          entries: [
-            { positionId, amount, ...(target.version === null ? {} : { expectedVersion: target.version }) },
-          ],
-        }),
+    // Today's balance is an ordinary current-month write — except when it puts
+    // money back into an account whose dormant period began in a month that has
+    // closed, which rewrites that history and needs review (§11).
+    const entries = [
+      { positionId, amount, ...(target.version === null ? {} : { expectedVersion: target.version }) },
+    ];
+    return runCorrectableSave(
+      correction,
+      { kind: 'quick_update', entries },
+      () => quickUpdateAction({ entries }),
       setState,
       () => {
         router.refresh();
@@ -780,7 +852,9 @@ export function CurrentAccountsEditor({
   accounts,
   formatting,
 }: CurrentAccountsEditorProps) {
+  const router = useRouter();
   const hydrated = useHydrated();
+  const correction = useCorrection();
   const day = (date: string) => dayTitle(date, formatting.locale);
 
   return (
@@ -826,10 +900,19 @@ export function CurrentAccountsEditor({
               previousMonthName={previousMonthName}
               formatting={formatting}
               hydrated={hydrated}
+              correction={correction}
             />
           ))}
         </Table>
       )}
+
+      <CorrectionHost
+        flow={correction}
+        labels={correctionLabels(accounts.accounts, formatting)}
+        onCommitted={() => {
+          router.refresh();
+        }}
+      />
     </div>
   );
 }
