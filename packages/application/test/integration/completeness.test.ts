@@ -7,7 +7,6 @@ import {
   closePosition,
   createCashAccount,
   createOtherAsset,
-  updateCashAccount,
 } from '../../src/positions/service';
 import { recordValuation } from '../../src/positions/valuations';
 import { listCategories } from '../../src/users/categories';
@@ -16,6 +15,7 @@ import { acceptSuggestion, skipSuggestion } from '../../src/recurring/suggestion
 import { getMonthReconciliation, parseMonth } from '../../src/reconciliation/service';
 import { getMonthCompleteness } from '../../src/reconciliation/completeness-service';
 import { ValidationError } from '../../src/errors';
+import { setDormantFlag } from '../helpers/corrections';
 
 /**
  * Completed-month completeness against a real database (blueprint 12.6, 21.3,
@@ -303,7 +303,7 @@ describe('cash accounts, by 8.1 participation', () => {
     await closedAccount('BBVA');
     const dormant = await makeAccount('Dormant');
     await balance(dormant.id, '2026-07-31', '0');
-    await updateCashAccount(harness.services.positions, OCT_1, {
+    await setDormantFlag(harness.services, OCT_1, {
       positionId: dormant.id,
       expectedVersion: dormant.version,
       isDormant: true,
@@ -357,7 +357,7 @@ describe('the stale state (30.18)', () => {
   it('with nothing required, is stale without evidence and sufficient with it, and never has a ratio', async () => {
     const dormant = await makeAccount('Dormant');
     await balance(dormant.id, '2026-07-31', '0');
-    await updateCashAccount(harness.services.positions, OCT_1, {
+    await setDormantFlag(harness.services, OCT_1, {
       positionId: dormant.id,
       expectedVersion: dormant.version,
       isDormant: true,

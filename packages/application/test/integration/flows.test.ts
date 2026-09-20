@@ -31,6 +31,7 @@ import {
   unskipSuggestion,
 } from '../../src/recurring/suggestions';
 import { listUserTemplates } from '../../src/recurring/templates';
+import { reviewAndConfirm } from '../helpers/corrections';
 
 /**
  * Phase 3 flow services against a real database (blueprint 21.3, v2.1.6 §30.9).
@@ -1207,13 +1208,19 @@ describe('accepting and skipping occurrences', () => {
       occurrenceDate: '2026-08-25',
     });
 
-    const updated = await updateIncomeEntry(deps(), SEPT_15, {
+    // August is closed on 15 September, so moving the money's date is a
+    // Historical Correction — and the occurrence identity it fulfils must
+    // survive the ceremony untouched (§30.9 item 2, §73).
+    await reviewAndConfirm(harness.services.corrections, SEPT_15, {
+      kind: 'income_update',
       entryId: accepted.entry.id,
       expectedVersion: accepted.entry.version,
       receivedOn: '2026-08-27',
     });
-    expect(updated.receivedOn).toBe('2026-08-27');
-    expect(updated.occurrenceDate).toBe('2026-08-25');
+
+    const updated = await findIncomeEntry(harness.db, USER_A, accepted.entry.id);
+    expect(updated?.receivedOn).toBe('2026-08-27');
+    expect(updated?.occurrenceDate).toBe('2026-08-25');
 
     // And the occurrence stays fulfilled, so it is not suggested again.
     await expect(
@@ -1385,7 +1392,8 @@ describe('accepting and skipping occurrences', () => {
       templateId: template.id,
       occurrenceDate: '2026-08-25',
     });
-    await deleteIncomeEntry(deps(), SEPT_15, {
+    await reviewAndConfirm(harness.services.corrections, SEPT_15, {
+      kind: 'income_delete',
       entryId: accepted.entry.id,
       expectedVersion: accepted.entry.version,
     });

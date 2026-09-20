@@ -17,13 +17,21 @@ import {
 import { Decimal, plainDate } from '@vaultide/finance';
 import type { RequestContext } from '../context';
 import { withUserWrite } from '../coordination';
+import { assertNoHistoricalReview } from '../corrections/guard';
 import {
   ImpossibleOperationError,
   NotFoundError,
   ValidationError,
   VersionConflictError,
 } from '../errors';
+import { auditContextOf, dormancyStateOf } from '../flows/shared';
 import type { FxService } from '../fx/service';
+import {
+  dormancyChange,
+  type DormancyEffect,
+  type ResolvedWrite,
+  type ResolveOptions,
+} from '../write-plan';
 
 /**
  * Position lifecycle services (blueprint 5.2, 6.2, 6.3, 20.3, 30.22, M6, R22).
@@ -243,6 +251,12 @@ export interface UpdateCashAccountArgs {
  * already reflected in that balance (8.1). The episode starts on that balance's
  * date, not today: the carry is a statement about the balance, so it begins
  * where the balance is known.
+ *
+ * And that date is exactly why this is part of Historical Correction. An
+ * episode anchored to a zero balance dated in a month that has already closed
+ * reinterprets that month, so the transition goes through Preview → Confirm
+ * however ordinary the rest of the save is (30.22 item 1; §10 of the slice
+ * prompt). Renaming the account is still just a rename.
  */
 async function dormancyTransitionIn(
   tx: Transaction,
@@ -270,11 +284,25 @@ async function dormancyTransitionIn(
   return { isDormant: true, dormantFrom: latest.valuedOn };
 }
 
-async function updateCashAccountIn(
+/** A resolved cash-account edit, and the dormant episode it would move. */
+export interface CashAccountWritePlan extends ResolvedWrite {
+  readonly existing: PositionRow;
+  readonly expectedVersion: number;
+  readonly dormancyPatch: CashAccountPatch['dormancy'];
+  readonly patch: {
+    readonly name?: string;
+    readonly notes?: string | null;
+    readonly accountType?: PositionRow['accountType'];
+    readonly institution?: string | null;
+  };
+}
+
+export async function resolveUpdateCashAccountIn(
   tx: Transaction,
   ctx: RequestContext,
   args: UpdateCashAccountArgs,
-): Promise<PositionRow | undefined> {
+  options: ResolveOptions = { lock: true },
+): Promise<CashAccountWritePlan> {
   // Over the locked account (20.3, 30.20 item 5). The evidence for a dormant
   // episode and the write that starts it must not come apart: a flow recorded
   // between a check made outside and the update would leave an account dormant
@@ -283,43 +311,114 @@ async function updateCashAccountIn(
   // wake locks, so such a flow either commits before the evidence is read or
   // waits, and then wakes the account.
   //
+  // The correction preview reads the same row without the lock, because a
+  // `READ ONLY` transaction cannot take one; Confirm takes it for real before
+  // anything is applied (ADR 0010 §8).
+  //
   // Another user's id, a nonexistent one and a position of another kind are
   // all simply absent from the locked set, and read the same (17.2, 17.3).
-  const [existing] = await lockCashPositionsIn(tx, [args.positionId]);
+  const existing = options.lock
+    ? (await lockCashPositionsIn(tx, [args.positionId]))[0]
+    : await cashPositionIn(tx, args.positionId);
   if (existing === undefined) throw new NotFoundError('That account no longer exists.');
+  if (existing.version !== args.expectedVersion) throw new VersionConflictError();
 
-  const dormancy = await dormancyTransitionIn(tx, ctx, existing, args.isDormant);
+  const dormancyPatch = await dormancyTransitionIn(tx, ctx, existing, args.isDormant);
+  const dormancy: DormancyEffect[] =
+    dormancyPatch === undefined
+      ? []
+      : [
+          {
+            positionId: existing.id,
+            before: dormancyStateOf(existing),
+            after: { isDormant: dormancyPatch.isDormant, dormantFrom: dormancyPatch.dormantFrom },
+            via: 'account_update',
+          },
+        ];
 
-  return updatePositionIn(
-    tx,
-    { userId: ctx.userId, requestId: ctx.requestId },
-    args.positionId,
-    args.expectedVersion,
-    {
+  return {
+    existing,
+    expectedVersion: args.expectedVersion,
+    dormancyPatch,
+    patch: {
       ...(args.name === undefined ? {} : { name: args.name }),
       ...(args.notes === undefined ? {} : { notes: args.notes }),
+      ...(args.accountType === undefined ? {} : { accountType: args.accountType }),
+      ...(args.institution === undefined ? {} : { institution: args.institution }),
+    },
+    // The account's own columns are not dated financial facts, so a rename or
+    // an institution change is never a revision of history. Only the dormancy
+    // rule can make this a correction.
+    revision: false,
+    changes: dormancy.map(dormancyChange),
+    dormancy,
+    support: [],
+  };
+}
+
+/** A cash position read without a lock, for the correction preview alone. */
+async function cashPositionIn(
+  tx: Transaction,
+  positionId: string,
+): Promise<PositionRow | undefined> {
+  const row = await findPositionIn(tx, positionId);
+  return row === undefined || row.kind !== 'cash' ? undefined : row;
+}
+
+export async function applyCashAccountPlanIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  plan: CashAccountWritePlan,
+  reason?: string,
+): Promise<PositionRow> {
+  const updated = await updatePositionIn(
+    tx,
+    auditContextOf(ctx, reason),
+    plan.existing.id,
+    plan.expectedVersion,
+    {
+      ...(plan.patch.name === undefined ? {} : { name: plan.patch.name }),
+      ...(plan.patch.notes === undefined ? {} : { notes: plan.patch.notes }),
     },
     {
       cash: {
-        ...(args.accountType === undefined ? {} : { accountType: args.accountType }),
-        ...(args.institution === undefined ? {} : { institution: args.institution }),
-        ...(dormancy === undefined ? {} : { dormancy }),
+        ...(plan.patch.accountType === undefined ? {} : { accountType: plan.patch.accountType }),
+        ...(plan.patch.institution === undefined ? {} : { institution: plan.patch.institution }),
+        ...(plan.dormancyPatch === undefined ? {} : { dormancy: plan.dormancyPatch }),
       },
     },
   );
+  if (updated === undefined) throw new VersionConflictError();
+  return updated;
 }
 
+async function updateCashAccountIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: UpdateCashAccountArgs,
+): Promise<PositionRow> {
+  const plan = await resolveUpdateCashAccountIn(tx, ctx, args);
+  assertNoHistoricalReview(plan, ctx.today);
+  return applyCashAccountPlanIn(tx, ctx, plan);
+}
+
+/**
+ * Edit a cash account.
+ *
+ * The name, the institution, the account type and the notes are ordinary
+ * account housekeeping and stay ordinary. The dormant checkbox is not: the
+ * episode it starts or ends is dated evidence, and one whose date reaches a
+ * closed month goes through Historical Correction instead (§10 of the slice
+ * prompt).
+ */
 export async function updateCashAccount(
   deps: PositionDependencies,
   ctx: RequestContext,
   args: UpdateCashAccountArgs,
 ): Promise<PositionRow> {
-  const updated = await withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+  return withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
     updateCashAccountIn(tx, ctx, args),
   );
-
-  if (updated === undefined) throw new VersionConflictError();
-  return updated;
 }
 
 export interface UpdateOtherAssetArgs {

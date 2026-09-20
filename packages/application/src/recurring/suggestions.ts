@@ -1,11 +1,8 @@
 import {
   deleteSkipIn,
-  findCategoryIn,
   findSkipIn,
   findTemplateIn,
   hasMaterializedOccurrenceIn,
-  insertExpenseEntryIn,
-  insertIncomeEntryIn,
   insertSkipIn,
   listMaterializedOccurrences,
   listResolvedOccurrenceDatesIn,
@@ -15,6 +12,7 @@ import {
   lockTemplateIn,
   type ExpenseEntryRow,
   type IncomeEntryRow,
+  type OccurrenceRef,
   type RecurringTemplateRow,
   type RecurringTemplateSkipRow,
   type Transaction,
@@ -36,13 +34,19 @@ import {
   NotFoundError,
   ValidationError,
 } from '../errors';
-import { assertCategoryUsableInPhase3 } from '../flows/expenses';
+import { assertNoHistoricalReview } from '../corrections/guard';
 import {
-  clearDormancyForFlowIn,
-  auditContextOf,
-  resolveTrackedCashLegIn,
-  type FlowDependencies,
-} from '../flows/shared';
+  applyExpensePlanIn,
+  resolveExpenseCreateIn,
+  type ExpenseWritePlan,
+} from '../flows/expenses';
+import {
+  applyIncomePlanIn,
+  resolveIncomeCreateIn,
+  type IncomeWritePlan,
+} from '../flows/income';
+import { auditContextOf, type FlowDependencies } from '../flows/shared';
+import type { ResolvedWrite, ResolveOptions } from '../write-plan';
 
 /**
  * Accepting and skipping recurring occurrences (blueprint 6.2, 15.3, 20.3,
@@ -204,8 +208,16 @@ function assertScheduledOccurrence(
 async function claimOccurrenceIn(
   tx: Transaction,
   args: { templateId: string; occurrenceDate: string; today?: string },
+  options: ResolveOptions = { lock: true },
 ): Promise<RecurringTemplateRow> {
-  const template = await lockTemplateIn(tx, args.templateId);
+  // The correction preview runs the same checks without the lock: it claims
+  // nothing, writes nothing and cannot take a row lock in a `READ ONLY`
+  // transaction. Confirm takes it for real, so an occurrence somebody else
+  // recorded in between is still the existing conflict rather than a changed
+  // impact (§12 of the slice prompt).
+  const template = options.lock
+    ? await lockTemplateIn(tx, args.templateId)
+    : await findTemplateIn(tx, args.templateId);
   if (template === undefined) throw new NotFoundError('That source no longer exists.');
   if (template.archivedAt !== null) {
     throw new ImpossibleOperationError(
@@ -283,17 +295,34 @@ export type AcceptedOccurrence =
   | { readonly kind: 'expense'; readonly entry: ExpenseEntryRow };
 
 /**
- * Accept one occurrence, creating the source row it materializes.
+ * A resolved acceptance: the flow it would materialize, and the occurrence it
+ * would claim.
  *
- * The settlement is always `tracked_cash` (§30.9 item 1): the template carries
- * no settlement preference, and inferring one from a NULL cash position would
- * contradict 8.1, where a null cash leg is a tracked flow awaiting attribution.
+ * Accepting is a **first assertion** — the occurrence's financial date may be
+ * historical and that alone is not a correction (30.22 item 2). What can make
+ * one is its dormancy consequence: materializing a flow onto an account whose
+ * dormant episode began in a closed month rewrites that episode, and that goes
+ * through Preview → Confirm (§12 of the slice prompt).
+ *
+ * The plan delegates its `changes`, `dormancy` and `support` to the flow plan
+ * underneath, so an acceptance and a direct creation are classified by exactly
+ * the same rule.
  */
-async function acceptSuggestionIn(
+export type AcceptWritePlan = ResolvedWrite & {
+  readonly currency: string;
+  readonly financialDate: string;
+  readonly occurrence: OccurrenceRef;
+} & (
+    | { readonly kind: 'income'; readonly income: IncomeWritePlan }
+    | { readonly kind: 'expense'; readonly expense: ExpenseWritePlan }
+  );
+
+export async function resolveAcceptSuggestionIn(
   tx: Transaction,
   ctx: RequestContext,
   args: AcceptSuggestionArgs,
-): Promise<{ accepted: AcceptedOccurrence; currency: string; financialDate: string }> {
+  options: ResolveOptions = { lock: true },
+): Promise<AcceptWritePlan> {
   const template = await findTemplateIn(tx, args.templateId);
   if (template === undefined) throw new NotFoundError('That source no longer exists.');
 
@@ -386,69 +415,113 @@ async function acceptSuggestionIn(
   const cashPositionId =
     args.cashPositionId === undefined ? template.cashPositionId : args.cashPositionId;
 
-  await resolveTrackedCashLegIn(tx, {
-    cashPositionId,
-    currency: template.currency,
-    on: financialDate,
-    dateField: 'financialDate',
-  });
-
-  const audit = auditContextOf(ctx);
   const occurrence = { templateId: args.templateId, occurrenceDate: args.occurrenceDate };
 
-  const accepted = await (async (): Promise<AcceptedOccurrence> => {
-    const locked = await claimOccurrenceIn(tx, { ...occurrence, today: ctx.today });
+  // The claim is the serialization point and it comes **before** the flow is
+  // resolved, so an occurrence somebody else has already recorded refuses with
+  // its own conflict rather than being previewed as though it were free. In
+  // preview mode it runs the same checks without the template's lock: a preview
+  // claims nothing (§12 of the slice prompt).
+  const locked = await claimOccurrenceIn(tx, { ...occurrence, today: ctx.today }, options);
 
-    if (locked.kind === 'income') {
-      if (locked.incomeKind === null) {
-        /* v8 ignore next -- a 6.2 CHECK makes an income template's kind non-null. */
-        throw new ImpossibleOperationError('This income source has no kind.');
-      }
-      const entry = await insertIncomeEntryIn(tx, audit, {
+  if (locked.kind === 'income') {
+    if (locked.incomeKind === null) {
+      /* v8 ignore next -- a 6.2 CHECK makes an income template's kind non-null. */
+      throw new ImpossibleOperationError('This income source has no kind.');
+    }
+    const income = await resolveIncomeCreateIn(
+      tx,
+      ctx,
+      {
         kind: locked.incomeKind,
         receivedOn: financialDate,
         netAmount: amount,
-        grossAmount,
+        ...(grossAmount === null ? {} : { grossAmount }),
         currency: locked.currency,
         settlement: 'tracked_cash',
         cashPositionId,
-        description: args.description ?? null,
-        occurrence,
-      });
-      await clearDormancyForFlowIn(tx, ctx, [cashPositionId]);
-      return { kind: 'income' as const, entry };
-    }
+        ...(args.description === undefined ? {} : { description: args.description }),
+      },
+      occurrence,
+    );
+    return {
+      kind: 'income',
+      income,
+      currency: locked.currency,
+      financialDate,
+      occurrence,
+      revision: income.revision,
+      changes: income.changes,
+      dormancy: income.dormancy,
+      support: income.support,
+    };
+  }
 
-    if (locked.categoryId === null) {
-      /* v8 ignore next -- a 6.2 CHECK makes an expense template's category non-null. */
-      throw new ImpossibleOperationError('This expense source has no category.');
-    }
+  if (locked.categoryId === null) {
+    /* v8 ignore next -- a 6.2 CHECK makes an expense template's category non-null. */
+    throw new ImpossibleOperationError('This expense source has no category.');
+  }
 
-    // The same rule again, under the lock, because template creation is not the
-    // only way a template can come to exist: a fixture, an import or a direct
-    // database write can leave one behind, and materialization is the step that
-    // would turn it into a financial fact. Read with archived rows included —
-    // the category's **kind** is what disqualifies it, and a category archived
-    // since the template was made does not change what its occurrences are.
-    const category = await findCategoryIn(tx, locked.categoryId);
-    /* v8 ignore next 2 -- a composite FK guarantees the user's own category. */
-    if (category === undefined) throw new NotFoundError('That category no longer exists.');
-    assertCategoryUsableInPhase3(category);
-    const entry = await insertExpenseEntryIn(tx, audit, {
+  const expense = await resolveExpenseCreateIn(
+    tx,
+    ctx,
+    {
       categoryId: locked.categoryId,
       incurredOn: financialDate,
       amount,
       currency: locked.currency,
       settlement: 'tracked_cash',
       cashPositionId,
-      description: args.description ?? null,
-      occurrence,
-    });
-    await clearDormancyForFlowIn(tx, ctx, [cashPositionId]);
-    return { kind: 'expense' as const, entry };
-  })();
+      ...(args.description === undefined ? {} : { description: args.description }),
+    },
+    // The category was chosen when the template was made, and a category
+    // archived since does not change what its occurrences are (30.22 item 9).
+    { lock: options.lock, occurrence, carryCategory: true },
+  );
+  return {
+    kind: 'expense',
+    expense,
+    currency: locked.currency,
+    financialDate,
+    occurrence,
+    revision: expense.revision,
+    changes: expense.changes,
+    dormancy: expense.dormancy,
+    support: expense.support,
+  };
+}
 
-  return { accepted, currency: template.currency, financialDate };
+export async function applyAcceptPlanIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  plan: AcceptWritePlan,
+  reason?: string,
+): Promise<AcceptedOccurrence> {
+  if (plan.kind === 'income') {
+    return { kind: 'income', entry: await applyIncomePlanIn(tx, ctx, plan.income, reason) };
+  }
+  return { kind: 'expense', entry: await applyExpensePlanIn(tx, ctx, plan.expense, reason) };
+}
+
+/**
+ * Accept one occurrence, creating the source row it materializes.
+ *
+ * The settlement is always `tracked_cash` (§30.9 item 1): the template carries
+ * no settlement preference, and inferring one from a NULL cash position would
+ * contradict 8.1, where a null cash leg is a tracked flow awaiting attribution.
+ */
+async function acceptSuggestionIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: AcceptSuggestionArgs,
+): Promise<{ accepted: AcceptedOccurrence; currency: string; financialDate: string }> {
+  const plan = await resolveAcceptSuggestionIn(tx, ctx, args);
+  assertNoHistoricalReview(plan, ctx.today);
+  return {
+    accepted: await applyAcceptPlanIn(tx, ctx, plan),
+    currency: plan.currency,
+    financialDate: plan.financialDate,
+  };
 }
 
 /**
@@ -458,6 +531,10 @@ async function acceptSuggestionIn(
  * cash leg the flow attaches to and the occurrence claim are all read there, so
  * a term edited or an account closed between the read and the write cannot
  * change what this acceptance meant (30.22 item 5).
+ *
+ * Accepting a historical occurrence stays ordinary. Accepting one that would
+ * wake an account out of a dormant episode anchored in a closed month does not:
+ * that is a rewrite of history and goes through Preview → Confirm.
  */
 export async function acceptSuggestion(
   deps: FlowDependencies,
@@ -471,7 +548,6 @@ export async function acceptSuggestion(
   await deps.fx.ensureHistory(written.currency, written.financialDate);
   return written.accepted;
 }
-
 export interface SkipSuggestionArgs {
   readonly templateId: string;
   readonly occurrenceDate: string;

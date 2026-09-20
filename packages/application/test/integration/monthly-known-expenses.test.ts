@@ -23,8 +23,6 @@ import { archiveUserCategory, createCategory, listCategories } from '../../src/u
 import {
   assertCategoryUsableInPhase3,
   createExpenseEntry,
-  deleteExpenseEntry,
-  updateExpenseEntry,
 } from '../../src/flows/expenses';
 import { createCashTransfer } from '../../src/flows/transfers';
 import {
@@ -49,6 +47,7 @@ import type {
   ExpenseOccurrenceDto,
   MonthlyExpensesDto,
 } from '../../src/monthly/types';
+import { reviewAndConfirm } from '../helpers/corrections';
 
 /**
  * Monthly's Known-expenses section against a real database (blueprint 6.2,
@@ -1384,7 +1383,10 @@ describe('corrections through the existing services', () => {
     });
     expect((await completed()).expenses.direct[0]?.isOneOff).toBe(true);
 
-    const corrected = await updateExpenseEntry(flowDeps(), OCT_1, {
+    // September is closed on 1 October, so each of these is a reviewed
+    // Historical Correction; the flag has to survive both of them.
+    await reviewAndConfirm(harness.services.corrections, OCT_1, {
+      kind: 'expense_update',
       entryId: created.id,
       expectedVersion: created.version,
       amount: '30.00',
@@ -1392,12 +1394,13 @@ describe('corrections through the existing services', () => {
     expect((await completed()).expenses.direct[0]).toMatchObject({
       isOneOff: true,
       amount: eur('30'),
-      version: corrected.version,
+      version: created.version + 1,
     });
 
-    await updateExpenseEntry(flowDeps(), OCT_1, {
+    await reviewAndConfirm(harness.services.corrections, OCT_1, {
+      kind: 'expense_update',
       entryId: created.id,
-      expectedVersion: corrected.version,
+      expectedVersion: created.version + 1,
       isOneOff: false,
     });
     expect((await completed()).expenses.direct[0]?.isOneOff).toBe(false);
@@ -1405,7 +1408,8 @@ describe('corrections through the existing services', () => {
 
   it('removes a deleted direct expense from the section', async () => {
     const created = await expense(OCT_1, { incurredOn: '2026-09-20', settlement: 'third_party' });
-    await deleteExpenseEntry(flowDeps(), OCT_1, {
+    await reviewAndConfirm(harness.services.corrections, OCT_1, {
+      kind: 'expense_delete',
       entryId: created.id,
       expectedVersion: created.version,
     });
@@ -1419,7 +1423,8 @@ describe('corrections through the existing services', () => {
       templateId: source.id,
       occurrenceDate: '2026-09-15',
     });
-    await deleteExpenseEntry(flowDeps(), OCT_1, {
+    await reviewAndConfirm(harness.services.corrections, OCT_1, {
+      kind: 'expense_delete',
       entryId: accepted.entry.id,
       expectedVersion: accepted.entry.version,
     });

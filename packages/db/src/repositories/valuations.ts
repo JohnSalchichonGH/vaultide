@@ -1,4 +1,4 @@
-import { and, desc, eq, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, lte } from 'drizzle-orm';
 import { positionValuations } from '../schema/position-valuations';
 import { withUser, type Database, type Transaction } from '../client';
 import { recordAudit, type AuditContext } from './audited';
@@ -81,6 +81,38 @@ export async function findValuationOnIn(
     .limit(1);
   const [row] = options.lock === 'share' ? await query.for('share') : await query;
   return row;
+}
+
+/**
+ * The valuations dated exactly `valuedOn` for several positions, in one query.
+ *
+ * What a quick update's **resolution** reads: whether each submitted balance
+ * would insert a row or correct today's existing one is part of what the write
+ * is about, and Historical Correction has to know it before anything is
+ * written (ADR 0010 §1). Asked in one statement rather than one per position,
+ * so resolving a twelve-account submission costs one round trip (23.2).
+ *
+ * It takes no lock. The write that follows re-reads each row under
+ * `FOR UPDATE` as it always has, and the correction preview could not take one
+ * anyway.
+ */
+export async function listValuationsOnIn(
+  tx: Transaction,
+  positionIds: readonly string[],
+  valuedOn: string,
+): Promise<ValuationRow[]> {
+  const ids = [...new Set(positionIds)];
+  if (ids.length === 0) return [];
+  return tx
+    .select()
+    .from(positionValuations)
+    .where(
+      and(
+        inArray(positionValuations.positionId, ids),
+        eq(positionValuations.valuedOn, valuedOn),
+      ),
+    )
+    .orderBy(asc(positionValuations.positionId));
 }
 
 /**

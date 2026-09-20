@@ -3,7 +3,7 @@ import { findPosition, listIncomeEntries, sql, withUser, withoutUser } from '@va
 import { createHarness, type Harness } from '../helpers/harness';
 import { testContext, type RequestContext } from '../../src/context';
 import { provisionUser } from '../../src/users/provisioning';
-import { createCashAccount, updateCashAccount } from '../../src/positions/service';
+import { createCashAccount } from '../../src/positions/service';
 import { recordValuation } from '../../src/positions/valuations';
 import { listCategories } from '../../src/users/categories';
 import { createIncomeEntry } from '../../src/flows/income';
@@ -13,6 +13,7 @@ import { getMonthReconciliation, parseMonth } from '../../src/reconciliation/ser
 import { getMonthToDate } from '../../src/reconciliation/mtd-service';
 import { getMonthReportingCashFlow } from '../../src/reconciliation/reporting-service';
 import { ValidationError, VersionConflictError } from '../../src/errors';
+import { setDormantFlag } from '../helpers/corrections';
 
 /**
  * "Accept as adjustment" against a real database (blueprint 8.5, 30.21; ADR
@@ -254,12 +255,11 @@ describe('accepting a completed month’s unexplained inflow', () => {
       amount: '0.00',
       datePrecision: 'exact',
     });
-    const marked = await updateCashAccount(harness.services.positions, OCTOBER_1, {
+    await setDormantFlag(harness.services, OCTOBER_1, {
       positionId: dormant,
       expectedVersion: 1,
       isDormant: true,
     });
-    expect(marked.isDormant).toBe(true);
     await unexplainedSeptember();
 
     await acceptUnexplainedInflowAsAdjustment(deps(), OCTOBER_1, {

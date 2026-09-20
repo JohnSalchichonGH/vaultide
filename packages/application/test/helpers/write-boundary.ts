@@ -72,6 +72,13 @@ export const FINANCIAL_MUTATION_REGISTRY: Readonly<Record<string, readonly strin
   ],
   'recurring/suggestions.ts': ['acceptSuggestion', 'skipSuggestion', 'unskipSuggestion'],
   'settings/service.ts': ['setCountAdditionalSpending'],
+  // Historical Confirm is a financial mutation like any other: the same mutex,
+  // the same transaction, the same audit. What it adds is the consent check in
+  // front of the apply, and that is inside the boundary rather than around it
+  // (ADR 0010 §12). Preview is a read, lives in `corrections/preview.ts`, and is
+  // deliberately absent — which is also why the two are separate modules: the
+  // nested-boundary rule below is a module-wide one and stays that way.
+  'corrections/confirm.ts': ['confirmHistoricalCorrection'],
 };
 
 /** Every registered mutation entry point, flattened. */
@@ -106,6 +113,9 @@ export const POST_COMMIT_ALLOWLIST = [
   'deps.fx.ensureHistory',
   'warmRates',
   'warmHistory',
+  // The correction's own warming, from a descriptor the transaction produced
+  // rather than a dependency it was handed (ADR 0010 §16 item 6).
+  'warmCorrectionSupport',
 ] as const;
 
 /** Names that would let a mutation reach a connection out of thin air. */
@@ -121,6 +131,7 @@ const FORBIDDEN_INNER_PARAMETER_TYPES = [
   'PositionDependencies',
   'SettingsDependencies',
   'MonthDataDependencies',
+  'CorrectionDependencies',
 ] as const;
 
 export type WriteBoundaryRule =

@@ -23,6 +23,7 @@ import {
 } from '../../src/flows/expenses';
 import { createIncomeEntry, deleteIncomeEntry } from '../../src/flows/income';
 import { createCashTransfer, deleteCashTransfer } from '../../src/flows/transfers';
+import { saveOrCorrect } from '../helpers/corrections';
 
 /**
  * A financial write and its consequences are one transaction, and a financial
@@ -58,6 +59,7 @@ const OCT_1 = on('2026-10-01');
 
 const positions = () => harness.services.positions;
 const flows = () => harness.services.flows;
+const corrections = () => harness.services.corrections;
 
 interface Deferred {
   readonly promise: Promise<void>;
@@ -98,12 +100,22 @@ async function state(positionId: string) {
 
 const AWAKE = { dormant: false, from: null };
 
+/**
+ * Mark an account dormant, through whichever path its own evidence makes right.
+ *
+ * The zero these fixtures anchor on is months old, so the transition rewrites
+ * completed history and goes through Review → Confirm (30.22 item 1). What is
+ * being checked either side of that is unchanged: the transition and its
+ * consequence are one atomic outcome, and a refusal leaves nothing behind.
+ */
 async function markDormant(positionId: string, ctx = SEPT_15) {
-  return updateCashAccount(positions(), ctx, {
-    positionId,
-    expectedVersion: (await state(positionId)).version,
-    isDormant: true,
-  });
+  const expectedVersion = (await state(positionId)).version;
+  await saveOrCorrect(
+    corrections(),
+    ctx,
+    { kind: 'cash_account_update', positionId, expectedVersion, isDormant: true },
+    () => updateCashAccount(positions(), ctx, { positionId, expectedVersion, isDormant: true }),
+  );
 }
 
 async function countRows(table: string): Promise<number> {
@@ -122,13 +134,75 @@ async function auditActions(entityId: string): Promise<string[]> {
   return rows.rows.map((row) => (row as { action: string }).action);
 }
 
-const balance = (
+/** One valuation of an account on a date, by id and version. */
+async function valuationOn(positionId: string, valuedOn: string) {
+  return withUser(harness.db, { userId: USER_A }, async (tx) => {
+    const result = await tx.execute(
+      sql`SELECT id, version, amount::text AS amount FROM position_valuations
+           WHERE position_id = ${positionId} AND valued_on = ${valuedOn}`,
+    );
+    return result.rows[0] as { id: string; version: number; amount: string };
+  });
+}
+
+const balance = async (
   positionId: string,
   valuedOn: string,
   amount: string,
   datePrecision: 'exact' | 'month_end' = 'exact',
   ctx = SEPT_15,
-) => recordValuation(positions(), ctx, { positionId, valuedOn, amount, datePrecision });
+) => {
+  await saveOrCorrect(
+    corrections(),
+    ctx,
+    { kind: 'valuation_create', positionId, valuedOn, amount, datePrecision },
+    () => recordValuation(positions(), ctx, { positionId, valuedOn, amount, datePrecision }),
+  );
+  return valuationOn(positionId, valuedOn);
+};
+
+/** Correct a balance, through whichever path its dates make right. */
+async function correctBalance(
+  anchor: { id: string; version: number },
+  patch: { valuedOn: string; amount: string; datePrecision: 'exact' | 'month_end' },
+) {
+  await saveOrCorrect(
+    corrections(),
+    SEPT_15,
+    { kind: 'valuation_update', valuationId: anchor.id, expectedVersion: anchor.version, ...patch },
+    () =>
+      correctValuation(positions(), SEPT_15, {
+        valuationId: anchor.id,
+        expectedVersion: anchor.version,
+        ...patch,
+      }),
+  );
+}
+
+async function deleteBalance(anchor: { id: string; version: number }) {
+  await saveOrCorrect(
+    corrections(),
+    SEPT_15,
+    { kind: 'valuation_delete', valuationId: anchor.id, expectedVersion: anchor.version },
+    () =>
+      removeValuation(positions(), SEPT_15, {
+        valuationId: anchor.id,
+        expectedVersion: anchor.version,
+      }),
+  );
+}
+
+/** A quick update, through whichever path its dormancy consequence makes right. */
+async function quickUpdateEither(
+  entries: readonly { positionId: string; amount: string; expectedVersion?: number }[],
+) {
+  return saveOrCorrect(
+    corrections(),
+    SEPT_15,
+    { kind: 'quick_update', entries },
+    () => quickUpdate(positions(), SEPT_15, { entries }),
+  );
+}
 
 beforeAll(async () => {
   harness = await createHarness();
@@ -208,9 +282,7 @@ describe('a valuation and its dormancy consequence commit together (ADR 0010 §1
     await markDormant(savings);
     const zero = await balance(savings, '2026-09-10', '0.00');
 
-    await correctValuation(positions(), SEPT_15, {
-      valuationId: zero.id,
-      expectedVersion: zero.version,
+    await correctBalance(zero, {
       valuedOn: '2026-09-10',
       amount: '80.00',
       datePrecision: 'exact',
@@ -223,9 +295,7 @@ describe('a valuation and its dormancy consequence commit together (ADR 0010 §1
     const anchor = await balance(savings, '2026-03-31', '0.00');
     await markDormant(savings);
 
-    await correctValuation(positions(), SEPT_15, {
-      valuationId: anchor.id,
-      expectedVersion: anchor.version,
+    await correctBalance(anchor, {
       // Still zero, but no longer dated where the episode says it starts.
       valuedOn: '2026-04-30',
       amount: '0.00',
@@ -239,10 +309,11 @@ describe('a valuation and its dormancy consequence commit together (ADR 0010 §1
     const anchor = await balance(savings, '2026-03-31', '0.00');
     await markDormant(savings);
 
+    // A stale version is refused while the operation is being **resolved**, so
+    // it never reaches the consent step, and the ceremony writes nothing
+    // (§59). The direct path refuses for the same reason, in the same place.
     await expect(
-      correctValuation(positions(), SEPT_15, {
-        valuationId: anchor.id,
-        expectedVersion: anchor.version + 5,
+      correctBalance({ id: anchor.id, version: anchor.version + 5 }, {
         valuedOn: '2026-04-30',
         amount: '900.00',
         datePrecision: 'exact',
@@ -259,10 +330,7 @@ describe('a valuation and its dormancy consequence commit together (ADR 0010 §1
     const anchor = await balance(savings, '2026-03-31', '0.00');
     await markDormant(savings);
 
-    await removeValuation(positions(), SEPT_15, {
-      valuationId: anchor.id,
-      expectedVersion: anchor.version,
-    });
+    await deleteBalance(anchor);
 
     expect(await state(savings)).toMatchObject(AWAKE);
     expect(await positionHistory(positions(), SEPT_15, savings)).toHaveLength(0);
@@ -274,14 +342,12 @@ describe('a valuation and its dormancy consequence commit together (ADR 0010 §1
     await markDormant(bbva);
     await markDormant(savings);
 
-    const summary = await quickUpdate(positions(), SEPT_15, {
-      entries: [
-        { positionId: bbva, amount: '120.00' },
-        { positionId: savings, amount: '340.00' },
-      ],
-    });
+    await quickUpdateEither([
+      { positionId: bbva, amount: '120.00' },
+      { positionId: savings, amount: '340.00' },
+    ]);
 
-    expect(summary.inserted).toBe(2);
+    expect(await positionHistory(positions(), SEPT_15, bbva)).toHaveLength(2);
     expect(await state(bbva)).toMatchObject(AWAKE);
     expect(await state(savings)).toMatchObject(AWAKE);
   });
@@ -295,12 +361,10 @@ describe('a valuation and its dormancy consequence commit together (ADR 0010 §1
     const today = await balance(bbva, '2026-09-15', '10.00');
 
     await expect(
-      quickUpdate(positions(), SEPT_15, {
-        entries: [
-          { positionId: bbva, amount: '120.00', expectedVersion: today.version + 3 },
-          { positionId: savings, amount: '340.00' },
-        ],
-      }),
+      quickUpdateEither([
+        { positionId: bbva, amount: '120.00', expectedVersion: today.version + 3 },
+        { positionId: savings, amount: '340.00' },
+      ]),
     ).rejects.toMatchObject({ code: 'CONFLICT_VERSION' });
 
     // The first entry's wake and the second entry's balance are both rolled
@@ -316,12 +380,10 @@ describe('a valuation and its dormancy consequence commit together (ADR 0010 §1
     await markDormant(bbva);
     await markDormant(savings);
 
-    await quickUpdate(positions(), SEPT_15, {
-      entries: [
-        { positionId: bbva, amount: '0.00' },
-        { positionId: savings, amount: '340.00' },
-      ],
-    });
+    await quickUpdateEither([
+      { positionId: bbva, amount: '0.00' },
+      { positionId: savings, amount: '340.00' },
+    ]);
 
     // A zero is not money: the episode stands (6.2, R22).
     expect(await state(bbva)).toMatchObject({ dormant: true, from: '2026-03-31' });

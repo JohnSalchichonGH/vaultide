@@ -4,7 +4,7 @@ import { createHarness, type Harness } from '../helpers/harness';
 import { testContext, type RequestContext } from '../../src/context';
 import { provisionUser } from '../../src/users/provisioning';
 import { createCashAccount, removePosition } from '../../src/positions/service';
-import { correctValuation, recordValuation } from '../../src/positions/valuations';
+import { recordValuation } from '../../src/positions/valuations';
 import { listCategories } from '../../src/users/categories';
 import { createExpenseEntry } from '../../src/flows/expenses';
 import { createIncomeEntry } from '../../src/flows/income';
@@ -14,6 +14,7 @@ import { acceptSuggestion, skipSuggestion } from '../../src/recurring/suggestion
 import { getMonthReconciliation, parseMonth } from '../../src/reconciliation/service';
 import { loadCompletedMonth } from '../../src/reconciliation/loader';
 import { ValidationError } from '../../src/errors';
+import { reviewAndConfirm } from '../helpers/corrections';
 
 /**
  * Completed-month reconciliation against a real database (blueprint 21.3, 8.10).
@@ -278,7 +279,9 @@ describe('a completed month, from real rows', () => {
       return result.rows[0] as { id: string; version: number };
     });
 
-    await correctValuation(harness.services.positions, on('2027-03-04'), {
+    // Six months late: a Historical Correction, reviewed and confirmed.
+    await reviewAndConfirm(harness.services.corrections, on('2027-03-04'), {
+      kind: 'valuation_update',
       valuationId: august.id,
       expectedVersion: august.version,
       valuedOn: '2026-08-31',

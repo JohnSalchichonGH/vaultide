@@ -14,6 +14,7 @@ export type ErrorCode =
   | 'CONFLICT_VERSION'
   | 'CONFLICT_DUPLICATE'
   | 'WRITE_BUSY'
+  | 'HISTORICAL_REVIEW_REQUIRED'
   | 'IMPOSSIBLE_OPERATION'
   | 'INCOMPLETE_DATA'
   | 'FX_UNAVAILABLE'
@@ -32,6 +33,7 @@ export const LOG_LEVEL_BY_CODE: Record<ErrorCode, LogLevel> = {
   CONFLICT_VERSION: 'info',
   CONFLICT_DUPLICATE: 'info',
   WRITE_BUSY: 'info',
+  HISTORICAL_REVIEW_REQUIRED: 'info',
   IMPOSSIBLE_OPERATION: 'info',
   INCOMPLETE_DATA: 'info',
   FX_UNAVAILABLE: 'warn',
@@ -107,6 +109,35 @@ export class DuplicateConflictError extends DomainError {
 export class WriteBusyError extends DomainError {
   readonly code = 'WRITE_BUSY';
   constructor(message = 'Another change is still saving. Nothing was saved — try again.') {
+    super(message);
+  }
+}
+
+/**
+ * The write would revise completed history, and no consent was given for it
+ * (blueprint 30.22 items 1 and 2; ADR 0010 §1).
+ *
+ * A safety boundary rather than the intended interaction. The interface routes
+ * an expected historical revision through Preview → Confirm before it ever gets
+ * here; this is what answers a caller that did not — a bypassed client, or a
+ * web layer that could not anticipate a hidden dormancy consequence.
+ *
+ * It is its own code precisely so the interface can tell it apart from a
+ * validation failure and open the review ceremony instead of showing a red
+ * error about data the user did nothing wrong with. `reasons` says which of the
+ * two rules applied, so the interface can explain the dormancy case, which is
+ * the one a user has no reason to expect.
+ *
+ * Nothing was written when this is raised: the classification happens after the
+ * write has been fully resolved and before its first mutation.
+ */
+export class HistoricalReviewRequiredError extends DomainError {
+  readonly code = 'HISTORICAL_REVIEW_REQUIRED';
+  constructor(
+    readonly reasons: readonly string[],
+    readonly completedPeriods: readonly string[],
+    message = 'This change rewrites a month that is already closed, so it has to be reviewed before it is saved. Nothing was saved.',
+  ) {
     super(message);
   }
 }

@@ -9,6 +9,7 @@ import type { FxProvider } from './fx/provider';
 import { createLogger, type Logger } from './logging';
 import { createMailerFromEnv } from './mail/providers';
 import type { Mailer } from './mail/mailer';
+import type { CorrectionDependencies } from './corrections/derive';
 import type { SettingsDependencies } from './settings/service';
 import type { FlowDependencies } from './flows/shared';
 import type { PositionDependencies } from './positions/service';
@@ -47,6 +48,13 @@ export interface Services {
    * services a change touches.
    */
   readonly flows: FlowDependencies;
+  /**
+   * Historical Correction's preview and confirm. The same two dependencies
+   * again — the preview reads and the confirm writes through the same
+   * repositories — named separately so a reader can see which services the
+   * correction ceremony reaches.
+   */
+  readonly corrections: CorrectionDependencies;
 }
 
 export interface ServiceOverrides {
@@ -170,6 +178,7 @@ export function createServices(overrides: ServiceOverrides = {}): Services {
     },
     positions: { db, fx },
     flows: { db, fx },
+    corrections: { db, fx },
   };
 }
 

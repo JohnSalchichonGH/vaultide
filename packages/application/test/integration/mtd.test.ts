@@ -3,13 +3,14 @@ import { sql, withoutUser } from '@vaultide/db';
 import { createHarness, type Harness } from '../helpers/harness';
 import { testContext, type RequestContext } from '../../src/context';
 import { provisionUser } from '../../src/users/provisioning';
-import { closePosition, createCashAccount, updateCashAccount } from '../../src/positions/service';
+import { closePosition, createCashAccount } from '../../src/positions/service';
 import { recordValuation } from '../../src/positions/valuations';
 import { listCategories } from '../../src/users/categories';
 import { createExpenseEntry } from '../../src/flows/expenses';
 import { createIncomeEntry } from '../../src/flows/income';
 import { createCashTransfer } from '../../src/flows/transfers';
 import { getMonthToDate } from '../../src/reconciliation/mtd-service';
+import { setDormantFlag } from '../helpers/corrections';
 
 /**
  * Month-to-date reconciliation against a real database (blueprint 21.3, 8.6).
@@ -215,7 +216,7 @@ describe('account states at the as-of date', () => {
       amount: '0.00',
       datePrecision: 'exact',
     });
-    await updateCashAccount(harness.services.positions, SEPT_10, {
+    await setDormantFlag(harness.services, SEPT_10, {
       positionId: b,
       isDormant: true,
       expectedVersion: 1,

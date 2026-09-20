@@ -13,7 +13,7 @@ import { provisionUser } from '../../src/users/provisioning';
 import { closePosition, createCashAccount, updateCashAccount } from '../../src/positions/service';
 import { recordValuation } from '../../src/positions/valuations';
 import { listCategories } from '../../src/users/categories';
-import { createCashTransfer, updateCashTransfer } from '../../src/flows/transfers';
+import { createCashTransfer } from '../../src/flows/transfers';
 import { createTemplate } from '../../src/recurring/templates';
 import { createFxService } from '../../src/fx/service';
 import { parseMonth } from '../../src/reconciliation/service';
@@ -24,6 +24,7 @@ import type {
   MonthlyPageDto,
   MonthlyTransferDto,
 } from '../../src/monthly/types';
+import { reviewAndConfirm } from '../helpers/corrections';
 
 /**
  * Monthly's transfer maintenance read against a real database (blueprint 7.5,
@@ -262,7 +263,10 @@ describe('the transfers a month owns', () => {
       description: 'Rent share',
       fee: { amount: '1.50', cashPositionId: bbva, incurredOn: '2026-09-12' },
     });
-    const corrected = await updateCashTransfer(flowDeps(), OCT_1, {
+    // September is closed on 1 October, so correcting the aggregate is a
+    // reviewed Historical Correction — and the section still lists one row.
+    await reviewAndConfirm(harness.services.corrections, OCT_1, {
+      kind: 'transfer_update',
       transferId: saved.transfer.id,
       expectedVersion: saved.transfer.version,
       occurredOn: '2026-09-12',
@@ -274,7 +278,6 @@ describe('the transfers a month owns', () => {
       fee: { amount: '1.50', cashPositionId: bbva, incurredOn: '2026-09-12' },
       expectedFee: { state: 'version', feeId: saved.fee?.id as string, version: saved.fee?.version as number },
     });
-    expect(corrected.transfer.version).toBe(2);
 
     expect((await completed()).transfers.transfers).toEqual([
       {

@@ -8,7 +8,6 @@ import {
   closePosition,
   createCashAccount,
   createOtherAsset,
-  updateCashAccount,
 } from '../../src/positions/service';
 import {
   confirmMonthEnd,
@@ -42,6 +41,7 @@ import {
   restoreMonthAdvisory,
 } from '../../src/monthly/review-service';
 import type { CompletedMonthlyPageDto, CurrentMonthlyPageDto } from '../../src/monthly/types';
+import { saveOrCorrect, setDormantFlag } from '../helpers/corrections';
 
 /**
  * The Monthly page's read and its review state, against a real database
@@ -840,8 +840,27 @@ async function makeDormantAccount(name: string, zeroOn: string, ctx: RequestCont
     amount: '0',
     datePrecision: 'exact',
   });
-  await updateCashAccount(positionDeps(), ctx, { positionId: id, expectedVersion: 1, isDormant: true });
+  await setDormantFlag(harness.services, ctx, { positionId: id, expectedVersion: 1, isDormant: true });
   return id;
+}
+
+/**
+ * Correct a balance the way the Accounts section does: a current month's is an
+ * ordinary save, and a completed month's is a Historical Correction (30.22
+ * item 1). The figure that lands, and the row it lands in, are the same either
+ * way — which is what these tests are about.
+ */
+async function correctBalance(
+  ctx: RequestContext,
+  target: { valuationId: string; expectedVersion: number },
+  patch: { valuedOn: string; amount: string; datePrecision: 'exact' | 'month_end' },
+) {
+  await saveOrCorrect(
+    harness.services.corrections,
+    ctx,
+    { kind: 'valuation_update', ...target, ...patch },
+    () => correctValuation(positionDeps(), ctx, { ...target, ...patch }),
+  );
 }
 
 describe('a completed month’s Accounts section', () => {
@@ -875,13 +894,11 @@ describe('a completed month’s Accounts section', () => {
 
     const before = (await completedAccount('BBVA')).closing;
     if (before.kind !== 'statement') throw new Error('expected a statement');
-    await correctValuation(positionDeps(), OCT_1, {
-      valuationId: before.valuationId,
-      expectedVersion: before.version,
-      valuedOn: '2026-09-30',
-      amount: '7890.00',
-      datePrecision: 'month_end',
-    });
+    await correctBalance(
+      OCT_1,
+      { valuationId: before.valuationId, expectedVersion: before.version },
+      { valuedOn: '2026-09-30', amount: '7890.00', datePrecision: 'month_end' },
+    );
 
     const after = (await completedAccount('BBVA')).closing;
     expect(after).toMatchObject({
@@ -893,13 +910,11 @@ describe('a completed month’s Accounts section', () => {
 
     // The page that still holds the old version cannot overwrite the new figure.
     await expect(
-      correctValuation(positionDeps(), OCT_1, {
-        valuationId: before.valuationId,
-        expectedVersion: before.version,
-        valuedOn: '2026-09-30',
-        amount: '7000.00',
-        datePrecision: 'month_end',
-      }),
+      correctBalance(
+        OCT_1,
+        { valuationId: before.valuationId, expectedVersion: before.version },
+        { valuedOn: '2026-09-30', amount: '7000.00', datePrecision: 'month_end' },
+      ),
     ).rejects.toMatchObject({ code: 'CONFLICT_VERSION' });
     expect((await completedAccount('BBVA')).closing).toMatchObject({ version: 2, amount: { amount: '7890' } });
   });
@@ -992,13 +1007,11 @@ describe('a completed month’s Accounts section', () => {
 
     const closing = (await completedAccount('BBVA')).closing;
     if (closing.kind !== 'last_day_snapshot') throw new Error('expected a last-day snapshot');
-    await correctValuation(positionDeps(), OCT_1, {
-      valuationId: closing.valuationId,
-      expectedVersion: closing.version,
-      valuedOn: '2026-09-30',
-      amount: '7875.50',
-      datePrecision: 'month_end',
-    });
+    await correctBalance(
+      OCT_1,
+      { valuationId: closing.valuationId, expectedVersion: closing.version },
+      { valuedOn: '2026-09-30', amount: '7875.50', datePrecision: 'month_end' },
+    );
 
     expect((await completedAccount('BBVA')).closing).toMatchObject({
       kind: 'statement',

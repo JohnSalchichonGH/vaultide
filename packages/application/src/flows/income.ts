@@ -4,16 +4,30 @@ import {
   insertIncomeEntryIn,
   updateIncomeEntryIn as updateIncomeEntryRowIn,
   type IncomeEntryRow,
+  type OccurrenceRef,
   type Transaction,
 } from '@vaultide/db';
 import { allowedIncomeSettlements, type IncomeKind, type IncomeSettlement } from '@vaultide/validation';
 import type { RequestContext } from '../context';
 import { withUserWrite } from '../coordination';
+import { assertNoHistoricalReview } from '../corrections/guard';
 import { NotFoundError, ValidationError, VersionConflictError } from '../errors';
 import {
+  canonicalAmount,
+  created,
+  deleted,
+  dormancyChange,
+  mergeSupport,
+  updated,
+  type IncomeSourceFacts,
+  type ResolvedWrite,
+  type ResolveOptions,
+} from '../write-plan';
+import {
+  applyDormancyClearsIn,
   assertNotFuture,
   auditContextOf,
-  clearDormancyForFlowIn,
+  clearDormancyEffect,
   resolveTrackedCashLegIn,
   type FlowDependencies,
 } from './shared';
@@ -78,35 +92,103 @@ export function assertIncomeSettlementAllowed(
   throw new ValidationError(message, { settlement: [message] });
 }
 
+/** The columns an income write sets. */
+export interface IncomeColumns {
+  readonly kind: IncomeKind;
+  readonly receivedOn: string;
+  readonly netAmount: string;
+  readonly grossAmount: string | null;
+  readonly currency: string;
+  readonly settlement: IncomeSettlement;
+  readonly cashPositionId: string | null;
+  readonly description: string | null;
+  readonly tags: string[] | undefined;
+  readonly isOneOff: boolean | undefined;
+}
+
 /**
- * Create an income entry inside the caller's transaction.
+ * A resolved income write (ADR 0010 §1; §20 of the slice prompt).
  *
- * Exported because the reconciliation adjustment is an ordinary income entry
- * whose amount the server derives from a recomputation it must perform under
- * the same mutex (ADR 0009 §5, ADR 0010 §15). Everything a direct caller gets —
- * the settlement matrix, the null-leg rule, the future-date rule, dormancy and
- * the audit row — it gets too.
+ * The ordinary mutation, the correction preview and Historical Confirm all
+ * resolve through the same three functions below and apply through the same
+ * one, so there is no second validator that can drift from what actually
+ * happens when the row is written.
  */
-export async function createIncomeEntryIn(
+export interface IncomeWritePlan extends ResolvedWrite {
+  readonly operation: 'create' | 'update' | 'delete';
+  readonly existing: IncomeEntryRow | null;
+  readonly expectedVersion: number | null;
+  readonly columns: IncomeColumns | null;
+  /** The occurrence a creation materializes, when it materializes one. */
+  readonly occurrence: OccurrenceRef | undefined;
+}
+
+function incomeFacts(row: IncomeEntryRow): IncomeSourceFacts {
+  return {
+    kind: 'income',
+    incomeKind: row.kind,
+    receivedOn: row.receivedOn,
+    netAmount: canonicalAmount(row.netAmount),
+    grossAmount: row.grossAmount === null ? null : canonicalAmount(row.grossAmount),
+    currency: row.currency,
+    settlement: row.settlement,
+    cashPositionId: row.cashPositionId,
+    description: row.description,
+    templateId: row.templateId,
+    occurrenceDate: row.occurrenceDate,
+  };
+}
+
+function incomeFactsOf(
+  columns: IncomeColumns,
+  occurrence: OccurrenceRef | undefined,
+): IncomeSourceFacts {
+  return {
+    kind: 'income',
+    incomeKind: columns.kind,
+    receivedOn: columns.receivedOn,
+    netAmount: canonicalAmount(columns.netAmount),
+    grossAmount: columns.grossAmount === null ? null : canonicalAmount(columns.grossAmount),
+    currency: columns.currency,
+    settlement: columns.settlement,
+    cashPositionId: columns.cashPositionId,
+    description: columns.description,
+    templateId: occurrence?.templateId ?? null,
+    occurrenceDate: occurrence?.occurrenceDate ?? null,
+  };
+}
+
+/**
+ * Resolve a new income entry, whoever is creating it.
+ *
+ * Exported because the reconciliation adjustment and a recurring acceptance are
+ * ordinary income entries whose amount and occurrence identity their own
+ * services derive (ADR 0009 §5, ADR 0010 §15). Everything a direct caller gets
+ * — the settlement matrix, the null-leg rule, the future-date rule and the
+ * dormancy consequence — they get too.
+ */
+export async function resolveIncomeCreateIn(
   tx: Transaction,
   ctx: RequestContext,
   args: IncomeEntryArgs,
-): Promise<IncomeEntryRow> {
+  occurrence?: OccurrenceRef,
+): Promise<IncomeWritePlan> {
   assertNotFuture(ctx, args.receivedOn, 'receivedOn');
   assertIncomeSettlementAllowed(args.kind, args.settlement);
 
   const cashPositionId = args.settlement === 'tracked_cash' ? (args.cashPositionId ?? null) : null;
 
-  if (args.settlement === 'tracked_cash') {
-    await resolveTrackedCashLegIn(tx, {
-      cashPositionId,
-      currency: args.currency,
-      on: args.receivedOn,
-      dateField: 'receivedOn',
-    });
-  }
+  const leg =
+    args.settlement === 'tracked_cash'
+      ? await resolveTrackedCashLegIn(tx, {
+          cashPositionId,
+          currency: args.currency,
+          on: args.receivedOn,
+          dateField: 'receivedOn',
+        })
+      : null;
 
-  const row = await insertIncomeEntryIn(tx, auditContextOf(ctx), {
+  const columns: IncomeColumns = {
     kind: args.kind,
     receivedOn: args.receivedOn,
     netAmount: args.netAmount,
@@ -115,11 +197,229 @@ export async function createIncomeEntryIn(
     settlement: args.settlement,
     cashPositionId,
     description: args.description ?? null,
-    tags: args.tags ?? [],
-    isOneOff: args.isOneOff ?? false,
-  });
-  await clearDormancyForFlowIn(tx, ctx, [cashPositionId]);
-  return row;
+    tags: args.tags,
+    isOneOff: args.isOneOff,
+  };
+  const dormancy = leg === null ? [] : [clearDormancyEffect(leg)];
+
+  return {
+    operation: 'create',
+    existing: null,
+    expectedVersion: null,
+    columns,
+    occurrence,
+    // A first assertion, whatever month it lands in (30.22 item 2).
+    revision: false,
+    changes: [
+      created(
+        {
+          scope: 'prospective',
+          kind: 'income',
+          role: occurrence === undefined ? 'entry' : 'occurrence',
+          owner:
+            occurrence === undefined
+              ? null
+              : `${occurrence.templateId}#${occurrence.occurrenceDate}`,
+        },
+        incomeFactsOf(columns, occurrence),
+      ),
+      ...dormancy.map(dormancyChange),
+    ],
+    dormancy,
+    support: [{ currency: args.currency, from: args.receivedOn }],
+  };
+}
+
+export async function resolveIncomeUpdateIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: UpdateIncomeEntryArgs,
+  options: ResolveOptions = { lock: true },
+): Promise<IncomeWritePlan> {
+  const existing = await findIncomeEntryIn(
+    tx,
+    args.entryId,
+    options.lock ? { lock: 'update' } : {},
+  );
+  if (existing === undefined) throw new NotFoundError('That income entry no longer exists.');
+  if (existing.version !== args.expectedVersion) {
+    // Asked here as well as by the update, so a preview — which writes nothing
+    // and never reaches the update — refuses a stale draft for the same reason
+    // a save does (§59 of the slice prompt).
+    throw new VersionConflictError('This entry changed while you were editing it.');
+  }
+
+  const kind = args.kind ?? existing.kind;
+  const settlement = args.settlement ?? existing.settlement;
+  const receivedOn = args.receivedOn ?? existing.receivedOn;
+  const netAmount = args.netAmount ?? existing.netAmount;
+
+  assertNotFuture(ctx, receivedOn, 'receivedOn');
+  assertIncomeSettlementAllowed(kind, settlement);
+
+  const requestedCash =
+    args.cashPositionId === undefined ? existing.cashPositionId : args.cashPositionId;
+  const cashPositionId = settlement === 'tracked_cash' ? requestedCash : null;
+
+  const leg =
+    settlement === 'tracked_cash'
+      ? await resolveTrackedCashLegIn(tx, {
+          cashPositionId,
+          currency: existing.currency,
+          on: receivedOn,
+          dateField: 'receivedOn',
+        })
+      : null;
+
+  const columns: IncomeColumns = {
+    kind,
+    receivedOn,
+    netAmount,
+    grossAmount: args.grossAmount === undefined ? existing.grossAmount : args.grossAmount,
+    currency: existing.currency,
+    settlement,
+    cashPositionId,
+    description: args.description === undefined ? existing.description : args.description,
+    tags: args.tags,
+    isOneOff: args.isOneOff,
+  };
+  const dormancy = leg === null ? [] : [clearDormancyEffect(leg)];
+
+  return {
+    operation: 'update',
+    existing,
+    expectedVersion: args.expectedVersion,
+    columns,
+    // `occurrence_date` is the scheduling identity of the occurrence this row
+    // fulfilled, so moving the financial date must not move it (§30.9 item 2).
+    // The patch has no such field, and the facts carry the stored pair.
+    occurrence:
+      existing.templateId === null || existing.occurrenceDate === null
+        ? undefined
+        : { templateId: existing.templateId, occurrenceDate: existing.occurrenceDate },
+    revision: true,
+    changes: [
+      updated(
+        { scope: 'existing', kind: 'income', id: existing.id },
+        incomeFacts(existing),
+        incomeFactsOf(
+          columns,
+          existing.templateId === null || existing.occurrenceDate === null
+            ? undefined
+            : { templateId: existing.templateId, occurrenceDate: existing.occurrenceDate },
+        ),
+      ),
+      ...dormancy.map(dormancyChange),
+    ],
+    dormancy,
+    support: mergeSupport([
+      { currency: existing.currency, from: receivedOn },
+      { currency: existing.currency, from: existing.receivedOn },
+    ]),
+  };
+}
+
+export async function resolveIncomeDeleteIn(
+  tx: Transaction,
+  args: DeleteIncomeEntryArgs,
+  options: ResolveOptions = { lock: true },
+): Promise<IncomeWritePlan> {
+  const existing = await findIncomeEntryIn(
+    tx,
+    args.entryId,
+    options.lock ? { lock: 'update' } : {},
+  );
+  if (existing === undefined) throw new NotFoundError('That income entry no longer exists.');
+  if (existing.version !== args.expectedVersion) {
+    throw new VersionConflictError(
+      'This entry changed after you opened it. Reload to see what it says now.',
+    );
+  }
+
+  return {
+    operation: 'delete',
+    existing,
+    expectedVersion: args.expectedVersion,
+    columns: null,
+    occurrence: undefined,
+    revision: true,
+    // Deleting an attributed flow restores no dormancy (8.8).
+    changes: [deleted({ scope: 'existing', kind: 'income', id: existing.id }, incomeFacts(existing))],
+    dormancy: [],
+    support: [],
+  };
+}
+
+/** The one writer for all three income operations, and for both callers. */
+export async function applyIncomePlanIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  plan: IncomeWritePlan,
+  reason?: string,
+): Promise<IncomeEntryRow> {
+  const audit = auditContextOf(ctx, reason);
+
+  const written = await (async (): Promise<IncomeEntryRow> => {
+    if (plan.operation === 'delete') {
+      /* v8 ignore next 2 -- a delete plan always carries the row it removes. */
+      if (plan.existing === null) throw new NotFoundError('That income entry no longer exists.');
+      const removed = await deleteIncomeEntryRowIn(tx, audit, plan.existing.id);
+      /* v8 ignore next -- the row is held under FOR UPDATE in this transaction. */
+      if (removed === undefined) throw new NotFoundError('That income entry no longer exists.');
+      return removed;
+    }
+
+    /* v8 ignore next 2 -- create and update plans always carry their columns. */
+    if (plan.columns === null) throw new NotFoundError('That income entry no longer exists.');
+    const columns = plan.columns;
+
+    if (plan.operation === 'create') {
+      return insertIncomeEntryIn(tx, audit, {
+        kind: columns.kind,
+        receivedOn: columns.receivedOn,
+        netAmount: columns.netAmount,
+        grossAmount: columns.grossAmount,
+        currency: columns.currency,
+        settlement: columns.settlement,
+        cashPositionId: columns.cashPositionId,
+        description: columns.description,
+        tags: columns.tags ?? [],
+        isOneOff: columns.isOneOff ?? false,
+        ...(plan.occurrence === undefined ? {} : { occurrence: plan.occurrence }),
+      });
+    }
+
+    /* v8 ignore next 2 -- an update plan always carries a row and a version. */
+    if (plan.existing === null || plan.expectedVersion === null) throw new VersionConflictError();
+    const row = await updateIncomeEntryRowIn(tx, audit, plan.existing.id, plan.expectedVersion, {
+      kind: columns.kind,
+      receivedOn: columns.receivedOn,
+      netAmount: columns.netAmount,
+      settlement: columns.settlement,
+      cashPositionId: columns.cashPositionId,
+      grossAmount: columns.grossAmount,
+      description: columns.description,
+      ...(columns.tags === undefined ? {} : { tags: columns.tags }),
+      ...(columns.isOneOff === undefined ? {} : { isOneOff: columns.isOneOff }),
+    });
+    if (row === undefined) {
+      throw new VersionConflictError('This entry changed while you were editing it.');
+    }
+    return row;
+  })();
+
+  await applyDormancyClearsIn(tx, ctx, plan.dormancy);
+  return written;
+}
+
+export async function createIncomeEntryIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: IncomeEntryArgs,
+): Promise<IncomeEntryRow> {
+  const plan = await resolveIncomeCreateIn(tx, ctx, args);
+  assertNoHistoricalReview(plan, ctx.today);
+  return applyIncomePlanIn(tx, ctx, plan);
 }
 
 export async function createIncomeEntry(
@@ -154,51 +454,10 @@ async function updateIncomeEntryIn(
   tx: Transaction,
   ctx: RequestContext,
   args: UpdateIncomeEntryArgs,
-): Promise<IncomeEntryRow | undefined> {
-  const existing = await findIncomeEntryIn(tx, args.entryId, { lock: 'update' });
-  if (existing === undefined) throw new NotFoundError('That income entry no longer exists.');
-
-  const kind = args.kind ?? existing.kind;
-  const settlement = args.settlement ?? existing.settlement;
-  const receivedOn = args.receivedOn ?? existing.receivedOn;
-  const netAmount = args.netAmount ?? existing.netAmount;
-
-  assertNotFuture(ctx, receivedOn, 'receivedOn');
-  assertIncomeSettlementAllowed(kind, settlement);
-
-  const requestedCash =
-    args.cashPositionId === undefined ? existing.cashPositionId : args.cashPositionId;
-  const cashPositionId = settlement === 'tracked_cash' ? requestedCash : null;
-
-  if (settlement === 'tracked_cash') {
-    await resolveTrackedCashLegIn(tx, {
-      cashPositionId,
-      currency: existing.currency,
-      on: receivedOn,
-      dateField: 'receivedOn',
-    });
-  }
-
-  const row = await updateIncomeEntryRowIn(
-    tx,
-    auditContextOf(ctx, args.reason),
-    args.entryId,
-    args.expectedVersion,
-    {
-      kind,
-      receivedOn,
-      netAmount,
-      settlement,
-      cashPositionId,
-      ...(args.grossAmount === undefined ? {} : { grossAmount: args.grossAmount }),
-      ...(args.description === undefined ? {} : { description: args.description }),
-      ...(args.tags === undefined ? {} : { tags: args.tags }),
-      ...(args.isOneOff === undefined ? {} : { isOneOff: args.isOneOff }),
-    },
-  );
-  if (row === undefined) return undefined;
-  await clearDormancyForFlowIn(tx, ctx, [cashPositionId]);
-  return row;
+): Promise<IncomeEntryRow> {
+  const plan = await resolveIncomeUpdateIn(tx, ctx, args);
+  assertNoHistoricalReview(plan, ctx.today);
+  return applyIncomePlanIn(tx, ctx, plan, args.reason);
 }
 
 /**
@@ -215,20 +474,19 @@ async function updateIncomeEntryIn(
  * two transactions could commit the attribution and then lose the clear,
  * leaving the account asserting "no movement" while a flow it owns says
  * otherwise — and nothing would report it, because each half succeeded.
+ *
+ * A correction whose before or after date lands in a completed month, or whose
+ * dormancy consequence reaches one, is a Historical Correction and is refused
+ * here: it goes through Preview → Confirm instead (30.22 item 1).
  */
 export async function updateIncomeEntry(
   deps: FlowDependencies,
   ctx: RequestContext,
   args: UpdateIncomeEntryArgs,
 ): Promise<IncomeEntryRow> {
-  const updated = await withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+  return withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
     updateIncomeEntryIn(tx, ctx, args),
   );
-
-  if (updated === undefined) {
-    throw new VersionConflictError('This entry changed while you were editing it.');
-  }
-  return updated;
 }
 
 export interface DeleteIncomeEntryArgs {
@@ -243,18 +501,9 @@ async function deleteIncomeEntryIn(
   ctx: RequestContext,
   args: DeleteIncomeEntryArgs,
 ): Promise<IncomeEntryRow> {
-  const existing = await findIncomeEntryIn(tx, args.entryId, { lock: 'update' });
-  if (existing === undefined) throw new NotFoundError('That income entry no longer exists.');
-  if (existing.version !== args.expectedVersion) {
-    throw new VersionConflictError(
-      'This entry changed after you opened it. Reload to see what it says now.',
-    );
-  }
-
-  const removed = await deleteIncomeEntryRowIn(tx, auditContextOf(ctx, args.reason), args.entryId);
-  /* v8 ignore next -- the row is held under FOR UPDATE in this transaction. */
-  if (removed === undefined) throw new NotFoundError('That income entry no longer exists.');
-  return removed;
+  const plan = await resolveIncomeDeleteIn(tx, args);
+  assertNoHistoricalReview(plan, ctx.today);
+  return applyIncomePlanIn(tx, ctx, plan, args.reason);
 }
 
 /**
@@ -264,6 +513,9 @@ async function deleteIncomeEntryIn(
  * tab — or in another month's editor — is never removed by a request that was
  * about the version before it. The refusal happens before the delete, so no
  * audit row records a deletion that did not happen.
+ *
+ * Deleting an entry out of a completed month is a Historical Correction; the
+ * current month's own delete stays one short confirmation (§71).
  */
 export async function deleteIncomeEntry(
   deps: FlowDependencies,

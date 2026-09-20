@@ -1,12 +1,13 @@
 import {
   deleteExpenseEntryIn,
   deleteTransferIn,
+  findCategoryIn,
   findTransferFeesIn,
+  findTransferIn,
   insertExpenseEntryIn,
   insertTransferIn,
   listCategoryRecordsIn,
   lockCategoryIn,
-  lockTransferIn,
   updateExpenseEntryIn,
   updateTransferIn,
   type AuditContext,
@@ -19,6 +20,7 @@ import {
 import { Decimal } from '@vaultide/finance';
 import type { RequestContext } from '../context';
 import { withUserWrite } from '../coordination';
+import { assertNoHistoricalReview } from '../corrections/guard';
 import {
   ImpossibleOperationError,
   NotFoundError,
@@ -26,10 +28,27 @@ import {
   VersionConflictError,
 } from '../errors';
 import {
+  canonicalAmount,
+  created,
+  deleted,
+  dormancyChange,
+  mergeSupport,
+  updated,
+  type ExpenseSourceFacts,
+  type IdentifiedSourceChange,
+  type ResolvedWrite,
+  type ResolveOptions,
+  type SourceIdentity,
+  type SupportWarm,
+  type TransferSourceFacts,
+} from '../write-plan';
+import { expenseFacts } from './expenses';
+import {
+  applyDormancyClearsIn,
   assertAccountParticipates,
   assertNotFuture,
   auditContextOf,
-  clearDormancyForFlowIn,
+  clearDormancyEffect,
   requireCashAccountIn,
   type FlowDependencies,
 } from './shared';
@@ -271,6 +290,7 @@ async function resolveFactsIn(
 async function transferFeeCategoryIn(
   tx: Transaction,
   categories: readonly CategoryRecord[],
+  options: ResolveOptions = { lock: true },
 ): Promise<CategoryRecord> {
   const candidates = categories.filter((row) => row.kind === 'transfer_fee');
   const only = candidates[0];
@@ -285,7 +305,9 @@ async function transferFeeCategoryIn(
   // (30.22 item 8; ADR 0010 §9). No application path can archive a system
   // category today, and the lock states the dependency rather than relying on
   // the absence of a feature.
-  const held = await lockCategoryIn(tx, only.id);
+  // The correction preview asks the same question without the lock, because a
+  // `READ ONLY` transaction cannot take one (ADR 0010 §8). Confirm takes it.
+  const held = options.lock ? await lockCategoryIn(tx, only.id) : await findCategoryIn(tx, only.id);
   if (held === undefined || held.archivedAt !== null) {
     throw new ImpossibleOperationError(
       'Your transfer-fee category is missing or not unique, so this fee cannot be filed. Nothing was saved.',
@@ -352,17 +374,22 @@ function assertFeeAsExpected(
 }
 
 /** Whether a correction changes anything the transfer's own row holds. */
-function transferChanged(stored: TransferRow, args: UpdateTransferArgs): boolean {
+function transferChanged(
+  stored: TransferRow,
+  facts: TransferFacts,
+  description: string | null,
+  tags: string[] | undefined,
+): boolean {
   return (
-    stored.occurredOn !== args.occurredOn ||
-    stored.fromPositionId !== args.fromPositionId ||
-    stored.toPositionId !== args.toPositionId ||
-    !sameAmount(stored.fromAmount, args.fromAmount) ||
-    !sameAmount(stored.toAmount, args.toAmount) ||
-    stored.description !== args.description ||
-    (args.tags !== undefined &&
-      (args.tags.length !== stored.tags.length ||
-        args.tags.some((tag, index) => tag !== stored.tags[index])))
+    stored.occurredOn !== facts.occurredOn ||
+    stored.fromPositionId !== facts.fromPositionId ||
+    stored.toPositionId !== facts.toPositionId ||
+    !sameAmount(stored.fromAmount, facts.fromAmount) ||
+    !sameAmount(stored.toAmount, facts.toAmount) ||
+    stored.description !== description ||
+    (tags !== undefined &&
+      (tags.length !== stored.tags.length ||
+        tags.some((tag, index) => tag !== stored.tags[index])))
   );
 }
 
@@ -460,13 +487,103 @@ interface SavedTransfer extends TransferWithFee {
   readonly resolved: ResolvedFacts;
 }
 
-async function createCashTransferIn(
+/* -------------------------------------------------------------------------- */
+/* Resolved transfer writes                                                    */
+/* -------------------------------------------------------------------------- */
+
+/** A transfer row as its consent-relevant facts. */
+function transferFacts(row: TransferRow): TransferSourceFacts {
+  return {
+    kind: 'transfer',
+    occurredOn: row.occurredOn,
+    fromPositionId: row.fromPositionId,
+    fromCurrency: row.fromCurrency,
+    fromAmount: canonicalAmount(row.fromAmount),
+    toPositionId: row.toPositionId,
+    toCurrency: row.toCurrency,
+    toAmount: canonicalAmount(row.toAmount),
+    description: row.description,
+  };
+}
+
+/** The same facts from what a create or a correction states. */
+function transferFactsOf(facts: TransferFacts, resolved: ResolvedFacts, description: string | null): TransferSourceFacts {
+  return {
+    kind: 'transfer',
+    occurredOn: facts.occurredOn,
+    fromPositionId: resolved.from.id,
+    fromCurrency: resolved.from.currency,
+    fromAmount: canonicalAmount(facts.fromAmount),
+    toPositionId: resolved.to.id,
+    toCurrency: resolved.to.currency,
+    toAmount: canonicalAmount(facts.toAmount),
+    description,
+  };
+}
+
+/** A fee as the aggregate would save it, with the category it is filed under. */
+function feeFactsOf(fee: FeeToSave, transferId: string | null): ExpenseSourceFacts {
+  const columns = feeColumnsOf(fee);
+  return {
+    kind: 'expense',
+    categoryId: fee.category.id,
+    categoryKind: fee.category.kind,
+    incurredOn: columns.incurredOn,
+    amount: canonicalAmount(columns.amount),
+    currency: columns.currency,
+    settlement: 'tracked_cash',
+    cashPositionId: columns.cashPositionId,
+    description: null,
+    transferId,
+    templateId: null,
+    occurrenceDate: null,
+  };
+}
+
+/**
+ * The identity a fee row carries in a correction preview (§19 of the slice
+ * prompt).
+ *
+ * An existing fee is named by its real database id. A fee the correction would
+ * **add** has none — PostgreSQL generates it on insert — so it is named by what
+ * it is in the aggregate: the `transfer_fee` role of this transfer. A preview
+ * that invented a UUID would be fingerprinting a value the commit could never
+ * reproduce, and would force Confirm to preserve an id it does not own.
+ */
+function feeIdentity(transferId: string, stored: ExpenseEntryRow | null): SourceIdentity {
+  return stored === null
+    ? { scope: 'prospective', kind: 'expense', role: 'transfer_fee', owner: transferId }
+    : { scope: 'existing', kind: 'expense', id: stored.id };
+}
+
+/** A resolved transfer write: the aggregate, its fee, and their consequences. */
+export interface TransferWritePlan extends ResolvedWrite {
+  readonly operation: 'create' | 'update' | 'delete';
+  /** The locked transfer row, for an update or a delete. */
+  readonly existing: TransferRow | null;
+  readonly expectedVersion: number | null;
+  /** What the transfer should become, and `null` for a delete. */
+  readonly facts: TransferFacts | null;
+  readonly resolved: ResolvedFacts | null;
+  readonly description: string | null;
+  readonly tags: string[] | undefined;
+  /** The single editable fee this aggregate has now, if any. */
+  readonly storedFee: ExpenseEntryRow | null;
+  /** The fee it should carry once this lands, or `null` for none. */
+  readonly desiredFee: FeeToSave | null;
+  /** Every linked row, for a delete — the malformed several-fee case included. */
+  readonly allFees: readonly ExpenseEntryRow[];
+}
+
+export async function resolveCreateTransferIn(
   tx: Transaction,
   ctx: RequestContext,
   args: CreateTransferArgs,
-): Promise<SavedTransfer> {
-  const resolved = await resolveFactsIn(tx, ctx, { ...args, fee: args.fee ?? null });
-  const fee: FeeToSave | null =
+  options: ResolveOptions = { lock: true },
+): Promise<TransferWritePlan> {
+  const facts: TransferFacts = { ...args, fee: args.fee ?? null };
+  const resolved = await resolveFactsIn(tx, ctx, facts);
+  const desiredFee: FeeToSave | null =
     resolved.fee === null
       ? null
       : {
@@ -474,52 +591,72 @@ async function createCashTransferIn(
           category: await transferFeeCategoryIn(
             tx,
             await listCategoryRecordsIn(tx, { includeArchived: true }),
+            options,
           ),
         };
 
-  const audit = auditContextOf(ctx);
-  const transfer = await insertTransferIn(tx, audit, {
-    kind: 'cash_transfer',
-    occurredOn: args.occurredOn,
-    fromPositionId: resolved.from.id,
-    fromCurrency: resolved.from.currency,
-    fromAmount: args.fromAmount,
-    toPositionId: resolved.to.id,
-    toCurrency: resolved.to.currency,
-    toAmount: args.toAmount,
-    description: args.description ?? null,
-    tags: args.tags ?? [],
-    // Phase 3 materializes no recurring transfer occurrence.
-  });
+  const description = args.description ?? null;
+  const dormancy = [
+    clearDormancyEffect(resolved.from),
+    clearDormancyEffect(resolved.to),
+  ];
 
-  const feeRow = fee === null ? null : await insertFeeIn(tx, audit, transfer.id, fee);
-
-  await clearDormancyForFlowIn(tx, ctx, [resolved.from.id, resolved.to.id]);
-  return { transfer, fee: feeRow, resolved };
+  return {
+    operation: 'create',
+    existing: null,
+    expectedVersion: null,
+    facts,
+    resolved,
+    description,
+    tags: args.tags,
+    storedFee: null,
+    desiredFee,
+    allFees: [],
+    revision: false,
+    changes: [
+      created(
+        { scope: 'prospective', kind: 'transfer', role: 'transfer', owner: null },
+        transferFactsOf(facts, resolved, description),
+      ),
+      ...(desiredFee === null
+        ? []
+        : [
+            created(
+              { scope: 'prospective', kind: 'expense', role: 'transfer_fee', owner: null },
+              feeFactsOf(desiredFee, null),
+            ),
+          ]),
+      ...dormancy.map(dormancyChange),
+    ],
+    dormancy,
+    support: supportOf(args.occurredOn, resolved),
+  };
 }
 
-export async function createCashTransfer(
-  deps: FlowDependencies,
-  ctx: RequestContext,
-  args: CreateTransferArgs,
-): Promise<TransferWithFee> {
-  const created = await withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
-    createCashTransferIn(tx, ctx, args),
-  );
-
-  await warmHistory(deps.fx, args.occurredOn, created.resolved);
-  return { transfer: created.transfer, fee: created.fee };
-}
-
-async function updateCashTransferIn(
+/**
+ * Resolve a correction of the whole aggregate (ADR 0006 §2–§6, §8).
+ *
+ * In this order, and the order is the contract: lock the transfer and check its
+ * version; resolve the facts the correction states against the accounts they
+ * name; read the linked fee rows and refuse any the aggregate cannot edit;
+ * check the fee against what the caller saw.
+ *
+ * The transfer **and** its fee are both reported as changes even where their
+ * values are identical, because the aggregate's historical qualification is
+ * about every financial date it carries, not only the ones that move (§14 of
+ * the slice prompt). A September transfer with an August fee is a correction of
+ * August whichever half the user actually edited.
+ */
+export async function resolveUpdateTransferIn(
   tx: Transaction,
   ctx: RequestContext,
   args: UpdateTransferArgs,
-): Promise<SavedTransfer> {
-  // The aggregate's own lock first, exactly as before: every fee read and every
-  // fee write in this service happens behind it, so the two orders that could
-  // deadlock never meet (M14, ADR 0006).
-  const locked = await lockTransferIn(tx, args.transferId);
+  options: ResolveOptions = { lock: true },
+): Promise<TransferWritePlan> {
+  // The aggregate's own lock first: every fee read and every fee write in this
+  // service happens behind it, so the two orders that could deadlock never meet
+  // (M14, ADR 0006).
+  const locked = await findTransferIn(tx, args.transferId, options.lock ? { lock: 'update' } : {});
   if (locked === undefined) throw new NotFoundError('That transfer no longer exists.');
   if (locked.kind !== 'cash_transfer') {
     throw new ImpossibleOperationError('Only cash transfers can be edited here.');
@@ -541,43 +678,239 @@ async function updateCashTransferIn(
   const desiredFee: FeeToSave | null =
     resolved.fee === null
       ? null
-      : { ...resolved.fee, category: await transferFeeCategoryIn(tx, categories) };
+      : { ...resolved.fee, category: await transferFeeCategoryIn(tx, categories, options) };
 
-  const audit = auditContextOf(ctx, args.reason);
-
-  const stored = editableFeeOf(
+  const linked = await findTransferFeesIn(
+    tx,
     args.transferId,
-    await findTransferFeesIn(tx, args.transferId),
-    kindOf,
+    options.lock ? {} : { lock: 'none' },
   );
-  assertFeeAsExpected(args.expectedFee, stored);
+  const storedFee = editableFeeOf(args.transferId, linked, kindOf);
+  assertFeeAsExpected(args.expectedFee, storedFee);
 
-  let transfer: TransferRow = locked;
-  if (transferChanged(locked, args)) {
-    const updated = await updateTransferIn(tx, audit, args.transferId, args.expectedVersion, {
-      occurredOn: args.occurredOn,
+  const dormancy = [clearDormancyEffect(resolved.from), clearDormancyEffect(resolved.to)];
+
+  const feeChange: IdentifiedSourceChange | null =
+    storedFee === null && desiredFee === null
+      ? null
+      : storedFee === null
+        ? created(feeIdentity(args.transferId, null), feeFactsOf(desiredFee as FeeToSave, args.transferId))
+        : desiredFee === null
+          ? deleted(
+              feeIdentity(args.transferId, storedFee),
+              expenseFacts(storedFee, kindOf.get(storedFee.categoryId) ?? 'transfer_fee'),
+            )
+          : updated(
+              feeIdentity(args.transferId, storedFee),
+              expenseFacts(storedFee, kindOf.get(storedFee.categoryId) ?? 'transfer_fee'),
+              feeFactsOf(desiredFee, args.transferId),
+            );
+
+  return {
+    operation: 'update',
+    existing: locked,
+    expectedVersion: args.expectedVersion,
+    facts: args,
+    resolved,
+    description: args.description,
+    tags: args.tags,
+    storedFee,
+    desiredFee,
+    allFees: linked,
+    revision: true,
+    changes: [
+      updated(
+        { scope: 'existing', kind: 'transfer', id: locked.id },
+        transferFacts(locked),
+        transferFactsOf(args, resolved, args.description),
+      ),
+      ...(feeChange === null ? [] : [feeChange]),
+      ...dormancy.map(dormancyChange),
+    ],
+    dormancy,
+    support: supportOf(args.occurredOn, resolved),
+  };
+}
+
+export async function resolveDeleteTransferIn(
+  tx: Transaction,
+  args: DeleteTransferArgs,
+  options: ResolveOptions = { lock: true },
+): Promise<TransferWritePlan> {
+  const locked = await findTransferIn(tx, args.transferId, options.lock ? { lock: 'update' } : {});
+  if (locked === undefined) throw new NotFoundError('That transfer no longer exists.');
+  if (locked.kind !== 'cash_transfer') {
+    throw new ImpossibleOperationError('Only cash transfers can be deleted here.');
+  }
+  if (locked.version !== args.expectedVersion) {
+    throw new VersionConflictError(
+      'This transfer changed after you opened it. Reload to see what it says now.',
+    );
+  }
+
+  // Every linked row, compared as a whole set before a single row is touched.
+  const fees = await findTransferFeesIn(
+    tx,
+    args.transferId,
+    options.lock ? {} : { lock: 'none' },
+  );
+  assertFeesAsExpectedForDelete(args.expectedFees, fees);
+
+  const categories = await listCategoryRecordsIn(tx, { includeArchived: true });
+  const kindOf = new Map(categories.map((row) => [row.id, row.kind]));
+
+  return {
+    operation: 'delete',
+    existing: locked,
+    expectedVersion: args.expectedVersion,
+    facts: null,
+    resolved: null,
+    description: null,
+    tags: undefined,
+    storedFee: null,
+    desiredFee: null,
+    allFees: fees,
+    revision: true,
+    changes: [
+      deleted({ scope: 'existing', kind: 'transfer', id: locked.id }, transferFacts(locked)),
+      // Every linked fee, whatever month it is dated in and however many there
+      // are: deletion is how an inconsistent aggregate is cleared, so each of
+      // them is a source fact this operation is about (30.22 item 10).
+      ...fees.map((fee) =>
+        deleted(
+          { scope: 'existing', kind: 'expense', id: fee.id },
+          expenseFacts(fee, kindOf.get(fee.categoryId) ?? 'transfer_fee'),
+        ),
+      ),
+    ],
+    // Deleting a transfer restores no account's dormancy (8.8).
+    dormancy: [],
+    support: [],
+  };
+}
+
+/** The exchange-rate history the saved aggregate makes worth warming (10.4). */
+function supportOf(occurredOn: string, resolved: ResolvedFacts): readonly SupportWarm[] {
+  return mergeSupport([
+    { currency: resolved.from.currency, from: occurredOn },
+    { currency: resolved.to.currency, from: occurredOn },
+    ...(resolved.fee === null
+      ? []
+      : [{ currency: resolved.fee.payer.currency, from: resolved.fee.facts.incurredOn }]),
+  ]);
+}
+
+/** The one writer for all three transfer operations, and for both callers. */
+export async function applyTransferPlanIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  plan: TransferWritePlan,
+  reason?: string,
+): Promise<{ transfer: TransferRow; fee: ExpenseEntryRow | null; fees: ExpenseEntryRow[] }> {
+  const audit = auditContextOf(ctx, reason);
+
+  if (plan.operation === 'delete') {
+    const removedFees: ExpenseEntryRow[] = [];
+    for (const fee of plan.allFees) {
+      const removed = await deleteExpenseEntryIn(tx, audit, fee.id);
+      /* v8 ignore next -- the row is held under FOR UPDATE in this transaction. */
+      if (removed !== undefined) removedFees.push(removed);
+    }
+    /* v8 ignore next 2 -- a delete plan always carries the row it removes. */
+    if (plan.existing === null) throw new NotFoundError('That transfer no longer exists.');
+    const removed = await deleteTransferIn(tx, audit, plan.existing.id);
+    /* v8 ignore next -- the row is held under FOR UPDATE in this transaction. */
+    if (removed === undefined) throw new NotFoundError('That transfer no longer exists.');
+    return { transfer: removed, fee: null, fees: removedFees };
+  }
+
+  /* v8 ignore next 2 -- create and update plans always carry resolved facts. */
+  if (plan.facts === null || plan.resolved === null) throw new NotFoundError('That transfer no longer exists.');
+  const { facts, resolved } = plan;
+
+  if (plan.operation === 'create') {
+    const transfer = await insertTransferIn(tx, audit, {
+      kind: 'cash_transfer',
+      occurredOn: facts.occurredOn,
       fromPositionId: resolved.from.id,
-      fromAmount: args.fromAmount,
+      fromCurrency: resolved.from.currency,
+      fromAmount: facts.fromAmount,
       toPositionId: resolved.to.id,
-      toAmount: args.toAmount,
-      description: args.description,
-      ...(args.tags === undefined ? {} : { tags: args.tags }),
+      toCurrency: resolved.to.currency,
+      toAmount: facts.toAmount,
+      description: plan.description,
+      tags: plan.tags ?? [],
+      // Phase 3 materializes no recurring transfer occurrence.
+    });
+    const feeRow =
+      plan.desiredFee === null ? null : await insertFeeIn(tx, audit, transfer.id, plan.desiredFee);
+    await applyDormancyClearsIn(tx, ctx, plan.dormancy);
+    return { transfer, fee: feeRow, fees: feeRow === null ? [] : [feeRow] };
+  }
+
+  /* v8 ignore next 2 -- an update plan always carries a row and a version. */
+  if (plan.existing === null || plan.expectedVersion === null) throw new VersionConflictError();
+  let transfer: TransferRow = plan.existing;
+  if (transferChanged(plan.existing, facts, plan.description, plan.tags)) {
+    const updatedRow = await updateTransferIn(tx, audit, plan.existing.id, plan.expectedVersion, {
+      occurredOn: facts.occurredOn,
+      fromPositionId: resolved.from.id,
+      fromAmount: facts.fromAmount,
+      toPositionId: resolved.to.id,
+      toAmount: facts.toAmount,
+      description: plan.description,
+      ...(plan.tags === undefined ? {} : { tags: plan.tags }),
     });
     /* v8 ignore next 5 -- the row is held under FOR UPDATE at the version just checked. */
-    if (updated === undefined) {
+    if (updatedRow === undefined) {
       throw new VersionConflictError(
         'This transfer changed while you were editing it. Reload to see the current values.',
       );
     }
-    transfer = updated;
+    transfer = updatedRow;
   }
 
-  const fee = await saveFeeIn(tx, audit, args.transferId, stored, desiredFee);
+  const fee = await saveFeeIn(tx, audit, plan.existing.id, plan.storedFee, plan.desiredFee);
 
   // 8.8 on the endpoints the transfer now has. An account the correction
   // moved away from keeps whatever flag it has: nothing restores dormancy.
-  await clearDormancyForFlowIn(tx, ctx, [resolved.from.id, resolved.to.id]);
-  return { transfer, fee, resolved };
+  await applyDormancyClearsIn(tx, ctx, plan.dormancy);
+  return { transfer, fee, fees: fee === null ? [] : [fee] };
+}
+
+async function createCashTransferIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: CreateTransferArgs,
+): Promise<SavedTransfer> {
+  const plan = await resolveCreateTransferIn(tx, ctx, args);
+  assertNoHistoricalReview(plan, ctx.today);
+  const saved = await applyTransferPlanIn(tx, ctx, plan);
+  return { transfer: saved.transfer, fee: saved.fee, resolved: plan.resolved as ResolvedFacts };
+}
+
+export async function createCashTransfer(
+  deps: FlowDependencies,
+  ctx: RequestContext,
+  args: CreateTransferArgs,
+): Promise<TransferWithFee> {
+  const created = await withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    createCashTransferIn(tx, ctx, args),
+  );
+
+  await warmHistory(deps.fx, args.occurredOn, created.resolved);
+  return { transfer: created.transfer, fee: created.fee };
+}
+
+async function updateCashTransferIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: UpdateTransferArgs,
+): Promise<SavedTransfer> {
+  const plan = await resolveUpdateTransferIn(tx, ctx, args);
+  assertNoHistoricalReview(plan, ctx.today);
+  const saved = await applyTransferPlanIn(tx, ctx, plan, args.reason);
+  return { transfer: saved.transfer, fee: saved.fee, resolved: plan.resolved as ResolvedFacts };
 }
 
 /**
@@ -590,9 +923,10 @@ async function updateCashTransferIn(
  * transfer and the fee where their facts changed; and clear dormancy on both
  * final endpoints. Any refusal on the way leaves every row exactly as it was.
  *
- * The endpoint and category reads used to happen before that transaction
- * opened, so a correction could be judged against an account or a category
- * another request was free to change (30.22 item 5).
+ * A correction is judged historical on **every** date the aggregate carries —
+ * the transfer's `occurred_on` and the fee's own `incurred_on`, before and
+ * after — so an edit whose visible date is current is still refused here when
+ * the fee it re-states belongs to a closed month (§14).
  */
 export async function updateCashTransfer(
   deps: FlowDependencies,
@@ -606,7 +940,6 @@ export async function updateCashTransfer(
   await warmHistory(deps.fx, args.occurredOn, saved.resolved);
   return { transfer: saved.transfer, fee: saved.fee };
 }
-
 /**
  * Delete a cash transfer and every fee linked to it, all audited (6.3, 18.1).
  *
@@ -708,36 +1041,10 @@ async function deleteCashTransferIn(
   ctx: RequestContext,
   args: DeleteTransferArgs,
 ): Promise<{ transfer: TransferRow; fees: ExpenseEntryRow[] }> {
-  const audit = auditContextOf(ctx, args.reason);
-
-  const locked = await lockTransferIn(tx, args.transferId);
-  if (locked === undefined) throw new NotFoundError('That transfer no longer exists.');
-  if (locked.kind !== 'cash_transfer') {
-    throw new ImpossibleOperationError('Only cash transfers can be deleted here.');
-  }
-  if (locked.version !== args.expectedVersion) {
-    throw new VersionConflictError(
-      'This transfer changed after you opened it. Reload to see what it says now.',
-    );
-  }
-
-  // Every linked row, held under `FOR UPDATE`, compared as a whole set before
-  // a single row is touched.
-  const fees = await findTransferFeesIn(tx, args.transferId);
-  assertFeesAsExpectedForDelete(args.expectedFees, fees);
-
-  const removedFees: ExpenseEntryRow[] = [];
-  for (const fee of fees) {
-    const removed = await deleteExpenseEntryIn(tx, audit, fee.id);
-    /* v8 ignore next -- the row is held under FOR UPDATE in this transaction. */
-    if (removed !== undefined) removedFees.push(removed);
-  }
-
-  const transfer = await deleteTransferIn(tx, audit, args.transferId);
-  /* v8 ignore next -- the row is held under FOR UPDATE in this transaction. */
-  if (transfer === undefined) throw new NotFoundError('That transfer no longer exists.');
-
-  return { transfer, fees: removedFees };
+  const plan = await resolveDeleteTransferIn(tx, args);
+  assertNoHistoricalReview(plan, ctx.today);
+  const removed = await applyTransferPlanIn(tx, ctx, plan, args.reason);
+  return { transfer: removed.transfer, fees: removed.fees };
 }
 
 export async function deleteCashTransfer(

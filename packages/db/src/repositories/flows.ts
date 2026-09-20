@@ -466,17 +466,27 @@ export async function listExpenseEntriesByOccurrenceIn(
     .orderBy(asc(expenseEntries.occurrenceDate), asc(expenseEntries.id));
 }
 
-/** The fee rows linked to a transfer. Normally one; the query does not assume it. */
+/**
+ * The fee rows linked to a transfer. Normally one; the query does not assume it.
+ *
+ * `lock: 'update'` is what every **write** takes, and is the default: a
+ * transfer mutation holds its fees for the rest of its transaction. The
+ * correction **preview** reads the same rows in a `READ ONLY` transaction,
+ * where PostgreSQL refuses a row lock outright, so it asks for the rows
+ * without one (ADR 0010 §8). The query is otherwise identical, which is the
+ * point — the preview must see exactly what the write would resolve from.
+ */
 export async function findTransferFeesIn(
   tx: Transaction,
   transferId: string,
+  options: { readonly lock?: 'update' | 'none' } = {},
 ): Promise<ExpenseEntryRow[]> {
-  return tx
+  const query = tx
     .select()
     .from(expenseEntries)
     .where(eq(expenseEntries.transferId, transferId))
-    .orderBy(asc(expenseEntries.id))
-    .for('update');
+    .orderBy(asc(expenseEntries.id));
+  return options.lock === 'none' ? query : query.for('update');
 }
 
 /**
@@ -585,12 +595,25 @@ export async function lockTransferIn(
   tx: Transaction,
   transferId: string,
 ): Promise<TransferRow | undefined> {
-  const [row] = await tx
-    .select()
-    .from(transfers)
-    .where(eq(transfers.id, transferId))
-    .limit(1)
-    .for('update');
+  return findTransferIn(tx, transferId, { lock: 'update' });
+}
+
+/**
+ * One transfer row inside a caller's transaction, with or without the
+ * aggregate's lock.
+ *
+ * `lockTransferIn` above is this with `lock: 'update'`, and is what every
+ * mutation uses. The unlocked form exists for the correction preview, which
+ * runs `REPEATABLE READ READ ONLY` and cannot take a row lock at all; one
+ * query keeps the two from drifting apart.
+ */
+export async function findTransferIn(
+  tx: Transaction,
+  transferId: string,
+  options: { readonly lock?: 'update' } = {},
+): Promise<TransferRow | undefined> {
+  const query = tx.select().from(transfers).where(eq(transfers.id, transferId)).limit(1);
+  const [row] = options.lock === 'update' ? await query.for('update') : await query;
   return row;
 }
 

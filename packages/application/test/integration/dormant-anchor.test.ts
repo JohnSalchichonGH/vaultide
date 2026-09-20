@@ -19,6 +19,7 @@ import { createIncomeEntry } from '../../src/flows/income';
 import { createCashTransfer } from '../../src/flows/transfers';
 import { getMonthReconciliation } from '../../src/reconciliation/service';
 import { getMonthCompleteness } from '../../src/reconciliation/completeness-service';
+import { saveOrCorrect } from '../helpers/corrections';
 
 /**
  * The dormant anchor on its write paths, against a real database (blueprint
@@ -46,6 +47,7 @@ const SEPT_15 = on('2026-09-15');
 
 const positions = () => harness.services.positions;
 const flows = () => harness.services.flows;
+const corrections = () => harness.services.corrections;
 const reads = () => ({ db: harness.db, fx: harness.services.fx });
 
 async function createAuthUser(id: string, email: string): Promise<void> {
@@ -72,52 +74,169 @@ async function state(positionId = savings, userId = USER_A) {
 
 const AWAKE = { dormant: false, from: null };
 
+/**
+ * Every fixture below goes through `saveOrCorrect`, which is what the interface
+ * does: it asks whether the operation rewrites a closed month or a dormant
+ * episode anchored in one, and takes the ordinary path or the ceremony
+ * accordingly (30.22 item 1; ADR 0010 §1).
+ *
+ * That matters here more than anywhere else, because this suite's whole subject
+ * is an episode whose anchor is months in the past. Waking one is now a
+ * reviewed correction, and these tests still assert exactly what they always
+ * asserted — what the episode is anchored to, what ends it, and what leaves it
+ * alone — rather than being rewritten around the ceremony.
+ */
+
+/** One valuation of an account on a date, by id and version. */
+async function valuationOn(positionId: string, valuedOn: string) {
+  return withUser(harness.db, { userId: USER_A }, async (tx) => {
+    const result = await tx.execute(
+      sql`SELECT id, version FROM position_valuations
+           WHERE position_id = ${positionId} AND valued_on = ${valuedOn}`,
+    );
+    return result.rows[0] as { id: string; version: number };
+  });
+}
+
 async function balance(
   positionId: string,
   valuedOn: string,
   amount: string,
   datePrecision: 'exact' | 'month_end' = 'exact',
 ) {
-  return recordValuation(positions(), SEPT_15, { positionId, valuedOn, amount, datePrecision });
+  await saveOrCorrect(
+    corrections(),
+    SEPT_15,
+    { kind: 'valuation_create', positionId, valuedOn, amount, datePrecision },
+    () => recordValuation(positions(), SEPT_15, { positionId, valuedOn, amount, datePrecision }),
+  );
+  return valuationOn(positionId, valuedOn);
 }
 
 /** Mark Savings dormant as the account form does: the current version, the flag. */
 async function markDormant(ctx = SEPT_15) {
-  return updateCashAccount(positions(), ctx, {
-    positionId: savings,
-    expectedVersion: (await state()).version,
-    isDormant: true,
-  });
+  const expectedVersion = (await state()).version;
+  await saveOrCorrect(
+    corrections(),
+    ctx,
+    { kind: 'cash_account_update', positionId: savings, expectedVersion, isDormant: true },
+    () => updateCashAccount(positions(), ctx, { positionId: savings, expectedVersion, isDormant: true }),
+  );
+  const after = await state();
+  return { isDormant: after.dormant, dormantFrom: after.from };
+}
+
+/** Clear the flag the way the account form does. */
+async function wakeByFlag(ctx = SEPT_15) {
+  const expectedVersion = (await state()).version;
+  await saveOrCorrect(
+    corrections(),
+    ctx,
+    { kind: 'cash_account_update', positionId: savings, expectedVersion, isDormant: false },
+    () => updateCashAccount(positions(), ctx, { positionId: savings, expectedVersion, isDormant: false }),
+  );
 }
 
 const income = (cashPositionId: string | null, receivedOn: string) =>
-  createIncomeEntry(flows(), SEPT_15, {
-    kind: 'interest',
-    receivedOn,
-    netAmount: '5.00',
-    currency: 'EUR',
-    settlement: 'tracked_cash',
-    cashPositionId,
-  });
+  saveOrCorrect(
+    corrections(),
+    SEPT_15,
+    {
+      kind: 'income_create',
+      incomeKind: 'interest',
+      receivedOn,
+      netAmount: '5.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId,
+    },
+    () =>
+      createIncomeEntry(flows(), SEPT_15, {
+        kind: 'interest',
+        receivedOn,
+        netAmount: '5.00',
+        currency: 'EUR',
+        settlement: 'tracked_cash',
+        cashPositionId,
+      }),
+  );
 
 const expense = (cashPositionId: string, incurredOn: string) =>
-  createExpenseEntry(flows(), SEPT_15, {
-    categoryId: groceries,
-    incurredOn,
-    amount: '5.00',
-    currency: 'EUR',
-    settlement: 'tracked_cash',
-    cashPositionId,
-  });
+  saveOrCorrect(
+    corrections(),
+    SEPT_15,
+    {
+      kind: 'expense_create',
+      categoryId: groceries,
+      incurredOn,
+      amount: '5.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId,
+    },
+    () =>
+      createExpenseEntry(flows(), SEPT_15, {
+        categoryId: groceries,
+        incurredOn,
+        amount: '5.00',
+        currency: 'EUR',
+        settlement: 'tracked_cash',
+        cashPositionId,
+      }),
+  );
 
 const transfer = (fromPositionId: string, toPositionId: string, occurredOn: string) =>
-  createCashTransfer(flows(), SEPT_15, {
-    occurredOn,
-    fromPositionId,
-    toPositionId,
-    fromAmount: '40.00',
-    toAmount: '40.00',
-  });
+  saveOrCorrect(
+    corrections(),
+    SEPT_15,
+    {
+      kind: 'transfer_create',
+      occurredOn,
+      fromPositionId,
+      toPositionId,
+      fromAmount: '40.00',
+      toAmount: '40.00',
+    },
+    () =>
+      createCashTransfer(flows(), SEPT_15, {
+        occurredOn,
+        fromPositionId,
+        toPositionId,
+        fromAmount: '40.00',
+        toAmount: '40.00',
+      }),
+  );
+
+/** A balance corrected, through whichever path the dates make right. */
+async function correctBalance(
+  anchor: { id: string; version: number },
+  patch: { valuedOn: string; amount: string; datePrecision: 'exact' | 'month_end'; note?: string },
+) {
+  await saveOrCorrect(
+    corrections(),
+    SEPT_15,
+    { kind: 'valuation_update', valuationId: anchor.id, expectedVersion: anchor.version, ...patch },
+    () =>
+      correctValuation(positions(), SEPT_15, {
+        valuationId: anchor.id,
+        expectedVersion: anchor.version,
+        ...patch,
+      }),
+  );
+}
+
+async function deleteBalance(anchor: { id: string; version: number }) {
+  await saveOrCorrect(
+    corrections(),
+    SEPT_15,
+    { kind: 'valuation_delete', valuationId: anchor.id, expectedVersion: anchor.version },
+    () =>
+      removeValuation(positions(), SEPT_15, {
+        valuationId: anchor.id,
+        expectedVersion: anchor.version,
+      }),
+  );
+}
 
 beforeAll(async () => {
   harness = await createHarness();
@@ -300,17 +419,15 @@ describe('waking ends the episode in both columns', () => {
     ['a non-zero balance', () => balance(savings, '2026-09-10', '50.00')],
     [
       'a non-zero balance from quick update',
-      () => quickUpdate(positions(), SEPT_15, { entries: [{ positionId: savings, amount: '50.00' }] }),
+      () =>
+        saveOrCorrect(
+          corrections(),
+          SEPT_15,
+          { kind: 'quick_update', entries: [{ positionId: savings, amount: '50.00' }] },
+          () => quickUpdate(positions(), SEPT_15, { entries: [{ positionId: savings, amount: '50.00' }] }),
+        ),
     ],
-    [
-      'the user clearing the flag',
-      async () =>
-        updateCashAccount(positions(), SEPT_15, {
-          positionId: savings,
-          expectedVersion: (await state()).version,
-          isDormant: false,
-        }),
-    ],
+    ['the user clearing the flag', () => wakeByFlag()],
   ];
 
   it.each(wakes)('%s', async (_label, act) => {
@@ -356,17 +473,12 @@ describe('a correction cannot leave the episode resting on a record that is gone
   });
 
   it('deleting the anchor balance wakes the account, and nothing is re-anchored', async () => {
-    await removeValuation(positions(), SEPT_15, {
-      valuationId: anchor.id,
-      expectedVersion: anchor.version,
-    });
+    await deleteBalance(anchor);
     expect(await state()).toMatchObject(AWAKE);
   });
 
   it('re-dating the anchor balance wakes the account, even though it is still zero', async () => {
-    await correctValuation(positions(), SEPT_15, {
-      valuationId: anchor.id,
-      expectedVersion: anchor.version,
+    await correctBalance(anchor, {
       valuedOn: '2026-04-30',
       amount: '0',
       datePrecision: 'month_end',
@@ -375,9 +487,7 @@ describe('a correction cannot leave the episode resting on a record that is gone
   });
 
   it('correcting the anchor balance to a non-zero amount wakes the account', async () => {
-    await correctValuation(positions(), SEPT_15, {
-      valuationId: anchor.id,
-      expectedVersion: anchor.version,
+    await correctBalance(anchor, {
       valuedOn: '2026-03-31',
       amount: '12.00',
       datePrecision: 'month_end',
@@ -386,9 +496,7 @@ describe('a correction cannot leave the episode resting on a record that is gone
   });
 
   it('leaves the episode alone when the anchor keeps its date and its zero', async () => {
-    await correctValuation(positions(), SEPT_15, {
-      valuationId: anchor.id,
-      expectedVersion: anchor.version,
+    await correctBalance(anchor, {
       valuedOn: '2026-03-31',
       amount: '0',
       datePrecision: 'month_end',
@@ -399,18 +507,12 @@ describe('a correction cannot leave the episode resting on a record that is gone
 
   it('leaves the episode alone when some other zero balance is deleted', async () => {
     const later = await balance(savings, '2026-06-30', '0', 'month_end');
-    await removeValuation(positions(), SEPT_15, {
-      valuationId: later.id,
-      expectedVersion: later.version,
-    });
+    await deleteBalance(later);
     expect(await state()).toMatchObject({ dormant: true, from: '2026-03-31' });
   });
 
   it('lets the user mark it dormant again afterwards, on whatever evidence is left', async () => {
-    await removeValuation(positions(), SEPT_15, {
-      valuationId: anchor.id,
-      expectedVersion: anchor.version,
-    });
+    await deleteBalance(anchor);
     // What is left is January's 700: not an account that can be dormant.
     await expect(markDormant()).rejects.toMatchObject({ code: 'IMPOSSIBLE_OPERATION' });
   });

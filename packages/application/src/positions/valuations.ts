@@ -1,5 +1,4 @@
 import {
-  clearCashDormancyIn,
   deleteValuationIn,
   findLatestValuationIn,
   findPosition,
@@ -10,6 +9,7 @@ import {
   isUniqueViolation,
   listPositionsIn,
   listValuations,
+  listValuationsOnIn,
   lockCashPositionsIn,
   quickUpdateValuationsIn,
   updateValuationIn,
@@ -33,6 +33,7 @@ import {
 } from '@vaultide/finance';
 import type { RequestContext } from '../context';
 import { withUserWrite } from '../coordination';
+import { assertNoHistoricalReview } from '../corrections/guard';
 import {
   DuplicateConflictError,
   ImpossibleOperationError,
@@ -41,7 +42,25 @@ import {
   ValidationError,
   VersionConflictError,
 } from '../errors';
-import { auditContextOf } from '../flows/shared';
+import {
+  applyDormancyClearsIn,
+  auditContextOf,
+  clearDormancyEffect,
+} from '../flows/shared';
+import {
+  canonicalAmount,
+  created,
+  deleted,
+  dormancyChange,
+  mergeSupport,
+  updated,
+  type DormancyEffect,
+  type ResolveOptions,
+  type IdentifiedSourceChange,
+  type ResolvedWrite,
+  type SupportWarm,
+  type ValuationSourceFacts,
+} from '../write-plan';
 import { toPositionRecord, toValuationRecord } from './mapping';
 import type { PositionDependencies } from './service';
 
@@ -184,18 +203,15 @@ function assertWithinPositionWindow(position: PositionRow, valuedOn: string): vo
  *
  * A dormant account carries at zero without a monthly confirmation. The moment
  * it holds money again that carry would be a lie, so recording a non-zero
- * balance turns the flag off rather than leaving the two facts in conflict —
- * inside the same transaction as the balance, so the two cannot come apart.
+ * balance turns the flag off rather than leaving the two facts in conflict.
+ *
+ * Decided here and applied later: the consequence is part of the plan the write
+ * resolves, so a balance that would end an episode anchored in a closed month is
+ * refused before anything moves (ADR 0010 §1).
  */
-async function clearDormantIfNonZeroIn(
-  tx: Transaction,
-  ctx: RequestContext,
-  position: PositionRow,
-  amount: string,
-): Promise<void> {
-  if (position.kind !== 'cash' || position.isDormant !== true) return;
-  if (new Decimal(amount).isZero()) return;
-  await clearCashDormancyIn(tx, { userId: ctx.userId, requestId: ctx.requestId }, position.id);
+function wakesOnNonZero(position: PositionRow, amount: string): boolean {
+  if (position.kind !== 'cash' || position.isDormant !== true) return false;
+  return !new Decimal(amount).isZero();
 }
 
 /**
@@ -208,14 +224,38 @@ async function clearDormantIfNonZeroIn(
  * and nothing is re-anchored, because only the user can say the account is
  * dormant again — and marking it re-reads the evidence when they do.
  */
-async function wakeIfAnchorRemovedIn(
-  tx: Transaction,
-  ctx: RequestContext,
-  position: PositionRow,
-  removedFrom: string,
-): Promise<void> {
-  if (position.kind !== 'cash' || position.dormantFrom !== removedFrom) return;
-  await clearCashDormancyIn(tx, { userId: ctx.userId, requestId: ctx.requestId }, position.id);
+function wakesOnAnchorRemoved(position: PositionRow, removedFrom: string): boolean {
+  return position.kind === 'cash' && position.dormantFrom === removedFrom;
+}
+
+/** A valuation row as its consent-relevant facts (§52 of the slice prompt). */
+function valuationFacts(row: ValuationRow, currency: string): ValuationSourceFacts {
+  return {
+    kind: 'valuation',
+    positionId: row.positionId,
+    valuedOn: row.valuedOn,
+    amount: canonicalAmount(row.amount),
+    currency,
+    datePrecision: row.datePrecision,
+    note: row.note,
+  };
+}
+
+/** The same facts from the columns a write is about to set. */
+function valuationFactsOf(
+  positionId: string,
+  currency: string,
+  columns: ValuationColumns,
+): ValuationSourceFacts {
+  return {
+    kind: 'valuation',
+    positionId,
+    valuedOn: columns.valuedOn,
+    amount: canonicalAmount(columns.amount),
+    currency,
+    datePrecision: columns.datePrecision,
+    note: columns.note,
+  };
 }
 
 /**
@@ -240,11 +280,46 @@ function carriedByDormancy(
 const dormantCarryMessage = (name: string): string =>
   `${name} is dormant over this month, so it carries at zero without a monthly confirmation. Nothing was confirmed.`;
 
-async function recordValuationIn(
+/** The columns a valuation write sets. */
+export interface ValuationColumns {
+  readonly amount: string;
+  readonly valuedOn: string;
+  readonly datePrecision: 'exact' | 'month_end';
+  readonly note: string | null;
+}
+
+/**
+ * A resolved valuation write: what it would change, and what it needs to apply.
+ *
+ * Produced by the three resolvers below and consumed by `applyValuationPlanIn`.
+ * The ordinary mutations resolve, ask `assertNoHistoricalReview`, and apply; the
+ * correction preview resolves and stops; Historical Confirm resolves, derives
+ * the impact, compares the fingerprint, and then applies the same plan through
+ * the same function. There is exactly one implementation of each rule.
+ */
+export interface ValuationWritePlan extends ResolvedWrite {
+  readonly operation: 'record' | 'correct' | 'remove';
+  readonly position: PositionRow;
+  /** The row being corrected or removed, and `null` for a new balance. */
+  readonly existing: ValuationRow | null;
+  readonly expectedVersion: number | null;
+  /** What to write, and `null` for a removal. */
+  readonly columns: ValuationColumns | null;
+}
+
+function requireValuationIn(
+  tx: Transaction,
+  valuationId: string,
+  options: ResolveOptions,
+): Promise<ValuationRow | undefined> {
+  return findValuationIn(tx, valuationId, options.lock ? { lock: 'update' } : {});
+}
+
+export async function resolveRecordValuationIn(
   tx: Transaction,
   ctx: RequestContext,
   args: ValuationArgs,
-): Promise<WrittenValuation> {
+): Promise<ValuationWritePlan> {
   const position = await requirePositionIn(tx, args.positionId);
   assertDateRules(ctx, args.valuedOn, args.datePrecision);
   assertSign(position, args.amount);
@@ -259,17 +334,108 @@ async function recordValuationIn(
     );
   }
 
-  const created = await insertValuationIn(tx, auditContextOf(ctx), {
-    positionId: args.positionId,
-    valuedOn: args.valuedOn,
+  const columns: ValuationColumns = {
     amount: args.amount,
-    source: 'entered',
+    valuedOn: args.valuedOn,
     datePrecision: args.datePrecision,
     note: args.note ?? null,
-  });
+  };
+  const dormancy: DormancyEffect[] = wakesOnNonZero(position, args.amount)
+    ? [clearDormancyEffect(position)]
+    : [];
 
-  await clearDormantIfNonZeroIn(tx, ctx, position, args.amount);
-  return { valuation: created, currency: position.currency };
+  return {
+    operation: 'record',
+    position,
+    existing: null,
+    expectedVersion: null,
+    columns,
+    // A first assertion, whatever month it lands in (30.22 item 2). Its
+    // dormancy consequence is judged on its own terms.
+    revision: false,
+    changes: [
+      created(
+        { scope: 'prospective', kind: 'valuation', role: 'valuation', owner: position.id },
+        valuationFactsOf(position.id, position.currency, columns),
+      ),
+      ...dormancy.map(dormancyChange),
+    ],
+    dormancy,
+    support: [{ currency: position.currency, from: args.valuedOn }],
+  };
+}
+
+/**
+ * Apply a resolved valuation plan: the row, then its dormancy consequence.
+ *
+ * The one writer for all three operations and for both callers — the ordinary
+ * mutation and Historical Confirm — so a corrected balance and a confirmed
+ * correction cannot come to mean different things.
+ */
+export async function applyValuationPlanIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  plan: ValuationWritePlan,
+  reason?: string,
+): Promise<ValuationRow> {
+  const audit = auditContextOf(ctx, reason);
+
+  const written = await (async (): Promise<ValuationRow> => {
+    if (plan.operation === 'remove') {
+      /* v8 ignore next 2 -- a removal plan always carries the row it removes. */
+      if (plan.existing === null) throw new NotFoundError('That balance no longer exists.');
+      const removed = await deleteValuationIn(tx, audit, plan.existing.id);
+      /* v8 ignore next -- the row is held under FOR UPDATE in this transaction. */
+      if (removed === undefined) throw new NotFoundError('That balance no longer exists.');
+      return removed;
+    }
+
+    /* v8 ignore next 2 -- record and correct plans always carry their columns. */
+    if (plan.columns === null) throw new NotFoundError('That balance no longer exists.');
+    const columns = plan.columns;
+
+    if (plan.operation === 'record') {
+      return insertValuationIn(tx, audit, {
+        positionId: plan.position.id,
+        valuedOn: columns.valuedOn,
+        amount: columns.amount,
+        source: 'entered',
+        datePrecision: columns.datePrecision,
+        note: columns.note,
+      });
+    }
+
+    /* v8 ignore next 2 -- a correction plan always carries a row and a version. */
+    if (plan.existing === null || plan.expectedVersion === null) throw new VersionConflictError();
+    const corrected = await updateValuationIn(
+      tx,
+      audit,
+      plan.existing.id,
+      plan.expectedVersion,
+      {
+        amount: columns.amount,
+        valuedOn: columns.valuedOn,
+        datePrecision: columns.datePrecision,
+        note: columns.note,
+      },
+    );
+    if (corrected === undefined) throw new VersionConflictError();
+    return corrected;
+  })();
+
+  await applyDormancyClearsIn(tx, ctx, plan.dormancy);
+  return written;
+}
+
+async function recordValuationIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: ValuationArgs,
+): Promise<WrittenValuation> {
+  const plan = await resolveRecordValuationIn(tx, ctx, args);
+  assertNoHistoricalReview(plan, ctx.today);
+  const valuation = await applyValuationPlanIn(tx, ctx, plan);
+  return { valuation, currency: plan.position.currency };
 }
 
 export async function recordValuation(
@@ -296,12 +462,13 @@ export interface CorrectValuationArgs {
   readonly reason?: string | undefined;
 }
 
-async function correctValuationIn(
+export async function resolveCorrectValuationIn(
   tx: Transaction,
   ctx: RequestContext,
   args: CorrectValuationArgs,
-): Promise<WrittenValuation> {
-  const existing = await findValuationIn(tx, args.valuationId, { lock: 'update' });
+  options: ResolveOptions = { lock: true },
+): Promise<ValuationWritePlan> {
+  const existing = await requireValuationIn(tx, args.valuationId, options);
   if (existing === undefined) throw new NotFoundError('That balance no longer exists.');
 
   const position = await requirePositionIn(tx, existing.positionId);
@@ -316,25 +483,57 @@ async function correctValuationIn(
     }
   }
 
-  const updated = await updateValuationIn(
-    tx,
-    auditContextOf(ctx, args.reason),
-    args.valuationId,
-    args.expectedVersion,
-    {
-      amount: args.amount,
-      valuedOn: args.valuedOn,
-      datePrecision: args.datePrecision,
-      note: args.note ?? null,
-    },
-  );
-  if (updated === undefined) throw new VersionConflictError();
+  // Checked here as well as by the update itself, so a **preview** — which
+  // writes nothing and therefore never reaches the update — refuses a stale
+  // draft for the same reason a save does (§59 of the slice prompt).
+  if (existing.version !== args.expectedVersion) throw new VersionConflictError();
 
-  await clearDormantIfNonZeroIn(tx, ctx, position, args.amount);
-  if (args.valuedOn !== existing.valuedOn) {
-    await wakeIfAnchorRemovedIn(tx, ctx, position, existing.valuedOn);
-  }
-  return { valuation: updated, currency: position.currency };
+  const columns: ValuationColumns = {
+    amount: args.amount,
+    valuedOn: args.valuedOn,
+    datePrecision: args.datePrecision,
+    note: args.note ?? null,
+  };
+
+  // Two rules, one consequence: a non-zero amount wakes the account, and so
+  // does moving the row off the date the episode is anchored to.
+  const wakes =
+    wakesOnNonZero(position, args.amount) ||
+    (args.valuedOn !== existing.valuedOn && wakesOnAnchorRemoved(position, existing.valuedOn));
+  const dormancy: DormancyEffect[] = wakes ? [clearDormancyEffect(position)] : [];
+
+  return {
+    operation: 'correct',
+    position,
+    existing,
+    expectedVersion: args.expectedVersion,
+    columns,
+    revision: true,
+    changes: [
+      updated(
+        { scope: 'existing', kind: 'valuation', id: existing.id },
+        valuationFacts(existing, position.currency),
+        valuationFactsOf(position.id, position.currency, columns),
+      ),
+      ...dormancy.map(dormancyChange),
+    ],
+    dormancy,
+    support: mergeSupport([
+      { currency: position.currency, from: args.valuedOn },
+      { currency: position.currency, from: existing.valuedOn },
+    ]),
+  };
+}
+
+async function correctValuationIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: CorrectValuationArgs,
+): Promise<WrittenValuation> {
+  const plan = await resolveCorrectValuationIn(tx, ctx, args);
+  assertNoHistoricalReview(plan, ctx.today);
+  const valuation = await applyValuationPlanIn(tx, ctx, plan, args.reason);
+  return { valuation, currency: plan.position.currency };
 }
 
 /**
@@ -347,6 +546,10 @@ async function correctValuationIn(
  * The correction, the dormancy it clears and the episode a re-dating ends are
  * one transaction: a correction that woke an account and then failed to record
  * the balance would leave the flag and the evidence disagreeing (30.22 item 5).
+ *
+ * A correction whose before or after side lands in a completed month, or whose
+ * dormancy consequence reaches one, is a **Historical Correction** and is
+ * refused here: it goes through Preview → Confirm instead (30.22 item 1).
  */
 export async function correctValuation(
   deps: PositionDependencies,
@@ -368,12 +571,12 @@ export interface RemoveValuationArgs {
   readonly reason?: string | undefined;
 }
 
-async function removeValuationIn(
+export async function resolveRemoveValuationIn(
   tx: Transaction,
-  ctx: RequestContext,
   args: RemoveValuationArgs,
-): Promise<ValuationRow> {
-  const existing = await findValuationIn(tx, args.valuationId, { lock: 'update' });
+  options: ResolveOptions = { lock: true },
+): Promise<ValuationWritePlan> {
+  const existing = await requireValuationIn(tx, args.valuationId, options);
   if (existing === undefined) throw new NotFoundError('That balance no longer exists.');
 
   const position = await requirePositionIn(tx, existing.positionId);
@@ -394,12 +597,37 @@ async function removeValuationIn(
     );
   }
 
-  const deleted = await deleteValuationIn(tx, auditContextOf(ctx, args.reason), args.valuationId);
-  /* v8 ignore next -- the row is held under FOR UPDATE in this transaction. */
-  if (deleted === undefined) throw new NotFoundError('That balance no longer exists.');
+  const dormancy: DormancyEffect[] = wakesOnAnchorRemoved(position, existing.valuedOn)
+    ? [clearDormancyEffect(position)]
+    : [];
 
-  await wakeIfAnchorRemovedIn(tx, ctx, position, existing.valuedOn);
-  return deleted;
+  return {
+    operation: 'remove',
+    position,
+    existing,
+    expectedVersion: args.expectedVersion,
+    columns: null,
+    revision: true,
+    changes: [
+      deleted(
+        { scope: 'existing', kind: 'valuation', id: existing.id },
+        valuationFacts(existing, position.currency),
+      ),
+      ...dormancy.map(dormancyChange),
+    ],
+    dormancy,
+    support: [],
+  };
+}
+
+async function removeValuationIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: RemoveValuationArgs,
+): Promise<ValuationRow> {
+  const plan = await resolveRemoveValuationIn(tx, args);
+  assertNoHistoricalReview(plan, ctx.today);
+  return applyValuationPlanIn(tx, ctx, plan, args.reason);
 }
 
 /**
@@ -408,6 +636,9 @@ async function removeValuationIn(
  * The delete and the dormant episode it ends are one transaction: `dormant_from`
  * names this row's date, so a deleted anchor with the flag left standing would
  * carry an account at zero on evidence that no longer exists (30.20 item 6).
+ *
+ * Deleting a balance out of a completed month is a Historical Correction and is
+ * refused here; the current month's own delete stays one short confirmation.
  */
 export async function removeValuation(
   deps: PositionDependencies,
@@ -766,11 +997,32 @@ interface QuickUpdateWritten {
   readonly currencies: readonly string[];
 }
 
-async function quickUpdateIn(
+/**
+ * A resolved quick update: every balance it would write, and every dormant
+ * episode it would end.
+ *
+ * Quick update stays the current-balance batch it has always been — it is not
+ * Bulk History and writes nothing dated before today (15.3, M5). What it can
+ * do, and what makes it part of this feature, is wake an account whose dormant
+ * episode began in a month that is already closed (§11 of the slice prompt).
+ * The submission is resolved as one unit so that consequence is visible before
+ * anything is written, and the batch keeps its all-or-nothing semantics.
+ */
+export interface QuickUpdateWritePlan extends ResolvedWrite {
+  readonly entries: readonly {
+    readonly position: PositionRow;
+    readonly amount: string;
+    readonly expectedVersion: number | undefined;
+    /** Today's row for this position, when it already has one. */
+    readonly existing: ValuationRow | null;
+  }[];
+}
+
+export async function resolveQuickUpdateIn(
   tx: Transaction,
   ctx: RequestContext,
   args: QuickUpdateArgs,
-): Promise<QuickUpdateWritten> {
+): Promise<QuickUpdateWritePlan> {
   const positions = await listPositionsIn(tx);
   const byId = new Map(positions.map((row) => [row.id, row]));
 
@@ -786,38 +1038,122 @@ async function quickUpdateIn(
     assertWithinPositionWindow(position, ctx.today);
   }
 
-  const result = await quickUpdateValuationsIn(
-    tx,
-    auditContextOf(ctx),
-    ctx.today,
-    args.entries.map((item) => ({
-      positionId: item.positionId,
-      amount: item.amount,
-      ...(item.expectedVersion === undefined ? {} : { expectedVersion: item.expectedVersion }),
-    })),
+  // One read for the whole submission: which of today's rows already exist
+  // decides whether each entry is an insert or a correction (23.2).
+  const existingToday = new Map(
+    (
+      await listValuationsOnIn(
+        tx,
+        args.entries.map((item) => item.positionId),
+        ctx.today,
+      )
+    ).map((row) => [row.positionId, row]),
   );
+
+  const changes: IdentifiedSourceChange[] = [];
+  const dormancy: DormancyEffect[] = [];
+  const support: SupportWarm[] = [];
+  const entries: QuickUpdateWritePlan['entries'] = args.entries.map((item) => {
+    const position = byId.get(item.positionId) as PositionRow;
+    const existing = existingToday.get(item.positionId) ?? null;
+    const columns: ValuationColumns = {
+      amount: item.amount,
+      valuedOn: ctx.today,
+      datePrecision: existing?.datePrecision ?? 'exact',
+      note: existing?.note ?? null,
+    };
+    const after = valuationFactsOf(position.id, position.currency, columns);
+
+    changes.push(
+      existing === null
+        ? created(
+            { scope: 'prospective', kind: 'valuation', role: 'valuation', owner: position.id },
+            after,
+          )
+        : updated(
+            { scope: 'existing', kind: 'valuation', id: existing.id },
+            valuationFacts(existing, position.currency),
+            after,
+          ),
+    );
+    if (wakesOnNonZero(position, item.amount)) dormancy.push(clearDormancyEffect(position));
+    support.push({ currency: position.currency, from: ctx.today });
+
+    return {
+      position,
+      amount: item.amount,
+      expectedVersion: item.expectedVersion,
+      existing,
+    };
+  });
+
+  return {
+    entries,
+    // Today's row may be corrected, so the batch does revise evidence — but
+    // today is in the current month by construction, so rule 1 never fires
+    // and only the dormancy rule can make one of these a correction.
+    revision: true,
+    changes: [...changes, ...dormancy.map(dormancyChange)],
+    dormancy,
+    support: mergeSupport(support),
+  };
+}
+
+export async function applyQuickUpdatePlanIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  plan: QuickUpdateWritePlan,
+  reason?: string,
+): Promise<QuickUpdateSummary> {
+  let result: Awaited<ReturnType<typeof quickUpdateValuationsIn>>;
+  try {
+    result = await quickUpdateValuationsIn(
+      tx,
+      auditContextOf(ctx, reason),
+      ctx.today,
+      plan.entries.map((item) => ({
+        positionId: item.position.id,
+        amount: item.amount,
+        ...(item.expectedVersion === undefined ? {} : { expectedVersion: item.expectedVersion }),
+      })),
+    );
+  } catch (error) {
+    // Mapped here rather than around the transaction, because there are two
+    // callers now: the ordinary quick update and Historical Confirm. A
+    // repository error that only one of them translated would reach the other
+    // as an unhandled internal failure (20.2).
+    if (error instanceof QuickUpdateConflictError) {
+      throw new VersionConflictError(
+        'One of these balances was changed elsewhere, so nothing was saved. Reload and try again.',
+      );
+    }
+    throw error;
+  }
 
   // Every dormancy consequence of this batch, in the batch's own transaction.
   // Before, each clear was a further user write transaction *after* the
   // balances had already committed, so a failure in the middle left some
   // accounts holding money and still flagged dormant (ADR 0010 §15).
-  const currencies = new Set<string>();
-  for (const item of args.entries) {
-    const position = byId.get(item.positionId);
-    /* v8 ignore next -- validated in the loop above. */
-    if (position === undefined) continue;
-    await clearDormantIfNonZeroIn(tx, ctx, position, item.amount);
-    currencies.add(position.currency);
-  }
+  await applyDormancyClearsIn(tx, ctx, plan.dormancy);
 
   return {
-    summary: {
-      valuedOn: ctx.today,
-      inserted: result.inserted,
-      corrected: result.corrected,
-      positionIds: args.entries.map((item) => item.positionId),
-    },
-    currencies: [...currencies],
+    valuedOn: ctx.today,
+    inserted: result.inserted,
+    corrected: result.corrected,
+    positionIds: plan.entries.map((item) => item.position.id),
+  };
+}
+
+async function quickUpdateIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: QuickUpdateArgs,
+): Promise<QuickUpdateWritten> {
+  const plan = await resolveQuickUpdateIn(tx, ctx, args);
+  assertNoHistoricalReview(plan, ctx.today);
+  return {
+    summary: await applyQuickUpdatePlanIn(tx, ctx, plan),
+    currencies: plan.support.map((item) => item.currency),
   };
 }
 
@@ -841,19 +1177,9 @@ export async function quickUpdate(
   ctx: RequestContext,
   args: QuickUpdateArgs,
 ): Promise<QuickUpdateSummary> {
-  let written: QuickUpdateWritten;
-  try {
-    written = await withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
-      quickUpdateIn(tx, ctx, args),
-    );
-  } catch (error) {
-    if (error instanceof QuickUpdateConflictError) {
-      throw new VersionConflictError(
-        'One of these balances was changed elsewhere, so nothing was saved. Reload and try again.',
-      );
-    }
-    throw error;
-  }
+  const written = await withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    quickUpdateIn(tx, ctx, args),
+  );
 
   for (const currency of written.currencies) await deps.fx.ensureHistory(currency, ctx.today);
   return written.summary;

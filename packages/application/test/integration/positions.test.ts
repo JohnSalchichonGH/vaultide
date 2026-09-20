@@ -23,6 +23,7 @@ import {
   removeValuation,
 } from '../../src/positions/valuations';
 import { getNetWorth, getPositionDetail } from '../../src/positions/queries';
+import { reviewAndConfirm } from '../helpers/corrections';
 
 /**
  * Positions, valuations and net worth against a real database
@@ -408,14 +409,18 @@ describe('correcting and deleting a balance (2.6, R12, 18.1)', () => {
     });
     const [original] = await positionHistory(deps(), SEPT_6, account.id);
 
-    const corrected = await correctValuation(deps(), SEPT_6, {
+    // March is long closed on 6 September, so this is a reviewed Historical
+    // Correction — and it still writes exactly one audited in-place update.
+    await reviewAndConfirm(harness.services.corrections, SEPT_6, {
+      kind: 'valuation_update',
       valuationId: original!.id,
       expectedVersion: original!.version,
       valuedOn: '2026-03-31',
       amount: '8055.00',
       datePrecision: 'exact',
     });
-    expect(corrected.amount).toBe('8055.00000000');
+    const [corrected] = await positionHistory(deps(), SEPT_6, account.id);
+    expect(corrected?.amount).toBe('8055.00000000');
 
     // §26 Phase 2, item 7: editing a past balance produces an audit row.
     const audit = await auditRows(USER_A, original!.id);

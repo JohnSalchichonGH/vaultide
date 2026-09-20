@@ -23,6 +23,7 @@ import {
 import { getMonthReconciliation, parseMonth } from '../../src/reconciliation/service';
 import { getMonthSavings } from '../../src/reconciliation/savings-service';
 import { getMonthReportingCashFlow } from '../../src/reconciliation/reporting-service';
+import { reviewAndConfirm } from '../helpers/corrections';
 
 /**
  * The cash-transfer aggregate against a real database (blueprint 6.2, 7.4, 7.5,
@@ -848,14 +849,20 @@ describe('the fee’s lifecycle inside a correction', () => {
   it('moves the fee to its own date in the next month, leaving the transfer where it was', async () => {
     const saved = await eurTransfer({ ctx: NOV_5, occurredOn: '2026-09-30' });
 
-    const moved = await updateCashTransfer(
-      deps(),
-      NOV_5,
-      correction(saved, { fee: { amount: '1.50', cashPositionId: bbva, incurredOn: '2026-10-01' } }),
-    );
+    // Both months are closed on 5 November, so the aggregate is corrected
+    // through Review → Confirm. The fee still moves on its own date, and the
+    // transfer still does not move with it (ADR 0006 §5).
+    await reviewAndConfirm(harness.services.corrections, NOV_5, {
+      kind: 'transfer_update',
+      ...correction(saved, { fee: { amount: '1.50', cashPositionId: bbva, incurredOn: '2026-10-01' } }),
+    });
 
-    expect(moved.fee?.incurredOn).toBe('2026-10-01');
-    expect(moved.transfer).toMatchObject({ occurredOn: '2026-09-30', version: saved.transfer.version });
+    const [movedFee] = await feesOf(saved.transfer.id);
+    expect(movedFee?.incurred_on).toBe('2026-10-01');
+    expect(await storedTransfer(saved.transfer.id)).toMatchObject({
+      occurred_on: '2026-09-30',
+      version: saved.transfer.version,
+    });
   });
 
   it('removes the fee and keeps the transfer, leaving the fee’s before-image', async () => {
@@ -1254,10 +1261,13 @@ describe('deleting a cash transfer', () => {
   it('removes a fee dated in another month with its transfer, each with a before-image', async () => {
     const saved = await eurTransfer({ ctx: NOV_5, occurredOn: '2026-09-30', fee: { incurredOn: '2026-10-01' } });
 
-    const removed = await deleteCashTransfer(deps(), NOV_5, removal(saved));
+    await reviewAndConfirm(harness.services.corrections, NOV_5, {
+      kind: 'transfer_delete',
+      ...removal(saved),
+    });
 
-    expect(removed.fees.map((fee) => fee.id)).toEqual([saved.fee?.id]);
     expect(await countRows('expense_entries')).toBe(0);
+    expect(await storedTransfer(saved.transfer.id)).toBeUndefined();
     expect(await auditActions(saved.fee?.id as string)).toEqual(['insert', 'delete']);
     expect(await auditActions(saved.transfer.id)).toEqual(['insert', 'delete']);
   });

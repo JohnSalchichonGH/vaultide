@@ -77,7 +77,7 @@ describe('the financial write boundary (30.22 item 5, ADR 0010 §16)', () => {
     expect(found).toHaveLength(REGISTERED_COUNT);
     // A deliberate number: adding a financial mutation without registering it
     // leaves this untouched, so the count is asserted beside the names.
-    expect(REGISTERED_COUNT).toBe(32);
+    expect(REGISTERED_COUNT).toBe(33);
   });
 
   it('keeps the post-commit allow-list small and explicit', () => {
@@ -88,6 +88,7 @@ describe('the financial write boundary (30.22 item 5, ADR 0010 §16)', () => {
       'deps.fx.ensureHistory',
       'warmRates',
       'warmHistory',
+      'warmCorrectionSupport',
     ]);
   });
 });

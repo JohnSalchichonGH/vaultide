@@ -10,6 +10,7 @@ import {
 import type { RequestContext } from '../context';
 import { NotFoundError, ValidationError } from '../errors';
 import type { FxService } from '../fx/service';
+import { dormancyChanged, type DormancyEffect, type DormancyState } from '../write-plan';
 
 /**
  * The rules every Phase 3 flow obeys, in one place (blueprint 8.1, 8.8, M5).
@@ -126,6 +127,37 @@ export async function resolveTrackedCashLegIn(
   return position;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Dormancy, as a resolved consequence                                         */
+/* -------------------------------------------------------------------------- */
+
+/** A cash account's dormant episode as a row carries it (8.8, 30.20). */
+export function dormancyStateOf(position: PositionRow): DormancyState {
+  return {
+    isDormant: position.isDormant === true,
+    dormantFrom: position.dormantFrom ?? null,
+  };
+}
+
+const AWAKE: DormancyState = { isDormant: false, dormantFrom: null };
+
+/**
+ * The consequence clear, as the plan that describes it.
+ *
+ * A clear only ever moves a dormant account to awake, so the effect is fully
+ * determined by the row it was read from. An account that is already awake
+ * produces an effect that changes nothing, which `dormancyChanged` filters and
+ * `classifyHistorical` ignores.
+ */
+export function clearDormancyEffect(position: PositionRow): DormancyEffect {
+  return {
+    positionId: position.id,
+    before: dormancyStateOf(position),
+    after: AWAKE,
+    via: 'clear',
+  };
+}
+
 /**
  * An attributed flow clears dormancy (8.8, v2.1.6 §30.9 item 6).
  *
@@ -143,18 +175,27 @@ export async function resolveTrackedCashLegIn(
  * Deleting the last attributed flow does not restore dormancy. Dormancy is a
  * user assertion, re-made only through the explicit action, which still
  * requires the latest balance to be exactly zero.
+ *
+ * What changed with Historical Correction is **when** the consequence is known,
+ * not what it is: it is now resolved before the write, as a `DormancyEffect`,
+ * so a save that would end an episode anchored in a closed month can be refused
+ * before a single row moves (ADR 0010 §1). This applies what was resolved.
  */
-export async function clearDormancyForFlowIn(
+export async function applyDormancyClearsIn(
   tx: Transaction,
   ctx: RequestContext,
-  positionIds: readonly (string | null)[],
+  effects: readonly DormancyEffect[],
 ): Promise<void> {
   const seen = new Set<string>();
-  for (const positionId of positionIds) {
-    // A null leg attributes to no account, so it clears nothing.
-    if (positionId === null || seen.has(positionId)) continue;
-    seen.add(positionId);
-    await clearCashDormancyIn(tx, { userId: ctx.userId, requestId: ctx.requestId }, positionId);
+  for (const effect of effects) {
+    if (effect.via !== 'clear' || !dormancyChanged(effect)) continue;
+    if (seen.has(effect.positionId)) continue;
+    seen.add(effect.positionId);
+    await clearCashDormancyIn(
+      tx,
+      { userId: ctx.userId, requestId: ctx.requestId },
+      effect.positionId,
+    );
   }
 }
 
