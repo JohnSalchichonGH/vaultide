@@ -81,7 +81,16 @@ export type IssueActionTarget =
       readonly dates: CorrectionDates;
     }
   | { readonly kind: 'add_expense'; readonly initial: AddExpenseInitialValues }
-  | { readonly kind: 'transfer'; readonly initial: TransferInitialValues }
+  | {
+      readonly kind: 'transfer';
+      readonly initial: TransferInitialValues;
+      /**
+       * The issue's own interval, not the page's. A transfer offered for a
+       * current month's issue must stay on or before `D`: dated later it saves
+       * as an ordinary transfer and leaves the issue exactly as it was.
+       */
+      readonly dates: CorrectionDates;
+    }
   | {
       readonly kind: 'adjustment';
       readonly currency: string;
@@ -357,6 +366,7 @@ const unexplainedInflow: Handler = (issue, context) => {
         target: {
           kind: 'transfer',
           initial: { occurredOn: null, to: { currency } },
+          dates,
         },
       })
     : undefined;
@@ -399,8 +409,11 @@ const unexplainedInflow: Handler = (issue, context) => {
  * evidence for the suggestion. Neither account is chosen, even where only one
  * account of a currency takes part, and the date starts empty.
  */
-const possibleMissingConversion: Handler = (issue, context) =>
-  (issue.candidates ?? []).map((candidate) =>
+const possibleMissingConversion: Handler = (issue, context) => {
+  // The advisory is completed-month only, so this is the month's own span; it is
+  // carried explicitly rather than left to the page's wider bounds.
+  const dates = correctionDates(context);
+  return (issue.candidates ?? []).map((candidate) =>
     action(issue, `transfer:${candidate.sourceCurrency}`, {
       label: 'Record this transfer',
       hint: `Opens a transfer out of ${candidate.sourceCurrency} and into ${candidate.destinationCurrency} with the two unexplained amounts. Choose the accounts and the day it moved, inside ${context.monthName}, and change the amounts to what your statements show.`,
@@ -418,9 +431,11 @@ const possibleMissingConversion: Handler = (issue, context) =>
             amount: candidate.destinationAmount.amount,
           },
         },
+        dates,
       },
     }),
   );
+};
 
 /**
  * The one suggestion that knows an account: the residual is that account's

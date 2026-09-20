@@ -159,6 +159,27 @@ async function accountWithStatements(
   await expect(page.getByTestId('month-end-2026-09')).toHaveCount(0);
 }
 
+/**
+ * An account closed in August and last seen on 6 September — the ordinary way a
+ * live month stops short of today, which is where its corrections stop too
+ * (8.6).
+ */
+async function accountThrough(
+  page: Page,
+  options: { name: string; august: string; asOf: string; currency?: string },
+): Promise<void> {
+  await addAccount(page, {
+    name: options.name,
+    ...(options.currency === undefined ? {} : { currency: options.currency }),
+    balance: options.august,
+    balanceOn: '2026-08-31',
+  });
+  await openAccount(page, options.name);
+  await page.getByTestId('confirm-statement-2026-08').click();
+  await expect(page.getByTestId('month-end-2026-08')).toHaveCount(0);
+  await recordValuation(page, options.asOf, '2026-09-06');
+}
+
 /** The corrective control of one issue, by the action the model gave it. */
 function actionIn(page: Page, group: string, actionId: string): Locator {
   return page.getByTestId(`issue-group-${group}`).locator(`[data-action-id="${actionId}"]`);
@@ -226,6 +247,45 @@ test.describe('an unexplained inflow', () => {
     await expect(direct).toContainText('€500.00');
     // It explains the cash without becoming income (7.4, 12.5).
     await expect(page.getByTestId('figure-externalIncome')).toContainText('€0.00');
+  });
+
+  test('offers its transfer only as far as the month was reconciled', async ({ page, request }) => {
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': SEPTEMBER_10 });
+    await onboard(page, request, uniqueEmail('e2e-mtd-transfer'));
+
+    // September is reconciled through the 6th — both accounts were last seen
+    // then — while today is the 10th. Euros grew 500 with nothing to explain it,
+    // and dollars take part, so a transfer is one of the corrections offered.
+    await accountThrough(page, { name: 'Euros', august: '1000.00', asOf: '1500.00' });
+    await accountThrough(page, {
+      name: 'Dollars',
+      currency: 'USD',
+      august: '1000.00',
+      asOf: '1000.00',
+    });
+
+    await open(page, '/monthly/2026-09');
+    await expect(page.getByTestId('mtd-as-of')).toContainText('6 Sept 2026');
+    await expect(page.getByTestId('issue-group-unexplained_inflow')).toContainText('€500.00');
+
+    await actionIn(page, 'unexplained_inflow', 'unexplained_inflow:EUR::transfer').click();
+    await expect(dialog(page)).toBeVisible();
+    // The interval the issue was measured over, not the days the page allows:
+    // a transfer dated the 8th would save and leave the figure exactly as it is.
+    await expect(dialog(page).getByTestId('transfer-date')).toHaveAttribute('max', '2026-09-06');
+
+    await dialog(page).getByTestId('transfer-from').selectOption({ label: 'Dollars (USD)' });
+    await dialog(page).getByTestId('transfer-to').selectOption({ label: 'Euros (EUR)' });
+    await fillTestId(page, 'transfer-amount-sent', '540.00');
+    await fillTestId(page, 'transfer-amount-received', '500.00');
+
+    // With everything else in place, the day alone decides whether it can be saved.
+    await dialog(page).getByTestId('transfer-date').fill('2026-09-08');
+    await expect(dialog(page)).toContainText('To save: Choose a day from 1 Sept 2026 to 6 Sept 2026.');
+    await expect(dialog(page).getByTestId('transfer-save')).toBeDisabled();
+
+    await dialog(page).getByTestId('transfer-date').fill('2026-09-06');
+    await expect(dialog(page).getByTestId('transfer-save')).toBeEnabled();
   });
 
   test('refuses a second acceptance from a view the month has moved past', async ({

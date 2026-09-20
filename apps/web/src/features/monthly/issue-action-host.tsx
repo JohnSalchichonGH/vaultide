@@ -95,6 +95,20 @@ function useHost(): HostValue {
 /* -------------------------------------------------------------------------- */
 
 /**
+ * Whether this dialog may send the adjustment.
+ *
+ * `stale` means the page behind it no longer raises the issue, so the figure
+ * this would confirm is one the month has moved past. The server refuses such
+ * an acceptance on its own evidence (ADR 0009 §9) and stays the authority;
+ * this only stops the user sending a confirmation that cannot succeed.
+ */
+export const canRecordAdjustment = (state: {
+  readonly hydrated: boolean;
+  readonly pending: boolean;
+  readonly stale: boolean;
+}): boolean => state.hydrated && !state.pending && !state.stale;
+
+/**
  * Accepting the unexplained difference (ADR 0009 §5–§9).
  *
  * The one corrective dialog with no financial field: the amount is the month's
@@ -192,9 +206,9 @@ export function AdjustmentForm({
           about when the missing event happened, and the adjustment is attributed to no account.
         </p>
         <p className={META}>
-          It makes the cash records add up, but it does not identify what caused the difference. It
-          is not income and does not change your savings. If you later find the missing
-          transaction, record it and delete this adjustment from Income.
+          It makes the cash records add up, but it does not identify what caused the difference.
+          Vaultide does not count it as income when it works out your savings. If you later find
+          the missing transaction, record it and delete this adjustment from Income.
         </p>
 
         <div className="space-y-1.5">
@@ -226,7 +240,7 @@ export function AdjustmentForm({
             type="submit"
             className={PRIMARY}
             data-testid="adjustment-submit"
-            disabled={!hydrated || pending}
+            disabled={!canRecordAdjustment({ hydrated, pending, stale })}
           >
             {pending ? 'Recording…' : 'Record adjustment'}
           </button>
@@ -306,7 +320,9 @@ export function IssueActionHost({
                   // own Save and Cancel, so it is not wrapped again.
                   <TransferEditor
                     accounts={resources.transferAccounts}
-                    range={resources.bounds}
+                    // The issue's interval, not the page's: a correction dated
+                    // past where its month-to-date stops would not touch it.
+                    range={open.target.dates}
                     today={resources.today}
                     formatting={resources.formatting}
                     transfer={null}

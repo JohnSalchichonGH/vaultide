@@ -258,8 +258,11 @@ amount, and no change to any sum, status or residual.
 ## 14. A current-month correction stays inside the month-to-date interval
 
 **Decision.** A correction launched from a current-month issue is bounded by
-`[start(M), D]`: the income dialog's dates stop at `D`, and the adjustment is
-dated `D`.
+`[start(M), D]`. Every corrective target that carries a date carries that
+interval: the income dialog's dates stop at `D`, the transfer editor's range
+stops at `D`, and the adjustment is dated `D`. The interval travels with the
+action rather than being read from the page around it, whose own editors
+legitimately reach today.
 
 **Why.** Month-to-date reconciliation covers flows dated on or before `D` (8.6),
 so a record dated after it cannot change the issue that offered the correction.

@@ -47,7 +47,9 @@ const {
   isActionableIssueKey,
   issueActions,
 } = await import('@/features/monthly/issue-actions');
-const { AdjustmentForm, IssueActionHost } = await import('@/features/monthly/issue-action-host');
+const { AdjustmentForm, IssueActionHost, canRecordAdjustment } = await import(
+  '@/features/monthly/issue-action-host'
+);
 
 /**
  * What each reconciliation issue offers (blueprint 8.5, 15.3 section 8, 30.21;
@@ -301,6 +303,15 @@ describe('an unexplained inflow', () => {
     const actions = issueActions(inflow('a'), current);
     const addIncome = actions.find((action) => action.target.kind === 'add_income');
     expect(addIncome?.target).toMatchObject({ dates: { min: '2026-09-01', max: '2026-09-06' } });
+    // Every correction offered for this figure, not only the ones with a form of
+    // their own: a transfer dated after `D` saves as an ordinary transfer and
+    // leaves the issue exactly where it was (today is the 10th, `D` the 6th).
+    const transfer = actions.find((action) => action.target.kind === 'transfer');
+    expect(transfer?.target).toEqual({
+      kind: 'transfer',
+      initial: { occurredOn: null, to: { currency: 'EUR' } },
+      dates: { min: '2026-09-01', max: '2026-09-06' },
+    });
     const adjustment = actions.find((action) => action.target.kind === 'adjustment');
     // The adjustment is dated where month-to-date stops, never today.
     expect(adjustment?.target).toEqual({
@@ -316,6 +327,13 @@ describe('an unexplained inflow', () => {
       (action) => action.target.kind === 'adjustment',
     );
     expect(adjustment?.target).toMatchObject({ recordedOn: '2026-09-30' });
+  });
+
+  it('lets a completed month’s transfer reach its last day', () => {
+    const transfer = issueActions(inflow('a'), completed).find(
+      (action) => action.target.kind === 'transfer',
+    );
+    expect(transfer?.target).toMatchObject({ dates: { min: '2026-09-01', max: '2026-09-30' } });
   });
 
   it('keeps its action ids free of the amount, so a refresh does not move them', () => {
@@ -371,6 +389,9 @@ describe('a possible missing conversion', () => {
         from: { currency: 'USD', amount: '1100' },
         to: { currency: 'EUR', amount: '1000' },
       },
+      // The month it is suggested for, carried by the action rather than left
+      // to whatever range the page around it happens to allow.
+      dates: { min: '2026-09-01', max: '2026-09-30' },
     });
     const serialized = JSON.stringify(issueActions(advisory, completed));
     // `X2` is evidence for the suggestion, and belongs in no field (30.15 item 9).
@@ -508,7 +529,21 @@ describe('the adjustment dialog', () => {
 
   it('says what an adjustment does not do, and needs an explicit confirmation', () => {
     expect(html).toContain('does not identify what caused the difference');
-    expect(html).toContain('not income');
+    // Excluded from the income savings is worked out from (12.5) — which is not
+    // the same as leaving savings unchanged: a month that could not be worked
+    // out at all may become available once its cash records add up.
+    expect(html).toContain('does not count it as income when it works out your savings');
+    expect(html).not.toContain('does not change your savings');
     expect(html).toContain('data-testid="adjustment-submit"');
+  });
+
+  it('cannot be confirmed once the month no longer raises the issue', () => {
+    // The server refuses a stale acceptance on its own evidence and remains the
+    // authority (ADR 0009 §9); the dialog stops the user sending one.
+    const ready = { hydrated: true, pending: false, stale: false };
+    expect(canRecordAdjustment(ready)).toBe(true);
+    expect(canRecordAdjustment({ ...ready, stale: true })).toBe(false);
+    expect(canRecordAdjustment({ ...ready, pending: true })).toBe(false);
+    expect(canRecordAdjustment({ ...ready, hydrated: false })).toBe(false);
   });
 });

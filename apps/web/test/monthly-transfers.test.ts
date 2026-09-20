@@ -541,6 +541,25 @@ describe('what a Save sends, and when there is one to make', () => {
       'Choose a day from 2026-09-01 to 2026-09-30.',
     );
   });
+
+  it('keeps a narrower range, as a correction offered for a month to date carries', () => {
+    // A current month reconciled through the 6th offers its corrections that
+    // range; the 8th is inside the month and still not a day this transfer may
+    // take, because it would leave the figure it was offered for untouched.
+    const throughD = context({ range: { min: '2026-09-01', max: '2026-09-06' } });
+    expect(draftProblems(newDraft({ occurredOn: '2026-09-08' }), throughD).occurredOn).toBe(
+      'Choose a day from 2026-09-01 to 2026-09-06.',
+    );
+    expect(draftProblems(newDraft({ occurredOn: '2026-09-06' }), throughD).occurredOn).toBeUndefined();
+    // The same day the ordinary month-wide editor still accepts.
+    expect(draftProblems(newDraft({ occurredOn: '2026-09-08' }), context()).occurredOn).toBeUndefined();
+  });
+
+  it('offers the issue’s own last day to the date control, not the page’s', () => {
+    const html = editor({ range: { min: '2026-09-01', max: '2026-09-06' } });
+    expect(html).toContain('max="2026-09-06"');
+    expect(html).not.toContain('max="2026-09-30"');
+  });
 });
 
 describe('after a Save', () => {
