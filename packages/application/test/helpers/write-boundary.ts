@@ -395,6 +395,31 @@ export interface ExposedFinancialAction {
 
 const APPLICATION_PACKAGE = '@vaultide/application';
 
+/**
+ * Which of a directory's entries are server-action modules to analyze.
+ *
+ * Takes the entry names rather than reading the directory itself, so it stays a
+ * pure function the suite can check against a synthetic listing as well as
+ * against the real tree.
+ *
+ * The rule is deliberately the widest one that can be stated: **every** `.ts`
+ * file under the action directory, nested ones included. Naming a module to
+ * exclude would reopen exactly the hole this closes — a new action file nobody
+ * remembered to add. Files that declare no
+ * `export const … = financialAction({ … })` simply yield no actions, so
+ * `define.ts` (the wrapper's own definition), a declaration file and a test
+ * file are all naturally harmless rather than specially cased.
+ *
+ * Paths come back with `/` separators whatever the platform, so the label a
+ * violation carries reads the same on Windows and on CI.
+ */
+export function actionModuleFiles(entries: readonly string[]): string[] {
+  return entries
+    .map((entry) => entry.split('\\').join('/'))
+    .filter((entry) => entry.endsWith('.ts'))
+    .sort();
+}
+
 /** The value names this module imports from `@vaultide/application`. */
 function applicationImports(file: ts.SourceFile): Set<string> {
   const names = new Set<string>();

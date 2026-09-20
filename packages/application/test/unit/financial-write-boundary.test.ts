@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -7,6 +8,7 @@ import {
   NON_MUTATING_APPLICATION_CALLS,
   POST_COMMIT_ALLOWLIST,
   REGISTERED_MUTATIONS,
+  actionModuleFiles,
   analyzeModule,
   crossCheckRegistryCoverage,
   discoverFinancialActions,
@@ -340,7 +342,16 @@ describe('the checker itself (ADR 0010 §16)', () => {
  * because the boundary rules above would otherwise never analyze it.
  */
 
-const ACTION_MODULES = ['flows.ts', 'positions.ts', 'recurring.ts', 'settings.ts', 'monthly.ts'];
+/**
+ * The action modules, **enumerated from disk** rather than listed.
+ *
+ * A hand-written list was the last way a financial action could escape this
+ * check: a new module — Phase 4's `investments.ts`, say — would simply never be
+ * read, so its actions would never be cross-checked and its mutations never
+ * analyzed, while the authorization suite (which does enumerate) stayed green.
+ * `financial-actions.test.ts` has always read the directory; so does this now.
+ */
+const ACTION_MODULES = actionModuleFiles(readdirSync(actionsDir, { encoding: 'utf8', recursive: true }));
 
 const actionSource = (file: string): string =>
   readFileSync(path.join(actionsDir, file), 'utf8');
@@ -352,16 +363,41 @@ function exposedFinancialActions() {
 describe('the registry covers the exposed financial surface (ADR 0010 §16)', () => {
   const actions = exposedFinancialActions();
 
-  it('finds the real action modules, and a plausible number of financial actions', () => {
-    // Non-vacuity. If the directory moved, a module was renamed, or
-    // `financialAction` stopped being the wrapper, this fails instead of
-    // quietly discovering nothing and passing everything.
-    expect(actions.length).toBeGreaterThanOrEqual(30);
-    expect([...new Set(actions.map((action) => action.file))].sort()).toEqual([
+  it('reads every action module the directory actually holds', () => {
+    // Computed inline, independently of `ACTION_MODULES`, so replacing that
+    // constant with a hand-written array fails here rather than silently
+    // narrowing what gets analyzed.
+    const onDisk = readdirSync(actionsDir, { encoding: 'utf8', recursive: true })
+      .map((entry) => String(entry).split('\\').join('/'))
+      .filter((entry) => entry.endsWith('.ts'))
+      .sort();
+
+    expect([...ACTION_MODULES]).toEqual(onDisk);
+    // Today that includes the wrapper definition itself, which declares no
+    // action and so contributes none — naturally harmless, not excluded.
+    expect(onDisk).toContain('define.ts');
+    expect(discoverFinancialActions('define.ts', actionSource('define.ts'))).toEqual([]);
+
+    for (const known of [
+      'define.ts',
       'flows.ts',
+      'monthly.ts',
       'positions.ts',
       'recurring.ts',
-    ]);
+      'settings.ts',
+    ]) {
+      expect(onDisk).toContain(known);
+    }
+  });
+
+  it('finds a plausible number of financial actions, in modules it enumerated', () => {
+    // Non-vacuity, without freezing the future set: a fourth module that
+    // starts declaring financial actions is covered automatically, and only
+    // its mutations need registering.
+    expect(actions.length).toBeGreaterThanOrEqual(30);
+    for (const file of new Set(actions.map((action) => action.file))) {
+      expect(ACTION_MODULES).toContain(file);
+    }
 
     const names = actions.map((action) => action.actionName);
     for (const expected of [
@@ -536,5 +572,111 @@ describe('the coverage cross-check itself (ADR 0010 §16)', () => {
     expect([...new Set(violations.map((item) => item.rule))]).toContain(
       'action-reaches-no-registered-mutation',
     );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The file-discovery layer: a brand-new action module                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The layer above the fixtures: **which files reach the checker at all**.
+ *
+ * The cross-check discovers actions independently of the registry, but it used
+ * to be handed a hand-written list of modules. A Phase 4 `investments.ts` whose
+ * author forgot both that list and the registry would then have passed
+ * everything: the authorization suite enumerates the directory and would have
+ * seen a correct `financialAction`, while nothing here ever read the file.
+ */
+
+const NEW_MODULE = [
+  "import { createContribution, getServices } from '@vaultide/application';",
+  "import { financialAction } from './define';",
+  '',
+  'export const createContributionAction = financialAction({',
+  "  name: 'investments.createContribution',",
+  '  input: investmentInput.createContributionInput,',
+  '  async handler({ input, ctx }) {',
+  '    const created = await createContribution(getServices().investments, ctx, input);',
+  '    return { id: created.id };',
+  '  },',
+  '});',
+].join('\n');
+
+const KNOWN_MODULE = [
+  "import { createIncomeEntry, getServices } from '@vaultide/application';",
+  "import { financialAction } from './define';",
+  '',
+  'export const createIncomeEntryAction = financialAction({',
+  "  name: 'flows.createIncomeEntry',",
+  '  input: flowInput.createIncomeEntryInput,',
+  '  async handler({ input, ctx }) {',
+  '    return createIncomeEntry(getServices().flows, ctx, input);',
+  '  },',
+  '});',
+].join('\n');
+
+describe('a brand-new server-action module (ADR 0010 §16)', () => {
+  it('enumerates every TypeScript module, nested ones included, and nothing else', () => {
+    // The pure rule, checked on its own: the widest statable one. Naming a file
+    // to skip is what reopens the hole, so nothing is skipped — a module that
+    // declares no action simply yields none.
+    expect(
+      actionModuleFiles([
+        'define.ts',
+        'flows.ts',
+        'investments.ts',
+        'README.md',
+        'notes.txt',
+        'nested',
+        'nested\\contributions.ts',
+        'legacy.d.ts',
+        'helpers.test.ts',
+      ]),
+    ).toEqual([
+      'define.ts',
+      'flows.ts',
+      'helpers.test.ts',
+      'investments.ts',
+      'legacy.d.ts',
+      'nested/contributions.ts',
+    ]);
+  });
+
+  it('carries a new module through enumeration, discovery and the cross-check', () => {
+    // End to end over a real directory, because the defect lived between the
+    // directory and the checker rather than inside either.
+    const directory = mkdtempSync(path.join(tmpdir(), 'vaultide-actions-'));
+    try {
+      writeFileSync(path.join(directory, 'define.ts'), 'export function financialAction() {}\n');
+      writeFileSync(path.join(directory, 'flows.ts'), KNOWN_MODULE);
+      writeFileSync(path.join(directory, 'investments.ts'), NEW_MODULE);
+      writeFileSync(path.join(directory, 'README.md'), '# not a module\n');
+
+      const files = actionModuleFiles(readdirSync(directory, { encoding: 'utf8', recursive: true }));
+      // The new module is read without anybody adding it to a list.
+      expect(files).toEqual(['define.ts', 'flows.ts', 'investments.ts']);
+
+      const discovered = files.flatMap((file) =>
+        discoverFinancialActions(file, readFileSync(path.join(directory, file), 'utf8')),
+      );
+      expect(discovered.map((action) => action.actionName).sort()).toEqual([
+        'flows.createIncomeEntry',
+        'investments.createContribution',
+      ]);
+
+      const violations = crossCheckRegistryCoverage(discovered);
+      expect(
+        violations.map((item) => `${item.file} ${item.actionName} [${item.rule}] ${item.detail}`),
+      ).toEqual([
+        'investments.ts investments.createContribution [action-calls-unregistered-mutation] createContribution',
+        'investments.ts investments.createContribution [action-reaches-no-registered-mutation] createContribution, getServices',
+      ]);
+      // The registered neighbour in the same directory stays clean, so the
+      // failure is about the new mutation and not about the sweep being noisy.
+      expect(violations.every((item) => item.file === 'investments.ts')).toBe(true);
+    } finally {
+      rmSync(directory, { recursive: true, force: true, maxRetries: 3 });
+    }
   });
 });
