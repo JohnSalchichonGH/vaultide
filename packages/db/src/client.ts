@@ -14,16 +14,18 @@ import {
  * Database connections and the RLS primitive (blueprint 17.4, 22.4).
  *
  * The runtime connects as `app_user`, which is `NOBYPASSRLS` and has no DDL.
- * Every query that touches user data runs inside `withUser`, which sets the
- * transaction-local GUC the RLS policies read. Outside `withUser` the GUC is
- * unset, the policy predicate is NULL and the query returns nothing: the
- * database fails closed.
+ * Every query that touches user data runs inside one of the transactions
+ * below — `withUser` for an ordinary read, `withUserWrite` for a financial
+ * mutation, `withUserRead` for one coherent read — each of which sets the
+ * transaction-local GUC the RLS policies read. Outside them the GUC is unset,
+ * the policy predicate is NULL and the query returns nothing: the database
+ * fails closed.
  */
 
 export type Database = NodePgDatabase<typeof schema>;
 export type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
 
-/** Canonical UUID, the only shape `withUser` will ever put into the GUC. */
+/** Canonical UUID, the only shape any of them will ever put into the GUC. */
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export class InvalidUserIdError extends Error {

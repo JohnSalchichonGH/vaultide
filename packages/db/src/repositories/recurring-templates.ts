@@ -169,35 +169,33 @@ export async function insertTemplateIn(
   ctx: AuditContext,
   input: TemplateInput,
 ): Promise<RecurringTemplateRow> {
-  {
-    const [row] = await tx
-      .insert(recurringTemplates)
-      .values({
-        userId: ctx.userId,
-        kind: input.kind,
-        name: input.name,
-        counterparty: input.counterparty ?? null,
-        incomeKind: input.incomeKind ?? null,
-        categoryId: input.categoryId ?? null,
-        currency: input.currency,
-        frequency: input.frequency,
-        dayOfMonth: input.dayOfMonth ?? null,
-        startDate: input.startDate,
-        endDate: input.endDate ?? null,
-        ...cashRef(input.cashPositionId),
-        ...propertyRef(input.propertyPositionId),
-      })
-      .returning();
+  const [row] = await tx
+    .insert(recurringTemplates)
+    .values({
+      userId: ctx.userId,
+      kind: input.kind,
+      name: input.name,
+      counterparty: input.counterparty ?? null,
+      incomeKind: input.incomeKind ?? null,
+      categoryId: input.categoryId ?? null,
+      currency: input.currency,
+      frequency: input.frequency,
+      dayOfMonth: input.dayOfMonth ?? null,
+      startDate: input.startDate,
+      endDate: input.endDate ?? null,
+      ...cashRef(input.cashPositionId),
+      ...propertyRef(input.propertyPositionId),
+    })
+    .returning();
 
-    const created = row as RecurringTemplateRow;
-    await recordAudit(tx, ctx, {
-      entityTable: 'recurring_templates',
-      entityId: created.id,
-      action: 'insert',
-      after: created,
-    });
-    return created;
-  }
+  const created = row as RecurringTemplateRow;
+  await recordAudit(tx, ctx, {
+    entityTable: 'recurring_templates',
+    entityId: created.id,
+    action: 'insert',
+    after: created,
+  });
+  return created;
 }
 
 export interface TemplatePatch {
@@ -214,31 +212,29 @@ export async function updateTemplateIn(
   expectedVersion: number,
   patch: TemplatePatch,
 ): Promise<RecurringTemplateRow | undefined> {
-  {
-    const before = await lockTemplateIn(tx, templateId);
-    if (before === undefined) return undefined;
+  const before = await lockTemplateIn(tx, templateId);
+  if (before === undefined) return undefined;
 
-    const [row] = await tx
-      .update(recurringTemplates)
-      .set({ ...patch, version: expectedVersion + 1 })
-      .where(
-        and(
-          eq(recurringTemplates.id, templateId),
-          eq(recurringTemplates.version, expectedVersion),
-        ),
-      )
-      .returning();
-    if (row === undefined) return undefined;
+  const [row] = await tx
+    .update(recurringTemplates)
+    .set({ ...patch, version: expectedVersion + 1 })
+    .where(
+      and(
+        eq(recurringTemplates.id, templateId),
+        eq(recurringTemplates.version, expectedVersion),
+      ),
+    )
+    .returning();
+  if (row === undefined) return undefined;
 
-    await recordAudit(tx, ctx, {
-      entityTable: 'recurring_templates',
-      entityId: templateId,
-      action: 'update',
-      before,
-      after: row,
-    });
-    return row;
-  }
+  await recordAudit(tx, ctx, {
+    entityTable: 'recurring_templates',
+    entityId: templateId,
+    action: 'update',
+    before,
+    after: row,
+  });
+  return row;
 }
 
 /** `true` when any materialized flow or skip references this template. */
@@ -437,28 +433,26 @@ export async function insertTermIn(
   ctx: AuditContext,
   input: TermInput,
 ): Promise<RecurringTemplateTermRow> {
-  {
-    const [row] = await tx
-      .insert(recurringTemplateTerms)
-      .values({
-        userId: ctx.userId,
-        templateId: input.templateId,
-        effectiveFrom: input.effectiveFrom,
-        amount: input.amount,
-        grossAmount: input.grossAmount ?? null,
-        note: input.note ?? null,
-      })
-      .returning();
+  const [row] = await tx
+    .insert(recurringTemplateTerms)
+    .values({
+      userId: ctx.userId,
+      templateId: input.templateId,
+      effectiveFrom: input.effectiveFrom,
+      amount: input.amount,
+      grossAmount: input.grossAmount ?? null,
+      note: input.note ?? null,
+    })
+    .returning();
 
-    const created = row as RecurringTemplateTermRow;
-    await recordAudit(tx, ctx, {
-      entityTable: 'recurring_template_terms',
-      entityId: created.id,
-      action: 'insert',
-      after: created,
-    });
-    return created;
-  }
+  const created = row as RecurringTemplateTermRow;
+  await recordAudit(tx, ctx, {
+    entityTable: 'recurring_template_terms',
+    entityId: created.id,
+    action: 'insert',
+    after: created,
+  });
+  return created;
 }
 
 export async function updateTermIn(
@@ -468,36 +462,34 @@ export async function updateTermIn(
   expectedVersion: number,
   patch: { amount?: string; grossAmount?: string | null; note?: string | null },
 ): Promise<RecurringTemplateTermRow | undefined> {
-  {
-    const [before] = await tx
-      .select()
-      .from(recurringTemplateTerms)
-      .where(eq(recurringTemplateTerms.id, termId))
-      .limit(1)
-      .for('update');
-    if (before === undefined) return undefined;
+  const [before] = await tx
+    .select()
+    .from(recurringTemplateTerms)
+    .where(eq(recurringTemplateTerms.id, termId))
+    .limit(1)
+    .for('update');
+  if (before === undefined) return undefined;
 
-    const [row] = await tx
-      .update(recurringTemplateTerms)
-      .set({ ...patch, version: expectedVersion + 1 })
-      .where(
-        and(
-          eq(recurringTemplateTerms.id, termId),
-          eq(recurringTemplateTerms.version, expectedVersion),
-        ),
-      )
-      .returning();
-    if (row === undefined) return undefined;
+  const [row] = await tx
+    .update(recurringTemplateTerms)
+    .set({ ...patch, version: expectedVersion + 1 })
+    .where(
+      and(
+        eq(recurringTemplateTerms.id, termId),
+        eq(recurringTemplateTerms.version, expectedVersion),
+      ),
+    )
+    .returning();
+  if (row === undefined) return undefined;
 
-    await recordAudit(tx, ctx, {
-      entityTable: 'recurring_template_terms',
-      entityId: termId,
-      action: 'update',
-      before,
-      after: row,
-    });
-    return row;
-  }
+  await recordAudit(tx, ctx, {
+    entityTable: 'recurring_template_terms',
+    entityId: termId,
+    action: 'update',
+    before,
+    after: row,
+  });
+  return row;
 }
 
 /**
@@ -573,63 +565,61 @@ export async function listResolvedOccurrencesInRangeIn(
   from: string,
   to: string,
 ): Promise<{ templateId: string; occurrenceDate: string }[]> {
-  {
-    const [income, expenses, moves, skips] = await Promise.all([
-      tx
-        .select({
-          templateId: incomeEntries.templateId,
-          occurrenceDate: incomeEntries.occurrenceDate,
-        })
-        .from(incomeEntries)
-        .where(
-          and(
-            isNotNull(incomeEntries.occurrenceDate),
-            gte(incomeEntries.occurrenceDate, from),
-            lte(incomeEntries.occurrenceDate, to),
-          ),
+  const [income, expenses, moves, skips] = await Promise.all([
+    tx
+      .select({
+        templateId: incomeEntries.templateId,
+        occurrenceDate: incomeEntries.occurrenceDate,
+      })
+      .from(incomeEntries)
+      .where(
+        and(
+          isNotNull(incomeEntries.occurrenceDate),
+          gte(incomeEntries.occurrenceDate, from),
+          lte(incomeEntries.occurrenceDate, to),
         ),
-      tx
-        .select({
-          templateId: expenseEntries.templateId,
-          occurrenceDate: expenseEntries.occurrenceDate,
-        })
-        .from(expenseEntries)
-        .where(
-          and(
-            isNotNull(expenseEntries.occurrenceDate),
-            gte(expenseEntries.occurrenceDate, from),
-            lte(expenseEntries.occurrenceDate, to),
-          ),
+      ),
+    tx
+      .select({
+        templateId: expenseEntries.templateId,
+        occurrenceDate: expenseEntries.occurrenceDate,
+      })
+      .from(expenseEntries)
+      .where(
+        and(
+          isNotNull(expenseEntries.occurrenceDate),
+          gte(expenseEntries.occurrenceDate, from),
+          lte(expenseEntries.occurrenceDate, to),
         ),
-      tx
-        .select({ templateId: transfers.templateId, occurrenceDate: transfers.occurrenceDate })
-        .from(transfers)
-        .where(
-          and(
-            isNotNull(transfers.occurrenceDate),
-            gte(transfers.occurrenceDate, from),
-            lte(transfers.occurrenceDate, to),
-          ),
+      ),
+    tx
+      .select({ templateId: transfers.templateId, occurrenceDate: transfers.occurrenceDate })
+      .from(transfers)
+      .where(
+        and(
+          isNotNull(transfers.occurrenceDate),
+          gte(transfers.occurrenceDate, from),
+          lte(transfers.occurrenceDate, to),
         ),
-      tx
-        .select({
-          templateId: recurringTemplateSkips.templateId,
-          occurrenceDate: recurringTemplateSkips.occurrenceDate,
-        })
-        .from(recurringTemplateSkips)
-        .where(
-          and(
-            gte(recurringTemplateSkips.occurrenceDate, from),
-            lte(recurringTemplateSkips.occurrenceDate, to),
-          ),
+      ),
+    tx
+      .select({
+        templateId: recurringTemplateSkips.templateId,
+        occurrenceDate: recurringTemplateSkips.occurrenceDate,
+      })
+      .from(recurringTemplateSkips)
+      .where(
+        and(
+          gte(recurringTemplateSkips.occurrenceDate, from),
+          lte(recurringTemplateSkips.occurrenceDate, to),
         ),
-    ]);
+      ),
+  ]);
 
-    return [...income, ...expenses, ...moves, ...skips].map((row) => ({
-      templateId: row.templateId as string,
-      occurrenceDate: row.occurrenceDate as string,
-    }));
-  }
+  return [...income, ...expenses, ...moves, ...skips].map((row) => ({
+    templateId: row.templateId as string,
+    occurrenceDate: row.occurrenceDate as string,
+  }));
 }
 
 /**
@@ -845,25 +835,23 @@ export async function deleteSkipIn(
   ctx: AuditContext,
   skipId: string,
 ): Promise<RecurringTemplateSkipRow | undefined> {
-  {
-    const [before] = await tx
-      .select()
-      .from(recurringTemplateSkips)
-      .where(eq(recurringTemplateSkips.id, skipId))
-      .limit(1)
-      .for('update');
-    if (before === undefined) return undefined;
+  const [before] = await tx
+    .select()
+    .from(recurringTemplateSkips)
+    .where(eq(recurringTemplateSkips.id, skipId))
+    .limit(1)
+    .for('update');
+  if (before === undefined) return undefined;
 
-    await tx.delete(recurringTemplateSkips).where(eq(recurringTemplateSkips.id, skipId));
+  await tx.delete(recurringTemplateSkips).where(eq(recurringTemplateSkips.id, skipId));
 
-    await recordAudit(tx, ctx, {
-      entityTable: 'recurring_template_skips',
-      entityId: skipId,
-      action: 'delete',
-      before,
-    });
-    return before;
-  }
+  await recordAudit(tx, ctx, {
+    entityTable: 'recurring_template_skips',
+    entityId: skipId,
+    action: 'delete',
+    before,
+  });
+  return before;
 }
 
 /** Templates active at any point in a date range — what suggestions need. */

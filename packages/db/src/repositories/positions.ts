@@ -9,10 +9,14 @@ import { recordAudit, type AuditContext } from './audited';
 /**
  * `positions` and its Phase 2 subtypes (blueprint 6.2, 6.3, 17.2, 20.3).
  *
- * Every statement runs inside `withUser`, so RLS is the backstop for the
- * `WHERE` clause: a query carrying another user's id returns nothing and an
- * insert carrying one fails the policy's `WITH CHECK`. No function here takes a
- * caller-supplied `userId` — it always comes from the authenticated context.
+ * Every statement runs inside a user-scoped transaction, so RLS is the backstop
+ * for the `WHERE` clause: a query carrying another user's id returns nothing and
+ * an insert carrying one fails the policy's `WITH CHECK`. No function here takes
+ * a caller-supplied `userId` — it always comes from the authenticated context.
+ *
+ * Every **write** takes the caller's `Transaction` rather than the database:
+ * that transaction holds the per-user financial write mutex, and a repository
+ * that opened one of its own would write outside it (20.3, 30.22).
  *
  * Reads join the subtype in one query rather than fetching it per position: a
  * page shows every account at once, and N+1 queries for a fixed, small set of
@@ -602,32 +606,30 @@ export async function loadFinancialWindowIn(
   tx: Transaction,
   to: string,
 ): Promise<FinancialWindow> {
-  {
-    const positionRows = await positionQuery(tx).orderBy(
-      asc(positions.sortOrder),
-      asc(positions.name),
-    );
+  const positionRows = await positionQuery(tx).orderBy(
+    asc(positions.sortOrder),
+    asc(positions.name),
+  );
 
-    const valuationRows = await tx
-      .select()
-      .from(positionValuations)
-      .where(lte(positionValuations.valuedOn, to))
-      .orderBy(asc(positionValuations.positionId), desc(positionValuations.valuedOn));
+  const valuationRows = await tx
+    .select()
+    .from(positionValuations)
+    .where(lte(positionValuations.valuedOn, to))
+    .orderBy(asc(positionValuations.positionId), desc(positionValuations.valuedOn));
 
-    const [earliest] = await tx
-      .select({ valuedOn: sql<string | null>`min(${positionValuations.valuedOn})::text` })
-      .from(positionValuations);
+  const [earliest] = await tx
+    .select({ valuedOn: sql<string | null>`min(${positionValuations.valuedOn})::text` })
+    .from(positionValuations);
 
-    const earliestValuedOn = earliest?.valuedOn ?? undefined;
+  const earliestValuedOn = earliest?.valuedOn ?? undefined;
 
-    return {
-      positions: positionRows.map(toRecord),
-      valuations: valuationRows,
-      ...(earliestValuedOn === null || earliestValuedOn === undefined
-        ? {}
-        : { earliestValuedOn }),
-    };
-  }
+  return {
+    positions: positionRows.map(toRecord),
+    valuations: valuationRows,
+    ...(earliestValuedOn === null || earliestValuedOn === undefined
+      ? {}
+      : { earliestValuedOn }),
+  };
 }
 
 /**

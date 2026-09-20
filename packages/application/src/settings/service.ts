@@ -17,11 +17,14 @@ import type { UserSettings } from './types';
 /**
  * User settings (blueprint 6.2, 15.2 Settings, 20.3).
  *
- * Every read and every write goes through `withUser`, so the database enforces
- * ownership as well as this code: a query that somehow carried another user's
- * id would return nothing and an insert would fail the policy's `WITH CHECK`.
- * No function here accepts a caller-supplied `userId` — it comes from the
- * authenticated context (17.2).
+ * Every read and every write goes through a user-scoped transaction, so the
+ * database enforces ownership as well as this code: a query that somehow carried
+ * another user's id would return nothing and an insert would fail the policy's
+ * `WITH CHECK`. No function here accepts a caller-supplied `userId` — it comes
+ * from the authenticated context (17.2).
+ *
+ * The savings preference is the one financial input here, and it is the one
+ * write that takes the per-user financial mutex (12.5, 30.22 item 6).
  */
 
 export interface SettingsDependencies {

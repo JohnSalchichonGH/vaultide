@@ -5,10 +5,14 @@ import { withUser, type Database, type Transaction } from '../client';
 /**
  * `user_settings` reads and writes (blueprint 6.2, 17.2, 20.3).
  *
- * Every statement runs inside `withUser`, so the database enforces ownership as
- * well as the `WHERE` clause: a query carrying the wrong id returns nothing and
- * an insert carrying the wrong id fails the policy's `WITH CHECK`. The id is
- * always the authenticated user's — no repository here takes one from input.
+ * Every statement runs inside a user-scoped transaction, so the database
+ * enforces ownership as well as the `WHERE` clause: a query carrying the wrong
+ * id returns nothing and an insert carrying the wrong id fails the policy's
+ * `WITH CHECK`. The id is always the authenticated user's — no repository here
+ * takes one from input.
+ *
+ * One column on this row is a financial input rather than a preference, and the
+ * patch types below are what keep the two apart (30.22 item 6).
  */
 
 export type UserSettingsRecord = typeof userSettings.$inferSelect;

@@ -8,7 +8,8 @@ import { recordAudit, type AuditContext } from './audited';
  *
  * A valuation is a snapshot: what a position was worth on a date. These
  * functions insert, correct and delete them, always with an audit image, and
- * always inside `withUser`.
+ * always inside the caller's transaction — which is the one holding the
+ * per-user financial write mutex (20.3, 30.22).
  *
  * What they deliberately do not do is derive anything. There is no "current
  * balance" column to keep in step, no running total, no cached net worth: the
