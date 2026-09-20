@@ -9,7 +9,7 @@ investments, other assets and liabilities, in as many currencies as you hold.
 
 The exact financial semantics live in
 [`docs/implementation-blueprint.md`](docs/implementation-blueprint.md) (frozen,
-v2.1.18). This README describes the product, its current status and how to
+v2.1.19). This README describes the product, its current status and how to
 work on the repository; it does not restate the blueprint's rules.
 
 ## Status
@@ -269,7 +269,7 @@ policy filtered can never pass verification. Restoring is documented in
 ## Design and engineering docs
 
 - **Semantic authority:** [`docs/implementation-blueprint.md`](docs/implementation-blueprint.md)
-  (frozen, v2.1.18). When the code and the blueprint disagree, the blueprint is
+  (frozen, v2.1.19). When the code and the blueprint disagree, the blueprint is
   corrected or the code is — never silently either.
 - **Implementation decisions:** [`docs/adr/`](docs/adr/) —
   [Phase 0](docs/adr/0001-phase-0-implementation-decisions.md),
@@ -281,7 +281,8 @@ policy filtered can never pass verification. Restoring is documented in
   [Phase 3 Monthly-transfer decisions](docs/adr/0006-phase-3-monthly-transfers.md),
   [the dormant anchor](docs/adr/0007-dormant-anchor.md),
   [standalone Spending](docs/adr/0008-standalone-spending.md),
-  [reconciliation corrective actions](docs/adr/0009-reconciliation-corrective-actions.md).
+  [reconciliation corrective actions](docs/adr/0009-reconciliation-corrective-actions.md),
+  [historical correction and financial write coordination](docs/adr/0010-historical-correction.md).
 - **Evidence for frozen phases:**
   [`docs/phase-0-acceptance.md`](docs/phase-0-acceptance.md),
   [`docs/phase-1-acceptance.md`](docs/phase-1-acceptance.md),
