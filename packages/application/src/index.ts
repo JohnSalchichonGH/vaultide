@@ -4,6 +4,7 @@
  */
 export * from './actions';
 export * from './context';
+export * from './coordination';
 export * from './database';
 export * from './errors';
 export * from './health';

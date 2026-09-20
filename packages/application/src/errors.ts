@@ -13,6 +13,7 @@ export type ErrorCode =
   | 'NOT_FOUND'
   | 'CONFLICT_VERSION'
   | 'CONFLICT_DUPLICATE'
+  | 'WRITE_BUSY'
   | 'IMPOSSIBLE_OPERATION'
   | 'INCOMPLETE_DATA'
   | 'FX_UNAVAILABLE'
@@ -30,6 +31,7 @@ export const LOG_LEVEL_BY_CODE: Record<ErrorCode, LogLevel> = {
   NOT_FOUND: 'none',
   CONFLICT_VERSION: 'info',
   CONFLICT_DUPLICATE: 'info',
+  WRITE_BUSY: 'info',
   IMPOSSIBLE_OPERATION: 'info',
   INCOMPLETE_DATA: 'info',
   FX_UNAVAILABLE: 'warn',
@@ -88,6 +90,23 @@ export class VersionConflictError extends DomainError {
 export class DuplicateConflictError extends DomainError {
   readonly code = 'CONFLICT_DUPLICATE';
   constructor(message = 'This record already exists.') {
+    super(message);
+  }
+}
+
+/**
+ * Another financial write of the same user held the write mutex for longer than
+ * a request may wait, twice (blueprint 20.2, 20.3, 30.22; ADR 0010 §7).
+ *
+ * A benign, retryable conflict and deliberately **not** an internal failure: it
+ * writes nothing, it names no database and no SQLSTATE, and it hands out no
+ * internal-error reference id for what is ordinary contention. The message says
+ * the two things the user needs — nothing was saved, and trying again is the
+ * right response.
+ */
+export class WriteBusyError extends DomainError {
+  readonly code = 'WRITE_BUSY';
+  constructor(message = 'Another change is still saving. Nothing was saved — try again.') {
     super(message);
   }
 }

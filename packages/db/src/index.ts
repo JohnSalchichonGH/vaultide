@@ -3,6 +3,7 @@
  * (blueprint section 19). Imported only by @vaultide/application.
  */
 export * from './client';
+export * from './write-lock';
 export * from './env';
 export * from './schema/index';
 export * from './repositories/index';

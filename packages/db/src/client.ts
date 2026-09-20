@@ -3,6 +3,12 @@ import { sql } from 'drizzle-orm';
 import pg from 'pg';
 import * as schema from './schema/index';
 import { CURRENT_USER_SETTING } from './schema/rls';
+import {
+  WriteLockUnavailableError,
+  isLockNotAvailable,
+  userWriteLockKey,
+  writeLockTimeoutMs,
+} from './write-lock';
 
 /**
  * Database connections and the RLS primitive (blueprint 17.4, 22.4).
@@ -80,6 +86,164 @@ export async function withUser<T>(
     );
     return fn(tx);
   });
+}
+
+/**
+ * Set the RLS user context for the current transaction.
+ *
+ * `set_config(…, true)` is transaction-local, which is what makes RLS correct
+ * under PgBouncer transaction pooling. The id always comes from the
+ * authenticated session.
+ */
+async function setUserContext(tx: Transaction, userId: string): Promise<void> {
+  await tx.execute(sql`SELECT set_config(${CURRENT_USER_SETTING}, ${userId}::text, true)`);
+}
+
+export interface UserWriteOptions {
+  /**
+   * How long to wait for a lock before giving up, in milliseconds. Defaults to
+   * the reviewed value, or to `VAULTIDE_WRITE_LOCK_TIMEOUT_MS` where one is
+   * configured. Present so a test can provoke the timeout deterministically.
+   */
+  readonly lockTimeoutMs?: number;
+}
+
+/** The bounded pause between the first attempt and the retry (ADR 0010 §7). */
+const RETRY_BASE_DELAY_MS = 25;
+const RETRY_JITTER_MS = 50;
+
+/**
+ * The financial write transaction (blueprint 20.3, 30.22; ADR 0010 §5–§7).
+ *
+ * **Every** mutation of Vaultide's mutable financial evidence runs inside one of
+ * these, and the order of what it does is the contract:
+ *
+ * ```
+ * BEGIN ISOLATION LEVEL READ COMMITTED
+ * set app.current_user_id          -- RLS, fail-closed, from the session alone
+ * set lock_timeout                 -- transaction-local; no request hangs
+ * pg_advisory_xact_lock(<key>)     -- the per-user write mutex
+ *
+ * -- only now: authoritative reads, reference-dependency locks, row locks,
+ * -- version checks, validation, derived decisions, writes, audit
+ *
+ * COMMIT
+ * ```
+ *
+ * ## Why the lock precedes the first read
+ *
+ * A mutation that read an existing row, decided something from it, and only
+ * then took the mutex would have decided against a state another writer of the
+ * same user was free to replace. Locking the write alone serializes the SQL and
+ * leaves the decision racy — which is exactly the shape of the valuation
+ * defects this primitive was built to repair.
+ *
+ * ## Why READ COMMITTED
+ *
+ * After waiting for the mutex, the first authoritative read has to see what the
+ * previous holder committed. A `REPEATABLE READ` snapshot is taken at the
+ * transaction's first statement — the GUC set-up, *before* the wait — so every
+ * read after the wait would be answered from a world that predates the writer
+ * we just queued behind. Under `READ COMMITTED` each statement takes a fresh
+ * snapshot and sees the truth.
+ *
+ * The usual objection — that two statements of one transaction can disagree —
+ * does not reach the state that matters, because no participating financial
+ * writer of this user can commit while the mutex is held. What *can* commit
+ * underneath is non-financial: category administration, which is why a
+ * financial write that chooses a category locks that row itself (ADR 0010 §9).
+ *
+ * ## Why a transaction-scoped advisory lock
+ *
+ * `pg_advisory_xact_lock` is released by `COMMIT`, by `ROLLBACK` and by an
+ * error, with no `finally` to forget. A session-scoped lock leaked onto a
+ * pooled connection would lock a user out of their own account until that
+ * connection was recycled.
+ *
+ * ## The one retry
+ *
+ * A `lock_timeout` while waiting — PostgreSQL's `55P03` — rolls the whole
+ * transaction back, so nothing was written and nothing outside the database
+ * happened: `fn` may perform no external side effect, and the primitive repeats
+ * it once after a small jittered pause. A second failure is
+ * `WriteLockUnavailableError`, which the application layer turns into
+ * `WRITE_BUSY`. Nothing else is retried: a version conflict, a duplicate or a
+ * refusal is an answer, not contention.
+ */
+export async function withUserWrite<T>(
+  db: Database,
+  scope: UserScope,
+  fn: (tx: Transaction) => Promise<T>,
+  options: UserWriteOptions = {},
+): Promise<T> {
+  if (!UUID_PATTERN.test(scope.userId)) throw new InvalidUserIdError();
+
+  const key = userWriteLockKey(scope.userId).toString();
+  const timeout = `${String(options.lockTimeoutMs ?? writeLockTimeoutMs())}ms`;
+
+  const attempt = async (): Promise<T> =>
+    db.transaction(
+      async (tx) => {
+        await setUserContext(tx, scope.userId);
+        // `set_config` rather than SQL text: the value is a parameter, and the
+        // setting is transaction-local so it cannot escape onto a pooled
+        // connection (17.3 bans `sql.raw` outside migrations for this reason).
+        await tx.execute(sql`SELECT set_config('lock_timeout', ${timeout}, true)`);
+        // The key is sent as text and cast, so no driver has to decide what a
+        // JavaScript `bigint` parameter means.
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${key}::bigint)`);
+        return fn(tx);
+      },
+      { isolationLevel: 'read committed' },
+    );
+
+  try {
+    return await attempt();
+  } catch (error) {
+    if (!isLockNotAvailable(error)) throw error;
+  }
+
+  await new Promise((resolve) =>
+    setTimeout(resolve, RETRY_BASE_DELAY_MS + Math.floor(Math.random() * RETRY_JITTER_MS)),
+  );
+
+  try {
+    return await attempt();
+  } catch (error) {
+    if (isLockNotAvailable(error)) throw new WriteLockUnavailableError();
+    throw error;
+  }
+}
+
+/**
+ * One coherent user-scoped read (blueprint 20.3, 30.22; ADR 0010 §8).
+ *
+ * `REPEATABLE READ`, `READ ONLY`, the RLS context, and **no** write mutex: every
+ * statement inside sees the same snapshot, so several questions about one state
+ * of the world cannot be answered from two different worlds. `READ ONLY` is the
+ * database enforcing what the name promises — an accidental write inside fails
+ * rather than succeeding quietly.
+ *
+ * It takes no mutex and therefore blocks no writer, and a writer does not block
+ * it. Built for the correction preview a later slice adds; ordinary reads keep
+ * using `withUser`, and this is not a reason to migrate them.
+ */
+export async function withUserRead<T>(
+  db: Database,
+  scope: UserScope,
+  fn: (tx: Transaction) => Promise<T>,
+): Promise<T> {
+  if (!UUID_PATTERN.test(scope.userId)) throw new InvalidUserIdError();
+
+  return db.transaction(
+    async (tx) => {
+      // Permitted in a read-only transaction: a transaction-local GUC is not a
+      // write to any table.
+      await setUserContext(tx, scope.userId);
+      return fn(tx);
+    },
+    { isolationLevel: 'repeatable read', accessMode: 'read only' },
+  );
 }
 
 /**
