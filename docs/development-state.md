@@ -19,7 +19,7 @@ logs into this file.
 
 ## Current checkpoint
 
-- **Blueprint:** v2.1.18.
+- **Blueprint:** v2.1.19.
 - **Current phase:** Phase 3.
 - **Phase 3 status:** in progress; the phase as a whole is **not accepted or
   frozen**.
@@ -121,6 +121,10 @@ logs into this file.
   standalone Spending implementation decisions.
   `docs/adr/0009-reconciliation-corrective-actions.md` is the accepted record of
   the corrective-action decisions.
+  `docs/adr/0010-historical-correction.md` freezes the historical-correction
+  design and records the financial write-coordination prerequisite. Freezing
+  that design is **not** implementing it: at this checkpoint only the
+  prerequisite exists.
 
 Freezing completed Phase 3 slices does not imply acceptance or freeze of Phase 3
 as a whole.
@@ -227,9 +231,46 @@ Web surface of Phase 3:
   corrective-action journeys (`monthly`, `spending`, `corrective-actions`),
   alongside the Phase 0–2 journeys (`smoke`, `auth`, `accounts`).
 
+## Financial write coordination
+
+One invariant now holds across the whole backend, and is enforced
+mechanically rather than by convention (blueprint 20.3, §30.22; ADR 0010):
+
+> Every mutation of Vaultide's mutable financial evidence is one atomic
+> per-user transaction that acquires the same transaction-scoped advisory write
+> mutex before its first authoritative read, performs all validation, domain
+> decisions, writes and audit inside that transaction, and commits or rolls
+> back as one unit.
+
+- `withUserWrite` (in `@vaultide/db`, reached through the application's
+  `coordination` module) opens that transaction: read committed, the RLS
+  context, a transaction-local lock timeout, then `pg_advisory_xact_lock` on a
+  key derived from the session's user id alone. A lock timeout retries the
+  whole transaction once and then answers `WRITE_BUSY`.
+- `withUserRead` — repeatable read, read only, no write mutex — is the
+  coherent-read primitive the later correction preview needs. Ordinary page
+  reads are unchanged and stay on `withUser`.
+- `categories.archived_at` is a **reference dependency**: a financial write
+  that chooses a category afresh holds it `FOR SHARE` until it commits, and
+  category administration stays an ordinary non-financial write.
+- Financial deletes carry the version the client rendered; a transfer delete
+  carries what the caller saw of its fee too.
+- The four valuation paths whose dormancy consequence could commit separately —
+  record, correct, remove and quick update — are one transaction each, and the
+  adjustment path's residual check/write window (ADR 0009 §9) is closed.
+- `packages/application/test/unit/financial-write-boundary.test.ts` enforces the
+  boundary over the TypeScript AST, and is itself tested against fixtures that
+  are deliberately wrong. It is separate from
+  `apps/web/test/financial-actions.test.ts`, which enforces authorization.
+
+No migration: the mutex is ephemeral PostgreSQL state, and the versions, audit
+images, reasons and request ids it relies on already exist.
+
 ## Next planned work
 
-The next planned Phase 3 area is **historical correction**.
+The next planned Phase 3 area is **historical correction**. Its write-coordination
+prerequisite is implemented; the feature itself is **not started** — there is no
+correction preview, draft, impact model or dialog.
 
 Remaining Phase 3 work, in the agreed order:
 
