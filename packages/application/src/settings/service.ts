@@ -6,7 +6,7 @@ import {
   updateUserSettingsIn,
   type Database,
   type Transaction,
-  type UserSettingsPatch,
+  type UserPreferencesPatch,
   type UserSettingsRecord,
 } from '@vaultide/db';
 import { usableCurrencyCodes } from '../currencies/service';
@@ -107,7 +107,9 @@ export interface UpdateSettingsFields {
 }
 
 /*
- * `countAdditionalSpending` is deliberately absent above.
+ * `countAdditionalSpending` is deliberately absent above, and unreachable
+ * from here: the database-taking writer takes `UserPreferencesPatch`, which
+ * does not carry the field.
  *
  * It lives on `user_settings` like a preference and behaves like a financial
  * input: it decides whether spending paid from outside tracked accounts reduces
@@ -153,7 +155,7 @@ export async function updateSettings(
     }
   }
 
-  const patch: UserSettingsPatch = {};
+  const patch: UserPreferencesPatch = {};
   if (fields.baseCurrency !== undefined) patch.baseCurrency = fields.baseCurrency.toUpperCase();
   if (fields.reportingCurrency !== undefined) {
     patch.reportingCurrency = fields.reportingCurrency.toUpperCase();

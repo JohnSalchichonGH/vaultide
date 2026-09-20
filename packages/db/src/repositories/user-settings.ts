@@ -34,7 +34,14 @@ export async function findUserSettingsIn(
   return row;
 }
 
-export interface UserSettingsPatch {
+/**
+ * The display preferences an ordinary settings write may change.
+ *
+ * Cheap, reversible and visible to the account holder: none of them
+ * re-interprets a past figure, so none of them is serialized against financial
+ * writes (30.22 item 6).
+ */
+export interface UserPreferencesPatch {
   baseCurrency?: string;
   reportingCurrency?: string;
   timezone?: string;
@@ -42,6 +49,19 @@ export interface UserSettingsPatch {
   favoriteCurrencies?: string[];
   staleInvestmentMonths?: number;
   stalePropertyMonths?: number;
+}
+
+/**
+ * Those, plus the one **financial input** this row carries.
+ *
+ * `count_additional_spending` decides whether spending paid from outside
+ * tracked accounts reduces personal savings (12.5), so flipping it
+ * re-interprets every past month's `PersonalSavings` and `SavingsRate`. Only
+ * the transaction-taking writer below accepts this shape, and only a
+ * mutex-owned write can reach it — the database-taking wrapper cannot express
+ * the field at all.
+ */
+export interface UserSettingsPatch extends UserPreferencesPatch {
   countAdditionalSpending?: boolean;
 }
 
@@ -55,7 +75,7 @@ export async function updateUserSettings(
   db: Database,
   userId: string,
   expectedVersion: number,
-  patch: UserSettingsPatch,
+  patch: UserPreferencesPatch,
 ): Promise<UserSettingsRecord | undefined> {
   return withUser(db, { userId }, async (tx) =>
     updateUserSettingsIn(tx, userId, expectedVersion, patch),

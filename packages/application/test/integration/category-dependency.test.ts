@@ -41,6 +41,7 @@ const SEPT_15 = on('2026-09-15');
 const OCT_1 = on('2026-10-01');
 
 const flowDeps = () => harness.services.flows;
+const readDeps = () => ({ db: harness.db, fx: harness.services.fx });
 
 interface Deferred {
   readonly promise: Promise<void>;
@@ -321,13 +322,9 @@ describe('choosing a category afresh versus carrying history (30.22 item 9)', ()
       datePrecision: 'month_end',
     });
 
-    const before = await getMonthReconciliation(
-      { db: harness.db },
-      OCT_1,
-      parseMonth('2026-09'),
-    );
+    const before = await getMonthReconciliation(readDeps(), OCT_1, parseMonth('2026-09'));
     await archiveUserCategory(harness.db, USER_A, categoryId);
-    const after = await getMonthReconciliation({ db: harness.db }, OCT_1, parseMonth('2026-09'));
+    const after = await getMonthReconciliation(readDeps(), OCT_1, parseMonth('2026-09'));
 
     // Tidying up a category must never rewrite what a month said.
     expect(after.buckets).toEqual(before.buckets);
