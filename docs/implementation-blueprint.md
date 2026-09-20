@@ -436,7 +436,7 @@ Columns listed as `name type [constraints]`. "Own" = `user_id uuid NOT NULL` own
 | Table | User action | Mechanism |
 |---|---|---|
 | positions + subtypes | "Close" (keeps history) or "Delete" (only when no history) | status change; `NO ACTION` FKs from valuations/flows guarantee no orphaned history while the whole-account cascade still succeeds |
-| valuations, income, expenses, transfers, payments | Delete | hard delete + audit before-image, under the same optimistic version check an edit takes (20.3): the request carries the `version` the client rendered, and a stale one is `CONFLICT_VERSION` with nothing deleted and nothing audited — a delete corrects what the user was looking at, not whatever is there now. A transfer is one aggregate, so its delete carries what the caller saw of its fee as well (absent, or that fee id at that version), and removes its linked fee entry first with the fee’s own audit before-image, so the `ON DELETE CASCADE` never removes a financial fact that went unrecorded |
+| valuations, income, expenses, transfers, payments | Delete | hard delete + audit before-image, under the same optimistic version check an edit takes (20.3): the request carries the `version` the client rendered, and a stale one is `CONFLICT_VERSION` with nothing deleted and nothing audited — a delete corrects what the user was looking at, not whatever is there now. A transfer is one aggregate, so its delete carries every linked fee row the caller saw, each by id and version — the complete set, because a delete removes all of them and is the offered repair for a transfer that carries more than one, and removes its linked fee entry first with the fee’s own audit before-image, so the `ON DELETE CASCADE` never removes a financial fact that went unrecorded |
 | categories | Archive | `archived_at`; `NO ACTION` FK from expense entries blocks deletion while referenced |
 | templates | Archive | `archived_at`. Materialized flows keep their `(template_id, occurrence_date)` identity, so the FKs from `income_entries`, `expense_entries` and `transfers` are `NO ACTION`: a template with accepted history can be archived but never hard-deleted. A hard delete is possible only while no materialized flow references it, and then cascades its terms and skips |
 | recurring_template_skips | Un-skip | hard delete + audit image |
@@ -1637,9 +1637,9 @@ Money inputs are strings validated by `moneyString(currency)`; dates by `plainDa
 - Bulk editor: per-row versions; the batch aborts entirely on any conflict.
 - `month_reviews`: last write wins. Scenario pointer: compare-and-set on `current_revision_id`.
 - Accepting a suggestion twice: the client disables the control, and the partial unique index on `(template_id, occurrence_date)` rejects a second accepted flow for the same occurrence with `CONFLICT_DUPLICATE`.
-- **Every mutation of mutable financial evidence is one atomic per-user transaction that acquires the same transaction-scoped advisory write mutex before its first authoritative read.** The mutable financial evidence is `positions`, `cash_accounts`, `other_assets`, `position_valuations`, `income_entries`, `expense_entries`, `transfers`, `recurring_templates`, `recurring_template_terms`, `recurring_template_skips` and `user_settings.count_additional_spending`. The mutex key derives only from the authenticated session’s user id, never from request input. Locking the write alone would not be enough: a mutation that read an existing row, decided something from it and then took the mutex would have decided against a state another writer was free to replace, so the lock precedes the read, and the reads, the version checks, the domain decisions, the writes and the audit rows all commit or roll back as one unit.
+- **Every ordinary mutation of mutable financial evidence, during an account's active lifetime, is one atomic per-user transaction that acquires the same transaction-scoped advisory write mutex before its first authoritative read.** Account bootstrap (provisioning a new user's settings, categories and tags) and account teardown (the `ON DELETE CASCADE` from `user`, and the sweep that follows it, 18.3) are lifecycle operations with their own atomicity and cascade contracts, and are outside this editing mutex: bootstrap has no prior financial evidence and no second writer to race, and teardown leaves no state for a concurrent edit to be consistent with. The mutable financial evidence is `positions`, `cash_accounts`, `other_assets`, `position_valuations`, `income_entries`, `expense_entries`, `transfers`, `recurring_templates`, `recurring_template_terms`, `recurring_template_skips` and `user_settings.count_additional_spending`. The mutex key derives only from the authenticated session’s user id, never from request input. Locking the write alone would not be enough: a mutation that read an existing row, decided something from it and then took the mutex would have decided against a state another writer was free to replace, so the lock precedes the read, and the reads, the version checks, the domain decisions, the writes and the audit rows all commit or roll back as one unit.
 - That transaction runs at **read committed**, not serializable and not repeatable read. After waiting for the mutex the first authoritative read has to see what the previous holder committed, which a snapshot taken before the wait would not; and while the mutex is held no participating financial writer of the same user can commit, so the financial world is stable across statements anyway. The lock is transaction-scoped, so a commit, a rollback or an error releases it — which is what makes it safe on a pooled connection.
-- The mutex does **not** replace the optimistic `version` checks above; they solve different problems. The mutex serializes concurrent writers inside one request; `expectedVersion` protects the think-time between the state a user was shown and the request they send minutes later. A financial delete carries one too (6.3).
+- The mutex does **not** replace the optimistic `version` checks above; they solve different problems. The mutex serializes concurrent writers inside one request; `expectedVersion` protects the think-time between the state a user was shown and the request they send minutes later. A financial delete carries one too, and a transfer delete carries every linked fee row it rendered (6.3).
 - A financial write waits for the mutex under a transaction-local `lock_timeout` rather than indefinitely, retries the whole transaction once on a lock timeout, and then answers `WRITE_BUSY` (20.2) with nothing written.
 - **Reference dependencies** are mutable state that decides whether a financial write is *allowed* without reinterpreting existing history — currently `categories.archived_at` alone. They are not on the per-user mutex; a financial write that chooses a category afresh reads it `FOR SHARE` inside its own transaction, which conflicts with the archive’s `UPDATE` and so holds the category live until that write commits. A historical row keeps being classified by its archived category’s immutable `kind` (7.4, R12), so carrying history requires no such lock. Category administration stays an ordinary, non-financial write.
 - A future historical correction confirms inside that same transaction, comparing the impact fingerprint it showed against the one it recomputes there (30.22); its preview reads one coherent `repeatable read`, `read only` transaction, takes no write mutex and blocks nothing.
@@ -3457,13 +3457,19 @@ decisions are recorded in ADR 0010.
    impact with no `D` has no interval, no total and no bucket — it says so
    rather than inventing a zero bucket (30.13 items 3 and 4, 30.21 item 6).
 
-5. **The write-coordination invariant.** Every mutation of mutable financial
-   evidence is one atomic per-user transaction that takes the same
-   transaction-scoped advisory write mutex **before its first authoritative
-   read**, and performs its validation, its domain decisions, its writes and its
-   audit inside that transaction (20.3). The mutex key comes only from the
-   authenticated session's user id. Locking just the write would serialize the
-   SQL and leave the decision racy.
+5. **The write-coordination invariant.** Every **ordinary** mutation of mutable
+   financial evidence, during an account's active lifetime, is one atomic
+   per-user transaction that takes the same transaction-scoped advisory write
+   mutex **before its first authoritative read**, and performs its validation,
+   its domain decisions, its writes and its audit inside that transaction
+   (20.3). The mutex key comes only from the authenticated session's user id.
+   Locking just the write would serialize the SQL and leave the decision racy.
+   Account **bootstrap** and account **teardown** are not ordinary edits and
+   are outside this mutex: provisioning writes a new account’s settings,
+   categories and tags once, idempotently, before any financial evidence or
+   any second writer exists, and deletion removes the whole tenant through the
+   cascade of 18.3. Neither is concurrent editing, and putting either on the
+   editing mutex would protect nothing.
 
 6. **Mutable financial evidence, named.** `positions`, `cash_accounts`,
    `other_assets`, `position_valuations`, `income_entries`,
@@ -3507,9 +3513,13 @@ decisions are recorded in ADR 0010.
 10. **A financial delete is version-aware.** A valuation, income, expense or
     transfer delete carries the `version` the client rendered; a stale one is
     `CONFLICT_VERSION` with nothing deleted and nothing audited (6.3, 20.3). A
-    transfer additionally carries what the caller saw of its fee, in the shape a
-    transfer update already uses. This is a safety rule, not a ceremony: a
-    one-click delete stays one click.
+    transfer additionally carries **every** linked fee row the caller saw, each
+    by id and version, and the complete set is compared: a delete removes all of
+    them, and it is the offered repair for a transfer carrying more than one, so
+    naming only the first would let a second row move between the render and the
+    delete unconfirmed. A correction keeps its single-fee expectation, because a
+    transfer with several linked rows is refused for correction anyway. This is a
+    safety rule, not a ceremony: a one-click delete stays one click.
 
 11. **`WRITE_BUSY`.** A financial write waits for its mutex under a
     transaction-local lock timeout, retries the whole transaction once, and then

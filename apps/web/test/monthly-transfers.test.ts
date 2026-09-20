@@ -37,6 +37,8 @@ const {
   payerOptions,
   problemAfterSave,
   transferModeOf,
+  deleteTransferPayload,
+  feeExpectationOf,
   updateTransferPayload,
 } = await import('@/features/monthly/transfers-presentation');
 const { TRANSFER_FEE_NOTE } = await import('@/features/monthly/expenses-presentation');
@@ -559,6 +561,57 @@ describe('what a Save sends, and when there is one to make', () => {
     const html = editor({ range: { min: '2026-09-01', max: '2026-09-06' } });
     expect(html).toContain('max="2026-09-06"');
     expect(html).not.toContain('max="2026-09-30"');
+  });
+});
+
+describe('what a Delete sends (6.3, 30.22 item 10)', () => {
+  it('sends the transfer version and no fee when there is none', () => {
+    expect(deleteTransferPayload(transfer())).toEqual({
+      transferId: 'tr-1',
+      expectedVersion: 3,
+      expectedFees: [],
+    });
+  });
+
+  it('sends the one linked fee it rendered, by id and version', () => {
+    expect(deleteTransferPayload(WITH_FEE)).toEqual({
+      transferId: 'tr-1',
+      expectedVersion: 3,
+      expectedFees: [{ feeId: 'fee-1', version: 4 }],
+    });
+  });
+
+  it('sends every linked fee of a malformed aggregate, not just the first', () => {
+    // Delete is the repair this state offers, and it takes every linked row
+    // with it — so the request has to describe every one of them, or a second
+    // fee could move between the render and the delete unconfirmed.
+    const malformed = transfer({
+      fee: {
+        kind: 'multiple',
+        fees: [fee(), fee({ feeId: 'fee-2', version: 7, amount: { amount: '2.5', currency: 'EUR' } })],
+      },
+      readOnly: 'multiple_fees',
+    });
+
+    expect(deleteTransferPayload(malformed)).toEqual({
+      transferId: 'tr-1',
+      expectedVersion: 3,
+      expectedFees: [
+        { feeId: 'fee-1', version: 4 },
+        { feeId: 'fee-2', version: 7 },
+      ],
+    });
+  });
+
+  it('keeps the correction expectation single, because a correction is refused here anyway', () => {
+    // `editableFeeOf` refuses a multi-fee aggregate outright, so a correction
+    // never has more than one fee to describe (ADR 0006 §6).
+    const malformed = transfer({
+      fee: { kind: 'multiple', fees: [fee(), fee({ feeId: 'fee-2', version: 7 })] },
+      readOnly: 'multiple_fees',
+    });
+    expect(feeExpectationOf(malformed)).toEqual({ state: 'absent' });
+    expect(feeExpectationOf(WITH_FEE)).toEqual({ state: 'version', feeId: 'fee-1', version: 4 });
   });
 });
 

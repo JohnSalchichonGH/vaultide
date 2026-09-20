@@ -218,14 +218,33 @@ export function updateTransferInput(today: string) {
 }
 
 /**
+ * One linked fee row as the client rendered it (20.3, 30.22 item 10).
+ *
+ * A delete states **every** one of them, so a second fee cannot change, appear
+ * or vanish between the render and the delete without the caller having
+ * confirmed the aggregate that is actually removed. A correction keeps the
+ * single `transferFeeExpectation` above: it may only proceed over an aggregate
+ * this product could have created, which has at most one fee.
+ */
+export const linkedFeeExpectation = z.object({
+  feeId: z.uuid(),
+  version: expectedVersion,
+});
+
+/**
  * Deleting a transfer takes the whole aggregate down, so it states the whole
- * aggregate it saw: the transfer's own version and what it saw of the fee, in
- * the same shape a correction uses (ADR 0006 §2; 30.22 item 10).
+ * aggregate it saw: the transfer's own version and every linked fee row, each
+ * by id and version (ADR 0006 §2; 30.22 item 10).
+ *
+ * The list is bounded like every other array input (20.1). One fee is the only
+ * shape this product creates and two is already a repair case, so a hundred is
+ * far past anything real while still leaving the malformed-aggregate repair
+ * reachable.
  */
 export const deleteTransferInput = z.object({
   transferId: z.uuid(),
   expectedVersion,
-  expectedFee: transferFeeExpectation,
+  expectedFees: z.array(linkedFeeExpectation).max(100, 'That is too many linked fees.'),
   reason: reason.optional(),
 });
 

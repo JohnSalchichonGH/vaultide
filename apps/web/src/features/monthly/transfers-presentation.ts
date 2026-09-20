@@ -2,6 +2,7 @@ import type {
   MonthlyTransferDto,
   MonthlyTransfersDto,
   TransferAccountDto,
+  TransferFeeDto,
   TransferFeeStateDto,
   TransferProblemDto,
   TransferReadOnlyReasonDto,
@@ -667,41 +668,46 @@ export function updateTransferPayload(
 }
 
 /**
- * What the dialog saw of the transfer's fee, for a save or a delete (20.3;
- * 30.22 item 10).
+ * What the dialog saw of the transfer's fee when it opened a **correction**
+ * (20.3).
  *
- * No fee is `absent`. One fee names that row and its version. **Several** — a
- * state no application path creates, and which the dialog shows read-only
- * except for Delete — names the first of them: the aggregate cannot be
- * corrected in that state, and a delete takes every linked row with it, so what
- * the expectation has to prove is that the fee the user was shown is still
- * there, not how many rows exist.
+ * No fee is `absent`; one fee names that row and its version. A transfer with
+ * several linked rows is not correctable at all — the dialog shows it read-only
+ * — so the single shape is all a correction ever has to describe.
  */
 export function feeExpectationOf(transfer: MonthlyTransferDto) {
-  const fee =
-    transfer.fee.kind === 'one'
-      ? transfer.fee.fee
-      : transfer.fee.kind === 'multiple'
-        ? transfer.fee.fees[0]
-        : undefined;
+  const fee = transfer.fee.kind === 'one' ? transfer.fee.fee : undefined;
 
   return fee === undefined
     ? { state: 'absent' as const }
     : { state: 'version' as const, feeId: fee.feeId, version: fee.version };
 }
 
+/** Every linked fee row the dialog rendered, in the order the read returned. */
+export function renderedFeesOf(transfer: MonthlyTransferDto): readonly TransferFeeDto[] {
+  if (transfer.fee.kind === 'one') return [transfer.fee.fee];
+  if (transfer.fee.kind === 'multiple') return transfer.fee.fees;
+  return [];
+}
+
 /**
  * The delete action's input: the aggregate the dialog was opened on, and
  * nothing else (6.3, 30.22 item 10).
  *
- * A transfer corrected after the page was rendered — or one that gained, lost
- * or changed a fee — refuses rather than taking the newest aggregate down.
+ * A delete takes **every** linked row with it, including in the malformed
+ * several-fees state the interface offers Delete as the repair for. So it
+ * states every row it saw, by id and version: a transfer corrected after the
+ * page was rendered, or any linked fee that appeared, vanished or moved on,
+ * refuses rather than taking the newest aggregate down.
  */
 export function deleteTransferPayload(transfer: MonthlyTransferDto) {
   return {
     transferId: transfer.transferId,
     expectedVersion: transfer.version,
-    expectedFee: feeExpectationOf(transfer),
+    expectedFees: renderedFeesOf(transfer).map((fee) => ({
+      feeId: fee.feeId,
+      version: fee.version,
+    })),
   };
 }
 

@@ -80,6 +80,20 @@ async function auditFor(userId: string, entityId: string) {
   });
 }
 
+/** Every expense row linked to a transfer, as a delete must describe them. */
+async function linkedFees(userId: string, transferId: string) {
+  return withUser(harness.db, { userId }, async (tx) => {
+    const result = await tx.execute(
+      sql`SELECT id, version FROM expense_entries
+           WHERE transfer_id = ${transferId} ORDER BY id`,
+    );
+    return (result.rows as { id: string; version: number }[]).map((row) => ({
+      feeId: row.id,
+      version: row.version,
+    }));
+  });
+}
+
 async function countRows(userId: string, table: string): Promise<number> {
   return withUser(harness.db, { userId }, async (tx) => {
     const result = await tx.execute(sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)}`);
@@ -865,7 +879,7 @@ describe('cash transfers and their fee', () => {
     const removed = await deleteCashTransfer(deps(), SEPT_15, {
       transferId: transfer.id,
       expectedVersion: transfer.version,
-      expectedFee: { state: 'version', feeId: fee!.id, version: fee!.version },
+      expectedFees: [{ feeId: fee!.id, version: fee!.version }],
     });
     expect(removed.fees).toHaveLength(1);
 
@@ -1879,8 +1893,9 @@ describe('a transfer with a corrupted number of fees fails closed', () => {
       transferId: transfer.id,
       expectedVersion: transfer.version,
       // An aggregate with two fees can only be cleared, not corrected, and the
-      // expectation names the fee the caller was shown (ADR 0010 §11).
-      expectedFee: { state: 'version', feeId: fee!.id, version: fee!.version },
+      // expectation names **every** linked row the caller was shown, so the
+      // repair removes exactly the aggregate that was confirmed (ADR 0010 §11).
+      expectedFees: await linkedFees(USER_A, transfer.id),
     });
 
     expect(removed.fees).toHaveLength(2);
@@ -1888,6 +1903,107 @@ describe('a transfer with a corrupted number of fees fails closed', () => {
     const audit = await auditFor(USER_A, fee?.id as string);
     expect(audit.map((row) => row.action)).toEqual(['insert', 'delete']);
   });
+
+  /*
+   * The malformed aggregate is deletable, but only the exact one the caller saw
+   * (30.22 item 10; ADR 0010 §11).
+   *
+   * Describing only the first linked row would let a second fee change, appear
+   * or vanish between the render and the delete, and the repair would then take
+   * down an aggregate nobody confirmed. So the four cases below all refuse, and
+   * the fifth — nothing moved — removes every row with its own before-image.
+   */
+
+  it('refuses the repair when a second linked fee moved on', async () => {
+    const { transfer } = await transferWithTwoFees();
+    const rendered = await linkedFees(USER_A, transfer.id);
+    const second = rendered[1] as { feeId: string; version: number };
+
+    // Only an out-of-band write can move it: the aggregate is not editable.
+    await harness.asOwner(
+      'UPDATE expense_entries SET amount = 9.99, version = version + 1 WHERE id = $1',
+      [second.feeId],
+    );
+
+    await expect(
+      deleteCashTransfer(deps(), SEPT_15, {
+        transferId: transfer.id,
+        expectedVersion: transfer.version,
+        expectedFees: rendered,
+      }),
+    ).rejects.toMatchObject({ code: 'CONFLICT_VERSION' });
+
+    expect(await countRows(USER_A, 'transfers')).toBe(1);
+    expect(await countRows(USER_A, 'expense_entries')).toBe(2);
+    // Nothing was deleted, so nothing recorded a deletion.
+    for (const fee of rendered) {
+      expect((await auditFor(USER_A, fee.feeId)).map((row) => row.action)).not.toContain('delete');
+    }
+    expect((await auditFor(USER_A, transfer.id)).map((row) => row.action)).toEqual(['insert']);
+  });
+
+  it('refuses the repair when a third linked fee appeared', async () => {
+    const { transfer } = await transferWithTwoFees();
+    const rendered = await linkedFees(USER_A, transfer.id);
+
+    await harness.asOwner(
+      `INSERT INTO expense_entries
+         (user_id, category_id, incurred_on, amount, currency, settlement, transfer_id,
+          cash_position_id, cash_position_kind)
+       VALUES ($1, $2, DATE '2026-09-05', 4.00, 'EUR', 'tracked_cash', $3, $4, 'cash')`,
+      [USER_A, transferFeeCategory, transfer.id, bbva],
+    );
+
+    await expect(
+      deleteCashTransfer(deps(), SEPT_15, {
+        transferId: transfer.id,
+        expectedVersion: transfer.version,
+        expectedFees: rendered,
+      }),
+    ).rejects.toMatchObject({ code: 'CONFLICT_VERSION' });
+
+    expect(await countRows(USER_A, 'transfers')).toBe(1);
+    expect(await countRows(USER_A, 'expense_entries')).toBe(3);
+    expect((await auditFor(USER_A, transfer.id)).map((row) => row.action)).toEqual(['insert']);
+  });
+
+  it('refuses the repair when a linked fee disappeared', async () => {
+    const { transfer } = await transferWithTwoFees();
+    const rendered = await linkedFees(USER_A, transfer.id);
+    const second = rendered[1] as { feeId: string; version: number };
+
+    await harness.asOwner('DELETE FROM expense_entries WHERE id = $1', [second.feeId]);
+
+    await expect(
+      deleteCashTransfer(deps(), SEPT_15, {
+        transferId: transfer.id,
+        expectedVersion: transfer.version,
+        expectedFees: rendered,
+      }),
+    ).rejects.toMatchObject({ code: 'CONFLICT_VERSION' });
+
+    // The one that is left is left: a refused delete removes nothing.
+    expect(await countRows(USER_A, 'transfers')).toBe(1);
+    expect(await countRows(USER_A, 'expense_entries')).toBe(1);
+  });
+
+  it('refuses the repair when it names only one of the linked fees', async () => {
+    const { transfer } = await transferWithTwoFees();
+    const rendered = await linkedFees(USER_A, transfer.id);
+
+    await expect(
+      deleteCashTransfer(deps(), SEPT_15, {
+        transferId: transfer.id,
+        expectedVersion: transfer.version,
+        // What the old single-fee expectation could say. It is not enough: the
+        // second row would have gone down unconfirmed.
+        expectedFees: [rendered[0] as { feeId: string; version: number }],
+      }),
+    ).rejects.toMatchObject({ code: 'CONFLICT_VERSION' });
+
+    expect(await countRows(USER_A, 'expense_entries')).toBe(2);
+  });
+
 });
 
 describe('early materialization reaches only the next unresolved occurrence', () => {

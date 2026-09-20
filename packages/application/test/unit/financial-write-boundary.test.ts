@@ -3,8 +3,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  FINANCIAL_MUTATION_REGISTRY,
+  NON_MUTATING_APPLICATION_CALLS,
   POST_COMMIT_ALLOWLIST,
+  REGISTERED_MUTATIONS,
   analyzeModule,
+  crossCheckRegistryCoverage,
+  discoverFinancialActions,
   type WriteBoundaryViolation,
 } from '../helpers/write-boundary';
 
@@ -29,45 +34,14 @@ import {
 const here = path.dirname(fileURLToPath(import.meta.url));
 const srcDir = path.join(here, '..', '..', 'src');
 
-/**
- * Every externally callable mutation of Vaultide's mutable financial evidence
- * (30.22 item 6), by the module that owns it.
- *
- * `onboarding.firstAccount` is not listed: it is a server action that calls
- * `createCashAccount`, and inherits the mutex through it.
- */
-const REGISTRY: Readonly<Record<string, readonly string[]>> = {
-  'positions/service.ts': [
-    'createCashAccount',
-    'createOtherAsset',
-    'updateCashAccount',
-    'updateOtherAsset',
-    'closePosition',
-    'removePosition',
-  ],
-  'positions/valuations.ts': [
-    'recordValuation',
-    'correctValuation',
-    'removeValuation',
-    'confirmMonthEnd',
-    'confirmUnchanged',
-    'confirmUnchangedBatch',
-    'quickUpdate',
-  ],
-  'flows/income.ts': ['createIncomeEntry', 'updateIncomeEntry', 'deleteIncomeEntry'],
-  'flows/expenses.ts': ['createExpenseEntry', 'updateExpenseEntry', 'deleteExpenseEntry'],
-  'flows/transfers.ts': ['createCashTransfer', 'updateCashTransfer', 'deleteCashTransfer'],
-  'flows/adjustments.ts': ['acceptUnexplainedInflowAsAdjustment'],
-  'recurring/templates.ts': [
-    'createTemplate',
-    'updateTemplateDetails',
-    'archiveTemplate',
-    'unarchiveTemplate',
-    'setTemplateTerm',
-  ],
-  'recurring/suggestions.ts': ['acceptSuggestion', 'skipSuggestion', 'unskipSuggestion'],
-  'settings/service.ts': ['setCountAdditionalSpending'],
-};
+/** The registry itself lives beside the checker, so the coverage cross-check
+ * below and the boundary rules above read exactly one definition. */
+const REGISTRY = FINANCIAL_MUTATION_REGISTRY;
+
+/** The web app's action modules, read from disk rather than imported: the
+ * boundary between the packages is a module boundary, and this is source text
+ * (blueprint 19; enforced by dependency-cruiser, which sees no edge here). */
+const actionsDir = path.join(here, '..', '..', '..', '..', 'apps', 'web', 'src', 'server', 'actions');
 
 const REGISTERED_COUNT = Object.values(REGISTRY).reduce((n, names) => n + names.length, 0);
 
@@ -349,5 +323,218 @@ describe('the checker itself (ADR 0010 §16)', () => {
       expect(violation.line).toBeGreaterThan(0);
       expect(violation.detail.length).toBeGreaterThan(0);
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Registry coverage: the exposed surface, discovered independently            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The registry above is manual, and a manual list can be forgotten.
+ *
+ * These cases close that: they derive the **exposed** financial surface from
+ * the web app's own `financialAction` declarations, without consulting the
+ * registry to find them, and then cross-check. Adding a financial action that
+ * calls a new mutation nobody registered fails here — which is the whole point,
+ * because the boundary rules above would otherwise never analyze it.
+ */
+
+const ACTION_MODULES = ['flows.ts', 'positions.ts', 'recurring.ts', 'settings.ts', 'monthly.ts'];
+
+const actionSource = (file: string): string =>
+  readFileSync(path.join(actionsDir, file), 'utf8');
+
+function exposedFinancialActions() {
+  return ACTION_MODULES.flatMap((file) => discoverFinancialActions(file, actionSource(file)));
+}
+
+describe('the registry covers the exposed financial surface (ADR 0010 §16)', () => {
+  const actions = exposedFinancialActions();
+
+  it('finds the real action modules, and a plausible number of financial actions', () => {
+    // Non-vacuity. If the directory moved, a module was renamed, or
+    // `financialAction` stopped being the wrapper, this fails instead of
+    // quietly discovering nothing and passing everything.
+    expect(actions.length).toBeGreaterThanOrEqual(30);
+    expect([...new Set(actions.map((action) => action.file))].sort()).toEqual([
+      'flows.ts',
+      'positions.ts',
+      'recurring.ts',
+    ]);
+
+    const names = actions.map((action) => action.actionName);
+    for (const expected of [
+      'flows.createIncomeEntry',
+      'flows.acceptAdjustment',
+      'positions.createCashAccount',
+      'valuations.quickUpdate',
+      'recurring.acceptSuggestion',
+      'settings.setCountAdditionalSpending',
+      'onboarding.firstAccount',
+    ]) {
+      expect(names).toContain(expected);
+    }
+  });
+
+  it('resolves every exposed financial action to a registered mutation', () => {
+    const violations = crossCheckRegistryCoverage(actions);
+    expect(
+      violations.map(
+        (item) =>
+          `${item.file}:${String(item.line)} ${item.actionName} [${item.rule}] ${item.detail}`,
+      ),
+    ).toEqual([]);
+  });
+
+  it('accepts the onboarding delegation for the right reason', () => {
+    // It owns no mutation of its own: it reaches `createCashAccount`, which is
+    // registered and therefore analyzed by the boundary rules above, and
+    // `markOnboardingCompleted`, which writes UI state (6.1).
+    const onboarding = actions.find((action) => action.actionName === 'onboarding.firstAccount');
+    expect(onboarding?.applicationCalls).toEqual([
+      'createCashAccount',
+      'getServices',
+      'markOnboardingCompleted',
+    ]);
+    expect(REGISTERED_MUTATIONS.has('createCashAccount')).toBe(true);
+    expect(REGISTERED_MUTATIONS.has('markOnboardingCompleted')).toBe(false);
+  });
+
+  it('classifies no ordinary action as a financial mutation', () => {
+    // `settings.ts` and `monthly.ts` hold category, tag, preference and
+    // month-review actions. They are declared with `action`, not
+    // `financialAction`, so discovery must return nothing for them — reading a
+    // preference write or a presentation write as a financial mutation would be
+    // a different mistake, and `financial-actions.test.ts` is what holds those
+    // to the authorization rule.
+    for (const file of ['settings.ts', 'monthly.ts']) {
+      expect(discoverFinancialActions(file, actionSource(file))).toEqual([]);
+    }
+  });
+
+  it('keeps the non-mutating allow-list small and explicit', () => {
+    expect([...NON_MUTATING_APPLICATION_CALLS]).toEqual([
+      'getServices',
+      'parseMonth',
+      'markOnboardingCompleted',
+    ]);
+  });
+});
+
+const ACTION_PREAMBLE = [
+  "import { createIncomeEntry, getServices, recordFxAdjustment } from '@vaultide/application';",
+  "import { financialAction } from './define';",
+].join('\n');
+
+const discover = (body: string) =>
+  discoverFinancialActions('fixture.ts', `${ACTION_PREAMBLE}\n${body}`);
+
+describe('the coverage cross-check itself (ADR 0010 §16)', () => {
+  it('accepts an exposed action that calls a registered mutation', () => {
+    const actions = discover(`
+      export const createIncomeEntryAction = financialAction({
+        name: 'flows.createIncomeEntry',
+        input: flowInput.createIncomeEntryInput,
+        async handler({ input, ctx }) {
+          const created = await createIncomeEntry(getServices().flows, ctx, input);
+          return { id: created.id };
+        },
+      });
+    `);
+
+    expect(actions).toHaveLength(1);
+    expect(actions[0]?.applicationCalls).toEqual(['createIncomeEntry', 'getServices']);
+    expect(crossCheckRegistryCoverage(actions)).toEqual([]);
+  });
+
+  it('rejects an exposed action that calls a mutation nobody registered', () => {
+    // The omission this exists for: the new mutation may well be missing the
+    // mutex entirely, and the boundary rules never look at it because the
+    // registry never mentions it.
+    const actions = discover(`
+      export const recordFxAdjustmentAction = financialAction({
+        name: 'flows.recordFxAdjustment',
+        input: flowInput.recordFxAdjustmentInput,
+        async handler({ input, ctx }) {
+          const created = await recordFxAdjustment(getServices().flows, ctx, input);
+          return { id: created.id };
+        },
+      });
+    `);
+
+    const violations = crossCheckRegistryCoverage(actions);
+    expect(violations.map((item) => item.rule)).toContain('action-calls-unregistered-mutation');
+    expect(violations.map((item) => item.detail)).toContain('recordFxAdjustment');
+    expect(violations[0]?.actionName).toBe('flows.recordFxAdjustment');
+    expect(violations[0]?.line).toBeGreaterThan(0);
+  });
+
+  it('rejects an exposed action that reaches no registered mutation at all', () => {
+    // An action that stopped going through the mutation layer — an inlined
+    // write, say — must not pass by calling nothing the registry recognises.
+    const actions = discover(`
+      export const somethingAction = financialAction({
+        name: 'flows.something',
+        input: flowInput.somethingInput,
+        async handler({ ctx }) {
+          return { userId: ctx.userId };
+        },
+      });
+    `);
+
+    expect(crossCheckRegistryCoverage(actions).map((item) => item.rule)).toContain(
+      'action-reaches-no-registered-mutation',
+    );
+  });
+
+  it('does not discover ordinary actions, only financial ones', () => {
+    const actions = discoverFinancialActions(
+      'fixture.ts',
+      [
+        "import { listCategories } from '@vaultide/application';",
+        "import { action } from './define';",
+        '',
+        'export const listCategoriesAction = action({',
+        "  name: 'categories.list',",
+        '  input: z.object({}),',
+        '  async handler({ ctx }) {',
+        '    return listCategories(getServices().db, ctx.userId);',
+        '  },',
+        '});',
+      ].join('\n'),
+    );
+    expect(actions).toEqual([]);
+  });
+
+  it('ignores an application export that is only imported as a type', () => {
+    const actions = discoverFinancialActions(
+      'fixture.ts',
+      [
+        "import { createIncomeEntry, getServices, type UserSettings } from '@vaultide/application';",
+        "import { financialAction } from './define';",
+        '',
+        'export const createIncomeEntryAction = financialAction({',
+        "  name: 'flows.createIncomeEntry',",
+        '  input: flowInput.createIncomeEntryInput,',
+        '  async handler({ input, ctx }): Promise<UserSettings> {',
+        '    return createIncomeEntry(getServices().flows, ctx, input);',
+        '  },',
+        '});',
+      ].join('\n'),
+    );
+    expect(actions[0]?.applicationCalls).toEqual(['createIncomeEntry', 'getServices']);
+  });
+
+  it('discovers from the action declarations, never from the registry', () => {
+    // Handed an empty registry, the same real actions all fail. The discovery
+    // therefore cannot be reading the registry to decide what to look at.
+    const violations = crossCheckRegistryCoverage(exposedFinancialActions(), {
+      registered: new Set<string>(),
+    });
+    expect(violations.length).toBeGreaterThanOrEqual(30);
+    expect([...new Set(violations.map((item) => item.rule))]).toContain(
+      'action-reaches-no-registered-mutation',
+    );
   });
 });

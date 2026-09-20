@@ -5,9 +5,11 @@
 Historical correction is the next Phase 3 feature. Four read-only design passes
 settled what it is, what it may show, and what it needs underneath before a line
 of it is written. This record freezes those decisions, and records the one
-prerequisite implemented now: **financial write coordination** — every mutation
-of Vaultide's mutable financial evidence is one atomic per-user transaction that
-takes the same write mutex before its first authoritative read.
+prerequisite implemented now: **financial write coordination** — every ordinary
+mutation of Vaultide's mutable financial evidence is one atomic per-user
+transaction that takes the same write mutex before its first authoritative
+read. Account bootstrap and account teardown are lifecycle operations with
+their own contracts and are outside that editing mutex (§3, §4.1).
 
 Freezing a decision here is not shipping it. At this record's date Historical
 correction itself is **not implemented**: there is no correction preview, no
@@ -85,15 +87,35 @@ Not implemented now.
 
 **Decision.**
 
-> Every mutation of mutable financial evidence must acquire one per-user,
-> transaction-scoped advisory write mutex before its first authoritative read,
-> and must perform its validation, its domain decisions, its writes and its
-> audit inside that same transaction.
+> Every **ordinary** application mutation of mutable financial evidence during
+> an account's active lifetime must acquire one per-user, transaction-scoped
+> advisory write mutex before its first authoritative read, and must perform
+> its validation, its domain decisions, its writes and its audit inside that
+> same transaction.
 
 This is the prerequisite. A future Historical Confirm depends on it: Confirm
 re-derives the impact it is about to commit against, and a fingerprint check
 inside the transaction is only meaningful if no other participating financial
 writer of the same user can commit between the check and the write.
+
+**"Ordinary" and "active lifetime" are load-bearing, not hedging.** The mutex
+exists to serialize *concurrent editing of an account's financial records*.
+Two operations create or destroy those records without being edits of them,
+and they carry their own consistency contracts (§4.1):
+
+- **account bootstrap.** Provisioning writes a user's settings row, categories
+  and tags once, at sign-up, in its own transaction and idempotently. There is
+  no prior financial evidence for it to race with and no second writer: the
+  account does not yet exist as something a user can edit.
+- **account teardown.** Deleting an account removes the whole tenant through
+  `ON DELETE CASCADE` from `user`, with `sweepUserRows` as the belt-and-braces
+  follow-up (18.3). Its atomicity is the cascade's, and serializing it against
+  an editing mutex would protect nothing: there is no "after" state left for a
+  concurrent edit to be consistent with.
+
+Neither is a concurrent financial edit, and neither is put on the mutex. What
+the invariant promises — and what §16 mechanically enforces — is that no
+**ordinary** financial mutation escapes it.
 
 **No `SERIALIZABLE`.** No serializable snapshot isolation, and no
 predicate-locking design. The mutex is what provides stability; see §6.
@@ -120,7 +142,9 @@ recurring_template_skips
 user_settings.count_additional_spending
 ```
 
-Every mutation of these participates in the per-user financial write mutex.
+Every **ordinary** mutation of these — every edit a signed-in user can make
+to an account that exists — participates in the per-user financial write
+mutex. Bootstrap and teardown are the two exceptions, and §4.1 says why.
 
 `user_settings.count_additional_spending` is a financial input despite its
 address: 12.5 makes it decide whether spending paid outside tracked accounts
@@ -129,6 +153,26 @@ reduces personal savings, so flipping it re-interprets every past month's
 locale, favourite currencies, the reporting currency, the stale-months
 thresholds, the `preferences` JSONB — are **not** financial evidence and are
 deliberately not serialized against financial writes.
+
+### 4.1 Lifecycle operations, which are not ordinary edits
+
+Two writers touch those tables outside the mutex, deliberately:
+
+| Operation | What it does | Its own contract |
+|---|---|---|
+| `provisionAccount` | writes `user_settings`, the default categories and tags at sign-up | one transaction, idempotent; runs before the account has any financial evidence or any second writer |
+| Better Auth `deleteUser` → `ON DELETE CASCADE`, then `sweepUserRows` | removes every row of the tenant | the cascade’s own atomicity (18.3), verified by the deletion test that counts rows per table |
+
+Both are **account lifecycle**, not financial editing. Putting them on the
+editing mutex would make nothing safer: bootstrap has nothing to race, and
+teardown leaves no state for a concurrent edit to be consistent with.
+Migrating them into the financial mutation registry so that an older sentence
+reads literally true would be the wrong repair; saying precisely what the
+mutex covers is the right one.
+
+They also sit outside the enforcement surface structurally rather than by
+exemption: neither is reachable from a `financialAction`, which is where
+§16's coverage check begins.
 
 **Reference dependencies** are mutable eligibility state that decides whether a
 proposed financial write is *allowed*, without reinterpreting existing history.
@@ -327,13 +371,27 @@ No existing version check is removed, and financial deletes gain one.
 
 **Decision.** Deleting a valuation, an income entry, an expense entry or a
 transfer carries the version the client actually rendered, and a stale version
-is `CONFLICT_VERSION` with nothing deleted and nothing audited. A transfer
-delete additionally carries `expectedFee` in the shape a transfer *update*
-already uses — `absent`, or `{ feeId, version }` (ADR 0006 §2) — because a
-transfer is one aggregate and a fee that appeared, changed or vanished since the
-user looked is a conflict rather than something to sweep up. A transfer's fees
-keep being deleted explicitly with their own before-image; the `ON DELETE
-CASCADE` stays for account deletion and is not the ordinary path (ADR 0006).
+is `CONFLICT_VERSION` with nothing deleted and nothing audited.
+
+A transfer is one aggregate, so its delete additionally carries **every linked
+fee row the client rendered**, each by id and version, and the server compares
+the complete set against the rows it has locked. A fee that appeared,
+disappeared, changed version or was replaced by another is a conflict, and
+nothing is deleted or audited.
+
+Deliberately a set, not the single `{ absent | { feeId, version } }` shape a
+*correction* uses. A correction is already refused over an aggregate with more
+than one linked row (ADR 0006 §6), so one expectation is all it ever needs. A
+delete is the opposite: it removes every linked row, and the interface offers
+it as the **repair** for exactly the malformed several-fee state the product
+cannot itself create. Describing only the first row would let a second fee move
+between the render and the delete, and the repair would then take down an
+aggregate nobody confirmed. Deleting an already-malformed aggregate stays
+possible — but only the exact one the caller saw.
+
+A transfer's fees keep being deleted explicitly with their own before-image;
+the `ON DELETE CASCADE` stays for account teardown (§4.1) and is not the
+ordinary path (ADR 0006).
 
 This is a safety change, not a ceremony change. A one-click delete stays one
 click; the current-month delete confirmation that product review accepted
@@ -418,6 +476,22 @@ proves that:
    support data but may never decide whether the write should have happened;
 7. the registry is non-vacuous: a renamed or removed entry point fails the test
    rather than silently stopping being checked.
+
+**And the registry itself is covered.** An explicit list is reviewable and can
+also be forgotten, so a second check derives the **exposed** financial surface
+independently — from the web app's own `financialAction` declarations, which it
+reads as source text — and cross-checks it against the registry. It is
+default-deny in both directions: every `@vaultide/application` export a
+financial action calls must be a registered mutation or one of three
+documented non-mutating helpers (`getServices`, `parseMonth`,
+`markOnboardingCompleted`), and every financial action must reach at least one
+registered mutation. Adding a financial action that calls a new mutation nobody
+registered therefore fails CI, naming the file, line, action and mutation —
+rather than passing because the boundary rules never looked at it.
+
+Lifecycle operations (§4.1) are outside this surface structurally: neither
+provisioning nor account teardown is reachable from a `financialAction`, which
+is where the discovery starts.
 
 The checker itself is tested against fixtures, including the specific shape that
 looks correct and is not:

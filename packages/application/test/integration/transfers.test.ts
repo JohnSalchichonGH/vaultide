@@ -291,8 +291,7 @@ function removal(saved: TransferWithFee, over: Partial<DeleteTransferArgs> = {})
   return {
     transferId: transfer.id,
     expectedVersion: transfer.version,
-    expectedFee:
-      fee === null ? { state: 'absent' } : { state: 'version', feeId: fee.id, version: fee.version },
+    expectedFees: fee === null ? [] : [{ feeId: fee.id, version: fee.version }],
     ...over,
   };
 }
@@ -1235,7 +1234,7 @@ describe('deleting a cash transfer', () => {
       deleteCashTransfer(deps(), SEPT_15, {
         transferId: id,
         expectedVersion: 1,
-        expectedFee: { state: 'absent' },
+        expectedFees: [],
       }),
     ).rejects.toMatchObject({
       code: 'IMPOSSIBLE_OPERATION',

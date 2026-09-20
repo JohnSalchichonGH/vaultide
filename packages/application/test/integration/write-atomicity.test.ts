@@ -491,11 +491,7 @@ describe('a financial delete carries the version the client saw (30.22 item 10)'
       deleteCashTransfer(flows(), SEPT_15, {
         transferId: saved.transfer.id,
         expectedVersion: saved.transfer.version,
-        expectedFee: {
-          state: 'version',
-          feeId: saved.fee!.id,
-          version: saved.fee!.version + 1,
-        },
+        expectedFees: [{ feeId: saved.fee!.id, version: saved.fee!.version + 1 }],
       }),
     ).rejects.toMatchObject({ code: 'CONFLICT_VERSION' });
 
@@ -520,7 +516,7 @@ describe('a financial delete carries the version the client saw (30.22 item 10)'
       deleteCashTransfer(flows(), SEPT_15, {
         transferId: saved.transfer.id,
         expectedVersion: saved.transfer.version,
-        expectedFee: { state: 'absent' },
+        expectedFees: [],
       }),
     ).rejects.toMatchObject({ code: 'CONFLICT_VERSION' });
     expect(await countRows('transfers')).toBe(1);
@@ -540,7 +536,7 @@ describe('a financial delete carries the version the client saw (30.22 item 10)'
       deleteCashTransfer(flows(), SEPT_15, {
         transferId: saved.transfer.id,
         expectedVersion: saved.transfer.version + 1,
-        expectedFee: { state: 'absent' },
+        expectedFees: [],
       }),
     ).rejects.toMatchObject({ code: 'CONFLICT_VERSION' });
     expect(await countRows('transfers')).toBe(1);
@@ -548,7 +544,7 @@ describe('a financial delete carries the version the client saw (30.22 item 10)'
     const removed = await deleteCashTransfer(flows(), SEPT_15, {
       transferId: saved.transfer.id,
       expectedVersion: saved.transfer.version,
-      expectedFee: { state: 'absent' },
+      expectedFees: [],
     });
     expect(removed.transfer.id).toBe(saved.transfer.id);
     expect(await countRows('transfers')).toBe(0);

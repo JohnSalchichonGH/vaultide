@@ -617,47 +617,89 @@ export async function updateCashTransfer(
  * cleared, so it is not refused for being one. Deleting a transfer restores no
  * account's dormancy (8.8).
  *
- * The transfer's own version and what the caller saw of its fee come with the
- * request, so a transfer corrected after the page was rendered — or one that
- * gained, lost or changed a fee — refuses rather than taking the newest
- * aggregate down with it (6.3, 20.3, 30.22 item 10).
+ * The transfer's own version and the complete set of linked fee rows the
+ * caller saw come with the request, so a transfer corrected after the page was
+ * rendered — or one where any linked fee gained, lost or changed a version —
+ * refuses rather than taking the newest aggregate down with it (6.3, 20.3,
+ * 30.22 item 10).
  */
+/** One linked fee row as the caller rendered it: that row, at that version. */
+export interface LinkedFeeExpectation {
+  readonly feeId: string;
+  readonly version: number;
+}
+
 export interface DeleteTransferArgs {
   readonly transferId: string;
   /** The transfer's version as the client rendered it (6.3, 30.22 item 10). */
   readonly expectedVersion: number;
-  /** What the client saw of its fee, in the shape a correction already uses. */
-  readonly expectedFee: TransferFeeExpectation;
+  /**
+   * **Every** linked fee row the caller rendered, or an empty list for none.
+   *
+   * Deliberately a set rather than the single `TransferFeeExpectation` a
+   * correction uses. A correction may only proceed over an aggregate this
+   * service could have created, so one fee is all it ever has to describe. A
+   * delete removes every linked row and is the documented repair for an
+   * aggregate the product could **not** have created — so it has to describe
+   * every row it is about to take down, or a second fee could change, appear or
+   * vanish between the render and the delete without the caller ever having
+   * confirmed the aggregate that was actually removed.
+   */
+  readonly expectedFees: readonly LinkedFeeExpectation[];
   readonly reason?: string | undefined;
 }
 
 /**
- * Was the aggregate's fee what the caller was looking at (30.22 item 10)?
+ * The linked-fee set, canonicalized so two orderings of the same rows compare
+ * equal.
+ *
+ * `findTransferFeesIn` already returns rows in id order and the presentation
+ * builds its list from the same read, but neither is relied on: sorting here
+ * means the comparison is about the **set** of `(id, version)` pairs and
+ * nothing else, and a duplicate id in the request changes the length and so
+ * fails rather than silently matching.
+ */
+function canonicalFees(entries: readonly { id: string; version: number }[]): string {
+  return entries
+    .map((entry) => `${entry.id}@${String(entry.version)}`)
+    .sort()
+    .join(',');
+}
+
+/**
+ * Was the aggregate's **whole** linked-fee set what the caller was looking at
+ * (30.22 item 10)?
  *
  * Deliberately not `assertFeeAsExpected`: that one judges a *correction*, which
- * may only proceed over an aggregate this service could have created. A delete
- * removes **every** linked row, and is the documented way to clear an aggregate
- * the product could not have created — the interface says so in as many words
- * when a transfer carries more than one fee. So the expectation's job here is to
- * prove the caller was looking at this aggregate's fee as it stands, not to
- * enumerate rows its own shape cannot express: `absent` means no linked row may
- * exist, and `version` means the row the caller named must still be there, at
- * the version it named.
+ * `editableFeeOf` has already narrowed to an aggregate with at most one fee, so
+ * one expectation is all it ever needs. A delete removes every linked row and
+ * is the documented way to clear an aggregate the product could not have
+ * created — the interface says so in as many words when a transfer carries more
+ * than one fee. Describing only the first of them would let this happen:
+ *
+ * ```text
+ * rendered:  T v3, fee A v1, fee B v1
+ * meanwhile: B becomes v2, and fee C appears
+ * delete remembering A v1 alone -> A, B v2, C and T all removed,
+ *                                  over an aggregate nobody confirmed
+ * ```
+ *
+ * So the comparison is the complete set: a fee that appeared, disappeared,
+ * changed version, or was replaced by another one is a conflict, and nothing is
+ * deleted or audited. Deleting an already-malformed aggregate stays possible —
+ * but only the exact malformed aggregate the caller saw.
  */
-function assertFeeAsExpectedForDelete(
-  expected: TransferFeeExpectation,
+function assertFeesAsExpectedForDelete(
+  expected: readonly LinkedFeeExpectation[],
   stored: readonly ExpenseEntryRow[],
 ): void {
-  if (expected.state === 'absent') {
-    if (stored.length === 0) return;
-    throw new VersionConflictError(
-      'A fee was added to this transfer after you opened it. Reload to see it.',
-    );
-  }
-  const named = stored.find((row) => row.id === expected.feeId);
-  if (named !== undefined && named.version === expected.version) return;
+  const wanted = canonicalFees(expected.map((entry) => ({ id: entry.feeId, version: entry.version })));
+  if (canonicalFees(stored) === wanted) return;
+
   throw new VersionConflictError(
-    'This transfer’s fee changed after you opened it. Reload to see the current values.',
+    expected.length === 0
+      ? 'A fee was added to this transfer after you opened it. Reload to see it.'
+      : 'This transfer’s fees changed after you opened it. Reload to see the current values.',
   );
 }
 
@@ -679,8 +721,10 @@ async function deleteCashTransferIn(
     );
   }
 
+  // Every linked row, held under `FOR UPDATE`, compared as a whole set before
+  // a single row is touched.
   const fees = await findTransferFeesIn(tx, args.transferId);
-  assertFeeAsExpectedForDelete(args.expectedFee, fees);
+  assertFeesAsExpectedForDelete(args.expectedFees, fees);
 
   const removedFees: ExpenseEntryRow[] = [];
   for (const fee of fees) {

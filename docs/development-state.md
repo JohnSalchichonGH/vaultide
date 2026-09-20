@@ -236,11 +236,15 @@ Web surface of Phase 3:
 One invariant now holds across the whole backend, and is enforced
 mechanically rather than by convention (blueprint 20.3, §30.22; ADR 0010):
 
-> Every mutation of Vaultide's mutable financial evidence is one atomic
-> per-user transaction that acquires the same transaction-scoped advisory write
-> mutex before its first authoritative read, performs all validation, domain
-> decisions, writes and audit inside that transaction, and commits or rolls
-> back as one unit.
+> Every ordinary mutation of Vaultide's mutable financial evidence, during an
+> account's active lifetime, is one atomic per-user transaction that acquires
+> the same transaction-scoped advisory write mutex before its first
+> authoritative read, performs all validation, domain decisions, writes and
+> audit inside that transaction, and commits or rolls back as one unit.
+
+Account bootstrap (provisioning) and account teardown (the delete cascade and
+its sweep) are lifecycle operations with their own contracts, outside that
+editing mutex; ADR 0010 §3 and §4.1 say why.
 
 - `withUserWrite` (in `@vaultide/db`, reached through the application's
   `coordination` module) opens that transaction: read committed, the RLS
@@ -254,14 +258,19 @@ mechanically rather than by convention (blueprint 20.3, §30.22; ADR 0010):
   that chooses a category afresh holds it `FOR SHARE` until it commits, and
   category administration stays an ordinary non-financial write.
 - Financial deletes carry the version the client rendered; a transfer delete
-  carries what the caller saw of its fee too.
+  carries every linked fee row the caller saw, by id and version, so the
+  malformed several-fee aggregate can still be repaired but only exactly as it
+  was rendered.
 - The four valuation paths whose dormancy consequence could commit separately —
   record, correct, remove and quick update — are one transaction each, and the
   adjustment path's residual check/write window (ADR 0009 §9) is closed.
 - `packages/application/test/unit/financial-write-boundary.test.ts` enforces the
   boundary over the TypeScript AST, and is itself tested against fixtures that
-  are deliberately wrong. It is separate from
-  `apps/web/test/financial-actions.test.ts`, which enforces authorization.
+  are deliberately wrong. It also derives the exposed financial surface from
+  the web app's own `financialAction` declarations and cross-checks it against
+  the mutation registry, so a new financial action whose mutation nobody
+  registered fails CI instead of escaping the boundary rules. It is separate
+  from `apps/web/test/financial-actions.test.ts`, which enforces authorization.
 
 No migration: the mutex is ephemeral PostgreSQL state, and the versions, audit
 images, reasons and request ids it relies on already exist.

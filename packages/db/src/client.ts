@@ -117,8 +117,12 @@ const RETRY_JITTER_MS = 50;
 /**
  * The financial write transaction (blueprint 20.3, 30.22; ADR 0010 §5–§7).
  *
- * **Every** mutation of Vaultide's mutable financial evidence runs inside one of
- * these, and the order of what it does is the contract:
+ * **Every ordinary** mutation of Vaultide's mutable financial evidence runs
+ * inside one of these — every edit a signed-in user can make to an account that
+ * exists. Account bootstrap and account teardown are lifecycle operations with
+ * their own contracts and stay outside it (ADR 0010 §4.1).
+ *
+ * The order of what it does is the contract:
  *
  * ```
  * BEGIN ISOLATION LEVEL READ COMMITTED

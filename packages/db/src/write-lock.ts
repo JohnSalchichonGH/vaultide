@@ -14,9 +14,18 @@
  * random number — a reader can check where it came from, and its top bit is
  * clear, so it is a positive `bigint` before the fold.
  *
- * It exists so that two products sharing one PostgreSQL cluster, or a future
- * second Vaultide advisory lock, cannot collide on a key derived from the same
- * user id. Changing it changes every key, so it never changes.
+ * It exists to **decorrelate** this key space from anything else that might
+ * derive an advisory key from the same user id — a second Vaultide lock, or
+ * another product sharing the cluster. It does not make a collision impossible:
+ * the key space is 64 bits and finite, so two unrelated keys can in principle
+ * land on the same value whatever the salt. What the salt buys is that they do
+ * not collide *systematically*, by both being "the fold of this UUID".
+ *
+ * A collision costs liveness, not correctness: two unrelated writers would
+ * serialize against each other, and each would still see and write exactly its
+ * own tenant's rows, because RLS and the `WHERE` clauses decide that.
+ *
+ * Changing it changes every key, so it never changes.
  */
 export const WRITE_LOCK_NAMESPACE = 0x5641554c54494445n;
 
