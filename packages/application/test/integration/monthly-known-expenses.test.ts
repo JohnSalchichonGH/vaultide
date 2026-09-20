@@ -3,9 +3,9 @@ import type pg from 'pg';
 import {
   createDatabase,
   createPool,
-  insertExpenseEntry,
-  insertTemplate,
-  insertTerm,
+  insertExpenseEntryIn,
+  insertTemplateIn,
+  insertTermIn,
   listCategoryRecords,
   listExpenseEntriesByOccurrenceIn,
   sql,
@@ -94,6 +94,24 @@ async function createAuthUser(id: string, email: string): Promise<void> {
           ON CONFLICT (id) DO NOTHING`,
     );
   });
+}
+
+/**
+ * An expense row written **below** the domain services, the way imported or
+ * later-phase data arrives.
+ *
+ * The repositories are transaction-taking now — every financial write goes
+ * through the per-user write mutex (30.22) — so a fixture that deliberately
+ * bypasses the services opens the user-scoped transaction itself. It is still
+ * below the domain: no service rule runs.
+ */
+async function belowTheDomain(
+  input: Parameters<typeof insertExpenseEntryIn>[2],
+  userId = USER_A,
+) {
+  return withUser(harness.db, { userId }, async (tx) =>
+    insertExpenseEntryIn(tx, { userId }, input),
+  );
 }
 
 async function categoryId(match: { name?: string; kind?: string }, userId = USER_A): Promise<string> {
@@ -888,7 +906,7 @@ describe('the categories Known expenses offers', () => {
     // Phase 3's services refuse this row — there is no asset to link it to — but
     // imported or later-phase data can hold one, so it is written below the
     // domain, the way such data arrives.
-    const legacy = await insertExpenseEntry(harness.db, { userId: USER_A }, {
+    const legacy = await belowTheDomain({
       categoryId: await categoryId({ kind: 'capital_improvement' }),
       incurredOn: '2026-09-12',
       amount: '500.00',
@@ -926,7 +944,8 @@ async function legacySource(
     readonly cashPositionId?: string;
   },
 ) {
-  const template = await insertTemplate(harness.db, { userId: USER_A }, {
+  const template = await withUser(harness.db, { userId: USER_A }, async (tx) =>
+    insertTemplateIn(tx, { userId: USER_A }, {
     kind: 'expense',
     name: options.name,
     categoryId: await categoryId({ kind }),
@@ -934,13 +953,16 @@ async function legacySource(
     frequency: 'monthly',
     dayOfMonth: options.dayOfMonth,
     startDate: options.startDate ?? '2026-01-01',
-    ...(options.cashPositionId === undefined ? {} : { cashPositionId: options.cashPositionId }),
-  });
-  await insertTerm(harness.db, { userId: USER_A }, {
-    templateId: template.id,
-    effectiveFrom: template.startDate,
-    amount: options.amount ?? '100.00',
-  });
+      ...(options.cashPositionId === undefined ? {} : { cashPositionId: options.cashPositionId }),
+    }),
+  );
+  await withUser(harness.db, { userId: USER_A }, async (tx) =>
+    insertTermIn(tx, { userId: USER_A }, {
+      templateId: template.id,
+      effectiveFrom: template.startDate,
+      amount: options.amount ?? '100.00',
+    }),
+  );
   return template;
 }
 
@@ -981,7 +1003,7 @@ describe('a legacy source under a kind the expense services cannot record', () =
       cashPositionId: bbva,
     });
     // An actual capital improvement too, written below the domain the same way.
-    const capex = await insertExpenseEntry(harness.db, { userId: USER_A }, {
+    const capex = await belowTheDomain({
       categoryId: await categoryId({ kind: 'capital_improvement' }),
       incurredOn: '2026-09-12',
       amount: '500.00',
@@ -1141,7 +1163,7 @@ describe('a legacy source under a kind the expense services cannot record', () =
     });
     const wires = await legacySource('transfer_fee', { name: 'Wire fees', dayOfMonth: 25, cashPositionId: bbva });
     // Materialized before the guard existed, occurrence identity and all.
-    const works20 = await insertExpenseEntry(harness.db, { userId: USER_A }, {
+    const works20 = await belowTheDomain({
       categoryId: works.categoryId as string,
       incurredOn: '2026-09-20',
       amount: '100.00',
@@ -1151,7 +1173,7 @@ describe('a legacy source under a kind the expense services cannot record', () =
       occurrence: { templateId: works.id, occurrenceDate: '2026-09-20' },
     });
     // Scheduled in September, paid in October.
-    const wires25 = await insertExpenseEntry(harness.db, { userId: USER_A }, {
+    const wires25 = await belowTheDomain({
       categoryId: wires.categoryId as string,
       incurredOn: '2026-10-01',
       amount: '3.00',
@@ -1383,7 +1405,10 @@ describe('corrections through the existing services', () => {
 
   it('removes a deleted direct expense from the section', async () => {
     const created = await expense(OCT_1, { incurredOn: '2026-09-20', settlement: 'third_party' });
-    await deleteExpenseEntry(flowDeps(), OCT_1, { entryId: created.id });
+    await deleteExpenseEntry(flowDeps(), OCT_1, {
+      entryId: created.id,
+      expectedVersion: created.version,
+    });
     expect(renderedEntryIds((await completed()).expenses)).toEqual([]);
   });
 
@@ -1394,7 +1419,10 @@ describe('corrections through the existing services', () => {
       templateId: source.id,
       occurrenceDate: '2026-09-15',
     });
-    await deleteExpenseEntry(flowDeps(), OCT_1, { entryId: accepted.entry.id });
+    await deleteExpenseEntry(flowDeps(), OCT_1, {
+      entryId: accepted.entry.id,
+      expectedVersion: accepted.entry.version,
+    });
 
     let page = await completed();
     expect(occurrenceOf(page.expenses, source.id, '2026-09-15').state).toEqual({ kind: 'due' });

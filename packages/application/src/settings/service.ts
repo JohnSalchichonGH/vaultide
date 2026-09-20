@@ -1,12 +1,16 @@
 import {
   findUserSettings,
+  findUserSettingsIn,
   mergeUserPreferences,
   updateUserSettings,
+  updateUserSettingsIn,
   type Database,
+  type Transaction,
   type UserSettingsPatch,
   type UserSettingsRecord,
 } from '@vaultide/db';
 import { usableCurrencyCodes } from '../currencies/service';
+import { withUserWrite } from '../coordination';
 import { NotFoundError, ValidationError, VersionConflictError } from '../errors';
 import type { UserSettings } from './types';
 
@@ -214,21 +218,37 @@ export async function setReportingCurrency(
  *
  * Optimistic version and audit behaviour are the ordinary `user_settings` ones.
  */
+async function setCountAdditionalSpendingIn(
+  tx: Transaction,
+  userId: string,
+  expectedVersion: number,
+  countAdditionalSpending: boolean,
+): Promise<UserSettingsRecord> {
+  const updated = await updateUserSettingsIn(tx, userId, expectedVersion, {
+    countAdditionalSpending,
+  });
+
+  if (updated === undefined) {
+    // Either the row moved on under us, or it does not exist. Both are told
+    // apart by a second read in the same transaction, so a stale form gets the
+    // right message and neither answer can be about a different state.
+    const current = await findUserSettingsIn(tx);
+    if (current === undefined) throw new NotFoundError('Settings have not been created yet.');
+    throw new VersionConflictError();
+  }
+
+  return updated;
+}
+
 export async function setCountAdditionalSpending(
   deps: SettingsDependencies,
   userId: string,
   expectedVersion: number,
   countAdditionalSpending: boolean,
 ): Promise<UserSettings> {
-  const updated = await updateUserSettings(deps.db, userId, expectedVersion, {
-    countAdditionalSpending,
-  });
-
-  if (updated === undefined) {
-    const current = await findSettings(deps.db, userId);
-    if (current === undefined) throw new NotFoundError('Settings have not been created yet.');
-    throw new VersionConflictError();
-  }
+  const updated = await withUserWrite(deps.db, { userId }, async (tx) =>
+    setCountAdditionalSpendingIn(tx, userId, expectedVersion, countAdditionalSpending),
+  );
 
   return toDto(updated);
 }

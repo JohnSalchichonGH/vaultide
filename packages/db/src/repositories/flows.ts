@@ -80,14 +80,6 @@ export interface IncomeEntryInput {
   readonly occurrence?: OccurrenceRef;
 }
 
-export async function insertIncomeEntry(
-  db: Database,
-  ctx: AuditContext,
-  input: IncomeEntryInput,
-): Promise<IncomeEntryRow> {
-  return withUser(db, { userId: ctx.userId }, async (tx) => insertIncomeEntryIn(tx, ctx, input));
-}
-
 export async function insertIncomeEntryIn(
   tx: Transaction,
   ctx: AuditContext,
@@ -135,18 +127,6 @@ export interface IncomeEntryPatch {
   isOneOff?: boolean;
 }
 
-export async function updateIncomeEntry(
-  db: Database,
-  ctx: AuditContext,
-  entryId: string,
-  expectedVersion: number,
-  patch: IncomeEntryPatch,
-): Promise<IncomeEntryRow | undefined> {
-  return withUser(db, { userId: ctx.userId }, async (tx) =>
-    updateIncomeEntryIn(tx, ctx, entryId, expectedVersion, patch),
-  );
-}
-
 export async function updateIncomeEntryIn(
   tx: Transaction,
   ctx: AuditContext,
@@ -186,29 +166,27 @@ export async function updateIncomeEntryIn(
   return row;
 }
 
-export async function deleteIncomeEntry(
-  db: Database,
+export async function deleteIncomeEntryIn(
+  tx: Transaction,
   ctx: AuditContext,
   entryId: string,
 ): Promise<IncomeEntryRow | undefined> {
-  return withUser(db, { userId: ctx.userId }, async (tx) => {
-    const [before] = await tx
-      .select()
-      .from(incomeEntries)
-      .where(eq(incomeEntries.id, entryId))
-      .limit(1)
-      .for('update');
-    if (before === undefined) return undefined;
+  const [before] = await tx
+    .select()
+    .from(incomeEntries)
+    .where(eq(incomeEntries.id, entryId))
+    .limit(1)
+    .for('update');
+  if (before === undefined) return undefined;
 
-    await tx.delete(incomeEntries).where(eq(incomeEntries.id, entryId));
-    await recordAudit(tx, ctx, {
-      entityTable: 'income_entries',
-      entityId: entryId,
-      action: 'delete',
-      before,
-    });
-    return before;
+  await tx.delete(incomeEntries).where(eq(incomeEntries.id, entryId));
+  await recordAudit(tx, ctx, {
+    entityTable: 'income_entries',
+    entityId: entryId,
+    action: 'delete',
+    before,
   });
+  return before;
 }
 
 export async function findIncomeEntry(
@@ -216,9 +194,23 @@ export async function findIncomeEntry(
   userId: string,
   entryId: string,
 ): Promise<IncomeEntryRow | undefined> {
-  const [row] = await withUser(db, { userId }, async (tx) =>
-    tx.select().from(incomeEntries).where(eq(incomeEntries.id, entryId)).limit(1),
-  );
+  return withUser(db, { userId }, async (tx) => findIncomeEntryIn(tx, entryId));
+}
+
+/**
+ * One income entry inside a caller's transaction.
+ *
+ * `lock: 'update'` holds it for the rest of the transaction — what a correction
+ * or a delete takes before it compares the version it was given, so the row it
+ * judged and the row it writes are the same row (20.3, 30.22 item 10).
+ */
+export async function findIncomeEntryIn(
+  tx: Transaction,
+  entryId: string,
+  options: { readonly lock?: 'update' } = {},
+): Promise<IncomeEntryRow | undefined> {
+  const query = tx.select().from(incomeEntries).where(eq(incomeEntries.id, entryId)).limit(1);
+  const [row] = options.lock === 'update' ? await query.for('update') : await query;
   return row;
 }
 
@@ -228,13 +220,20 @@ export async function listIncomeEntries(
   from: string,
   to: string,
 ): Promise<IncomeEntryRow[]> {
-  return withUser(db, { userId }, async (tx) =>
-    tx
-      .select()
-      .from(incomeEntries)
-      .where(between(incomeEntries.receivedOn, from, to))
-      .orderBy(asc(incomeEntries.receivedOn), asc(incomeEntries.id)),
-  );
+  return withUser(db, { userId }, async (tx) => listIncomeEntriesIn(tx, from, to));
+}
+
+/** The same range inside a caller's transaction. */
+export async function listIncomeEntriesIn(
+  tx: Transaction,
+  from: string,
+  to: string,
+): Promise<IncomeEntryRow[]> {
+  return tx
+    .select()
+    .from(incomeEntries)
+    .where(between(incomeEntries.receivedOn, from, to))
+    .orderBy(asc(incomeEntries.receivedOn), asc(incomeEntries.id));
 }
 
 /**
@@ -287,14 +286,6 @@ export interface ExpenseEntryInput {
   readonly occurrence?: OccurrenceRef;
 }
 
-export async function insertExpenseEntry(
-  db: Database,
-  ctx: AuditContext,
-  input: ExpenseEntryInput,
-): Promise<ExpenseEntryRow> {
-  return withUser(db, { userId: ctx.userId }, async (tx) => insertExpenseEntryIn(tx, ctx, input));
-}
-
 export async function insertExpenseEntryIn(
   tx: Transaction,
   ctx: AuditContext,
@@ -341,18 +332,6 @@ export interface ExpenseEntryPatch {
   isOneOff?: boolean;
 }
 
-export async function updateExpenseEntry(
-  db: Database,
-  ctx: AuditContext,
-  entryId: string,
-  expectedVersion: number,
-  patch: ExpenseEntryPatch,
-): Promise<ExpenseEntryRow | undefined> {
-  return withUser(db, { userId: ctx.userId }, async (tx) =>
-    updateExpenseEntryIn(tx, ctx, entryId, expectedVersion, patch),
-  );
-}
-
 export async function updateExpenseEntryIn(
   tx: Transaction,
   ctx: AuditContext,
@@ -392,16 +371,6 @@ export async function updateExpenseEntryIn(
   return row;
 }
 
-export async function deleteExpenseEntry(
-  db: Database,
-  ctx: AuditContext,
-  entryId: string,
-): Promise<ExpenseEntryRow | undefined> {
-  return withUser(db, { userId: ctx.userId }, async (tx) =>
-    deleteExpenseEntryIn(tx, ctx, entryId),
-  );
-}
-
 export async function deleteExpenseEntryIn(
   tx: Transaction,
   ctx: AuditContext,
@@ -430,9 +399,17 @@ export async function findExpenseEntry(
   userId: string,
   entryId: string,
 ): Promise<ExpenseEntryRow | undefined> {
-  const [row] = await withUser(db, { userId }, async (tx) =>
-    tx.select().from(expenseEntries).where(eq(expenseEntries.id, entryId)).limit(1),
-  );
+  return withUser(db, { userId }, async (tx) => findExpenseEntryIn(tx, entryId));
+}
+
+/** The expense twin of `findIncomeEntryIn`, with the same locking contract. */
+export async function findExpenseEntryIn(
+  tx: Transaction,
+  entryId: string,
+  options: { readonly lock?: 'update' } = {},
+): Promise<ExpenseEntryRow | undefined> {
+  const query = tx.select().from(expenseEntries).where(eq(expenseEntries.id, entryId)).limit(1);
+  const [row] = options.lock === 'update' ? await query.for('update') : await query;
   return row;
 }
 
@@ -442,13 +419,20 @@ export async function listExpenseEntries(
   from: string,
   to: string,
 ): Promise<ExpenseEntryRow[]> {
-  return withUser(db, { userId }, async (tx) =>
-    tx
-      .select()
-      .from(expenseEntries)
-      .where(between(expenseEntries.incurredOn, from, to))
-      .orderBy(asc(expenseEntries.incurredOn), asc(expenseEntries.id)),
-  );
+  return withUser(db, { userId }, async (tx) => listExpenseEntriesIn(tx, from, to));
+}
+
+/** The same range inside a caller's transaction. */
+export async function listExpenseEntriesIn(
+  tx: Transaction,
+  from: string,
+  to: string,
+): Promise<ExpenseEntryRow[]> {
+  return tx
+    .select()
+    .from(expenseEntries)
+    .where(between(expenseEntries.incurredOn, from, to))
+    .orderBy(asc(expenseEntries.incurredOn), asc(expenseEntries.id));
 }
 
 /**
@@ -694,13 +678,20 @@ export async function listTransfers(
   from: string,
   to: string,
 ): Promise<TransferRow[]> {
-  return withUser(db, { userId }, async (tx) =>
-    tx
-      .select()
-      .from(transfers)
-      .where(between(transfers.occurredOn, from, to))
-      .orderBy(asc(transfers.occurredOn), asc(transfers.id)),
-  );
+  return withUser(db, { userId }, async (tx) => listTransfersIn(tx, from, to));
+}
+
+/** The same range inside a caller's transaction. */
+export async function listTransfersIn(
+  tx: Transaction,
+  from: string,
+  to: string,
+): Promise<TransferRow[]> {
+  return tx
+    .select()
+    .from(transfers)
+    .where(between(transfers.occurredOn, from, to))
+    .orderBy(asc(transfers.occurredOn), asc(transfers.id));
 }
 
 /* ------------------------------------------------------------------------- */

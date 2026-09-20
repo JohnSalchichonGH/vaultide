@@ -20,13 +20,53 @@ export async function listCategoryRecords(
   userId: string,
   options: { includeArchived?: boolean } = {},
 ): Promise<CategoryRecord[]> {
-  return withUser(db, { userId }, async (tx) =>
-    tx
-      .select()
-      .from(categories)
-      .where(options.includeArchived === true ? undefined : isNull(categories.archivedAt))
-      .orderBy(asc(categories.sortOrder), asc(categories.name)),
-  );
+  return withUser(db, { userId }, async (tx) => listCategoryRecordsIn(tx, options));
+}
+
+/** The same list inside a caller's transaction — one scope, not two. */
+export async function listCategoryRecordsIn(
+  tx: Transaction,
+  options: { includeArchived?: boolean } = {},
+): Promise<CategoryRecord[]> {
+  return tx
+    .select()
+    .from(categories)
+    .where(options.includeArchived === true ? undefined : isNull(categories.archivedAt))
+    .orderBy(asc(categories.sortOrder), asc(categories.name));
+}
+
+/**
+ * One category, **held live** for the rest of the caller's transaction
+ * (blueprint 20.3, 30.22 item 8; ADR 0010 §9).
+ *
+ * The reference-dependency lock. A financial write that chooses a category
+ * afresh has to keep that choice valid until it commits, and archiving is an
+ * ordinary `UPDATE` on another connection that is free to land in between.
+ *
+ * `FOR SHARE` rather than `FOR KEY SHARE`: archiving writes `archived_at`, a
+ * non-key column, so it takes `FOR NO KEY UPDATE` — which `FOR KEY SHARE` does
+ * **not** conflict with. `FOR SHARE` conflicts with it and with `FOR UPDATE`,
+ * which is exactly the guarantee wanted: once a financial transaction has read
+ * this row, nobody can archive it until that transaction ends. It is also not
+ * `FOR UPDATE`, which would needlessly serialize two financial writes that
+ * merely file under the same category.
+ *
+ * Archived rows are returned rather than filtered: the caller decides, and the
+ * difference between "gone" and "archived" is two different answers to the
+ * user. Reading a category to classify **existing** history is a different
+ * question and uses `findCategoryIn`, which takes no lock.
+ */
+export async function lockCategoryIn(
+  tx: Transaction,
+  categoryId: string,
+): Promise<CategoryRecord | undefined> {
+  const [row] = await tx
+    .select()
+    .from(categories)
+    .where(eq(categories.id, categoryId))
+    .limit(1)
+    .for('share');
+  return row;
 }
 
 /**

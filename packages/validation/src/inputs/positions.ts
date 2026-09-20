@@ -30,6 +30,15 @@ export const positionNotes = z.string().trim().max(2_000, 'That note is too long
 const expectedVersion = z.number().int().positive();
 
 /**
+ * The user's own explanation of a correction or a deletion (18.1; ADR 0010 §11).
+ *
+ * Bounded like every other free-text field. Whether an empty or whitespace-only
+ * string is a reason at all is settled once, in the application layer, which
+ * normalizes it to no reason before the audit row is written.
+ */
+const auditReason = z.string().trim().max(500, 'That reason is too long.');
+
+/**
  * "New account, started empty on <date>" versus "existing account I am starting
  * to track" (6.2 `positions.opened_on`).
  *
@@ -159,11 +168,26 @@ export function updateValuationInput(today: string) {
       expectedVersion,
       amount: moneyString(),
       note: z.string().trim().max(500).nullable().optional(),
+      /** The user's own explanation, for the audit row (ADR 0010 §11). */
+      reason: auditReason.optional(),
     })
     .and(valuationDateSchema(today));
 }
 
-export const deleteValuationInput = z.object({ valuationId: z.uuid() });
+/**
+ * Deleting a balance is version-aware (6.3, 20.3, 30.22 item 10): the request
+ * carries the version the client rendered, so a balance corrected elsewhere
+ * refuses instead of being removed.
+ *
+ * The optional reason is accepted at the input and persisted on the audit row.
+ * No current interface offers the field; historical correction will, and this
+ * is what lets it without redesigning persistence (ADR 0010 §11).
+ */
+export const deleteValuationInput = z.object({
+  valuationId: z.uuid(),
+  expectedVersion,
+  reason: auditReason.optional(),
+});
 
 /**
  * Confirming an existing exact snapshot dated the last day of a month as that

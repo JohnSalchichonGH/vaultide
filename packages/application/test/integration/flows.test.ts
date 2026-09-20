@@ -318,7 +318,10 @@ describe('income entries', () => {
       settlement: 'tracked_cash',
       cashPositionId: bbva,
     });
-    await deleteIncomeEntry(deps(), SEPT_15, { entryId: created.id });
+    await deleteIncomeEntry(deps(), SEPT_15, {
+      entryId: created.id,
+      expectedVersion: created.version,
+    });
 
     const audit = await auditFor(USER_A, created.id);
     expect(audit.map((row) => row.action)).toEqual(['insert', 'delete']);
@@ -411,7 +414,11 @@ describe('expense entries', () => {
       expectedVersion: created.version,
       amount: '310.00',
     });
-    await deleteExpenseEntry(deps(), SEPT_15, { entryId: created.id });
+    await deleteExpenseEntry(deps(), SEPT_15, {
+      entryId: created.id,
+      // The correction above moved it on, so the delete claims that version.
+      expectedVersion: created.version + 1,
+    });
 
     const audit = await auditFor(USER_A, created.id);
     expect(audit.map((row) => row.action)).toEqual(['insert', 'update', 'delete']);
@@ -855,7 +862,11 @@ describe('cash transfers and their fee', () => {
       fee: { amount: '1.50', cashPositionId: bbva, incurredOn: '2026-09-05' },
     });
 
-    const removed = await deleteCashTransfer(deps(), SEPT_15, { transferId: transfer.id });
+    const removed = await deleteCashTransfer(deps(), SEPT_15, {
+      transferId: transfer.id,
+      expectedVersion: transfer.version,
+      expectedFee: { state: 'version', feeId: fee!.id, version: fee!.version },
+    });
     expect(removed.fees).toHaveLength(1);
 
     // The cascade would have removed the fee with no audit row at all; this is
@@ -889,7 +900,10 @@ describe('cash transfers and their fee', () => {
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
 
     await expect(
-      deleteExpenseEntry(deps(), SEPT_15, { entryId: fee?.id as string }),
+      deleteExpenseEntry(deps(), SEPT_15, {
+        entryId: fee?.id as string,
+        expectedVersion: fee?.version as number,
+      }),
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
   });
 });
@@ -1006,7 +1020,10 @@ describe('dormancy', () => {
       settlement: 'tracked_cash',
       cashPositionId: savings,
     });
-    await deleteIncomeEntry(deps(), SEPT_15, { entryId: created.id });
+    await deleteIncomeEntry(deps(), SEPT_15, {
+      entryId: created.id,
+      expectedVersion: created.version,
+    });
     expect(await isDormant()).toBe(false);
   });
 });
@@ -1354,7 +1371,10 @@ describe('accepting and skipping occurrences', () => {
       templateId: template.id,
       occurrenceDate: '2026-08-25',
     });
-    await deleteIncomeEntry(deps(), SEPT_15, { entryId: accepted.entry.id });
+    await deleteIncomeEntry(deps(), SEPT_15, {
+      entryId: accepted.entry.id,
+      expectedVersion: accepted.entry.version,
+    });
 
     const again = await acceptSuggestion(deps(), SEPT_15, {
       templateId: template.id,
@@ -1855,7 +1875,13 @@ describe('a transfer with a corrupted number of fees fails closed', () => {
     // Deletion is not blocked: it removes all of them and records each, so it
     // leaves nothing dangling and nothing unaudited.
     const { transfer, fee } = await transferWithTwoFees();
-    const removed = await deleteCashTransfer(deps(), SEPT_15, { transferId: transfer.id });
+    const removed = await deleteCashTransfer(deps(), SEPT_15, {
+      transferId: transfer.id,
+      expectedVersion: transfer.version,
+      // An aggregate with two fees can only be cleared, not corrected, and the
+      // expectation names the fee the caller was shown (ADR 0010 §11).
+      expectedFee: { state: 'version', feeId: fee!.id, version: fee!.version },
+    });
 
     expect(removed.fees).toHaveLength(2);
     expect(await countRows(USER_A, 'expense_entries')).toBe(0);

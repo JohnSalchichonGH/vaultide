@@ -120,9 +120,25 @@ export async function findTemplate(
   userId: string,
   templateId: string,
 ): Promise<RecurringTemplateRow | undefined> {
-  const [row] = await withUser(db, { userId }, async (tx) =>
-    tx.select().from(recurringTemplates).where(eq(recurringTemplates.id, templateId)).limit(1),
-  );
+  return withUser(db, { userId }, async (tx) => findTemplateIn(tx, templateId));
+}
+
+/**
+ * The same read inside a caller's transaction, without taking the row's lock.
+ *
+ * For the callers that need to know what a template *is* — its currency, its
+ * schedule, its category — rather than to claim an occurrence of it, which is
+ * `lockTemplateIn`'s job.
+ */
+export async function findTemplateIn(
+  tx: Transaction,
+  templateId: string,
+): Promise<RecurringTemplateRow | undefined> {
+  const [row] = await tx
+    .select()
+    .from(recurringTemplates)
+    .where(eq(recurringTemplates.id, templateId))
+    .limit(1);
   return row;
 }
 
@@ -148,12 +164,12 @@ export async function lockTemplateIn(
   return row;
 }
 
-export async function insertTemplate(
-  db: Database,
+export async function insertTemplateIn(
+  tx: Transaction,
   ctx: AuditContext,
   input: TemplateInput,
 ): Promise<RecurringTemplateRow> {
-  return withUser(db, { userId: ctx.userId }, async (tx) => {
+  {
     const [row] = await tx
       .insert(recurringTemplates)
       .values({
@@ -181,7 +197,7 @@ export async function insertTemplate(
       after: created,
     });
     return created;
-  });
+  }
 }
 
 export interface TemplatePatch {
@@ -191,14 +207,14 @@ export interface TemplatePatch {
   archivedAt?: Date | null;
 }
 
-export async function updateTemplate(
-  db: Database,
+export async function updateTemplateIn(
+  tx: Transaction,
   ctx: AuditContext,
   templateId: string,
   expectedVersion: number,
   patch: TemplatePatch,
 ): Promise<RecurringTemplateRow | undefined> {
-  return withUser(db, { userId: ctx.userId }, async (tx) => {
+  {
     const before = await lockTemplateIn(tx, templateId);
     if (before === undefined) return undefined;
 
@@ -222,18 +238,10 @@ export async function updateTemplate(
       after: row,
     });
     return row;
-  });
+  }
 }
 
 /** `true` when any materialized flow or skip references this template. */
-export async function templateHasHistory(
-  db: Database,
-  userId: string,
-  templateId: string,
-): Promise<boolean> {
-  return withUser(db, { userId }, async (tx) => templateHasHistoryIn(tx, templateId));
-}
-
 export async function templateHasHistoryIn(
   tx: Transaction,
   templateId: string,
@@ -254,13 +262,11 @@ export async function templateHasHistoryIn(
 }
 
 /** The latest occurrence date any materialized flow or skip refers to. */
-export async function latestReferencedOccurrence(
-  db: Database,
-  userId: string,
+export async function latestReferencedOccurrenceIn(
+  tx: Transaction,
   templateId: string,
 ): Promise<string | undefined> {
-  const [row] = await withUser(db, { userId }, async (tx) =>
-    tx
+  const [row] = await tx
       .select({
         latest: sql<string | null>`(
           SELECT max(d)::text FROM (
@@ -276,8 +282,7 @@ export async function latestReferencedOccurrence(
       })
       .from(recurringTemplates)
       .where(eq(recurringTemplates.id, templateId))
-      .limit(1),
-  );
+      .limit(1);
   return row?.latest ?? undefined;
 }
 
@@ -298,13 +303,19 @@ export async function listTerms(
   userId: string,
   templateId: string,
 ): Promise<RecurringTemplateTermRow[]> {
-  return withUser(db, { userId }, async (tx) =>
-    tx
-      .select()
-      .from(recurringTemplateTerms)
-      .where(eq(recurringTemplateTerms.templateId, templateId))
-      .orderBy(desc(recurringTemplateTerms.effectiveFrom)),
-  );
+  return withUser(db, { userId }, async (tx) => listTermsIn(tx, templateId));
+}
+
+/** The same list inside a caller's transaction. */
+export async function listTermsIn(
+  tx: Transaction,
+  templateId: string,
+): Promise<RecurringTemplateTermRow[]> {
+  return tx
+    .select()
+    .from(recurringTemplateTerms)
+    .where(eq(recurringTemplateTerms.templateId, templateId))
+    .orderBy(desc(recurringTemplateTerms.effectiveFrom));
 }
 
 /**
@@ -401,33 +412,32 @@ export function isUniqueViolation(error: unknown): boolean {
 }
 
 /** Find a template's term at an exact effective date, if it has one. */
-export async function findTermAt(
-  db: Database,
-  userId: string,
+export async function findTermAtIn(
+  tx: Transaction,
   templateId: string,
   effectiveFrom: string,
+  options: { readonly lock?: 'update' } = {},
 ): Promise<RecurringTemplateTermRow | undefined> {
-  const [row] = await withUser(db, { userId }, async (tx) =>
-    tx
-      .select()
-      .from(recurringTemplateTerms)
-      .where(
-        and(
-          eq(recurringTemplateTerms.templateId, templateId),
-          eq(recurringTemplateTerms.effectiveFrom, effectiveFrom),
-        ),
-      )
-      .limit(1),
-  );
+  const query = tx
+    .select()
+    .from(recurringTemplateTerms)
+    .where(
+      and(
+        eq(recurringTemplateTerms.templateId, templateId),
+        eq(recurringTemplateTerms.effectiveFrom, effectiveFrom),
+      ),
+    )
+    .limit(1);
+  const [row] = options.lock === 'update' ? await query.for('update') : await query;
   return row;
 }
 
-export async function insertTerm(
-  db: Database,
+export async function insertTermIn(
+  tx: Transaction,
   ctx: AuditContext,
   input: TermInput,
 ): Promise<RecurringTemplateTermRow> {
-  return withUser(db, { userId: ctx.userId }, async (tx) => {
+  {
     const [row] = await tx
       .insert(recurringTemplateTerms)
       .values({
@@ -448,17 +458,17 @@ export async function insertTerm(
       after: created,
     });
     return created;
-  });
+  }
 }
 
-export async function updateTerm(
-  db: Database,
+export async function updateTermIn(
+  tx: Transaction,
   ctx: AuditContext,
   termId: string,
   expectedVersion: number,
   patch: { amount?: string; grossAmount?: string | null; note?: string | null },
 ): Promise<RecurringTemplateTermRow | undefined> {
-  return withUser(db, { userId: ctx.userId }, async (tx) => {
+  {
     const [before] = await tx
       .select()
       .from(recurringTemplateTerms)
@@ -487,7 +497,7 @@ export async function updateTerm(
       after: row,
     });
     return row;
-  });
+  }
 }
 
 /**
@@ -554,7 +564,16 @@ export async function listResolvedOccurrencesInRange(
   from: string,
   to: string,
 ): Promise<{ templateId: string; occurrenceDate: string }[]> {
-  return withUser(db, { userId }, async (tx) => {
+  return withUser(db, { userId }, async (tx) => listResolvedOccurrencesInRangeIn(tx, from, to));
+}
+
+/** The same four reads inside a caller's transaction. */
+export async function listResolvedOccurrencesInRangeIn(
+  tx: Transaction,
+  from: string,
+  to: string,
+): Promise<{ templateId: string; occurrenceDate: string }[]> {
+  {
     const [income, expenses, moves, skips] = await Promise.all([
       tx
         .select({
@@ -610,7 +629,7 @@ export async function listResolvedOccurrencesInRange(
       templateId: row.templateId as string,
       occurrenceDate: row.occurrenceDate as string,
     }));
-  });
+  }
 }
 
 /**
@@ -821,12 +840,12 @@ export async function insertSkipIn(
 }
 
 /** Un-skip: a hard delete with its before-image (6.3). */
-export async function deleteSkip(
-  db: Database,
+export async function deleteSkipIn(
+  tx: Transaction,
   ctx: AuditContext,
   skipId: string,
 ): Promise<RecurringTemplateSkipRow | undefined> {
-  return withUser(db, { userId: ctx.userId }, async (tx) => {
+  {
     const [before] = await tx
       .select()
       .from(recurringTemplateSkips)
@@ -844,7 +863,7 @@ export async function deleteSkip(
       before,
     });
     return before;
-  });
+  }
 }
 
 /** Templates active at any point in a date range — what suggestions need. */
@@ -854,16 +873,23 @@ export async function listTemplatesForRange(
   from: string,
   to: string,
 ): Promise<RecurringTemplateRow[]> {
-  return withUser(db, { userId }, async (tx) =>
-    tx
-      .select()
-      .from(recurringTemplates)
-      .where(
-        and(
-          lte(recurringTemplates.startDate, to),
-          or(isNull(recurringTemplates.endDate), sql`${recurringTemplates.endDate} >= ${from}`),
-        ),
-      )
-      .orderBy(asc(recurringTemplates.name)),
-  );
+  return withUser(db, { userId }, async (tx) => listTemplatesForRangeIn(tx, from, to));
+}
+
+/** The same list inside a caller's transaction. */
+export async function listTemplatesForRangeIn(
+  tx: Transaction,
+  from: string,
+  to: string,
+): Promise<RecurringTemplateRow[]> {
+  return tx
+    .select()
+    .from(recurringTemplates)
+    .where(
+      and(
+        lte(recurringTemplates.startDate, to),
+        or(isNull(recurringTemplates.endDate), sql`${recurringTemplates.endDate} >= ${from}`),
+      ),
+    )
+    .orderBy(asc(recurringTemplates.name));
 }

@@ -443,7 +443,10 @@ describe('correcting and deleting a balance (2.6, R12, 18.1)', () => {
     });
     const [row] = await positionHistory(deps(), SEPT_6, account.id);
 
-    await removeValuation(deps(), SEPT_6, row!.id);
+    await removeValuation(deps(), SEPT_6, {
+      valuationId: row!.id,
+      expectedVersion: row!.version,
+    });
     expect(await positionHistory(deps(), SEPT_6, account.id)).toHaveLength(0);
 
     const audit = await auditRows(USER_A, row!.id);
@@ -920,7 +923,12 @@ describe('one user can never reach another’s records (17.2, 17.3)', () => {
         datePrecision: 'exact',
       }),
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
-    await expect(removeValuation(deps(), asB, valuation!.id)).rejects.toMatchObject({
+    await expect(
+      removeValuation(deps(), asB, {
+        valuationId: valuation!.id,
+        expectedVersion: valuation!.version,
+      }),
+    ).rejects.toMatchObject({
       code: 'NOT_FOUND',
     });
     await expect(removePosition(deps(), asB, account.id)).rejects.toMatchObject({

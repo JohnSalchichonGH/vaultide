@@ -283,8 +283,12 @@ export function ValuationEditor({ detail, today, locale }: ValuationEditorProps)
                             onClick={() => {
                               setError(null);
                               startTransition(async () => {
+                                // The version this row was rendered at: a
+                                // balance corrected elsewhere refuses rather
+                                // than being deleted (6.3, 20.3).
                                 const result = await deleteValuationAction({
                                   valuationId: valuation.id,
+                                  expectedVersion: valuation.version,
                                 });
                                 if (!result.ok) {
                                   setError(result.error.message);

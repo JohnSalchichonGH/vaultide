@@ -1067,9 +1067,19 @@ function useExpenseSave(entry: MonthlyExpenseEntryDto) {
 
   const remove = async (): Promise<SaveState> => {
     if (!canWrite(state)) return state;
-    return runSave(() => deleteExpenseEntryAction({ entryId: entry.entryId }), setState, () => {
-      router.refresh();
-    });
+    // The version this row was rendered at (6.3, 20.3): an expense corrected
+    // elsewhere refuses rather than being deleted by a stale request.
+    return runSave(
+      () =>
+        deleteExpenseEntryAction({
+          entryId: entry.entryId,
+          expectedVersion: entry.version,
+        }),
+      setState,
+      () => {
+        router.refresh();
+      },
+    );
   };
 
   return { state, setState, drafts, busy, generation, setDraft, clearDraft, commit, reload, remove };

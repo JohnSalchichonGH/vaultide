@@ -1,24 +1,22 @@
 import {
-  countValuations,
-  deletePosition,
-  findLatestValuation,
+  countValuationsIn,
+  deletePositionIn,
   findLatestValuationIn,
-  findPosition,
-  insertCashAccount,
-  insertOtherAsset,
+  findPositionIn,
+  findUsableCurrencyCodesIn,
+  insertCashAccountIn,
+  insertOtherAssetIn,
   latestAttributedFlowDateIn,
   lockCashPositionsIn,
-  updatePosition,
   updatePositionIn,
-  withUser,
   type CashAccountPatch,
   type Database,
   type PositionRecord as PositionRow,
   type Transaction,
 } from '@vaultide/db';
 import { Decimal, plainDate } from '@vaultide/finance';
-import { usableCurrencyCodes } from '../currencies/service';
 import type { RequestContext } from '../context';
+import { withUserWrite } from '../coordination';
 import {
   ImpossibleOperationError,
   NotFoundError,
@@ -28,7 +26,7 @@ import {
 import type { FxService } from '../fx/service';
 
 /**
- * Position lifecycle services (blueprint 5.2, 6.2, 6.3, M6, R22).
+ * Position lifecycle services (blueprint 5.2, 6.2, 6.3, 20.3, 30.22, M6, R22).
  *
  * Creating, editing, **closing** and deleting. Not archiving: §25 gives Phase 2
  * "create/edit/close cash accounts", and what archiving means for net worth is
@@ -44,6 +42,12 @@ import type { FxService } from '../fx/service';
  * is validated against the store rather than the signed cookie cache (ADR
  * 0003). These are the writes that change what somebody's net worth says.
  *
+ * And every one of them is **one** `withUserWrite` transaction: the mutex is
+ * taken before the first authoritative read, so the state a decision is made
+ * from is the state the write lands on (ADR 0010 §5). The only work left
+ * outside is the FX warming below, which refreshes support data and decides
+ * nothing (ADR 0010 §7, blueprint 10.4).
+ *
  * What they deliberately do **not** do is explain a balance change. A valuation
  * is a snapshot; income, spending and transfers are Phase 3's tables, and no
  * function here invents one from a difference between two snapshots.
@@ -55,9 +59,9 @@ export interface PositionDependencies {
 }
 
 /** A currency must exist, be active and be one we hold rates for (10.5, R28). */
-async function assertUsableCurrency(db: Database, currency: string): Promise<string> {
+async function assertUsableCurrencyIn(tx: Transaction, currency: string): Promise<string> {
   const code = currency.trim().toUpperCase();
-  const usable = await usableCurrencyCodes(db, [code]);
+  const usable = new Set(await findUsableCurrencyCodesIn(tx, [code]));
   if (!usable.has(code)) {
     throw new ValidationError(
       `${code} is not a currency Vaultide can value. It supports the official currencies its approved rate sources publish daily reference rates for; crypto is tracked as an investment, not as a currency.`,
@@ -75,9 +79,13 @@ async function assertUsableCurrency(db: Database, currency: string): Promise<str
  * the backfill covers what this account actually needs and no more. Failure is
  * swallowed inside `ensureHistory`: a rate publisher being slow must never undo
  * an account somebody just created.
+ *
+ * It takes the rate service alone rather than the dependency bundle, so this
+ * post-commit step cannot reach a database handle even by accident (ADR 0010
+ * §16 item 6).
  */
-async function warmRates(deps: PositionDependencies, currency: string, earliest: string): Promise<void> {
-  await deps.fx.ensureHistory(currency, earliest);
+async function warmRates(fx: FxService, currency: string, earliest: string): Promise<void> {
+  await fx.ensureHistory(currency, earliest);
 }
 
 export interface CreateCashAccountArgs {
@@ -92,12 +100,12 @@ export interface CreateCashAccountArgs {
   readonly openingBalanceOn?: string | undefined;
 }
 
-export async function createCashAccount(
-  deps: PositionDependencies,
+async function createCashAccountIn(
+  tx: Transaction,
   ctx: RequestContext,
   args: CreateCashAccountArgs,
 ): Promise<PositionRow> {
-  const currency = await assertUsableCurrency(deps.db, args.currency);
+  const currency = await assertUsableCurrencyIn(tx, args.currency);
   assertNotFuture(ctx, args.openedOn);
   assertNotFuture(ctx, args.openingBalanceOn);
 
@@ -111,8 +119,8 @@ export async function createCashAccount(
     });
   }
 
-  const created = await insertCashAccount(
-    deps.db,
+  return insertCashAccountIn(
+    tx,
     { userId: ctx.userId, requestId: ctx.requestId },
     {
       name: args.name,
@@ -128,8 +136,18 @@ export async function createCashAccount(
           }),
     },
   );
+}
 
-  await warmRates(deps, currency, args.openingBalanceOn ?? args.openedOn ?? ctx.today);
+export async function createCashAccount(
+  deps: PositionDependencies,
+  ctx: RequestContext,
+  args: CreateCashAccountArgs,
+): Promise<PositionRow> {
+  const created = await withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    createCashAccountIn(tx, ctx, args),
+  );
+
+  await warmRates(deps.fx, created.currency, args.openingBalanceOn ?? args.openedOn ?? ctx.today);
   return created;
 }
 
@@ -145,17 +163,17 @@ export interface CreateOtherAssetArgs {
   readonly currentValueOn?: string | undefined;
 }
 
-export async function createOtherAsset(
-  deps: PositionDependencies,
+async function createOtherAssetIn(
+  tx: Transaction,
   ctx: RequestContext,
   args: CreateOtherAssetArgs,
 ): Promise<PositionRow> {
-  const currency = await assertUsableCurrency(deps.db, args.currency);
+  const currency = await assertUsableCurrencyIn(tx, args.currency);
   assertNotFuture(ctx, args.acquisitionDate);
   assertNotFuture(ctx, args.currentValueOn);
 
-  const created = await insertOtherAsset(
-    deps.db,
+  return insertOtherAssetIn(
+    tx,
     { userId: ctx.userId, requestId: ctx.requestId },
     {
       name: args.name,
@@ -170,8 +188,18 @@ export async function createOtherAsset(
         : { currentValue: { amount: args.currentValue, valuedOn: args.currentValueOn } }),
     },
   );
+}
 
-  await warmRates(deps, currency, args.currentValueOn ?? ctx.today);
+export async function createOtherAsset(
+  deps: PositionDependencies,
+  ctx: RequestContext,
+  args: CreateOtherAssetArgs,
+): Promise<PositionRow> {
+  const created = await withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    createOtherAssetIn(tx, ctx, args),
+  );
+
+  await warmRates(deps.fx, created.currency, args.currentValueOn ?? ctx.today);
   return created;
 }
 
@@ -185,12 +213,8 @@ function assertNotFuture(ctx: RequestContext, date: string | null | undefined): 
   }
 }
 
-async function requirePosition(
-  deps: PositionDependencies,
-  ctx: RequestContext,
-  positionId: string,
-): Promise<PositionRow> {
-  const row = await findPosition(deps.db, ctx.userId, positionId);
+async function requirePositionIn(tx: Transaction, positionId: string): Promise<PositionRow> {
+  const row = await findPositionIn(tx, positionId);
   if (row === undefined) throw new NotFoundError('That account no longer exists.');
   return row;
 }
@@ -246,46 +270,53 @@ async function dormancyTransitionIn(
   return { isDormant: true, dormantFrom: latest.valuedOn };
 }
 
+async function updateCashAccountIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: UpdateCashAccountArgs,
+): Promise<PositionRow | undefined> {
+  // Over the locked account (20.3, 30.20 item 5). The evidence for a dormant
+  // episode and the write that starts it must not come apart: a flow recorded
+  // between a check made outside and the update would leave an account dormant
+  // on a zero it had already moved past. `lockCashPositionsIn` holds the
+  // `positions` row a flow's foreign key needs and the `cash_accounts` row a
+  // wake locks, so such a flow either commits before the evidence is read or
+  // waits, and then wakes the account.
+  //
+  // Another user's id, a nonexistent one and a position of another kind are
+  // all simply absent from the locked set, and read the same (17.2, 17.3).
+  const [existing] = await lockCashPositionsIn(tx, [args.positionId]);
+  if (existing === undefined) throw new NotFoundError('That account no longer exists.');
+
+  const dormancy = await dormancyTransitionIn(tx, ctx, existing, args.isDormant);
+
+  return updatePositionIn(
+    tx,
+    { userId: ctx.userId, requestId: ctx.requestId },
+    args.positionId,
+    args.expectedVersion,
+    {
+      ...(args.name === undefined ? {} : { name: args.name }),
+      ...(args.notes === undefined ? {} : { notes: args.notes }),
+    },
+    {
+      cash: {
+        ...(args.accountType === undefined ? {} : { accountType: args.accountType }),
+        ...(args.institution === undefined ? {} : { institution: args.institution }),
+        ...(dormancy === undefined ? {} : { dormancy }),
+      },
+    },
+  );
+}
+
 export async function updateCashAccount(
   deps: PositionDependencies,
   ctx: RequestContext,
   args: UpdateCashAccountArgs,
 ): Promise<PositionRow> {
-  // One transaction, over the locked account (20.3, 30.20 item 5). The evidence
-  // for a dormant episode and the write that starts it must not come apart: a
-  // flow recorded between a check made out here and the update would leave an
-  // account dormant on a zero it had already moved past. `lockCashPositionsIn`
-  // holds the `positions` row a flow's foreign key needs and the `cash_accounts`
-  // row a wake locks, so such a flow either commits before the evidence is read
-  // or waits, and then wakes the account.
-  const updated = await withUser(deps.db, { userId: ctx.userId }, async (tx) => {
-    // Another user's id, a nonexistent one and a position of another kind are
-    // all simply absent from the locked set, and read the same (17.2, 17.3).
-    const [existing] = await lockCashPositionsIn(tx, [args.positionId]);
-    if (existing === undefined) throw new NotFoundError('That account no longer exists.');
-
-    const dormancy = await dormancyTransitionIn(tx, ctx, existing, args.isDormant);
-
-    return updatePositionIn(
-      tx,
-      { userId: ctx.userId, requestId: ctx.requestId },
-      args.positionId,
-      args.expectedVersion,
-      {
-        ...(args.name === undefined ? {} : { name: args.name }),
-        ...(args.notes === undefined ? {} : { notes: args.notes }),
-      },
-      {
-        cash: {
-          ...(args.accountType === undefined
-            ? {}
-            : { accountType: args.accountType }),
-          ...(args.institution === undefined ? {} : { institution: args.institution }),
-          ...(dormancy === undefined ? {} : { dormancy }),
-        },
-      },
-    );
-  });
+  const updated = await withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    updateCashAccountIn(tx, ctx, args),
+  );
 
   if (updated === undefined) throw new VersionConflictError();
   return updated;
@@ -302,6 +333,39 @@ export interface UpdateOtherAssetArgs {
   readonly includeInFinancialNetWorth?: boolean | undefined;
 }
 
+async function updateOtherAssetIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: UpdateOtherAssetArgs,
+): Promise<PositionRow | undefined> {
+  const existing = await requirePositionIn(tx, args.positionId);
+  if (existing.kind !== 'other_asset') throw new NotFoundError('That asset no longer exists.');
+  assertNotFuture(ctx, args.acquisitionDate);
+
+  return updatePositionIn(
+    tx,
+    { userId: ctx.userId, requestId: ctx.requestId },
+    args.positionId,
+    args.expectedVersion,
+    {
+      ...(args.name === undefined ? {} : { name: args.name }),
+      ...(args.notes === undefined ? {} : { notes: args.notes }),
+    },
+    {
+      otherAsset: {
+        ...(args.assetType === undefined ? {} : { assetType: args.assetType }),
+        ...(args.acquisitionDate === undefined ? {} : { acquisitionDate: args.acquisitionDate }),
+        ...(args.acquisitionValue === undefined
+          ? {}
+          : { acquisitionValue: args.acquisitionValue }),
+        ...(args.includeInFinancialNetWorth === undefined
+          ? {}
+          : { includeInFinancialNetWorth: args.includeInFinancialNetWorth }),
+      },
+    },
+  );
+}
+
 /**
  * Edit an other asset, including its inclusion preference.
  *
@@ -315,33 +379,8 @@ export async function updateOtherAsset(
   ctx: RequestContext,
   args: UpdateOtherAssetArgs,
 ): Promise<PositionRow> {
-  const existing = await requirePosition(deps, ctx, args.positionId);
-  if (existing.kind !== 'other_asset') throw new NotFoundError('That asset no longer exists.');
-  assertNotFuture(ctx, args.acquisitionDate);
-
-  const updated = await updatePosition(
-    deps.db,
-    { userId: ctx.userId, requestId: ctx.requestId },
-    args.positionId,
-    args.expectedVersion,
-    {
-      ...(args.name === undefined ? {} : { name: args.name }),
-      ...(args.notes === undefined ? {} : { notes: args.notes }),
-    },
-    {
-      otherAsset: {
-        ...(args.assetType === undefined
-          ? {}
-          : { assetType: args.assetType }),
-        ...(args.acquisitionDate === undefined ? {} : { acquisitionDate: args.acquisitionDate }),
-        ...(args.acquisitionValue === undefined
-          ? {}
-          : { acquisitionValue: args.acquisitionValue }),
-        ...(args.includeInFinancialNetWorth === undefined
-          ? {}
-          : { includeInFinancialNetWorth: args.includeInFinancialNetWorth }),
-      },
-    },
+  const updated = await withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    updateOtherAssetIn(tx, ctx, args),
   );
 
   if (updated === undefined) throw new VersionConflictError();
@@ -354,21 +393,12 @@ export interface ClosePositionArgs {
   readonly closedOn: string;
 }
 
-/**
- * Close a position (M6).
- *
- * Closing requires a final valuation of **zero** on the closing date. That is
- * not bureaucracy: an account closed while it still shows €4,000 would drop
- * that money out of net worth with no record of where it went, which is exactly
- * the kind of silent loss this product exists to prevent. The message says what
- * to do instead.
- */
-export async function closePosition(
-  deps: PositionDependencies,
+async function closePositionIn(
+  tx: Transaction,
   ctx: RequestContext,
   args: ClosePositionArgs,
-): Promise<PositionRow> {
-  const existing = await requirePosition(deps, ctx, args.positionId);
+): Promise<PositionRow | undefined> {
+  const existing = await requirePositionIn(tx, args.positionId);
   assertNotFuture(ctx, args.closedOn);
 
   if (existing.status === 'closed') {
@@ -380,7 +410,7 @@ export async function closePosition(
     });
   }
 
-  const latest = await findLatestValuation(deps.db, ctx.userId, args.positionId, args.closedOn);
+  const latest = await findLatestValuationIn(tx, args.positionId, args.closedOn);
   if (latest === undefined || !new Decimal(latest.amount).isZero()) {
     throw new ImpossibleOperationError(
       existing.kind === 'cash'
@@ -389,15 +419,62 @@ export async function closePosition(
     );
   }
 
-  const updated = await updatePosition(
-    deps.db,
+  return updatePositionIn(
+    tx,
     { userId: ctx.userId, requestId: ctx.requestId },
     args.positionId,
     args.expectedVersion,
     { status: 'closed', closedOn: args.closedOn },
   );
+}
+
+/**
+ * Close a position (M6).
+ *
+ * Closing requires a final valuation of **zero** on the closing date. That is
+ * not bureaucracy: an account closed while it still shows €4,000 would drop
+ * that money out of net worth with no record of where it went, which is exactly
+ * the kind of silent loss this product exists to prevent. The message says what
+ * to do instead.
+ *
+ * The zero it requires and the close it writes are one transaction: a balance
+ * recorded between the two would otherwise close an account over money that had
+ * just arrived (30.22 item 5).
+ */
+export async function closePosition(
+  deps: PositionDependencies,
+  ctx: RequestContext,
+  args: ClosePositionArgs,
+): Promise<PositionRow> {
+  const updated = await withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    closePositionIn(tx, ctx, args),
+  );
+
   if (updated === undefined) throw new VersionConflictError();
   return updated;
+}
+
+async function removePositionIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  positionId: string,
+): Promise<void> {
+  await requirePositionIn(tx, positionId);
+
+  const valuations = await countValuationsIn(tx, positionId);
+  if (valuations > 0) {
+    throw new ImpossibleOperationError(
+      'This account has recorded balances, so deleting it would delete history. Close it instead — it keeps everything and stops counting towards net worth.',
+    );
+  }
+
+  const deleted = await deletePositionIn(
+    tx,
+    { userId: ctx.userId, requestId: ctx.requestId },
+    positionId,
+  );
+  /* v8 ignore next -- `requirePositionIn` has already established it exists. */
+  if (!deleted) throw new NotFoundError('That account no longer exists.');
 }
 
 /**
@@ -405,27 +482,16 @@ export async function closePosition(
  *
  * The database enforces it too: the `NO ACTION` foreign key from
  * `position_valuations` refuses. This check exists so the answer is a sentence
- * rather than a constraint violation.
+ * rather than a constraint violation — and it is read in the same transaction
+ * as the delete, so a balance recorded in between cannot be deleted by a
+ * request that was told there were none.
  */
 export async function removePosition(
   deps: PositionDependencies,
   ctx: RequestContext,
   positionId: string,
 ): Promise<void> {
-  await requirePosition(deps, ctx, positionId);
-
-  const valuations = await countValuations(deps.db, ctx.userId, positionId);
-  if (valuations > 0) {
-    throw new ImpossibleOperationError(
-      'This account has recorded balances, so deleting it would delete history. Close it instead — it keeps everything and stops counting towards net worth.',
-    );
-  }
-
-  const deleted = await deletePosition(
-    deps.db,
-    { userId: ctx.userId, requestId: ctx.requestId },
-    positionId,
+  await withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    removePositionIn(tx, ctx, positionId),
   );
-  /* v8 ignore next -- `requirePosition` has already established it exists. */
-  if (!deleted) throw new NotFoundError('That account no longer exists.');
 }

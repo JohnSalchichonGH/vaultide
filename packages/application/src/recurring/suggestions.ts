@@ -1,8 +1,8 @@
 import {
-  deleteSkip,
+  deleteSkipIn,
   findCategoryIn,
   findSkipIn,
-  findTemplate,
+  findTemplateIn,
   hasMaterializedOccurrenceIn,
   insertExpenseEntryIn,
   insertIncomeEntryIn,
@@ -11,8 +11,8 @@ import {
   listResolvedOccurrenceDatesIn,
   listSkips,
   listTerms,
+  listTermsIn,
   lockTemplateIn,
-  withUser,
   type ExpenseEntryRow,
   type IncomeEntryRow,
   type RecurringTemplateRow,
@@ -29,6 +29,7 @@ import {
 } from '@vaultide/finance';
 import { isRentalOnlySkipReason, type SkipReason } from '@vaultide/validation';
 import type { RequestContext } from '../context';
+import { withUserWrite } from '../coordination';
 import {
   DuplicateConflictError,
   ImpossibleOperationError,
@@ -36,7 +37,12 @@ import {
   ValidationError,
 } from '../errors';
 import { assertCategoryUsableInPhase3 } from '../flows/expenses';
-import { clearDormancyForFlowIn, auditContextOf, resolveTrackedCashLeg, type FlowDependencies } from '../flows/shared';
+import {
+  clearDormancyForFlowIn,
+  auditContextOf,
+  resolveTrackedCashLegIn,
+  type FlowDependencies,
+} from '../flows/shared';
 
 /**
  * Accepting and skipping recurring occurrences (blueprint 6.2, 15.3, 20.3,
@@ -283,12 +289,12 @@ export type AcceptedOccurrence =
  * no settlement preference, and inferring one from a NULL cash position would
  * contradict 8.1, where a null cash leg is a tracked flow awaiting attribution.
  */
-export async function acceptSuggestion(
-  deps: FlowDependencies,
+async function acceptSuggestionIn(
+  tx: Transaction,
   ctx: RequestContext,
   args: AcceptSuggestionArgs,
-): Promise<AcceptedOccurrence> {
-  const template = await findTemplate(deps.db, ctx.userId, args.templateId);
+): Promise<{ accepted: AcceptedOccurrence; currency: string; financialDate: string }> {
+  const template = await findTemplateIn(tx, args.templateId);
   if (template === undefined) throw new NotFoundError('That source no longer exists.');
 
   // An expense has no gross figure to carry (6.2: `expense_entries` has no such
@@ -338,7 +344,7 @@ export async function acceptSuggestion(
     }
   }
 
-  const terms = (await listTerms(deps.db, ctx.userId, args.templateId)).map((row) => ({
+  const terms = (await listTermsIn(tx, args.templateId)).map((row) => ({
     id: row.id,
     templateId: row.templateId,
     effectiveFrom: plainDate(row.effectiveFrom),
@@ -380,7 +386,7 @@ export async function acceptSuggestion(
   const cashPositionId =
     args.cashPositionId === undefined ? template.cashPositionId : args.cashPositionId;
 
-  await resolveTrackedCashLeg(deps, ctx, {
+  await resolveTrackedCashLegIn(tx, {
     cashPositionId,
     currency: template.currency,
     on: financialDate,
@@ -390,7 +396,7 @@ export async function acceptSuggestion(
   const audit = auditContextOf(ctx);
   const occurrence = { templateId: args.templateId, occurrenceDate: args.occurrenceDate };
 
-  const result = await withUser(deps.db, { userId: ctx.userId }, async (tx) => {
+  const accepted = await (async (): Promise<AcceptedOccurrence> => {
     const locked = await claimOccurrenceIn(tx, { ...occurrence, today: ctx.today });
 
     if (locked.kind === 'income') {
@@ -440,10 +446,30 @@ export async function acceptSuggestion(
     });
     await clearDormancyForFlowIn(tx, ctx, [cashPositionId]);
     return { kind: 'expense' as const, entry };
-  });
+  })();
 
-  await deps.fx.ensureHistory(template.currency, financialDate);
-  return result;
+  return { accepted, currency: template.currency, financialDate };
+}
+
+/**
+ * Accept one occurrence, creating the source row it materializes.
+ *
+ * One transaction under the per-user write mutex: the template, its terms, the
+ * cash leg the flow attaches to and the occurrence claim are all read there, so
+ * a term edited or an account closed between the read and the write cannot
+ * change what this acceptance meant (30.22 item 5).
+ */
+export async function acceptSuggestion(
+  deps: FlowDependencies,
+  ctx: RequestContext,
+  args: AcceptSuggestionArgs,
+): Promise<AcceptedOccurrence> {
+  const written = await withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    acceptSuggestionIn(tx, ctx, args),
+  );
+
+  await deps.fx.ensureHistory(written.currency, written.financialDate);
+  return written.accepted;
 }
 
 export interface SkipSuggestionArgs {
@@ -461,30 +487,36 @@ export interface SkipSuggestionArgs {
  * the property was empty. That is why `vacant` and `non_payment` are refused
  * for anything but a rental template rather than quietly accepted.
  */
+async function skipSuggestionIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: SkipSuggestionArgs,
+): Promise<RecurringTemplateSkipRow> {
+  const template = await claimOccurrenceIn(tx, args);
+
+  if (isRentalOnlySkipReason(args.reason) && template.incomeKind !== 'rental') {
+    throw new ValidationError(
+      'A vacancy or a missed payment is something only a rental can record.',
+      { reason: ['Choose another reason.'] },
+    );
+  }
+
+  return insertSkipIn(tx, auditContextOf(ctx), {
+    templateId: args.templateId,
+    occurrenceDate: args.occurrenceDate,
+    reason: args.reason,
+    note: args.note ?? null,
+  });
+}
+
 export async function skipSuggestion(
   deps: FlowDependencies,
   ctx: RequestContext,
   args: SkipSuggestionArgs,
 ): Promise<RecurringTemplateSkipRow> {
-  const audit = auditContextOf(ctx);
-
-  return withUser(deps.db, { userId: ctx.userId }, async (tx) => {
-    const template = await claimOccurrenceIn(tx, args);
-
-    if (isRentalOnlySkipReason(args.reason) && template.incomeKind !== 'rental') {
-      throw new ValidationError(
-        'A vacancy or a missed payment is something only a rental can record.',
-        { reason: ['Choose another reason.'] },
-      );
-    }
-
-    return insertSkipIn(tx, audit, {
-      templateId: args.templateId,
-      occurrenceDate: args.occurrenceDate,
-      reason: args.reason,
-      note: args.note ?? null,
-    });
-  });
+  return withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    skipSuggestionIn(tx, ctx, args),
+  );
 }
 
 /**
@@ -493,12 +525,27 @@ export async function skipSuggestion(
  * The occurrence becomes due again, unless an accepted flow exists for it —
  * which `claimOccurrenceIn` would have prevented in the first place.
  */
+export interface UnskipSuggestionArgs {
+  readonly skipId: string;
+  readonly reason?: string | undefined;
+}
+
+async function unskipSuggestionIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: UnskipSuggestionArgs,
+): Promise<RecurringTemplateSkipRow> {
+  const removed = await deleteSkipIn(tx, auditContextOf(ctx, args.reason), args.skipId);
+  if (removed === undefined) throw new NotFoundError('That skipped occurrence no longer exists.');
+  return removed;
+}
+
 export async function unskipSuggestion(
   deps: FlowDependencies,
   ctx: RequestContext,
-  args: { skipId: string; reason?: string | undefined },
+  args: UnskipSuggestionArgs,
 ): Promise<RecurringTemplateSkipRow> {
-  const removed = await deleteSkip(deps.db, auditContextOf(ctx, args.reason), args.skipId);
-  if (removed === undefined) throw new NotFoundError('That skipped occurrence no longer exists.');
-  return removed;
+  return withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    unskipSuggestionIn(tx, ctx, args),
+  );
 }

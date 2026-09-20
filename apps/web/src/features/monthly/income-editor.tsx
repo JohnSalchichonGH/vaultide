@@ -922,9 +922,19 @@ function useEntrySave(entry: MonthlyIncomeEntryDto) {
 
   const remove = async (): Promise<SaveState> => {
     if (!canWrite(state)) return state;
-    return runSave(() => deleteIncomeEntryAction({ entryId: entry.entryId }), setState, () => {
-      router.refresh();
-    });
+    // The version this row was rendered at (6.3, 20.3): an entry corrected
+    // elsewhere refuses rather than being deleted by a stale request.
+    return runSave(
+      () =>
+        deleteIncomeEntryAction({
+          entryId: entry.entryId,
+          expectedVersion: entry.version,
+        }),
+      setState,
+      () => {
+        router.refresh();
+      },
+    );
   };
 
   return {

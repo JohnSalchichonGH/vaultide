@@ -1,27 +1,27 @@
 import {
-  deleteExpenseEntry as deleteExpenseEntryRow,
-  findExpenseEntry,
+  deleteExpenseEntryIn as deleteExpenseEntryRowIn,
+  findExpenseEntryIn,
   insertExpenseEntryIn,
-  listCategoryRecords,
-  updateExpenseEntryIn,
-  withUser,
+  lockCategoryIn,
+  updateExpenseEntryIn as updateExpenseEntryRowIn,
   type CategoryRecord,
-  type Database,
   type ExpenseEntryRow,
+  type Transaction,
 } from '@vaultide/db';
 import { phase3ExpenseSettlements, type ExpenseSettlement } from '@vaultide/validation';
 import type { RequestContext } from '../context';
+import { withUserWrite } from '../coordination';
 import { NotFoundError, ValidationError, VersionConflictError } from '../errors';
 import {
   assertNotFuture,
   auditContextOf,
   clearDormancyForFlowIn,
-  resolveTrackedCashLeg,
+  resolveTrackedCashLegIn,
   type FlowDependencies,
 } from './shared';
 
 /**
- * Expense entries (blueprint 6.2, 7.4, 12.5, R24).
+ * Expense entries (blueprint 6.2, 7.4, 12.5, 20.3, 30.22, R24).
  *
  * The three Phase 3 settlements are three different facts, and the whole point
  * of keeping them apart is that two of them are not tracked spending:
@@ -65,14 +65,27 @@ export function assertExpenseSettlementAllowed(settlement: ExpenseSettlement): v
   );
 }
 
-/** The category must be the user's, and live (6.2, 6.3). */
-export async function requireCategory(
-  db: Database,
-  ctx: RequestContext,
+/**
+ * The category must be the user's, and **live until this write commits**
+ * (6.2, 6.3, 30.22 item 8; ADR 0010 §9).
+ *
+ * Choosing a category afresh is the one place `categories.archived_at` decides
+ * whether a financial write is allowed, so the row is read under `FOR SHARE`
+ * and held for the rest of the transaction. Archiving is an `UPDATE`, which
+ * `FOR SHARE` conflicts with: once this read has accepted the category as live,
+ * an archive on another connection waits until the expense is committed, and an
+ * archive that got there first makes this read see the archived row and refuse.
+ *
+ * Reading a category to classify an **existing** row is a different question
+ * and takes no lock: an archived category's `kind` still says what its historic
+ * expenses were (7.4, R12), and requiring liveness there would let tidying up
+ * rewrite the past.
+ */
+export async function requireLiveCategoryIn(
+  tx: Transaction,
   categoryId: string,
 ): Promise<CategoryRecord> {
-  const categories = await listCategoryRecords(db, ctx.userId, { includeArchived: true });
-  const category = categories.find((row) => row.id === categoryId);
+  const category = await lockCategoryIn(tx, categoryId);
   if (category === undefined) throw new NotFoundError('That category no longer exists.');
   if (category.archivedAt !== null) {
     throw new ValidationError('That category is archived. Choose another one.', {
@@ -123,22 +136,22 @@ export function assertCategoryUsableInPhase3(category: CategoryRecord): void {
   }
 }
 
-export async function createExpenseEntry(
-  deps: FlowDependencies,
+async function createExpenseEntryIn(
+  tx: Transaction,
   ctx: RequestContext,
   args: ExpenseEntryArgs,
 ): Promise<ExpenseEntryRow> {
   assertNotFuture(ctx, args.incurredOn, 'incurredOn');
   assertExpenseSettlementAllowed(args.settlement);
 
-  const category = await requireCategory(deps.db, ctx, args.categoryId);
+  const category = await requireLiveCategoryIn(tx, args.categoryId);
   assertCategoryUsableInPhase3(category);
 
   // 6.2 domain rule: an untracked settlement never carries a cash position.
   const cashPositionId = args.settlement === 'tracked_cash' ? (args.cashPositionId ?? null) : null;
 
   if (args.settlement === 'tracked_cash') {
-    await resolveTrackedCashLeg(deps, ctx, {
+    await resolveTrackedCashLegIn(tx, {
       cashPositionId,
       currency: args.currency,
       on: args.incurredOn,
@@ -146,22 +159,29 @@ export async function createExpenseEntry(
     });
   }
 
-  const audit = auditContextOf(ctx);
-  const created = await withUser(deps.db, { userId: ctx.userId }, async (tx) => {
-    const row = await insertExpenseEntryIn(tx, audit, {
-      categoryId: args.categoryId,
-      incurredOn: args.incurredOn,
-      amount: args.amount,
-      currency: args.currency,
-      settlement: args.settlement,
-      cashPositionId,
-      description: args.description ?? null,
-      tags: args.tags ?? [],
-      isOneOff: args.isOneOff ?? false,
-    });
-    await clearDormancyForFlowIn(tx, ctx, [cashPositionId]);
-    return row;
+  const row = await insertExpenseEntryIn(tx, auditContextOf(ctx), {
+    categoryId: args.categoryId,
+    incurredOn: args.incurredOn,
+    amount: args.amount,
+    currency: args.currency,
+    settlement: args.settlement,
+    cashPositionId,
+    description: args.description ?? null,
+    tags: args.tags ?? [],
+    isOneOff: args.isOneOff ?? false,
   });
+  await clearDormancyForFlowIn(tx, ctx, [cashPositionId]);
+  return row;
+}
+
+export async function createExpenseEntry(
+  deps: FlowDependencies,
+  ctx: RequestContext,
+  args: ExpenseEntryArgs,
+): Promise<ExpenseEntryRow> {
+  const created = await withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    createExpenseEntryIn(tx, ctx, args),
+  );
 
   await deps.fx.ensureHistory(args.currency, args.incurredOn);
   return created;
@@ -181,12 +201,12 @@ export interface UpdateExpenseEntryArgs {
   readonly reason?: string | undefined;
 }
 
-export async function updateExpenseEntry(
-  deps: FlowDependencies,
+async function updateExpenseEntryIn(
+  tx: Transaction,
   ctx: RequestContext,
   args: UpdateExpenseEntryArgs,
-): Promise<ExpenseEntryRow> {
-  const existing = await findExpenseEntry(deps.db, ctx.userId, args.entryId);
+): Promise<ExpenseEntryRow | undefined> {
+  const existing = await findExpenseEntryIn(tx, args.entryId, { lock: 'update' });
   if (existing === undefined) throw new NotFoundError('That expense no longer exists.');
 
   if (existing.transferId !== null) {
@@ -204,8 +224,11 @@ export async function updateExpenseEntry(
   assertNotFuture(ctx, incurredOn, 'incurredOn');
   assertExpenseSettlementAllowed(settlement);
 
+  // Only when the request states a category. A correction that leaves the
+  // category alone is carrying history, not choosing afresh, so it must not
+  // start requiring the category to be live (30.22 item 9).
   if (args.categoryId !== undefined) {
-    assertCategoryUsableInPhase3(await requireCategory(deps.db, ctx, args.categoryId));
+    assertCategoryUsableInPhase3(await requireLiveCategoryIn(tx, args.categoryId));
   }
 
   const requestedCash =
@@ -213,7 +236,7 @@ export async function updateExpenseEntry(
   const cashPositionId = settlement === 'tracked_cash' ? requestedCash : null;
 
   if (settlement === 'tracked_cash') {
-    await resolveTrackedCashLeg(deps, ctx, {
+    await resolveTrackedCashLegIn(tx, {
       cashPositionId,
       currency: existing.currency,
       on: incurredOn,
@@ -221,12 +244,12 @@ export async function updateExpenseEntry(
     });
   }
 
-  // One scope, as creation already does — see the note on the income twin. The
-  // corrected row, its audit entry and the dormancy the correction clears commit
-  // together or not at all (ADR 0005 §2).
-  const audit = auditContextOf(ctx, args.reason);
-  const updated = await withUser(deps.db, { userId: ctx.userId }, async (tx) => {
-    const row = await updateExpenseEntryIn(tx, audit, args.entryId, args.expectedVersion, {
+  const row = await updateExpenseEntryRowIn(
+    tx,
+    auditContextOf(ctx, args.reason),
+    args.entryId,
+    args.expectedVersion,
+    {
       incurredOn,
       settlement,
       cashPositionId,
@@ -235,39 +258,82 @@ export async function updateExpenseEntry(
       ...(args.description === undefined ? {} : { description: args.description }),
       ...(args.tags === undefined ? {} : { tags: args.tags }),
       ...(args.isOneOff === undefined ? {} : { isOneOff: args.isOneOff }),
-    });
-    if (row === undefined) return undefined;
-    await clearDormancyForFlowIn(tx, ctx, [cashPositionId]);
-    return row;
-  });
+    },
+  );
+  if (row === undefined) return undefined;
+  await clearDormancyForFlowIn(tx, ctx, [cashPositionId]);
+  return row;
+}
+
+/**
+ * Correct an expense entry.
+ *
+ * One scope, as creation already does — see the note on the income twin. The
+ * row it was judged from, the corrected row, its audit entry, the category it
+ * holds live and the dormancy the correction clears commit together or not at
+ * all (ADR 0005 §2, ADR 0010 §5).
+ */
+export async function updateExpenseEntry(
+  deps: FlowDependencies,
+  ctx: RequestContext,
+  args: UpdateExpenseEntryArgs,
+): Promise<ExpenseEntryRow> {
+  const updated = await withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    updateExpenseEntryIn(tx, ctx, args),
+  );
 
   if (updated === undefined) {
     throw new VersionConflictError('This expense changed while you were editing it.');
   }
-
   return updated;
 }
 
-export async function deleteExpenseEntry(
-  deps: FlowDependencies,
+export interface DeleteExpenseEntryArgs {
+  readonly entryId: string;
+  /** The version the client rendered (6.3, 20.3, 30.22 item 10). */
+  readonly expectedVersion: number;
+  readonly reason?: string | undefined;
+}
+
+async function deleteExpenseEntryIn(
+  tx: Transaction,
   ctx: RequestContext,
-  args: { entryId: string; reason?: string | undefined },
+  args: DeleteExpenseEntryArgs,
 ): Promise<ExpenseEntryRow> {
-  const existing = await findExpenseEntry(deps.db, ctx.userId, args.entryId);
+  const existing = await findExpenseEntryIn(tx, args.entryId, { lock: 'update' });
   if (existing === undefined) throw new NotFoundError('That expense no longer exists.');
   if (existing.transferId !== null) {
+    // Answered before the version, because it is true of the row at every
+    // version: a fee is not deletable here whatever the caller last saw.
     throw new ValidationError(
       'This is a transfer’s fee. Remove it from the transfer, so the transfer does not keep a fee that no longer exists.',
       { entryId: ['Remove this fee from its transfer.'] },
     );
   }
+  if (existing.version !== args.expectedVersion) {
+    throw new VersionConflictError(
+      'This expense changed after you opened it. Reload to see what it says now.',
+    );
+  }
 
-  const removed = await deleteExpenseEntryRow(
-    deps.db,
-    auditContextOf(ctx, args.reason),
-    args.entryId,
-  );
-  /* v8 ignore next -- the row was read a statement ago inside the same session. */
+  const removed = await deleteExpenseEntryRowIn(tx, auditContextOf(ctx, args.reason), args.entryId);
+  /* v8 ignore next -- the row is held under FOR UPDATE in this transaction. */
   if (removed === undefined) throw new NotFoundError('That expense no longer exists.');
   return removed;
+}
+
+/**
+ * Delete an expense entry at the version the client saw (6.3, 30.22 item 10).
+ *
+ * A stale version refuses and deletes nothing, so an expense corrected
+ * elsewhere is never removed by a request that was about the version before it.
+ */
+export async function deleteExpenseEntry(
+  deps: FlowDependencies,
+  ctx: RequestContext,
+  args: DeleteExpenseEntryArgs,
+): Promise<ExpenseEntryRow> {
+  return withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    deleteExpenseEntryIn(tx, ctx, args),
+  );
 }

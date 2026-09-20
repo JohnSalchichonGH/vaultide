@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import { currencies } from '../schema/currencies';
-import { withoutUser, type Database } from '../client';
+import { withoutUser, type Database, type Transaction } from '../client';
 
 /**
  * `currencies` reads (blueprint 6.2, 19 "repositories").
@@ -50,21 +50,35 @@ export async function findUsableCurrencyCodes(
   db: Database,
   codes: readonly string[],
 ): Promise<string[]> {
+  return withoutUser(db, async (tx) => findUsableCurrencyCodesIn(tx, codes));
+}
+
+/**
+ * The same question inside a caller's transaction.
+ *
+ * A financial write validates its currency after taking the per-user write
+ * mutex (ADR 0010 §5), so the check cannot open a scope of its own. The table
+ * is global and carries no RLS policy, so reading it inside a user-scoped
+ * transaction returns the whole active catalogue exactly as `withoutUser`
+ * would; the user context simply does not apply to it.
+ */
+export async function findUsableCurrencyCodesIn(
+  tx: Transaction,
+  codes: readonly string[],
+): Promise<string[]> {
   const wanted = [...new Set(codes.map((code) => code.trim().toUpperCase()))];
   if (wanted.length === 0) return [];
 
-  const rows = await withoutUser(db, async (tx) =>
-    tx
-      .select({ code: currencies.code })
-      .from(currencies)
-      .where(
-        and(
-          inArray(currencies.code, wanted),
-          eq(currencies.isActive, true),
-          eq(currencies.isFxSupported, true),
-        ),
+  const rows = await tx
+    .select({ code: currencies.code })
+    .from(currencies)
+    .where(
+      and(
+        inArray(currencies.code, wanted),
+        eq(currencies.isActive, true),
+        eq(currencies.isFxSupported, true),
       ),
-  );
+    );
 
   return rows.map((row) => row.code.trim());
 }

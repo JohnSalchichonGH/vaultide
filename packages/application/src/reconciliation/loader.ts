@@ -1,12 +1,20 @@
 import {
   listCategoryRecords,
+  listCategoryRecordsIn,
   listExpenseEntries,
+  listExpenseEntriesIn,
   listIncomeEntries,
+  listIncomeEntriesIn,
   listResolvedOccurrencesInRange,
+  listResolvedOccurrencesInRangeIn,
   listTemplatesForRange,
+  listTemplatesForRangeIn,
   listTransfers,
+  listTransfersIn,
   loadFinancialWindow,
+  loadFinancialWindowIn,
   loadTermsForRange,
+  loadTermsForRangeIn,
   type CategoryRecord,
   type Database,
   type ExpenseEntryRow,
@@ -14,6 +22,7 @@ import {
   type PositionRecord as PositionRow,
   type RecurringTemplateRow,
   type RecurringTemplateTermRow,
+  type Transaction,
   type TransferRow,
 } from '@vaultide/db';
 import {
@@ -150,6 +159,18 @@ export function toCompletenessTemplate(row: RecurringTemplateRow): CompletenessT
   };
 }
 
+/** The rows one completed month is built from, however they were fetched. */
+interface CompletedMonthRows {
+  readonly window: Awaited<ReturnType<typeof loadFinancialWindow>>;
+  readonly income: readonly IncomeEntryRow[];
+  readonly expenses: readonly ExpenseEntryRow[];
+  readonly transfers: readonly TransferRow[];
+  readonly categories: readonly CategoryRecord[];
+  readonly templates: readonly RecurringTemplateRow[];
+  readonly resolved: readonly { templateId: string; occurrenceDate: string }[];
+  readonly terms: readonly RecurringTemplateTermRow[];
+}
+
 export async function loadCompletedMonth(
   deps: MonthDataDependencies,
   userId: string,
@@ -180,6 +201,62 @@ export async function loadCompletedMonth(
     from,
     to,
   );
+
+  return assembleCompletedMonth(
+    { window, income, expenses, transfers, categories, templates, resolved, terms },
+    month,
+    today,
+  );
+}
+
+/**
+ * The same month, read inside a caller's transaction (ADR 0010 §15).
+ *
+ * The reconciliation adjustment derives its amount from this result and writes
+ * it, so the recomputation and the write have to be one transaction under the
+ * per-user mutex: ADR 0009 §9 recorded the window between them as a known
+ * residual race, and this is what closes it.
+ *
+ * The reads are the same reads and the assembly is the same assembly. They are
+ * issued one after another rather than in parallel, because one transaction is
+ * one connection; the ordinary page read above keeps its parallel shape.
+ */
+export async function loadCompletedMonthIn(
+  tx: Transaction,
+  month: MonthKey,
+  today: string,
+): Promise<LoadedCompletedMonth> {
+  const from = startOfMonthKey(month);
+  const to = endOfMonthKey(month);
+
+  const window = await loadFinancialWindowIn(tx, to);
+  const income = await listIncomeEntriesIn(tx, from, to);
+  const expenses = await listExpenseEntriesIn(tx, from, to);
+  const transfers = await listTransfersIn(tx, from, to);
+  const categories = await listCategoryRecordsIn(tx, { includeArchived: true });
+  const templates = await listTemplatesForRangeIn(tx, from, to);
+  const resolved = await listResolvedOccurrencesInRangeIn(tx, from, to);
+  const terms = await loadTermsForRangeIn(
+    tx,
+    templates.map((template) => template.id),
+    from,
+    to,
+  );
+
+  return assembleCompletedMonth(
+    { window, income, expenses, transfers, categories, templates, resolved, terms },
+    month,
+    today,
+  );
+}
+
+/** One implementation of what a completed month's rows mean. */
+function assembleCompletedMonth(
+  rows: CompletedMonthRows,
+  month: MonthKey,
+  today: string,
+): LoadedCompletedMonth {
+  const { window, income, expenses, transfers, categories, templates, resolved, terms } = rows;
 
   const valuationsByPosition = new Map<string, ReturnType<typeof toValuationRecord>[]>();
   for (const row of window.valuations) {
@@ -224,3 +301,4 @@ export async function loadCompletedMonth(
     })),
   };
 }
+

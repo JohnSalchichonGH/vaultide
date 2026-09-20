@@ -356,7 +356,10 @@ describe('a correction cannot leave the episode resting on a record that is gone
   });
 
   it('deleting the anchor balance wakes the account, and nothing is re-anchored', async () => {
-    await removeValuation(positions(), SEPT_15, anchor.id);
+    await removeValuation(positions(), SEPT_15, {
+      valuationId: anchor.id,
+      expectedVersion: anchor.version,
+    });
     expect(await state()).toMatchObject(AWAKE);
   });
 
@@ -396,12 +399,18 @@ describe('a correction cannot leave the episode resting on a record that is gone
 
   it('leaves the episode alone when some other zero balance is deleted', async () => {
     const later = await balance(savings, '2026-06-30', '0', 'month_end');
-    await removeValuation(positions(), SEPT_15, later.id);
+    await removeValuation(positions(), SEPT_15, {
+      valuationId: later.id,
+      expectedVersion: later.version,
+    });
     expect(await state()).toMatchObject({ dormant: true, from: '2026-03-31' });
   });
 
   it('lets the user mark it dormant again afterwards, on whatever evidence is left', async () => {
-    await removeValuation(positions(), SEPT_15, anchor.id);
+    await removeValuation(positions(), SEPT_15, {
+      valuationId: anchor.id,
+      expectedVersion: anchor.version,
+    });
     // What is left is January's 700: not an account that can be dormant.
     await expect(markDormant()).rejects.toMatchObject({ code: 'IMPOSSIBLE_OPERATION' });
   });

@@ -72,8 +72,17 @@ export function updateIncomeEntryInput(today: string) {
   });
 }
 
+/**
+ * Deleting is version-aware (6.3, 20.3, 30.22 item 10).
+ *
+ * `expectedVersion` is the version the client rendered, so a row corrected
+ * elsewhere refuses rather than being taken down by a request that was about
+ * the version before it. It changes the safety contract, not the ceremony: the
+ * control stays one click.
+ */
 export const deleteIncomeEntryInput = z.object({
   entryId: z.uuid(),
+  expectedVersion,
   reason: reason.optional(),
 });
 
@@ -113,6 +122,7 @@ export function updateExpenseEntryInput(today: string) {
 
 export const deleteExpenseEntryInput = z.object({
   entryId: z.uuid(),
+  expectedVersion,
   reason: reason.optional(),
 });
 
@@ -207,8 +217,15 @@ export function updateTransferInput(today: string) {
   });
 }
 
+/**
+ * Deleting a transfer takes the whole aggregate down, so it states the whole
+ * aggregate it saw: the transfer's own version and what it saw of the fee, in
+ * the same shape a correction uses (ADR 0006 §2; 30.22 item 10).
+ */
 export const deleteTransferInput = z.object({
   transferId: z.uuid(),
+  expectedVersion,
+  expectedFee: transferFeeExpectation,
   reason: reason.optional(),
 });
 

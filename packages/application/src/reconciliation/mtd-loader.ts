@@ -1,13 +1,19 @@
 import {
   listCategoryRecords,
+  listCategoryRecordsIn,
   listExpenseEntries,
+  listExpenseEntriesIn,
   listIncomeEntries,
+  listIncomeEntriesIn,
   listTransfers,
+  listTransfersIn,
   loadFinancialWindow,
+  loadFinancialWindowIn,
   type CategoryRecord,
   type ExpenseEntryRow,
   type IncomeEntryRow,
   type PositionRecord as PositionRow,
+  type Transaction,
   type TransferRow,
   type ValuationRow,
 } from '@vaultide/db';
@@ -112,6 +118,15 @@ export function monthToDateInputOf(rows: MonthToDateInput): MonthToDateInput {
   };
 }
 
+/** The rows one month-to-date read is built from, however they were fetched. */
+interface MonthToDateRows {
+  readonly window: Awaited<ReturnType<typeof loadFinancialWindow>>;
+  readonly income: readonly IncomeEntryRow[];
+  readonly expenses: readonly ExpenseEntryRow[];
+  readonly transfers: readonly TransferRow[];
+  readonly categories: readonly CategoryRecord[];
+}
+
 export async function loadMonthToDate(
   deps: MonthDataDependencies,
   userId: string,
@@ -128,6 +143,36 @@ export async function loadMonthToDate(
     // of an archived one still decides how that expense is classified (R12).
     listCategoryRecords(deps.db, userId, { includeArchived: true }),
   ]);
+
+  return assembleMonthToDate({ window, income, expenses, transfers, categories }, today);
+}
+
+/**
+ * The same read inside a caller's transaction (ADR 0010 §15).
+ *
+ * The current month's reconciliation adjustment derives its amount and its date
+ * from this result and writes them, so the recomputation belongs in the write's
+ * own mutex-owned transaction. Same reads, same assembly, issued one after
+ * another because one transaction is one connection.
+ */
+export async function loadMonthToDateIn(
+  tx: Transaction,
+  today: PlainDate,
+): Promise<MonthToDateData> {
+  const from = startOfMonthKey(monthKey(today));
+
+  const window = await loadFinancialWindowIn(tx, today);
+  const income = await listIncomeEntriesIn(tx, from, today);
+  const expenses = await listExpenseEntriesIn(tx, from, today);
+  const transfers = await listTransfersIn(tx, from, today);
+  const categories = await listCategoryRecordsIn(tx, { includeArchived: true });
+
+  return assembleMonthToDate({ window, income, expenses, transfers, categories }, today);
+}
+
+/** One implementation of what the current month's rows mean. */
+function assembleMonthToDate(rows: MonthToDateRows, today: PlainDate): MonthToDateData {
+  const { window, income, expenses, transfers, categories } = rows;
 
   const valuationsByPosition = new Map<string, ReturnType<typeof toValuationRecord>[]>();
   for (const row of window.valuations) {

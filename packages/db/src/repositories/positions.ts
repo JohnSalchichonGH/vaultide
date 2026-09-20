@@ -136,17 +136,21 @@ export async function listPositions(
   userId: string,
   options: ListPositionsOptions = {},
 ): Promise<PositionRecord[]> {
-  const rows = await withUser(db, { userId }, async (tx) => {
-    const filters = [
-      ...(options.kinds === undefined ? [] : [inArray(positions.kind, [...options.kinds])]),
-      ...(options.includeArchived === true
-        ? []
-        : [sql`${positions.status} <> 'archived'`]),
-    ];
-    return positionQuery(tx)
-      .where(filters.length === 0 ? undefined : and(...filters))
-      .orderBy(asc(positions.sortOrder), asc(positions.name));
-  });
+  return withUser(db, { userId }, async (tx) => listPositionsIn(tx, options));
+}
+
+/** The same list inside a caller's transaction. */
+export async function listPositionsIn(
+  tx: Transaction,
+  options: ListPositionsOptions = {},
+): Promise<PositionRecord[]> {
+  const filters = [
+    ...(options.kinds === undefined ? [] : [inArray(positions.kind, [...options.kinds])]),
+    ...(options.includeArchived === true ? [] : [sql`${positions.status} <> 'archived'`]),
+  ];
+  const rows = await positionQuery(tx)
+    .where(filters.length === 0 ? undefined : and(...filters))
+    .orderBy(asc(positions.sortOrder), asc(positions.name));
   return rows.map(toRecord);
 }
 
@@ -155,9 +159,21 @@ export async function findPosition(
   userId: string,
   positionId: string,
 ): Promise<PositionRecord | undefined> {
-  const rows = await withUser(db, { userId }, async (tx) =>
-    positionQuery(tx).where(eq(positions.id, positionId)).limit(1),
-  );
+  return withUser(db, { userId }, async (tx) => findPositionIn(tx, positionId));
+}
+
+/**
+ * The same read inside a caller's transaction.
+ *
+ * Unlocked on purpose: a caller that will *decide* from this row takes
+ * `lockCashPositionsIn` instead. This is for the reads that only need to know
+ * what a position is — its currency, its window, its kind.
+ */
+export async function findPositionIn(
+  tx: Transaction,
+  positionId: string,
+): Promise<PositionRecord | undefined> {
+  const rows = await positionQuery(tx).where(eq(positions.id, positionId)).limit(1);
   const row = rows[0];
   return row === undefined ? undefined : toRecord(row);
 }
@@ -175,68 +191,71 @@ export interface CreateCashAccountInput {
 
 /**
  * Create a cash account, its subtype row and — when the user gave one — its
- * first balance, in **one** transaction (5.2: the position aggregate).
+ * first balance, inside the caller's transaction (5.2: the position aggregate).
+ *
+ * Transaction-taking rather than database-taking, like every financial write in
+ * this package now is: the per-user write mutex is held by the caller's
+ * transaction, and a repository that opened one of its own would write outside
+ * it (blueprint 20.3, 30.22; ADR 0010 §5).
  */
-export async function insertCashAccount(
-  db: Database,
+export async function insertCashAccountIn(
+  tx: Transaction,
   ctx: AuditContext,
   input: CreateCashAccountInput,
 ): Promise<PositionRecord> {
-  return withUser(db, { userId: ctx.userId }, async (tx) => {
-    const [positionRow] = await tx
-      .insert(positions)
-      .values({
-        userId: ctx.userId,
-        kind: 'cash',
-        name: input.name,
-        currency: input.currency,
-        openedOn: input.openedOn,
-        notes: input.notes,
-      })
-      .returning();
-    const created = positionRow as PositionRow;
+  const [positionRow] = await tx
+    .insert(positions)
+    .values({
+      userId: ctx.userId,
+      kind: 'cash',
+      name: input.name,
+      currency: input.currency,
+      openedOn: input.openedOn,
+      notes: input.notes,
+    })
+    .returning();
+  const created = positionRow as PositionRow;
 
-    const [cashRow] = await tx
-      .insert(cashAccounts)
-      .values({
-        positionId: created.id,
-        userId: ctx.userId,
-        kind: 'cash',
-        accountType: input.accountType,
-        institution: input.institution,
-      })
-      .returning();
+  const [cashRow] = await tx
+    .insert(cashAccounts)
+    .values({
+      positionId: created.id,
+      userId: ctx.userId,
+      kind: 'cash',
+      accountType: input.accountType,
+      institution: input.institution,
+    })
+    .returning();
 
-    await recordAudit(tx, ctx, {
-      entityTable: 'positions',
-      entityId: created.id,
-      action: 'insert',
-      after: { ...created, ...cashRow },
-    });
-
-    if (input.openingBalance !== undefined) {
-      const [valuationRow] = await tx
-        .insert(positionValuations)
-        .values({
-          userId: ctx.userId,
-          positionId: created.id,
-          valuedOn: input.openingBalance.valuedOn,
-          amount: input.openingBalance.amount,
-          source: 'entered',
-          datePrecision: 'exact',
-        })
-        .returning();
-      await recordAudit(tx, ctx, {
-        entityTable: 'position_valuations',
-        entityId: (valuationRow as { id: string }).id,
-        action: 'insert',
-        after: valuationRow as Record<string, unknown>,
-      });
-    }
-
-    const rows = await positionQuery(tx).where(eq(positions.id, created.id)).limit(1);
-    return toRecord(rows[0] as SelectedRow);
+  await recordAudit(tx, ctx, {
+    entityTable: 'positions',
+    entityId: created.id,
+    action: 'insert',
+    after: { ...created, ...cashRow },
   });
+
+  if (input.openingBalance !== undefined) {
+    const [valuationRow] = await tx
+      .insert(positionValuations)
+      .values({
+        userId: ctx.userId,
+        positionId: created.id,
+        valuedOn: input.openingBalance.valuedOn,
+        amount: input.openingBalance.amount,
+        source: 'entered',
+        datePrecision: 'exact',
+      })
+      .returning();
+    await recordAudit(tx, ctx, {
+      entityTable: 'position_valuations',
+      entityId: (valuationRow as { id: string }).id,
+      action: 'insert',
+      after: valuationRow as Record<string, unknown>,
+    });
+  }
+
+  const rows = await positionQuery(tx).where(eq(positions.id, created.id)).limit(1);
+  return toRecord(rows[0] as SelectedRow);
 }
 
 export interface CreateOtherAssetInput {
@@ -250,72 +269,70 @@ export interface CreateOtherAssetInput {
   readonly currentValue?: { readonly amount: string; readonly valuedOn: string };
 }
 
-export async function insertOtherAsset(
-  db: Database,
+export async function insertOtherAssetIn(
+  tx: Transaction,
   ctx: AuditContext,
   input: CreateOtherAssetInput,
 ): Promise<PositionRecord> {
-  return withUser(db, { userId: ctx.userId }, async (tx) => {
-    const [positionRow] = await tx
-      .insert(positions)
-      .values({
-        userId: ctx.userId,
-        kind: 'other_asset',
-        name: input.name,
-        currency: input.currency,
-        // An other asset is not "opened empty on a date": its acquisition date
-        // is metadata about the purchase, and its value only ever comes from a
-        // valuation. Leaving `opened_on` NULL keeps "unknown before the first
-        // valuation" true rather than asserting a zero nobody stated.
-        openedOn: null,
-        notes: input.notes,
-      })
-      .returning();
-    const created = positionRow as PositionRow;
+  const [positionRow] = await tx
+    .insert(positions)
+    .values({
+      userId: ctx.userId,
+      kind: 'other_asset',
+      name: input.name,
+      currency: input.currency,
+      // An other asset is not "opened empty on a date": its acquisition date
+      // is metadata about the purchase, and its value only ever comes from a
+      // valuation. Leaving `opened_on` NULL keeps "unknown before the first
+      // valuation" true rather than asserting a zero nobody stated.
+      openedOn: null,
+      notes: input.notes,
+    })
+    .returning();
+  const created = positionRow as PositionRow;
 
-    const [assetRow] = await tx
-      .insert(otherAssets)
-      .values({
-        positionId: created.id,
-        userId: ctx.userId,
-        kind: 'other_asset',
-        assetType: input.assetType,
-        acquisitionDate: input.acquisitionDate,
-        acquisitionValue: input.acquisitionValue,
-        includeInFinancialNetWorth: input.includeInFinancialNetWorth,
-      })
-      .returning();
+  const [assetRow] = await tx
+    .insert(otherAssets)
+    .values({
+      positionId: created.id,
+      userId: ctx.userId,
+      kind: 'other_asset',
+      assetType: input.assetType,
+      acquisitionDate: input.acquisitionDate,
+      acquisitionValue: input.acquisitionValue,
+      includeInFinancialNetWorth: input.includeInFinancialNetWorth,
+    })
+    .returning();
 
-    await recordAudit(tx, ctx, {
-      entityTable: 'positions',
-      entityId: created.id,
-      action: 'insert',
-      after: { ...created, ...assetRow },
-    });
-
-    if (input.currentValue !== undefined) {
-      const [valuationRow] = await tx
-        .insert(positionValuations)
-        .values({
-          userId: ctx.userId,
-          positionId: created.id,
-          valuedOn: input.currentValue.valuedOn,
-          amount: input.currentValue.amount,
-          source: 'entered',
-          datePrecision: 'exact',
-        })
-        .returning();
-      await recordAudit(tx, ctx, {
-        entityTable: 'position_valuations',
-        entityId: (valuationRow as { id: string }).id,
-        action: 'insert',
-        after: valuationRow as Record<string, unknown>,
-      });
-    }
-
-    const rows = await positionQuery(tx).where(eq(positions.id, created.id)).limit(1);
-    return toRecord(rows[0] as SelectedRow);
+  await recordAudit(tx, ctx, {
+    entityTable: 'positions',
+    entityId: created.id,
+    action: 'insert',
+    after: { ...created, ...assetRow },
   });
+
+  if (input.currentValue !== undefined) {
+    const [valuationRow] = await tx
+      .insert(positionValuations)
+      .values({
+        userId: ctx.userId,
+        positionId: created.id,
+        valuedOn: input.currentValue.valuedOn,
+        amount: input.currentValue.amount,
+        source: 'entered',
+        datePrecision: 'exact',
+      })
+      .returning();
+    await recordAudit(tx, ctx, {
+      entityTable: 'position_valuations',
+      entityId: (valuationRow as { id: string }).id,
+      action: 'insert',
+      after: valuationRow as Record<string, unknown>,
+    });
+  }
+
+  const rows = await positionQuery(tx).where(eq(positions.id, created.id)).limit(1);
+  return toRecord(rows[0] as SelectedRow);
 }
 
 export interface PositionPatch {
@@ -347,31 +364,15 @@ export interface OtherAssetPatch {
 
 /**
  * Update a position and, optionally, its subtype row under an optimistic
- * version check (20.3). Returns `undefined` when the version moved on, which
- * the service turns into `CONFLICT_VERSION` with the current values rather than
- * overwriting somebody else's edit.
- */
-export async function updatePosition(
-  db: Database,
-  ctx: AuditContext,
-  positionId: string,
-  expectedVersion: number,
-  patch: PositionPatch,
-  subtype?: { cash?: CashAccountPatch; otherAsset?: OtherAssetPatch },
-): Promise<PositionRecord | undefined> {
-  return withUser(db, { userId: ctx.userId }, async (tx) =>
-    updatePositionIn(tx, ctx, positionId, expectedVersion, patch, subtype),
-  );
-}
-
-/**
- * The same update, inside a caller's transaction.
+ * version check (20.3), inside the caller's transaction. Returns `undefined`
+ * when the version moved on, which the service turns into `CONFLICT_VERSION`
+ * with the current values rather than overwriting somebody else's edit.
  *
- * Marking a cash account dormant needs this: the evidence that permits it — a
- * zero latest balance that no attributed flow post-dates — has to be read from
- * rows the transaction has already locked, and the flag written before that
- * lock is released, or a flow could arrive between the check and the write
- * (20.3, v2.1.17 30.20 item 5).
+ * The evidence a decision rests on and the write it justifies belong to one
+ * transaction: marking a cash account dormant needs a zero latest balance that
+ * no attributed flow post-dates, and a flow arriving between the check and the
+ * write would leave the account dormant on a zero it had already moved past
+ * (20.3, v2.1.17 30.20 item 5, 30.22 item 5).
  */
 export async function updatePositionIn(
   tx: Transaction,
@@ -458,31 +459,29 @@ async function loadForUpdate(
  * `NO ACTION` foreign key from `position_valuations` refuses otherwise, which
  * is what keeps a deletion from silently orphaning financial records (6.3).
  */
-export async function deletePosition(
-  db: Database,
+export async function deletePositionIn(
+  tx: Transaction,
   ctx: AuditContext,
   positionId: string,
 ): Promise<boolean> {
-  return withUser(db, { userId: ctx.userId }, async (tx) => {
-    const before = await loadForUpdate(tx, positionId);
-    if (before === undefined) return false;
+  const before = await loadForUpdate(tx, positionId);
+  if (before === undefined) return false;
 
-    await tx.delete(cashAccounts).where(eq(cashAccounts.positionId, positionId));
-    await tx.delete(otherAssets).where(eq(otherAssets.positionId, positionId));
-    const deleted = await tx
-      .delete(positions)
-      .where(eq(positions.id, positionId))
-      .returning({ id: positions.id });
-    if (deleted.length === 0) return false;
+  await tx.delete(cashAccounts).where(eq(cashAccounts.positionId, positionId));
+  await tx.delete(otherAssets).where(eq(otherAssets.positionId, positionId));
+  const deleted = await tx
+    .delete(positions)
+    .where(eq(positions.id, positionId))
+    .returning({ id: positions.id });
+  if (deleted.length === 0) return false;
 
-    await recordAudit(tx, ctx, {
-      entityTable: 'positions',
-      entityId: positionId,
-      action: 'delete',
-      before: before.image,
-    });
-    return true;
+  await recordAudit(tx, ctx, {
+    entityTable: 'positions',
+    entityId: positionId,
+    action: 'delete',
+    before: before.image,
   });
+  return true;
 }
 
 /**
@@ -535,12 +534,25 @@ export async function countValuations(
   userId: string,
   positionId: string,
 ): Promise<number> {
-  const [row] = await withUser(db, { userId }, async (tx) =>
-    tx
-      .select({ n: sql<number>`count(*)::int` })
-      .from(positionValuations)
-      .where(eq(positionValuations.positionId, positionId)),
-  );
+  return withUser(db, { userId }, async (tx) => countValuationsIn(tx, positionId));
+}
+
+/**
+ * The same count inside a caller's transaction.
+ *
+ * What a delete needs: the answer decides whether the delete may proceed, so it
+ * is read inside the transaction that would perform it (30.22 item 5). The
+ * wrapper above answers the same question for a page that is only describing a
+ * position.
+ */
+export async function countValuationsIn(
+  tx: Transaction,
+  positionId: string,
+): Promise<number> {
+  const [row] = await tx
+    .select({ n: sql<number>`count(*)::int` })
+    .from(positionValuations)
+    .where(eq(positionValuations.positionId, positionId));
   return row?.n ?? 0;
 }
 
@@ -575,7 +587,22 @@ export async function loadFinancialWindow(
   userId: string,
   to: string,
 ): Promise<FinancialWindow> {
-  return withUser(db, { userId }, async (tx) => {
+  return withUser(db, { userId }, async (tx) => loadFinancialWindowIn(tx, to));
+}
+
+/**
+ * The same window inside a caller's transaction.
+ *
+ * The adjustment path needs it: its amount is derived from a reconciliation the
+ * server recomputes, and that recomputation is the decision the write rests on,
+ * so it has to happen under the same write mutex (ADR 0010 §15). Ordinary reads
+ * keep using the wrapper above.
+ */
+export async function loadFinancialWindowIn(
+  tx: Transaction,
+  to: string,
+): Promise<FinancialWindow> {
+  {
     const positionRows = await positionQuery(tx).orderBy(
       asc(positions.sortOrder),
       asc(positions.name),
@@ -600,7 +627,7 @@ export async function loadFinancialWindow(
         ? {}
         : { earliestValuedOn }),
     };
-  });
+  }
 }
 
 /**
@@ -632,30 +659,27 @@ export async function loadFinancialWindow(
  * position window" (20.1), which is the day-level question and is asked
  * elsewhere.
  */
-export async function hasParticipatingCashAccount(
-  db: Database,
-  userId: string,
+export async function hasParticipatingCashAccountIn(
+  tx: Transaction,
   currency: string,
   on: string,
 ): Promise<boolean> {
   const monthStart = `${on.slice(0, 7)}-01`;
-  const rows = await withUser(db, { userId }, async (tx) =>
-    tx
-      .select({ id: positions.id })
-      .from(positions)
-      .where(
-        and(
-          eq(positions.kind, 'cash'),
-          eq(positions.currency, currency),
-          or(
-            isNull(positions.openedOn),
-            lte(positions.openedOn, sql`(date_trunc('month', ${monthStart}::date) + interval '1 month - 1 day')::date`),
-          ),
-          or(isNull(positions.closedOn), gte(positions.closedOn, monthStart)),
+  const rows = await tx
+    .select({ id: positions.id })
+    .from(positions)
+    .where(
+      and(
+        eq(positions.kind, 'cash'),
+        eq(positions.currency, currency),
+        or(
+          isNull(positions.openedOn),
+          lte(positions.openedOn, sql`(date_trunc('month', ${monthStart}::date) + interval '1 month - 1 day')::date`),
         ),
-      )
-      .limit(1),
-  );
+        or(isNull(positions.closedOn), gte(positions.closedOn, monthStart)),
+      ),
+    )
+    .limit(1);
   return rows.length > 0;
 }
 
@@ -668,35 +692,22 @@ export async function positionCurrencies(db: Database, userId: string): Promise<
 }
 
 /**
- * Wake a cash account — end its dormant episode — on its own.
+ * Wake a cash account — end its dormant episode — inside the caller's
+ * transaction.
  *
- * Separate from `updatePosition` because it is not a user edit and must not
+ * Separate from `updatePositionIn` because it is not a user edit and must not
  * consume the position's optimistic version: recording a non-zero balance
  * wakes the account as a consequence (6.2, R22), and doing so must not
  * invalidate an account form somebody has open.
  *
  * It only ever clears. Starting an episode needs a date and the evidence for
- * it, which is the service's transaction to run (`updatePositionIn`); a
- * function that set the flag alone could only ever violate
- * `cash_accounts_dormant_anchor`.
- */
-export async function clearCashDormancy(
-  db: Database,
-  ctx: AuditContext,
-  positionId: string,
-): Promise<void> {
-  await withUser(db, { userId: ctx.userId }, async (tx) =>
-    clearCashDormancyIn(tx, ctx, positionId),
-  );
-}
-
-/**
- * The same clear, inside a caller's transaction.
+ * it, which is the service's own decision (`updatePositionIn`); a function that
+ * set the flag alone could only ever violate `cash_accounts_dormant_anchor`.
  *
- * Phase 3 needs this: 8.8 says an attributed flow clears dormancy, and the
- * clear has to be part of the flow's own transaction so the two facts cannot
- * come apart — a recorded flow with the account still flagged dormant would let
- * a month carry at zero against evidence that it did not.
+ * Transaction-taking only: 8.8 says an attributed flow or a non-zero balance
+ * clears dormancy, and the clear belongs to that write's own transaction so the
+ * two facts cannot come apart — a recorded flow with the account still flagged
+ * dormant would let a month carry at zero against evidence that it did not.
  */
 export async function clearCashDormancyIn(
   tx: Transaction,

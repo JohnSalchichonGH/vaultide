@@ -33,35 +33,25 @@ export async function listValuations(
   );
 }
 
-export async function findValuation(
-  db: Database,
-  userId: string,
+/**
+ * One valuation by id, inside a caller's transaction.
+ *
+ * `lock: 'update'` holds it for the rest of the transaction, which is what a
+ * correction or a delete takes before it checks the version it was given: the
+ * row it judged and the row it writes must be the same row (20.3, 30.22
+ * item 10).
+ */
+export async function findValuationIn(
+  tx: Transaction,
   valuationId: string,
+  options: { readonly lock?: 'update' } = {},
 ): Promise<ValuationRow | undefined> {
-  const [row] = await withUser(db, { userId }, async (tx) =>
-    tx.select().from(positionValuations).where(eq(positionValuations.id, valuationId)).limit(1),
-  );
-  return row;
-}
-
-export async function findValuationOn(
-  db: Database,
-  userId: string,
-  positionId: string,
-  valuedOn: string,
-): Promise<ValuationRow | undefined> {
-  const [row] = await withUser(db, { userId }, async (tx) =>
-    tx
-      .select()
-      .from(positionValuations)
-      .where(
-        and(
-          eq(positionValuations.positionId, positionId),
-          eq(positionValuations.valuedOn, valuedOn),
-        ),
-      )
-      .limit(1),
-  );
+  const query = tx
+    .select()
+    .from(positionValuations)
+    .where(eq(positionValuations.id, valuationId))
+    .limit(1);
+  const [row] = options.lock === 'update' ? await query.for('update') : await query;
   return row;
 }
 
@@ -92,17 +82,11 @@ export async function findValuationOnIn(
   return row;
 }
 
-/** The latest valuation on or before a date — the "current balance" question. */
-export async function findLatestValuation(
-  db: Database,
-  userId: string,
-  positionId: string,
-  onOrBefore: string,
-): Promise<ValuationRow | undefined> {
-  return withUser(db, { userId }, async (tx) => findLatestValuationIn(tx, positionId, onOrBefore));
-}
-
-/** The same read, inside a caller's transaction — for a decision its write depends on. */
+/**
+ * The latest valuation on or before a date — the "current balance" question,
+ * inside a caller's transaction, because every caller asks it to decide
+ * something it is about to write (30.22 item 5).
+ */
 export async function findLatestValuationIn(
   tx: Transaction,
   positionId: string,
@@ -131,15 +115,7 @@ export interface ValuationInput {
   readonly note?: string | null;
 }
 
-export async function insertValuation(
-  db: Database,
-  ctx: AuditContext,
-  input: ValuationInput,
-): Promise<ValuationRow> {
-  return withUser(db, { userId: ctx.userId }, async (tx) => insertValuationIn(tx, ctx, input));
-}
-
-/** The insert itself, so a caller already inside a transaction can reuse it. */
+/** The insert, always inside the caller's mutex-owned transaction (30.22). */
 export async function insertValuationIn(
   tx: Transaction,
   ctx: AuditContext,
@@ -181,18 +157,6 @@ export interface ValuationPatch {
  * a before-image (18.1). `undefined` means the row moved on or is not the
  * caller's — the service tells those apart with a second read.
  */
-export async function updateValuation(
-  db: Database,
-  ctx: AuditContext,
-  valuationId: string,
-  expectedVersion: number,
-  patch: ValuationPatch,
-): Promise<ValuationRow | undefined> {
-  return withUser(db, { userId: ctx.userId }, async (tx) =>
-    updateValuationIn(tx, ctx, valuationId, expectedVersion, patch),
-  );
-}
-
 export async function updateValuationIn(
   tx: Transaction,
   ctx: AuditContext,
@@ -237,30 +201,28 @@ export async function updateValuationIn(
  * balance is a balance every later query has to remember to exclude. The audit
  * row is what makes that safe.
  */
-export async function deleteValuation(
-  db: Database,
+export async function deleteValuationIn(
+  tx: Transaction,
   ctx: AuditContext,
   valuationId: string,
 ): Promise<ValuationRow | undefined> {
-  return withUser(db, { userId: ctx.userId }, async (tx) => {
-    const [before] = await tx
-      .select()
-      .from(positionValuations)
-      .where(eq(positionValuations.id, valuationId))
-      .limit(1)
-      .for('update');
-    if (before === undefined) return undefined;
+  const [before] = await tx
+    .select()
+    .from(positionValuations)
+    .where(eq(positionValuations.id, valuationId))
+    .limit(1)
+    .for('update');
+  if (before === undefined) return undefined;
 
-    await tx.delete(positionValuations).where(eq(positionValuations.id, valuationId));
+  await tx.delete(positionValuations).where(eq(positionValuations.id, valuationId));
 
-    await recordAudit(tx, ctx, {
-      entityTable: 'position_valuations',
-      entityId: valuationId,
-      action: 'delete',
-      before: before,
-    });
-    return before;
+  await recordAudit(tx, ctx, {
+    entityTable: 'position_valuations',
+    entityId: valuationId,
+    action: 'delete',
+    before: before,
   });
+  return before;
 }
 
 export interface QuickUpdateEntry {
@@ -287,62 +249,60 @@ export interface QuickUpdateResult {
  * valuation per position per date) — that touches today's row and no other, so
  * no history is overwritten and no earlier snapshot moves.
  */
-export async function quickUpdateValuations(
-  db: Database,
+export async function quickUpdateValuationsIn(
+  tx: Transaction,
   ctx: AuditContext,
   today: string,
   entries: readonly QuickUpdateEntry[],
 ): Promise<QuickUpdateResult> {
-  return withUser(db, { userId: ctx.userId }, async (tx) => {
-    const written: ValuationRow[] = [];
-    let inserted = 0;
-    let corrected = 0;
+  const written: ValuationRow[] = [];
+  let inserted = 0;
+  let corrected = 0;
 
-    for (const item of entries) {
-      const [existing] = await tx
-        .select()
-        .from(positionValuations)
-        .where(
-          and(
-            eq(positionValuations.positionId, item.positionId),
-            eq(positionValuations.valuedOn, today),
-          ),
-        )
-        .limit(1)
-        .for('update');
+  for (const item of entries) {
+    const [existing] = await tx
+      .select()
+      .from(positionValuations)
+      .where(
+        and(
+          eq(positionValuations.positionId, item.positionId),
+          eq(positionValuations.valuedOn, today),
+        ),
+      )
+      .limit(1)
+      .for('update');
 
-      if (existing === undefined) {
-        written.push(
-          await insertValuationIn(tx, ctx, {
-            positionId: item.positionId,
-            valuedOn: today,
-            amount: item.amount,
-            source: 'entered',
-            datePrecision: 'exact',
-          }),
-        );
-        inserted += 1;
-        continue;
-      }
-
-      const row = await updateValuationIn(
-        tx,
-        ctx,
-        existing.id,
-        item.expectedVersion ?? existing.version,
-        { amount: item.amount, source: 'entered' },
+    if (existing === undefined) {
+      written.push(
+        await insertValuationIn(tx, ctx, {
+          positionId: item.positionId,
+          valuedOn: today,
+          amount: item.amount,
+          source: 'entered',
+          datePrecision: 'exact',
+        }),
       );
-      if (row === undefined) {
-        // A conflict aborts the whole submission (20.3). Throwing rolls the
-        // transaction back, so nothing partial is left behind.
-        throw new QuickUpdateConflictError(item.positionId);
-      }
-      written.push(row);
-      corrected += 1;
+      inserted += 1;
+      continue;
     }
 
-    return { written, inserted, corrected };
-  });
+    const row = await updateValuationIn(
+      tx,
+      ctx,
+      existing.id,
+      item.expectedVersion ?? existing.version,
+      { amount: item.amount, source: 'entered' },
+    );
+    if (row === undefined) {
+      // A conflict aborts the whole submission (20.3). Throwing rolls the
+      // transaction back, so nothing partial is left behind.
+      throw new QuickUpdateConflictError(item.positionId);
+    }
+    written.push(row);
+    corrected += 1;
+  }
+
+  return { written, inserted, corrected };
 }
 
 export class QuickUpdateConflictError extends Error {

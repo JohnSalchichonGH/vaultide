@@ -1,6 +1,6 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { userSettings } from '../schema/user-settings';
-import { withUser, type Database } from '../client';
+import { withUser, type Database, type Transaction } from '../client';
 
 /**
  * `user_settings` reads and writes (blueprint 6.2, 17.2, 20.3).
@@ -17,9 +17,20 @@ export async function findUserSettings(
   db: Database,
   userId: string,
 ): Promise<UserSettingsRecord | undefined> {
-  const [row] = await withUser(db, { userId }, async (tx) =>
-    tx.select().from(userSettings).limit(1),
-  );
+  return withUser(db, { userId }, async (tx) => findUserSettingsIn(tx));
+}
+
+/**
+ * The same read inside a caller's transaction.
+ *
+ * `count_additional_spending` is a financial input (12.5, 30.22 item 6), so the
+ * write that changes it runs under the per-user write mutex and reads its
+ * current state there.
+ */
+export async function findUserSettingsIn(
+  tx: Transaction,
+): Promise<UserSettingsRecord | undefined> {
+  const [row] = await tx.select().from(userSettings).limit(1);
   return row;
 }
 
@@ -46,13 +57,31 @@ export async function updateUserSettings(
   expectedVersion: number,
   patch: UserSettingsPatch,
 ): Promise<UserSettingsRecord | undefined> {
-  const [row] = await withUser(db, { userId }, async (tx) =>
-    tx
-      .update(userSettings)
-      .set({ ...patch, version: expectedVersion + 1, updatedAt: new Date() })
-      .where(and(eq(userSettings.userId, userId), eq(userSettings.version, expectedVersion)))
-      .returning(),
+  return withUser(db, { userId }, async (tx) =>
+    updateUserSettingsIn(tx, userId, expectedVersion, patch),
   );
+}
+
+/**
+ * The same update inside a caller's transaction.
+ *
+ * The wrapper above stays, and is the right one for the display preferences —
+ * timezone, locale, favourite and reporting currency, the stale-months
+ * thresholds. Those are not financial evidence and are deliberately not
+ * serialized against financial writes (30.22 item 6). Only
+ * `count_additional_spending` comes through here.
+ */
+export async function updateUserSettingsIn(
+  tx: Transaction,
+  userId: string,
+  expectedVersion: number,
+  patch: UserSettingsPatch,
+): Promise<UserSettingsRecord | undefined> {
+  const [row] = await tx
+    .update(userSettings)
+    .set({ ...patch, version: expectedVersion + 1, updatedAt: new Date() })
+    .where(and(eq(userSettings.userId, userId), eq(userSettings.version, expectedVersion)))
+    .returning();
   return row;
 }
 

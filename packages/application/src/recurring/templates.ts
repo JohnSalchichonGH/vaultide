@@ -1,19 +1,22 @@
 import {
-  findTemplate,
-  findTermAt,
-  insertTemplate,
-  insertTerm,
+  findTermAtIn,
+  findTemplateIn,
+  insertTemplateIn,
+  insertTermIn,
   isUniqueViolation,
-  latestReferencedOccurrence,
+  latestReferencedOccurrenceIn,
   listTemplates,
-  templateHasHistory,
-  updateTemplate,
-  updateTerm,
+  lockTemplateIn,
+  templateHasHistoryIn,
+  updateTemplateIn,
+  updateTermIn,
   type RecurringTemplateRow,
   type RecurringTemplateTermRow,
+  type Transaction,
 } from '@vaultide/db';
 import type { IncomeKind, RecurrenceFrequency, TemplateKind } from '@vaultide/validation';
 import type { RequestContext } from '../context';
+import { withUserWrite } from '../coordination';
 import {
   DuplicateConflictError,
   ImpossibleOperationError,
@@ -21,11 +24,12 @@ import {
   ValidationError,
   VersionConflictError,
 } from '../errors';
-import { assertCategoryUsableInPhase3, requireCategory } from '../flows/expenses';
-import { auditContextOf, requireCashAccount, type FlowDependencies } from '../flows/shared';
+import { assertCategoryUsableInPhase3, requireLiveCategoryIn } from '../flows/expenses';
+import { auditContextOf, requireCashAccountIn, type FlowDependencies } from '../flows/shared';
 
 /**
- * Recurring templates and their terms (blueprint 6.2, 15.3, v2.1.6 §30.9).
+ * Recurring templates and their terms (blueprint 6.2, 15.3, 20.3, 30.22,
+ * v2.1.6 §30.9).
  *
  * A template generates suggestions; it holds no financial fact of its own.
  * Three rules give it its shape, and all three exist because a template that
@@ -53,6 +57,14 @@ import { auditContextOf, requireCashAccount, type FlowDependencies } from '../fl
  * terms and skips cascade, and a skip can carry an occupancy fact (`vacant`,
  * `non_payment`) whose removal has to be audited like any other record. A phase
  * that wants template deletion must define that child-row behaviour first.
+ *
+ * ## Every mutation is one mutex-owned transaction
+ *
+ * A template, a term and a skip are mutable financial evidence: they decide
+ * which occurrences a month expected and what each one was worth (8.5, 12.6).
+ * So the reads each decision rests on — the template, its history, its terms,
+ * the category it files under, the account it defaults to — happen inside the
+ * write's own `withUserWrite` transaction (30.22 item 5).
  */
 
 export interface CreateTemplateArgs {
@@ -86,9 +98,8 @@ export const FROZEN_TEMPLATE_FIELDS = [
   'targetInvestmentPositionId',
 ] as const;
 
-async function validateTemplateShape(
-  deps: FlowDependencies,
-  ctx: RequestContext,
+async function validateTemplateShapeIn(
+  tx: Transaction,
   args: {
     kind: TemplateKind;
     incomeKind?: IncomeKind | undefined;
@@ -137,7 +148,9 @@ async function validateTemplateShape(
   }
 
   if (args.categoryId !== undefined) {
-    const category = await requireCategory(deps.db, ctx, args.categoryId);
+    // Chosen afresh, so it is held live for the rest of this transaction
+    // (30.22 item 8; ADR 0010 §9).
+    const category = await requireLiveCategoryIn(tx, args.categoryId);
     if (args.kind === 'expense') {
       // A recurring expense is an ordinary Phase 3 expense that happens to be
       // scheduled, so it obeys the same rule about which category kinds one may
@@ -154,7 +167,7 @@ async function validateTemplateShape(
   }
 
   if (args.cashPositionId !== undefined) {
-    const account = await requireCashAccount(deps.db, ctx, args.cashPositionId);
+    const account = await requireCashAccountIn(tx, args.cashPositionId);
     if (account.currency !== args.currency) {
       throw new ValidationError(
         `${account.name} is held in ${account.currency}, so it cannot be the default account for a ${args.currency} template.`,
@@ -164,15 +177,15 @@ async function validateTemplateShape(
   }
 }
 
-export async function createTemplate(
-  deps: FlowDependencies,
+async function createTemplateIn(
+  tx: Transaction,
   ctx: RequestContext,
   args: CreateTemplateArgs,
 ): Promise<{ template: RecurringTemplateRow; term: RecurringTemplateTermRow }> {
-  await validateTemplateShape(deps, ctx, args);
+  await validateTemplateShapeIn(tx, args);
 
   const audit = auditContextOf(ctx);
-  const template = await insertTemplate(deps.db, audit, {
+  const template = await insertTemplateIn(tx, audit, {
     kind: args.kind,
     name: args.name,
     counterparty: args.counterparty ?? null,
@@ -187,16 +200,30 @@ export async function createTemplate(
   });
 
   // The opening term: a template with no term has a date and no amount, which
-  // is a real state but not one the creation form should leave behind.
-  const term = await insertTerm(deps.db, audit, {
+  // is a real state but not one the creation form should leave behind. In the
+  // same transaction, so a template can never exist without the amount its
+  // creation stated.
+  const term = await insertTermIn(tx, audit, {
     templateId: template.id,
     effectiveFrom: args.startDate,
     amount: args.amount,
     grossAmount: args.grossAmount ?? null,
   });
 
-  await deps.fx.ensureHistory(args.currency, args.startDate);
   return { template, term };
+}
+
+export async function createTemplate(
+  deps: FlowDependencies,
+  ctx: RequestContext,
+  args: CreateTemplateArgs,
+): Promise<{ template: RecurringTemplateRow; term: RecurringTemplateTermRow }> {
+  const created = await withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    createTemplateIn(tx, ctx, args),
+  );
+
+  await deps.fx.ensureHistory(args.currency, args.startDate);
+  return created;
 }
 
 export interface UpdateTemplateArgs {
@@ -207,20 +234,12 @@ export interface UpdateTemplateArgs {
   readonly endDate?: string | null | undefined;
 }
 
-/**
- * Edit the parts of a template that carry no accounting meaning.
- *
- * `name` and `counterparty` are the only two fields this table has that no
- * engine reads. `end_date` is editable as well, but never backwards past an
- * occurrence that has already been materialized or skipped — that would erase
- * an occurrence the history claims happened.
- */
-export async function updateTemplateDetails(
-  deps: FlowDependencies,
+async function updateTemplateDetailsIn(
+  tx: Transaction,
   ctx: RequestContext,
   args: UpdateTemplateArgs,
 ): Promise<RecurringTemplateRow> {
-  const existing = await findTemplate(deps.db, ctx.userId, args.templateId);
+  const existing = await lockTemplateIn(tx, args.templateId);
   if (existing === undefined) throw new NotFoundError('That source no longer exists.');
 
   if (args.endDate !== undefined && args.endDate !== null) {
@@ -229,7 +248,7 @@ export async function updateTemplateDetails(
         endDate: ['This is before the start date.'],
       });
     }
-    const latest = await latestReferencedOccurrence(deps.db, ctx.userId, args.templateId);
+    const latest = await latestReferencedOccurrenceIn(tx, args.templateId);
     if (latest !== undefined && args.endDate < latest) {
       throw new ValidationError(
         `This would end the schedule before ${latest}, which you have already recorded or skipped. Choose a later date.`,
@@ -238,8 +257,8 @@ export async function updateTemplateDetails(
     }
   }
 
-  const updated = await updateTemplate(
-    deps.db,
+  const updated = await updateTemplateIn(
+    tx,
     auditContextOf(ctx),
     args.templateId,
     args.expectedVersion,
@@ -256,21 +275,61 @@ export async function updateTemplateDetails(
 }
 
 /**
- * Refuse an edit to a field that decides what the past contained.
+ * Edit the parts of a template that carry no accounting meaning.
  *
- * Exported so the action layer can reject the attempt before it reaches the
- * repository, and so the rule is testable on its own.
+ * `name` and `counterparty` are the only two fields this table has that no
+ * engine reads. `end_date` is editable as well, but never backwards past an
+ * occurrence that has already been materialized or skipped — that would erase
+ * an occurrence the history claims happened. The occurrence it checks against
+ * is read under the template's own lock, inside the write's transaction, so an
+ * acceptance landing at the same moment cannot be erased by it.
  */
-export async function assertScheduleEditable(
+export async function updateTemplateDetails(
   deps: FlowDependencies,
   ctx: RequestContext,
+  args: UpdateTemplateArgs,
+): Promise<RecurringTemplateRow> {
+  return withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    updateTemplateDetailsIn(tx, ctx, args),
+  );
+}
+
+/**
+ * Refuse an edit to a field that decides what the past contained.
+ *
+ * Exported so a caller inside the write transaction can reject the attempt
+ * before it reaches the repository, and so the rule is testable on its own.
+ */
+export async function assertScheduleEditableIn(
+  tx: Transaction,
   templateId: string,
 ): Promise<void> {
-  if (await templateHasHistory(deps.db, ctx.userId, templateId)) {
+  if (await templateHasHistoryIn(tx, templateId)) {
     throw new ImpossibleOperationError(
       'This source already has recorded or skipped occurrences, so its schedule and category are fixed. End it and create a new one to change them.',
     );
   }
+}
+
+async function setArchivedAtIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: { templateId: string; expectedVersion: number },
+  archivedAt: Date | null,
+): Promise<RecurringTemplateRow> {
+  const updated = await updateTemplateIn(
+    tx,
+    auditContextOf(ctx),
+    args.templateId,
+    args.expectedVersion,
+    { archivedAt },
+  );
+  if (updated === undefined) {
+    const exists = await findTemplateIn(tx, args.templateId);
+    if (exists === undefined) throw new NotFoundError('That income source no longer exists.');
+    throw new VersionConflictError('This income source changed while you were editing it.');
+  }
+  return updated;
 }
 
 export async function archiveTemplate(
@@ -280,19 +339,9 @@ export async function archiveTemplate(
 ): Promise<RecurringTemplateRow> {
   // Always allowed, history or not: archiving stops the suggestions and keeps
   // every row. It is not a delete and must not behave like one.
-  const updated = await updateTemplate(
-    deps.db,
-    auditContextOf(ctx),
-    args.templateId,
-    args.expectedVersion,
-    { archivedAt: new Date() },
+  return withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    setArchivedAtIn(tx, ctx, args, new Date()),
   );
-  if (updated === undefined) {
-    const exists = await findTemplate(deps.db, ctx.userId, args.templateId);
-    if (exists === undefined) throw new NotFoundError('That income source no longer exists.');
-    throw new VersionConflictError('This income source changed while you were editing it.');
-  }
-  return updated;
 }
 
 export async function unarchiveTemplate(
@@ -300,17 +349,71 @@ export async function unarchiveTemplate(
   ctx: RequestContext,
   args: { templateId: string; expectedVersion: number },
 ): Promise<RecurringTemplateRow> {
-  const updated = await updateTemplate(
-    deps.db,
-    auditContextOf(ctx),
-    args.templateId,
-    args.expectedVersion,
-    { archivedAt: null },
+  return withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    setArchivedAtIn(tx, ctx, args, null),
   );
+}
+
+export interface SetTemplateTermArgs {
+  readonly templateId: string;
+  readonly effectiveFrom: string;
+  readonly amount: string;
+  readonly grossAmount?: string | undefined;
+  readonly note?: string | undefined;
+  readonly expected: { state: 'absent' } | { state: 'version'; version: number };
+}
+
+async function setTemplateTermIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: SetTemplateTermArgs,
+): Promise<RecurringTemplateTermRow> {
+  const template = await findTemplateIn(tx, args.templateId);
+  if (template === undefined) throw new NotFoundError('That income source no longer exists.');
+
+  if (args.effectiveFrom < template.startDate) {
+    throw new ValidationError('An amount cannot start before the source does.', {
+      effectiveFrom: [`This source starts on ${template.startDate}.`],
+    });
+  }
+
+  const audit = auditContextOf(ctx);
+
+  if (args.expected.state === 'absent') {
+    try {
+      return await insertTermIn(tx, audit, {
+        templateId: args.templateId,
+        effectiveFrom: args.effectiveFrom,
+        amount: args.amount,
+        grossAmount: args.grossAmount ?? null,
+        note: args.note ?? null,
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new DuplicateConflictError(
+          `There is already an amount starting ${args.effectiveFrom}. Reload to see it before changing it.`,
+        );
+      }
+      throw error;
+    }
+  }
+
+  const existing = await findTermAtIn(tx, args.templateId, args.effectiveFrom, { lock: 'update' });
+  if (existing === undefined) {
+    // The row the client was editing is gone. Inserting instead would recreate
+    // an amount somebody deliberately removed.
+    throw new VersionConflictError(
+      `The amount starting ${args.effectiveFrom} is no longer there. Reload before changing it.`,
+    );
+  }
+
+  const updated = await updateTermIn(tx, audit, existing.id, args.expected.version, {
+    amount: args.amount,
+    grossAmount: args.grossAmount ?? null,
+    note: args.note ?? null,
+  });
   if (updated === undefined) {
-    const exists = await findTemplate(deps.db, ctx.userId, args.templateId);
-    if (exists === undefined) throw new NotFoundError('That income source no longer exists.');
-    throw new VersionConflictError('This income source changed while you were editing it.');
+    throw new VersionConflictError('This amount changed while you were editing it.');
   }
   return updated;
 }
@@ -344,65 +447,14 @@ export async function unarchiveTemplate(
 export async function setTemplateTerm(
   deps: FlowDependencies,
   ctx: RequestContext,
-  args: {
-    templateId: string;
-    effectiveFrom: string;
-    amount: string;
-    grossAmount?: string | undefined;
-    note?: string | undefined;
-    expected: { state: 'absent' } | { state: 'version'; version: number };
-  },
+  args: SetTemplateTermArgs,
 ): Promise<RecurringTemplateTermRow> {
-  const template = await findTemplate(deps.db, ctx.userId, args.templateId);
-  if (template === undefined) throw new NotFoundError('That income source no longer exists.');
-
-  if (args.effectiveFrom < template.startDate) {
-    throw new ValidationError('An amount cannot start before the source does.', {
-      effectiveFrom: [`This source starts on ${template.startDate}.`],
-    });
-  }
-
-  const audit = auditContextOf(ctx);
-
-  if (args.expected.state === 'absent') {
-    try {
-      return await insertTerm(deps.db, audit, {
-        templateId: args.templateId,
-        effectiveFrom: args.effectiveFrom,
-        amount: args.amount,
-        grossAmount: args.grossAmount ?? null,
-        note: args.note ?? null,
-      });
-    } catch (error) {
-      if (isUniqueViolation(error)) {
-        throw new DuplicateConflictError(
-          `There is already an amount starting ${args.effectiveFrom}. Reload to see it before changing it.`,
-        );
-      }
-      throw error;
-    }
-  }
-
-  const existing = await findTermAt(deps.db, ctx.userId, args.templateId, args.effectiveFrom);
-  if (existing === undefined) {
-    // The row the client was editing is gone. Inserting instead would recreate
-    // an amount somebody deliberately removed.
-    throw new VersionConflictError(
-      `The amount starting ${args.effectiveFrom} is no longer there. Reload before changing it.`,
-    );
-  }
-
-  const updated = await updateTerm(deps.db, audit, existing.id, args.expected.version, {
-    amount: args.amount,
-    grossAmount: args.grossAmount ?? null,
-    note: args.note ?? null,
-  });
-  if (updated === undefined) {
-    throw new VersionConflictError('This amount changed while you were editing it.');
-  }
-  return updated;
+  return withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    setTemplateTermIn(tx, ctx, args),
+  );
 }
 
+/** Templates as a page lists them: an ordinary read, on the ordinary path. */
 export async function listUserTemplates(
   deps: FlowDependencies,
   ctx: RequestContext,

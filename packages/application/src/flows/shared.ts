@@ -1,7 +1,8 @@
 import {
   clearCashDormancyIn,
-  findPosition,
-  hasParticipatingCashAccount,
+  findPositionIn,
+  hasParticipatingCashAccountIn,
+  type AuditContext,
   type Database,
   type PositionRecord as PositionRow,
   type Transaction,
@@ -17,6 +18,10 @@ import type { FxService } from '../fx/service';
  * on where they may attach: a cash account the user owns, of the flow's own
  * currency, open on the flow's date — or no account at all, which is a tracked
  * flow awaiting attribution and **not** an untracked one.
+ *
+ * Every helper here that touches the database takes a `Transaction`, never a
+ * `Database`: these are the reads a flow's decision rests on, and they belong
+ * inside the write's own mutex-owned transaction (20.3, 30.22 item 5).
  */
 
 export interface FlowDependencies {
@@ -31,12 +36,11 @@ export interface FlowDependencies {
  * message, so an id cannot be probed for existence (17.3). RLS makes the read
  * return nothing either way; this turns that into the right error.
  */
-export async function requireCashAccount(
-  db: Database,
-  ctx: RequestContext,
+export async function requireCashAccountIn(
+  tx: Transaction,
   positionId: string,
 ): Promise<PositionRow> {
-  const position = await findPosition(db, ctx.userId, positionId);
+  const position = await findPositionIn(tx, positionId);
   if (position === undefined || position.kind !== 'cash') {
     throw new NotFoundError('That account no longer exists.');
   }
@@ -97,19 +101,16 @@ export function assertCurrencyMatches(position: PositionRow, currency: string): 
  * account is the blocking `flow_without_cash_account` issue. What this never
  * does is treat the missing account as evidence the flow was untracked —
  * settlement is a stated fact, never an inference (§30.9 item 1).
+ *
+ * Inside the caller's transaction, so an account closed or deleted between the
+ * check and the write cannot make the flow land in a bucket nothing reconciles.
  */
-export async function resolveTrackedCashLeg(
-  deps: FlowDependencies,
-  ctx: RequestContext,
+export async function resolveTrackedCashLegIn(
+  tx: Transaction,
   args: { cashPositionId: string | null; currency: string; on: string; dateField: string },
 ): Promise<PositionRow | null> {
   if (args.cashPositionId === null) {
-    const participates = await hasParticipatingCashAccount(
-      deps.db,
-      ctx.userId,
-      args.currency,
-      args.on,
-    );
+    const participates = await hasParticipatingCashAccountIn(tx, args.currency, args.on);
     if (!participates) {
       throw new ValidationError(
         `You have no ${args.currency} cash account open on ${args.on}, so this flow has nothing to reconcile against. Choose an account, or add one.`,
@@ -119,7 +120,7 @@ export async function resolveTrackedCashLeg(
     return null;
   }
 
-  const position = await requireCashAccount(deps.db, ctx, args.cashPositionId);
+  const position = await requireCashAccountIn(tx, args.cashPositionId);
   assertCurrencyMatches(position, args.currency);
   assertAccountParticipates(position, args.on, args.dateField);
   return position;
@@ -157,11 +158,31 @@ export async function clearDormancyForFlowIn(
   }
 }
 
-/** The audit context every flow write passes to the repositories. */
-export function auditContextOf(ctx: RequestContext, reason?: string) {
+/**
+ * The user's own explanation of a correction, as the audit trail should hold it
+ * (blueprint 18.1; ADR 0010 §11).
+ *
+ * One normalization, in one place. A reason that is absent, empty, or nothing
+ * but whitespace is the *same fact* — the user did not give one — and an audit
+ * row that stored `''` or `'   '` would record that fact as a string somebody
+ * has to squint at. It becomes `undefined` here, and `recordAudit` writes
+ * `NULL`.
+ *
+ * Length is not judged here: the input schemas already bound it, and silently
+ * truncating somebody's explanation would be worse than refusing it.
+ */
+export function normalizeReason(reason: string | null | undefined): string | undefined {
+  if (reason === null || reason === undefined) return undefined;
+  const trimmed = reason.trim();
+  return trimmed === '' ? undefined : trimmed;
+}
+
+/** The audit context every financial write passes to the repositories. */
+export function auditContextOf(ctx: RequestContext, reason?: string | null): AuditContext {
+  const explanation = normalizeReason(reason);
   return {
     userId: ctx.userId,
     requestId: ctx.requestId,
-    ...(reason === undefined ? {} : { reason }),
+    ...(explanation === undefined ? {} : { reason: explanation }),
   };
 }

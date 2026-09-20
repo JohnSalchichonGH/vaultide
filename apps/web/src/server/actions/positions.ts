@@ -163,17 +163,25 @@ export const correctValuationAction = financialAction({
       amount: input.amount,
       datePrecision: input.datePrecision,
       note: input.note,
+      reason: input.reason,
     });
     refreshFinancialViews();
     return { id: updated.id, version: updated.version };
   },
 });
 
+/**
+ * Delete a balance at the version the client rendered (6.3, 30.22 item 10).
+ *
+ * One click still, as before: what changed is that a balance corrected in
+ * another tab now refuses rather than being removed by a request that was about
+ * the version before it.
+ */
 export const deleteValuationAction = financialAction({
   name: 'valuations.delete',
   input: positionInput.deleteValuationInput,
   async handler({ input, ctx }) {
-    await removeValuation(getServices().positions, ctx, input.valuationId);
+    await removeValuation(getServices().positions, ctx, input);
     refreshFinancialViews();
     return { deleted: true } as const;
   },

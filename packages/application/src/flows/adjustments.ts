@@ -8,12 +8,13 @@ import {
   type MonthKey,
   type PlainDate,
 } from '@vaultide/finance';
-import type { IncomeEntryRow } from '@vaultide/db';
+import type { IncomeEntryRow, Transaction } from '@vaultide/db';
 import type { RequestContext } from '../context';
+import { withUserWrite } from '../coordination';
 import { ValidationError, VersionConflictError } from '../errors';
-import { loadCompletedMonth } from '../reconciliation/loader';
-import { loadMonthToDate } from '../reconciliation/mtd-loader';
-import { createIncomeEntry } from './income';
+import { loadCompletedMonthIn } from '../reconciliation/loader';
+import { loadMonthToDateIn } from '../reconciliation/mtd-loader';
+import { createIncomeEntryIn } from './income';
 import type { FlowDependencies } from './shared';
 
 /**
@@ -49,11 +50,18 @@ import type { FlowDependencies } from './shared';
  * gives `adjustment` the `I` cash role and 12.5 keeps it out of income, so
  * nothing here reclassifies anything.
  *
- * The precondition is read before the write's transaction: it closes the stale
- * view, which is the failure the interaction actually produces, and not a
- * simultaneous double submit, which the disabled control covers. A database
- * constraint for that race would be schema invented for a case the product does
- * not create, and would refuse a second, legitimate adjustment in a month a
+ * ## The recompute and the write are one transaction
+ *
+ * ADR 0009 §9 accepted a residual window here: the precondition was read
+ * *before* the write's transaction opened, so another financial write of the
+ * same user could land between the discrepancy this service computed and the
+ * row it wrote — and the adjustment would then record a residual the month no
+ * longer had. Both now happen inside one `withUserWrite`, so no participating
+ * writer can interleave (ADR 0010 §15). The stale-view precondition itself is
+ * unchanged, and it is still what catches the failure the interaction actually
+ * produces: a page left open while the month changed elsewhere. No database
+ * constraint was invented for it — a unique index over "one adjustment per
+ * month and currency" would refuse a second, legitimate adjustment in a month a
  * user really corrected twice.
  */
 
@@ -114,8 +122,8 @@ function stale(currency: string, month: MonthKey): VersionConflictError {
 }
 
 /** The current unexplained inflow of one bucket, from the authoritative engine. */
-async function discrepancyOf(
-  deps: FlowDependencies,
+async function discrepancyIn(
+  tx: Transaction,
   ctx: RequestContext,
   month: MonthKey,
   currency: string,
@@ -128,7 +136,7 @@ async function discrepancyOf(
   }
 
   if (isMonthCompleted(month, ctx.today)) {
-    const loaded = await loadCompletedMonth(deps, ctx.userId, month, ctx.today);
+    const loaded = await loadCompletedMonthIn(tx, month, ctx.today);
     const result = reconcileCompletedMonth(loaded.input);
     const bucket = result.buckets.find((row) => row.currency === currency);
     const issue = bucket?.issues.find((row) => row.key === 'unexplained_inflow');
@@ -139,7 +147,7 @@ async function discrepancyOf(
   // The current month: month-to-date reconciles through `D`, so that is where
   // the discrepancy is measured and where the adjustment belongs (8.6, 30.21
   // items 5–7). Without a `D` there is no interval and no such issue at all.
-  const data = await loadMonthToDate(deps, ctx.userId, ctx.today);
+  const data = await loadMonthToDateIn(tx, ctx.today);
   const result = reconcileMonthToDate(data.input);
   if (result.asOf === null) throw stale(currency, month);
   const bucket = result.buckets.find((row) => row.currency === currency);
@@ -154,13 +162,13 @@ async function discrepancyOf(
  * Returns the row it wrote, which is an ordinary income entry from that moment
  * on: visible in Income, correctable and deletable through the usual editors.
  */
-export async function acceptUnexplainedInflowAsAdjustment(
-  deps: FlowDependencies,
+async function acceptAdjustmentIn(
+  tx: Transaction,
   ctx: RequestContext,
   args: AcceptAdjustmentArgs,
+  currency: string,
 ): Promise<IncomeEntryRow> {
-  const currency = args.currency.trim().toUpperCase();
-  const discrepancy = await discrepancyOf(deps, ctx, args.month, currency);
+  const discrepancy = await discrepancyIn(tx, ctx, args.month, currency);
 
   // Exact decimals, never their spelling: "1702.00" and "1702" are the same
   // discrepancy, and a cent of difference is a different one.
@@ -168,7 +176,7 @@ export async function acceptUnexplainedInflowAsAdjustment(
     throw stale(currency, args.month);
   }
 
-  return createIncomeEntry(deps, ctx, {
+  return createIncomeEntryIn(tx, ctx, {
     kind: 'adjustment',
     receivedOn: discrepancy.on,
     // The server's own figure. The request's copy decided only whether this
@@ -180,4 +188,19 @@ export async function acceptUnexplainedInflowAsAdjustment(
     cashPositionId: null,
     description: descriptionOf(args.month, args.note),
   });
+}
+
+export async function acceptUnexplainedInflowAsAdjustment(
+  deps: FlowDependencies,
+  ctx: RequestContext,
+  args: AcceptAdjustmentArgs,
+): Promise<IncomeEntryRow> {
+  const currency = args.currency.trim().toUpperCase();
+
+  const created = await withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    acceptAdjustmentIn(tx, ctx, args, currency),
+  );
+
+  await deps.fx.ensureHistory(currency, created.receivedOn);
+  return created;
 }

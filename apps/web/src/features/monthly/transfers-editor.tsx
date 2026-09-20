@@ -34,6 +34,7 @@ import {
   readOnlyText,
   storedProblemText,
   transferModeOf,
+  deleteTransferPayload,
   updateTransferPayload,
   type ChoiceOption,
   type DateRange,
@@ -475,7 +476,7 @@ export function TransferEditor({
 
   const remove = (): void => {
     if (base === null || busy) return;
-    run(() => deleteTransferAction({ transferId: base.transferId }), 'Transfer deleted.');
+    run(() => deleteTransferAction(deleteTransferPayload(base)), 'Transfer deleted.');
   };
 
   const payer = accounts.find((row) => row.positionId === draft.fee.payerId);

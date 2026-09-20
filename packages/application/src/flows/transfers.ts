@@ -1,15 +1,14 @@
 import {
   deleteExpenseEntryIn,
   deleteTransferIn,
-  findTransfer,
   findTransferFeesIn,
   insertExpenseEntryIn,
   insertTransferIn,
-  listCategoryRecords,
+  listCategoryRecordsIn,
+  lockCategoryIn,
   lockTransferIn,
   updateExpenseEntryIn,
   updateTransferIn,
-  withUser,
   type AuditContext,
   type CategoryRecord,
   type ExpenseEntryRow,
@@ -19,6 +18,7 @@ import {
 } from '@vaultide/db';
 import { Decimal } from '@vaultide/finance';
 import type { RequestContext } from '../context';
+import { withUserWrite } from '../coordination';
 import {
   ImpossibleOperationError,
   NotFoundError,
@@ -30,7 +30,7 @@ import {
   assertNotFuture,
   auditContextOf,
   clearDormancyForFlowIn,
-  requireCashAccount,
+  requireCashAccountIn,
   type FlowDependencies,
 } from './shared';
 
@@ -216,8 +216,8 @@ function assertLegCurrency(
  * the inconsistency fails. `legCurrencies` is the stored pair when correcting:
  * an endpoint may move, a currency may not.
  */
-async function resolveFacts(
-  deps: FlowDependencies,
+async function resolveFactsIn(
+  tx: Transaction,
   ctx: RequestContext,
   facts: TransferFacts,
   legCurrencies?: { readonly from: string; readonly to: string },
@@ -231,8 +231,8 @@ async function resolveFacts(
     });
   }
 
-  const from = await requireCashAccount(deps.db, ctx, facts.fromPositionId);
-  const to = await requireCashAccount(deps.db, ctx, facts.toPositionId);
+  const from = await requireCashAccountIn(tx, facts.fromPositionId);
+  const to = await requireCashAccountIn(tx, facts.toPositionId);
   if (legCurrencies !== undefined) {
     assertLegCurrency(from, legCurrencies.from, 'fromPositionId');
     assertLegCurrency(to, legCurrencies.to, 'toPositionId');
@@ -268,15 +268,30 @@ async function resolveFacts(
  * because choosing among several, or filing under an archived one, would be
  * guessing what a fee means.
  */
-function transferFeeCategoryOf(categories: readonly CategoryRecord[]): CategoryRecord {
+async function transferFeeCategoryIn(
+  tx: Transaction,
+  categories: readonly CategoryRecord[],
+): Promise<CategoryRecord> {
   const candidates = categories.filter((row) => row.kind === 'transfer_fee');
   const only = candidates[0];
-  if (candidates.length !== 1 || only === undefined || only.archivedAt !== null) {
+  if (candidates.length !== 1 || only === undefined) {
     throw new ImpossibleOperationError(
       'Your transfer-fee category is missing or not unique, so this fee cannot be filed. Nothing was saved.',
     );
   }
-  return only;
+
+  // The fee's category is chosen afresh by this write, so it is a reference
+  // dependency like any other: held `FOR SHARE` until the transfer commits
+  // (30.22 item 8; ADR 0010 §9). No application path can archive a system
+  // category today, and the lock states the dependency rather than relying on
+  // the absence of a feature.
+  const held = await lockCategoryIn(tx, only.id);
+  if (held === undefined || held.archivedAt !== null) {
+    throw new ImpossibleOperationError(
+      'Your transfer-fee category is missing or not unique, so this fee cannot be filed. Nothing was saved.',
+    );
+  }
+  return held;
 }
 
 /**
@@ -424,7 +439,7 @@ async function saveFeeIn(
  * date for its payer's currency when the fee was charged before the transfer.
  */
 async function warmHistory(
-  deps: FlowDependencies,
+  fx: FlowDependencies['fx'],
   occurredOn: string,
   resolved: ResolvedFacts,
 ): Promise<void> {
@@ -437,7 +452,50 @@ async function warmHistory(
   need(resolved.to.currency, occurredOn);
   if (resolved.fee !== null) need(resolved.fee.payer.currency, resolved.fee.facts.incurredOn);
 
-  for (const [currency, date] of earliest) await deps.fx.ensureHistory(currency, date);
+  for (const [currency, date] of earliest) await fx.ensureHistory(currency, date);
+}
+
+interface SavedTransfer extends TransferWithFee {
+  /** What the post-commit FX warming needs, resolved inside the transaction. */
+  readonly resolved: ResolvedFacts;
+}
+
+async function createCashTransferIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: CreateTransferArgs,
+): Promise<SavedTransfer> {
+  const resolved = await resolveFactsIn(tx, ctx, { ...args, fee: args.fee ?? null });
+  const fee: FeeToSave | null =
+    resolved.fee === null
+      ? null
+      : {
+          ...resolved.fee,
+          category: await transferFeeCategoryIn(
+            tx,
+            await listCategoryRecordsIn(tx, { includeArchived: true }),
+          ),
+        };
+
+  const audit = auditContextOf(ctx);
+  const transfer = await insertTransferIn(tx, audit, {
+    kind: 'cash_transfer',
+    occurredOn: args.occurredOn,
+    fromPositionId: resolved.from.id,
+    fromCurrency: resolved.from.currency,
+    fromAmount: args.fromAmount,
+    toPositionId: resolved.to.id,
+    toCurrency: resolved.to.currency,
+    toAmount: args.toAmount,
+    description: args.description ?? null,
+    tags: args.tags ?? [],
+    // Phase 3 materializes no recurring transfer occurrence.
+  });
+
+  const feeRow = fee === null ? null : await insertFeeIn(tx, audit, transfer.id, fee);
+
+  await clearDormancyForFlowIn(tx, ctx, [resolved.from.id, resolved.to.id]);
+  return { transfer, fee: feeRow, resolved };
 }
 
 export async function createCashTransfer(
@@ -445,121 +503,108 @@ export async function createCashTransfer(
   ctx: RequestContext,
   args: CreateTransferArgs,
 ): Promise<TransferWithFee> {
-  const resolved = await resolveFacts(deps, ctx, { ...args, fee: args.fee ?? null });
-  const fee: FeeToSave | null =
+  const created = await withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    createCashTransferIn(tx, ctx, args),
+  );
+
+  await warmHistory(deps.fx, args.occurredOn, created.resolved);
+  return { transfer: created.transfer, fee: created.fee };
+}
+
+async function updateCashTransferIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: UpdateTransferArgs,
+): Promise<SavedTransfer> {
+  // The aggregate's own lock first, exactly as before: every fee read and every
+  // fee write in this service happens behind it, so the two orders that could
+  // deadlock never meet (M14, ADR 0006).
+  const locked = await lockTransferIn(tx, args.transferId);
+  if (locked === undefined) throw new NotFoundError('That transfer no longer exists.');
+  if (locked.kind !== 'cash_transfer') {
+    throw new ImpossibleOperationError('Only cash transfers can be edited here.');
+  }
+  if (locked.version !== args.expectedVersion) {
+    throw new VersionConflictError(
+      'This transfer changed while you were editing it. Reload to see the current values.',
+    );
+  }
+
+  const resolved = await resolveFactsIn(tx, ctx, args, {
+    from: locked.fromCurrency,
+    to: locked.toCurrency,
+  });
+  // Every category, archived included: the stored fee's kind is checked from
+  // the same read that resolves the one a fee is filed under.
+  const categories = await listCategoryRecordsIn(tx, { includeArchived: true });
+  const kindOf = new Map(categories.map((row) => [row.id, row.kind]));
+  const desiredFee: FeeToSave | null =
     resolved.fee === null
       ? null
-      : {
-          ...resolved.fee,
-          category: transferFeeCategoryOf(
-            await listCategoryRecords(deps.db, ctx.userId, { includeArchived: true }),
-          ),
-        };
+      : { ...resolved.fee, category: await transferFeeCategoryIn(tx, categories) };
 
-  const audit = auditContextOf(ctx);
-  const created = await withUser(deps.db, { userId: ctx.userId }, async (tx) => {
-    const transfer = await insertTransferIn(tx, audit, {
-      kind: 'cash_transfer',
+  const audit = auditContextOf(ctx, args.reason);
+
+  const stored = editableFeeOf(
+    args.transferId,
+    await findTransferFeesIn(tx, args.transferId),
+    kindOf,
+  );
+  assertFeeAsExpected(args.expectedFee, stored);
+
+  let transfer: TransferRow = locked;
+  if (transferChanged(locked, args)) {
+    const updated = await updateTransferIn(tx, audit, args.transferId, args.expectedVersion, {
       occurredOn: args.occurredOn,
       fromPositionId: resolved.from.id,
-      fromCurrency: resolved.from.currency,
       fromAmount: args.fromAmount,
       toPositionId: resolved.to.id,
-      toCurrency: resolved.to.currency,
       toAmount: args.toAmount,
-      description: args.description ?? null,
-      tags: args.tags ?? [],
-      // Phase 3 materializes no recurring transfer occurrence.
+      description: args.description,
+      ...(args.tags === undefined ? {} : { tags: args.tags }),
     });
+    /* v8 ignore next 5 -- the row is held under FOR UPDATE at the version just checked. */
+    if (updated === undefined) {
+      throw new VersionConflictError(
+        'This transfer changed while you were editing it. Reload to see the current values.',
+      );
+    }
+    transfer = updated;
+  }
 
-    const feeRow = fee === null ? null : await insertFeeIn(tx, audit, transfer.id, fee);
+  const fee = await saveFeeIn(tx, audit, args.transferId, stored, desiredFee);
 
-    await clearDormancyForFlowIn(tx, ctx, [resolved.from.id, resolved.to.id]);
-    return { transfer, fee: feeRow };
-  });
-
-  await warmHistory(deps, args.occurredOn, resolved);
-  return created;
+  // 8.8 on the endpoints the transfer now has. An account the correction
+  // moved away from keeps whatever flag it has: nothing restores dormancy.
+  await clearDormancyForFlowIn(tx, ctx, [resolved.from.id, resolved.to.id]);
+  return { transfer, fee, resolved };
 }
 
 /**
  * Correct a cash transfer as one aggregate (ADR 0006 §2–§6, §8).
  *
- * In one transaction, in this order: lock the transfer and check its version;
- * lock its fee rows and refuse any the aggregate cannot edit; check the fee
- * against what the caller saw; write the transfer and the fee where their facts
- * changed; and clear dormancy on both final endpoints. Any refusal on the way
- * leaves every row exactly as it was.
+ * In one transaction, in this order: take the per-user write mutex; lock the
+ * transfer and check its version; resolve the facts the correction states
+ * against the accounts they name; lock its fee rows and refuse any the
+ * aggregate cannot edit; check the fee against what the caller saw; write the
+ * transfer and the fee where their facts changed; and clear dormancy on both
+ * final endpoints. Any refusal on the way leaves every row exactly as it was.
+ *
+ * The endpoint and category reads used to happen before that transaction
+ * opened, so a correction could be judged against an account or a category
+ * another request was free to change (30.22 item 5).
  */
 export async function updateCashTransfer(
   deps: FlowDependencies,
   ctx: RequestContext,
   args: UpdateTransferArgs,
 ): Promise<TransferWithFee> {
-  const existing = await findTransfer(deps.db, ctx.userId, args.transferId);
-  if (existing === undefined) throw new NotFoundError('That transfer no longer exists.');
-  if (existing.kind !== 'cash_transfer') {
-    throw new ImpossibleOperationError('Only cash transfers can be edited here.');
-  }
+  const saved = await withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    updateCashTransferIn(tx, ctx, args),
+  );
 
-  const resolved = await resolveFacts(deps, ctx, args, {
-    from: existing.fromCurrency,
-    to: existing.toCurrency,
-  });
-  // Every category, archived included: the stored fee's kind is checked from
-  // the same read that resolves the one a fee is filed under.
-  const categories = await listCategoryRecords(deps.db, ctx.userId, { includeArchived: true });
-  const kindOf = new Map(categories.map((row) => [row.id, row.kind]));
-  const desiredFee: FeeToSave | null =
-    resolved.fee === null ? null : { ...resolved.fee, category: transferFeeCategoryOf(categories) };
-
-  const audit = auditContextOf(ctx, args.reason);
-  const saved = await withUser(deps.db, { userId: ctx.userId }, async (tx) => {
-    const locked = await lockTransferIn(tx, args.transferId);
-    if (locked === undefined) throw new NotFoundError('That transfer no longer exists.');
-    if (locked.version !== args.expectedVersion) {
-      throw new VersionConflictError(
-        'This transfer changed while you were editing it. Reload to see the current values.',
-      );
-    }
-
-    const stored = editableFeeOf(
-      args.transferId,
-      await findTransferFeesIn(tx, args.transferId),
-      kindOf,
-    );
-    assertFeeAsExpected(args.expectedFee, stored);
-
-    let transfer: TransferRow = locked;
-    if (transferChanged(locked, args)) {
-      const updated = await updateTransferIn(tx, audit, args.transferId, args.expectedVersion, {
-        occurredOn: args.occurredOn,
-        fromPositionId: resolved.from.id,
-        fromAmount: args.fromAmount,
-        toPositionId: resolved.to.id,
-        toAmount: args.toAmount,
-        description: args.description,
-        ...(args.tags === undefined ? {} : { tags: args.tags }),
-      });
-      /* v8 ignore next 5 -- the row is held under FOR UPDATE at the version just checked. */
-      if (updated === undefined) {
-        throw new VersionConflictError(
-          'This transfer changed while you were editing it. Reload to see the current values.',
-        );
-      }
-      transfer = updated;
-    }
-
-    const fee = await saveFeeIn(tx, audit, args.transferId, stored, desiredFee);
-
-    // 8.8 on the endpoints the transfer now has. An account the correction
-    // moved away from keeps whatever flag it has: nothing restores dormancy.
-    await clearDormancyForFlowIn(tx, ctx, [resolved.from.id, resolved.to.id]);
-    return { transfer, fee };
-  });
-
-  await warmHistory(deps, args.occurredOn, resolved);
-  return saved;
+  await warmHistory(deps.fx, args.occurredOn, saved.resolved);
+  return { transfer: saved.transfer, fee: saved.fee };
 }
 
 /**
@@ -571,33 +616,92 @@ export async function updateCashTransfer(
  * and however many there are: deletion is how an inconsistent aggregate is
  * cleared, so it is not refused for being one. Deleting a transfer restores no
  * account's dormancy (8.8).
+ *
+ * The transfer's own version and what the caller saw of its fee come with the
+ * request, so a transfer corrected after the page was rendered — or one that
+ * gained, lost or changed a fee — refuses rather than taking the newest
+ * aggregate down with it (6.3, 20.3, 30.22 item 10).
  */
-export async function deleteCashTransfer(
-  deps: FlowDependencies,
+export interface DeleteTransferArgs {
+  readonly transferId: string;
+  /** The transfer's version as the client rendered it (6.3, 30.22 item 10). */
+  readonly expectedVersion: number;
+  /** What the client saw of its fee, in the shape a correction already uses. */
+  readonly expectedFee: TransferFeeExpectation;
+  readonly reason?: string | undefined;
+}
+
+/**
+ * Was the aggregate's fee what the caller was looking at (30.22 item 10)?
+ *
+ * Deliberately not `assertFeeAsExpected`: that one judges a *correction*, which
+ * may only proceed over an aggregate this service could have created. A delete
+ * removes **every** linked row, and is the documented way to clear an aggregate
+ * the product could not have created — the interface says so in as many words
+ * when a transfer carries more than one fee. So the expectation's job here is to
+ * prove the caller was looking at this aggregate's fee as it stands, not to
+ * enumerate rows its own shape cannot express: `absent` means no linked row may
+ * exist, and `version` means the row the caller named must still be there, at
+ * the version it named.
+ */
+function assertFeeAsExpectedForDelete(
+  expected: TransferFeeExpectation,
+  stored: readonly ExpenseEntryRow[],
+): void {
+  if (expected.state === 'absent') {
+    if (stored.length === 0) return;
+    throw new VersionConflictError(
+      'A fee was added to this transfer after you opened it. Reload to see it.',
+    );
+  }
+  const named = stored.find((row) => row.id === expected.feeId);
+  if (named !== undefined && named.version === expected.version) return;
+  throw new VersionConflictError(
+    'This transfer’s fee changed after you opened it. Reload to see the current values.',
+  );
+}
+
+async function deleteCashTransferIn(
+  tx: Transaction,
   ctx: RequestContext,
-  args: { transferId: string; reason?: string | undefined },
+  args: DeleteTransferArgs,
 ): Promise<{ transfer: TransferRow; fees: ExpenseEntryRow[] }> {
   const audit = auditContextOf(ctx, args.reason);
 
-  return withUser(deps.db, { userId: ctx.userId }, async (tx) => {
-    const locked = await lockTransferIn(tx, args.transferId);
-    if (locked === undefined) throw new NotFoundError('That transfer no longer exists.');
-    if (locked.kind !== 'cash_transfer') {
-      throw new ImpossibleOperationError('Only cash transfers can be deleted here.');
-    }
+  const locked = await lockTransferIn(tx, args.transferId);
+  if (locked === undefined) throw new NotFoundError('That transfer no longer exists.');
+  if (locked.kind !== 'cash_transfer') {
+    throw new ImpossibleOperationError('Only cash transfers can be deleted here.');
+  }
+  if (locked.version !== args.expectedVersion) {
+    throw new VersionConflictError(
+      'This transfer changed after you opened it. Reload to see what it says now.',
+    );
+  }
 
-    const fees = await findTransferFeesIn(tx, args.transferId);
-    const removedFees: ExpenseEntryRow[] = [];
-    for (const fee of fees) {
-      const removed = await deleteExpenseEntryIn(tx, audit, fee.id);
-      /* v8 ignore next -- the row is held under FOR UPDATE in this transaction. */
-      if (removed !== undefined) removedFees.push(removed);
-    }
+  const fees = await findTransferFeesIn(tx, args.transferId);
+  assertFeeAsExpectedForDelete(args.expectedFee, fees);
 
-    const transfer = await deleteTransferIn(tx, audit, args.transferId);
+  const removedFees: ExpenseEntryRow[] = [];
+  for (const fee of fees) {
+    const removed = await deleteExpenseEntryIn(tx, audit, fee.id);
     /* v8 ignore next -- the row is held under FOR UPDATE in this transaction. */
-    if (transfer === undefined) throw new NotFoundError('That transfer no longer exists.');
+    if (removed !== undefined) removedFees.push(removed);
+  }
 
-    return { transfer, fees: removedFees };
-  });
+  const transfer = await deleteTransferIn(tx, audit, args.transferId);
+  /* v8 ignore next -- the row is held under FOR UPDATE in this transaction. */
+  if (transfer === undefined) throw new NotFoundError('That transfer no longer exists.');
+
+  return { transfer, fees: removedFees };
+}
+
+export async function deleteCashTransfer(
+  deps: FlowDependencies,
+  ctx: RequestContext,
+  args: DeleteTransferArgs,
+): Promise<{ transfer: TransferRow; fees: ExpenseEntryRow[] }> {
+  return withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    deleteCashTransferIn(tx, ctx, args),
+  );
 }

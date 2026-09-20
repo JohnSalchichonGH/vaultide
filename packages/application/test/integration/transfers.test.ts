@@ -17,6 +17,7 @@ import {
   deleteCashTransfer,
   updateCashTransfer,
   type TransferWithFee,
+  type DeleteTransferArgs,
   type UpdateTransferArgs,
 } from '../../src/flows/transfers';
 import { getMonthReconciliation, parseMonth } from '../../src/reconciliation/service';
@@ -275,6 +276,23 @@ function correction(saved: TransferWithFee, over: Partial<UpdateTransferArgs> = 
         ? null
         : { amount: fee.amount, cashPositionId: fee.cashPositionId as string, incurredOn: fee.incurredOn },
     expectedFee: fee === null ? { state: 'absent' } : { state: 'version', feeId: fee.id, version: fee.version },
+    ...over,
+  };
+}
+
+/**
+ * A delete's input: the aggregate as the caller was shown it (30.22 item 10).
+ *
+ * The same shape the dialog builds — the transfer's version, and what it saw of
+ * the fee — so a test deletes what it created rather than whatever is there.
+ */
+function removal(saved: TransferWithFee, over: Partial<DeleteTransferArgs> = {}): DeleteTransferArgs {
+  const { transfer, fee } = saved;
+  return {
+    transferId: transfer.id,
+    expectedVersion: transfer.version,
+    expectedFee:
+      fee === null ? { state: 'absent' } : { state: 'version', feeId: fee.id, version: fee.version },
     ...over,
   };
 }
@@ -1213,7 +1231,13 @@ describe('deleting a cash transfer', () => {
   it('refuses a transfer of another kind, and removes nothing', async () => {
     const id = await transferOfAnotherKind();
 
-    await expect(deleteCashTransfer(deps(), SEPT_15, { transferId: id })).rejects.toMatchObject({
+    await expect(
+      deleteCashTransfer(deps(), SEPT_15, {
+        transferId: id,
+        expectedVersion: 1,
+        expectedFee: { state: 'absent' },
+      }),
+    ).rejects.toMatchObject({
       code: 'IMPOSSIBLE_OPERATION',
     });
     expect(await storedTransfer(id)).toBeDefined();
@@ -1231,7 +1255,7 @@ describe('deleting a cash transfer', () => {
   it('removes a fee dated in another month with its transfer, each with a before-image', async () => {
     const saved = await eurTransfer({ ctx: NOV_5, occurredOn: '2026-09-30', fee: { incurredOn: '2026-10-01' } });
 
-    const removed = await deleteCashTransfer(deps(), NOV_5, { transferId: saved.transfer.id });
+    const removed = await deleteCashTransfer(deps(), NOV_5, removal(saved));
 
     expect(removed.fees.map((fee) => fee.id)).toEqual([saved.fee?.id]);
     expect(await countRows('expense_entries')).toBe(0);
@@ -1241,17 +1265,17 @@ describe('deleting a cash transfer', () => {
 
   it('answers NOT_FOUND for a transfer that is already gone', async () => {
     const saved = await eurTransfer();
-    await deleteCashTransfer(deps(), SEPT_15, { transferId: saved.transfer.id });
+    await deleteCashTransfer(deps(), SEPT_15, removal(saved));
 
-    await expect(
-      deleteCashTransfer(deps(), SEPT_15, { transferId: saved.transfer.id }),
-    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(deleteCashTransfer(deps(), SEPT_15, removal(saved))).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
   });
 
   it('restores no dormancy', async () => {
     await makeDormant(savings);
     const saved = await eurTransfer();
-    await deleteCashTransfer(deps(), SEPT_15, { transferId: saved.transfer.id });
+    await deleteCashTransfer(deps(), SEPT_15, removal(saved));
 
     // Dormancy is a user assertion, re-made only through its own action (8.8).
     expect(await isDormant(savings)).toBe(false);

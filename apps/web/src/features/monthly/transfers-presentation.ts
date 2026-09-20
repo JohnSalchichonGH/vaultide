@@ -662,10 +662,46 @@ export function updateTransferPayload(
     ...amountsOf(draft, accounts, legCurrencies),
     description: description === '' ? null : description,
     fee: draft.fee.enabled ? feePayloadOf(draft.fee) : null,
-    expectedFee:
-      transfer.fee.kind === 'one'
-        ? { state: 'version' as const, feeId: transfer.fee.fee.feeId, version: transfer.fee.fee.version }
-        : { state: 'absent' as const },
+    expectedFee: feeExpectationOf(transfer),
+  };
+}
+
+/**
+ * What the dialog saw of the transfer's fee, for a save or a delete (20.3;
+ * 30.22 item 10).
+ *
+ * No fee is `absent`. One fee names that row and its version. **Several** — a
+ * state no application path creates, and which the dialog shows read-only
+ * except for Delete — names the first of them: the aggregate cannot be
+ * corrected in that state, and a delete takes every linked row with it, so what
+ * the expectation has to prove is that the fee the user was shown is still
+ * there, not how many rows exist.
+ */
+export function feeExpectationOf(transfer: MonthlyTransferDto) {
+  const fee =
+    transfer.fee.kind === 'one'
+      ? transfer.fee.fee
+      : transfer.fee.kind === 'multiple'
+        ? transfer.fee.fees[0]
+        : undefined;
+
+  return fee === undefined
+    ? { state: 'absent' as const }
+    : { state: 'version' as const, feeId: fee.feeId, version: fee.version };
+}
+
+/**
+ * The delete action's input: the aggregate the dialog was opened on, and
+ * nothing else (6.3, 30.22 item 10).
+ *
+ * A transfer corrected after the page was rendered — or one that gained, lost
+ * or changed a fee — refuses rather than taking the newest aggregate down.
+ */
+export function deleteTransferPayload(transfer: MonthlyTransferDto) {
+  return {
+    transferId: transfer.transferId,
+    expectedVersion: transfer.version,
+    expectedFee: feeExpectationOf(transfer),
   };
 }
 
