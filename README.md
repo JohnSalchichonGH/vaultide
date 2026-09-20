@@ -9,7 +9,7 @@ investments, other assets and liabilities, in as many currencies as you hold.
 
 The exact financial semantics live in
 [`docs/implementation-blueprint.md`](docs/implementation-blueprint.md) (frozen,
-v2.1.17). This README describes the product, its current status and how to
+v2.1.18). This README describes the product, its current status and how to
 work on the repository; it does not restate the blueprint's rules.
 
 ## Status
@@ -46,6 +46,15 @@ progress, but Monthly and Spending are live. What is usable today:
     transfers between your own cash accounts: recording, correcting or deleting
     one, within one currency or across two with each amount as your accounts
     show it, and with an optional linked bank fee;
+- correcting what a month's reconciliation found, from the issue itself:
+  Monthly takes you to the balance, the income, the expense or the transfer
+  that would explain it, or opens one of the editors above with what the issue
+  already knows filled in — and, where nothing explains an unexplained
+  difference, offers to record it as a reconciliation adjustment. Vaultide
+  suggests; you decide what is recorded, and nothing is written until you
+  confirm it. There is no transaction matching, no bank import and no general
+  editing of past records here: an issue clears because the records changed and
+  the month was worked out again;
 - marking a completed month reviewed, and hiding an advisory for that month or
   showing it again. Hiding changes only what the page shows; it resolves
   nothing;
@@ -87,7 +96,17 @@ Implemented behind the application layer:
 Both advisories sit beside the figures and change none of them. Monthly can hide
 an advisory for that month and show it again; that is presentation and review
 state only, and changes neither the reconciliation nor any financial record.
-There are no corrective actions on an issue yet.
+
+Every issue those engines raise now carries a correction, live in production.
+One pure model maps an issue to what it offers and one host opens it; the
+corrections themselves are the existing editors, given what the issue knows. The
+one new write is the reconciliation adjustment, whose amount, date and
+settlement the server derives from the discrepancy it recomputes. No resolution
+state is stored — an issue clears because the source records changed — and a
+correction offered for the current month is bounded by the date its
+month-to-date reconciliation reaches. This is not the historical-correction
+workflow, which comes later and is what will edit an existing record with its
+effect shown before and after.
 
 In production, Monthly consumes this through one composite read: a month's
 reconciliation, reporting-currency figures and completeness, the cash balances
@@ -96,14 +115,13 @@ expected and received, and the expenses it expected and recorded. Cash transfers
 are maintained inside Monthly's Accounts section, with no page of their own. The
 standalone Spending page reads the same reconciliation, reporting, rolling and
 span machinery through its own composite read and reports spending across
-months; it is not a transaction ledger. Corrective actions on reconciliation
-issues and the standalone Income pages are not built yet.
+months; it is not a transaction ledger. The standalone Income pages are not
+built yet.
 
 ### Remaining Phase 3
 
 Phase 3 is **in progress**, and is neither accepted nor frozen. Still to do:
 
-- corrective actions on reconciliation issues;
 - historical correction;
 - bulk history entry;
 - the standalone Income pages;
@@ -160,8 +178,8 @@ packages/application use cases: auth and sessions, mailer, settings, FX service,
                      state, and the Spending composite read
 packages/config      tsconfig, ESLint (incl. the money-coercion rule), boundaries
 e2e                  Playwright: smoke, the auth and settings flow, the
-                     accounts, balances and net-worth journey, and the Monthly
-                     and Spending journeys
+                     accounts, balances and net-worth journey, and the Monthly,
+                     Spending and corrective-action journeys
 scripts/db           role bootstrap, local PostgreSQL, currency reconciliation,
                      live environment and financial-invariant checks
 scripts/backup       dump → verify → encrypt
@@ -251,7 +269,7 @@ policy filtered can never pass verification. Restoring is documented in
 ## Design and engineering docs
 
 - **Semantic authority:** [`docs/implementation-blueprint.md`](docs/implementation-blueprint.md)
-  (frozen, v2.1.17). When the code and the blueprint disagree, the blueprint is
+  (frozen, v2.1.18). When the code and the blueprint disagree, the blueprint is
   corrected or the code is — never silently either.
 - **Implementation decisions:** [`docs/adr/`](docs/adr/) —
   [Phase 0](docs/adr/0001-phase-0-implementation-decisions.md),
@@ -262,7 +280,8 @@ policy filtered can never pass verification. Restoring is documented in
   blueprint v2.1.6 and deliberately left at that baseline),
   [Phase 3 Monthly-transfer decisions](docs/adr/0006-phase-3-monthly-transfers.md),
   [the dormant anchor](docs/adr/0007-dormant-anchor.md),
-  [standalone Spending](docs/adr/0008-standalone-spending.md).
+  [standalone Spending](docs/adr/0008-standalone-spending.md),
+  [reconciliation corrective actions](docs/adr/0009-reconciliation-corrective-actions.md).
 - **Evidence for frozen phases:**
   [`docs/phase-0-acceptance.md`](docs/phase-0-acceptance.md),
   [`docs/phase-1-acceptance.md`](docs/phase-1-acceptance.md),

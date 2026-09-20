@@ -19,7 +19,7 @@ logs into this file.
 
 ## Current checkpoint
 
-- **Blueprint:** v2.1.17.
+- **Blueprint:** v2.1.18.
 - **Current phase:** Phase 3.
 - **Phase 3 status:** in progress; the phase as a whole is **not accepted or
   frozen**.
@@ -74,10 +74,39 @@ logs into this file.
   - the focus month's category breakdown and largest known expenses explain the
     known part;
   - Add known expense is Monthly's own, reused.
+
+  **Reconciliation issue corrective actions** are likewise an independently
+  reviewed, production-verified and frozen completed Phase 3 slice checkpoint:
+  - a reconciliation issue is actionable rather than a diagnosis to read.
+    Monthly takes the user to the record or the row that would resolve it, or
+    opens a focused corrective interaction beside the issue itself;
+  - the corrections are the existing Income, Known expenses, Transfers,
+    Accounts and Quick update workflows, opened with what the issue already
+    knows. No editor was duplicated and ordinary use of each is unchanged;
+  - an unexplained inflow the user cannot trace can be accepted as an explicit
+    **reconciliation adjustment**: the residual recorded as what it is, so the
+    month's cash records add up without claiming a cause. It is not counted as
+    economic income when savings are worked out;
+  - a suggested missing conversion opens a prefilled transfer, and suggested
+    interest a prefilled income entry. Both remain suggestions: Vaultide fills
+    in what it has evidence for, invents no financial fact, and writes nothing
+    until the user confirms it;
+  - a missing month-end or first balance sends the user to the exact account row
+    that holds it, and a flow with no cash account names the record it is about;
+  - a correction offered for the current month is bounded by the date its
+    month-to-date reconciliation reaches, because nothing dated later is in the
+    figure being corrected.
+
+  A blocking issue clears because the source records changed and the server
+  recomputed the month. There is no stored resolved-issue state, and advisory
+  dismissal stays separate and never automatic. This slice creates records
+  inside the issue's own month; general historical correction remains later
+  work.
 - **User-facing production:** Phases 0–2 remain the accepted/frozen user-facing
   foundation. Phase 3's Monthly page is in production with Overview, Income,
-  Known expenses, Accounts (including cash transfers) and Reconciliation, and so
-  is the standalone Spending page; the rest of Phase 3 remains in progress.
+  Known expenses, Accounts (including cash transfers) and Reconciliation —
+  whose issues now carry corrective actions — and so is the standalone Spending
+  page; the rest of Phase 3 remains in progress.
 - **Database migrations:** repository migrations run through
   `0008_dormant_anchor.sql`; the production release workflow
   applies migrations before deploying application code.
@@ -90,6 +119,8 @@ logs into this file.
   dormant-anchor correction.
   `docs/adr/0008-standalone-spending.md` is the accepted record of the
   standalone Spending implementation decisions.
+  `docs/adr/0009-reconciliation-corrective-actions.md` is the accepted record of
+  the corrective-action decisions.
 
 Freezing completed Phase 3 slices does not imply acceptance or freeze of Phase 3
 as a whole.
@@ -149,6 +180,13 @@ Monthly adds, on top of that backend:
   recording an upcoming occurrence early, changing what a source costs from an
   occurrence on or when it ends, creating a recurring expense source, and
   maintaining the month's direct known expenses;
+- **Reconciliation corrective actions**: one pure model mapping each issue the
+  engines can raise to what it offers
+  (`apps/web/src/features/monthly/issue-actions.ts`), rendered by one dialog
+  host over the editors above. Its one new write is the reconciliation
+  adjustment (`packages/application/src/flows/adjustments.ts`), whose server
+  recomputes the month and derives the record from the discrepancy rather than
+  trusting the browser's figure;
 - MonthReview state: a completed month can be marked reviewed;
 - advisory dismissal and restoration, applied only as presentation state.
 
@@ -185,25 +223,24 @@ Web surface of Phase 3:
   Known expenses sections are their consumers, as is Spending's reused Add known
   expense, and Monthly Accounts is the user-facing consumer of the transfer flow
   path.
-- End-to-end coverage now also includes the Monthly and Spending journeys
-  (`monthly`, `spending`), alongside the Phase 0–2 journeys (`smoke`, `auth`,
-  `accounts`).
+- End-to-end coverage now also includes the Monthly, Spending and
+  corrective-action journeys (`monthly`, `spending`, `corrective-actions`),
+  alongside the Phase 0–2 journeys (`smoke`, `auth`, `accounts`).
 
 ## Next planned work
 
-The next planned Phase 3 area is **reconciliation issue corrective actions**.
+The next planned Phase 3 area is **historical correction**.
 
 Remaining Phase 3 work, in the agreed order:
 
-1. reconciliation issue corrective actions;
-2. historical correction;
-3. bulk history entry;
-4. the standalone Income pages;
-5. the remaining end-to-end journeys and Phase 3 hardening, including the
+1. historical correction;
+2. bulk history entry;
+3. the standalone Income pages;
+4. the remaining end-to-end journeys and Phase 3 hardening, including the
    server/domain enforcement of each currency's minor-unit scale for Phase 3
    flows that acceptance still requires;
-6. a cold whole-Phase-3 review;
-7. Phase 3 acceptance, production verification, and freeze.
+5. a cold whole-Phase-3 review;
+6. Phase 3 acceptance, production verification, and freeze.
 
 The exact scope and subdivision of this work may still be refined by a later
 reviewed task prompt. Do not infer that an item is implemented merely because it

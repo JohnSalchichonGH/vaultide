@@ -103,6 +103,10 @@ export const ROADMAP = {
           title: 'Spending over time',
           text: 'A dedicated cross-month view of total and tracked spending, known vs unclassified amounts, recent averages, combined periods where balances have gaps, categories and the largest known expenses.',
         },
+        {
+          title: 'Fix reconciliation issues',
+          text: 'When a month does not add up, Vaultide takes you to the balance, income, expense or transfer that would explain it, with what it already knows filled in. It suggests; you decide what is recorded, and nothing is written until you confirm it.',
+        },
       ],
     },
     {
@@ -110,8 +114,8 @@ export const ROADMAP = {
       label: 'Next up',
       entries: [
         {
-          title: 'Corrections and income over time',
-          text: 'Resolve reconciliation issues, correct past months, enter older history faster, and see your income across months in a dedicated view.',
+          title: 'Historical corrections and income',
+          text: 'Correct past records with their effect shown before and after, enter older history faster, and see your income across months in a dedicated view.',
         },
       ],
     },
