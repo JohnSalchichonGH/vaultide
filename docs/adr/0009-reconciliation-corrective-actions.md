@@ -177,6 +177,14 @@ catches. The residual window between the check and the insert is the same shape
 the tracked-cash null-leg check already has, and is recorded here rather than
 hidden.
 
+> **Partly superseded (ADR 0010 §15).** The residual window this section records
+> is closed. The month is now recomputed inside the same transaction that writes
+> the row, under the per-user financial write mutex, so no participating
+> financial writer of the same user can land between the check and the insert —
+> and the same is true of the null-leg check this section compared it to. The
+> decision itself stands unchanged: the precondition is still the stale-view
+> guard, and no database constraint was invented for it.
+
 ---
 
 ## 10. The cross-currency suggestion prefills residuals, never evidence
