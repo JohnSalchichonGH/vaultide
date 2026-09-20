@@ -28,6 +28,7 @@ import { auditContextOf, dormancyStateOf } from '../flows/shared';
 import type { FxService } from '../fx/service';
 import {
   dormancyChange,
+  realDormancyEffects,
   type DormancyEffect,
   type ResolvedWrite,
   type ResolveOptions,
@@ -324,7 +325,7 @@ export async function resolveUpdateCashAccountIn(
   if (existing.version !== args.expectedVersion) throw new VersionConflictError();
 
   const dormancyPatch = await dormancyTransitionIn(tx, ctx, existing, args.isDormant);
-  const dormancy: DormancyEffect[] =
+  const dormancy: readonly DormancyEffect[] = realDormancyEffects(
     dormancyPatch === undefined
       ? []
       : [
@@ -334,7 +335,8 @@ export async function resolveUpdateCashAccountIn(
             after: { isDormant: dormancyPatch.isDormant, dormantFrom: dormancyPatch.dormantFrom },
             via: 'account_update',
           },
-        ];
+        ],
+  );
 
   return {
     existing,

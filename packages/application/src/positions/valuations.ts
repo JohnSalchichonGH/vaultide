@@ -53,6 +53,7 @@ import {
   deleted,
   dormancyChange,
   mergeSupport,
+  realDormancyEffects,
   updated,
   type DormancyEffect,
   type ResolveOptions,
@@ -340,9 +341,9 @@ export async function resolveRecordValuationIn(
     datePrecision: args.datePrecision,
     note: args.note ?? null,
   };
-  const dormancy: DormancyEffect[] = wakesOnNonZero(position, args.amount)
-    ? [clearDormancyEffect(position)]
-    : [];
+  const dormancy = realDormancyEffects(
+    wakesOnNonZero(position, args.amount) ? [clearDormancyEffect(position)] : [],
+  );
 
   return {
     operation: 'record',
@@ -500,7 +501,7 @@ export async function resolveCorrectValuationIn(
   const wakes =
     wakesOnNonZero(position, args.amount) ||
     (args.valuedOn !== existing.valuedOn && wakesOnAnchorRemoved(position, existing.valuedOn));
-  const dormancy: DormancyEffect[] = wakes ? [clearDormancyEffect(position)] : [];
+  const dormancy = realDormancyEffects(wakes ? [clearDormancyEffect(position)] : []);
 
   return {
     operation: 'correct',
@@ -597,9 +598,9 @@ export async function resolveRemoveValuationIn(
     );
   }
 
-  const dormancy: DormancyEffect[] = wakesOnAnchorRemoved(position, existing.valuedOn)
-    ? [clearDormancyEffect(position)]
-    : [];
+  const dormancy = realDormancyEffects(
+    wakesOnAnchorRemoved(position, existing.valuedOn) ? [clearDormancyEffect(position)] : [],
+  );
 
   return {
     operation: 'remove',
@@ -1051,7 +1052,7 @@ export async function resolveQuickUpdateIn(
   );
 
   const changes: IdentifiedSourceChange[] = [];
-  const dormancy: DormancyEffect[] = [];
+  const waking: DormancyEffect[] = [];
   const support: SupportWarm[] = [];
   const entries: QuickUpdateWritePlan['entries'] = args.entries.map((item) => {
     const position = byId.get(item.positionId) as PositionRow;
@@ -1076,7 +1077,7 @@ export async function resolveQuickUpdateIn(
             after,
           ),
     );
-    if (wakesOnNonZero(position, item.amount)) dormancy.push(clearDormancyEffect(position));
+    if (wakesOnNonZero(position, item.amount)) waking.push(clearDormancyEffect(position));
     support.push({ currency: position.currency, from: ctx.today });
 
     return {
@@ -1087,6 +1088,7 @@ export async function resolveQuickUpdateIn(
     };
   });
 
+  const dormancy = realDormancyEffects(waking);
   return {
     entries,
     // Today's row may be corrected, so the batch does revise evidence — but

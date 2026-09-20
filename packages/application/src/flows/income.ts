@@ -18,6 +18,7 @@ import {
   deleted,
   dormancyChange,
   mergeSupport,
+  realDormancyEffects,
   updated,
   type IncomeSourceFacts,
   type ResolvedWrite,
@@ -200,7 +201,7 @@ export async function resolveIncomeCreateIn(
     tags: args.tags,
     isOneOff: args.isOneOff,
   };
-  const dormancy = leg === null ? [] : [clearDormancyEffect(leg)];
+  const dormancy = realDormancyEffects(leg === null ? [] : [clearDormancyEffect(leg)]);
 
   return {
     operation: 'create',
@@ -283,7 +284,7 @@ export async function resolveIncomeUpdateIn(
     tags: args.tags,
     isOneOff: args.isOneOff,
   };
-  const dormancy = leg === null ? [] : [clearDormancyEffect(leg)];
+  const dormancy = realDormancyEffects(leg === null ? [] : [clearDormancyEffect(leg)]);
 
   return {
     operation: 'update',

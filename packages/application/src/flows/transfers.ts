@@ -33,6 +33,7 @@ import {
   deleted,
   dormancyChange,
   mergeSupport,
+  realDormancyEffects,
   updated,
   type ExpenseSourceFacts,
   type IdentifiedSourceChange,
@@ -596,10 +597,10 @@ export async function resolveCreateTransferIn(
         };
 
   const description = args.description ?? null;
-  const dormancy = [
+  const dormancy = realDormancyEffects([
     clearDormancyEffect(resolved.from),
     clearDormancyEffect(resolved.to),
-  ];
+  ]);
 
   return {
     operation: 'create',
@@ -688,7 +689,10 @@ export async function resolveUpdateTransferIn(
   const storedFee = editableFeeOf(args.transferId, linked, kindOf);
   assertFeeAsExpected(args.expectedFee, storedFee);
 
-  const dormancy = [clearDormancyEffect(resolved.from), clearDormancyEffect(resolved.to)];
+  const dormancy = realDormancyEffects([
+    clearDormancyEffect(resolved.from),
+    clearDormancyEffect(resolved.to),
+  ]);
 
   const feeChange: IdentifiedSourceChange | null =
     storedFee === null && desiredFee === null

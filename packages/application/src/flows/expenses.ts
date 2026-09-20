@@ -21,6 +21,7 @@ import {
   deleted,
   dormancyChange,
   mergeSupport,
+  realDormancyEffects,
   updated,
   type ExpenseSourceFacts,
   type ResolvedWrite,
@@ -294,7 +295,7 @@ export async function resolveExpenseCreateIn(
     isOneOff: args.isOneOff,
     transferId: null,
   };
-  const dormancy = leg === null ? [] : [clearDormancyEffect(leg)];
+  const dormancy = realDormancyEffects(leg === null ? [] : [clearDormancyEffect(leg)]);
 
   return {
     operation: 'create',
@@ -393,7 +394,7 @@ export async function resolveExpenseUpdateIn(
     isOneOff: args.isOneOff,
     transferId: null,
   };
-  const dormancy = leg === null ? [] : [clearDormancyEffect(leg)];
+  const dormancy = realDormancyEffects(leg === null ? [] : [clearDormancyEffect(leg)]);
   const occurrence =
     existing.templateId === null || existing.occurrenceDate === null
       ? undefined
