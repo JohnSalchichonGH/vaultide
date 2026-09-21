@@ -126,7 +126,13 @@ export function CorrectionReview({
               <span className={META}>Before</span>
               <span className={META}>After</span>
               {source.fields.map((field) => (
-                <div key={field.label} className="contents">
+                <div
+                  key={field.label}
+                  className="contents"
+                  data-testid="correction-field"
+                  data-field={field.label}
+                  data-changed={field.changed ? 'true' : 'false'}
+                >
                   <dt className={META}>{field.label}</dt>
                   <dd
                     className={cn(

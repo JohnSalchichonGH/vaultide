@@ -195,16 +195,25 @@ export function expenseFacts(row: ExpenseEntryRow, categoryKind: string): Expens
     settlement: row.settlement,
     cashPositionId: row.cashPositionId,
     description: row.description,
+    isOneOff: row.isOneOff,
     transferId: row.transferId,
     templateId: row.templateId,
     occurrenceDate: row.occurrenceDate,
   };
 }
 
+/**
+ * The facts a write will leave behind.
+ *
+ * `isOneOff` is passed resolved rather than read from `columns`, because there
+ * `undefined` means "leave the stored flag alone": an update's after-image is
+ * the stored flag unless the request states one, and a creation's is `false`.
+ */
 export function expenseFactsOf(
   columns: ExpenseColumns,
   categoryKind: string,
   occurrence: OccurrenceRef | undefined,
+  isOneOff: boolean,
 ): ExpenseSourceFacts {
   return {
     kind: 'expense',
@@ -216,6 +225,7 @@ export function expenseFactsOf(
     settlement: columns.settlement,
     cashPositionId: columns.cashPositionId,
     description: columns.description,
+    isOneOff,
     transferId: columns.transferId,
     templateId: occurrence?.templateId ?? null,
     occurrenceDate: occurrence?.occurrenceDate ?? null,
@@ -315,7 +325,7 @@ export async function resolveExpenseCreateIn(
               ? null
               : `${occurrence.templateId}#${occurrence.occurrenceDate}`,
         },
-        expenseFactsOf(columns, category.kind, occurrence),
+        expenseFactsOf(columns, category.kind, occurrence, columns.isOneOff ?? false),
       ),
       ...dormancy.map(dormancyChange),
     ],
@@ -411,7 +421,7 @@ export async function resolveExpenseUpdateIn(
       updated(
         { scope: 'existing', kind: 'expense', id: existing.id },
         expenseFacts(existing, beforeKind),
-        expenseFactsOf(columns, afterKind, occurrence),
+        expenseFactsOf(columns, afterKind, occurrence, columns.isOneOff ?? existing.isOneOff),
       ),
       ...dormancy.map(dormancyChange),
     ],

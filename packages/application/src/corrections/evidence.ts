@@ -91,8 +91,199 @@ export interface CorrectionEvidence {
 }
 
 /* -------------------------------------------------------------------------- */
+/* The valuation history                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Every position and every balance through today — the part of the evidence a
+ * correction's window is computed **from**.
+ *
+ * Loaded first and once, because the window cannot be known without it: how
+ * far a corrected balance reaches depends on which balances come after it, in
+ * both the world before the correction and the world after. It is then handed
+ * on unchanged to become part of the evidence, so the rows the window was
+ * judged from and the rows the engines read are the same rows.
+ *
+ * No lower bound (ADR 0004 §3): a month's opening may be a balance carried from
+ * years earlier, and windowing them would turn a carried balance into `missing`
+ * and a reconcilable month into `unavailable`. Bounded above by today, because
+ * `findSpanIntervals` reads every account's whole history (8.7).
+ */
+export interface ValuationHistory {
+  readonly positions: readonly PositionRecord[];
+  /** Valuations by position id, ascending by date. */
+  readonly valuations: ReadonlyMap<string, readonly ValuationRecord[]>;
+  readonly accountTypes: ReadonlyMap<string, string>;
+}
+
+export async function loadValuationHistoryIn(
+  tx: Transaction,
+  today: PlainDate,
+): Promise<ValuationHistory> {
+  const financial = await loadFinancialWindowIn(tx, today);
+
+  const valuations = new Map<string, ValuationRecord[]>();
+  for (const row of financial.valuations) {
+    const list = valuations.get(row.positionId);
+    const record = toValuationRecord(row);
+    if (list === undefined) valuations.set(row.positionId, [record]);
+    else list.push(record);
+  }
+
+  return {
+    positions: financial.positions.map(toPositionRecord),
+    valuations,
+    accountTypes: new Map(
+      financial.positions.map((row) => [row.id, row.accountType ?? 'checking']),
+    ),
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* How far a corrected balance reaches                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The last month in which a balance correction can still change anything, or
+ * `current` when no earlier month can be proved.
+ *
+ * ## What the engines read from a position's balances
+ *
+ * Every engine a preview asks — `reconcileCompletedMonth`,
+ * `reconcileMonthToDate`, `completedMonthCompleteness` — reads one account's
+ * balances for a month `M` in exactly four ways, all through the Phase 2 state
+ * machine in `positions/cash-state.ts`:
+ *
+ *  1. **by exact date** — the statement balance at `end(M)` and, for the
+ *     opening, at `end(M−1)`; the current month's snapshots at a candidate
+ *     `D`;
+ *  2. **the latest on or before a date** — any precision — which decides
+ *     `carried` against `missing` and whether a dormant zero is the episode's
+ *     own evidence;
+ *  3. **whether any balance exists before a date** — `first_balance`, in both
+ *     the completed and the month-to-date opening;
+ *  4. **whether any balance exists inside `M`** — 12.6's `stale`.
+ *
+ * ## When those reads stop seeing the corrected row
+ *
+ * Take the first balance of the position that is present, **unchanged**, in
+ * both worlds and dated after every row the correction adds, moves or removes.
+ * Call its date `s`. From `s` on, reads 2 and 3 answer the same in both worlds
+ * — the latest balance is `s` or later, and `s` itself proves something earlier
+ * exists — and reads 1 and 4 only ever ask about dates the correction does not
+ * touch. So every month after `month(s)` is identical before and after.
+ *
+ * `month(s)` itself is **not** safe to drop, and that is why this is not "stop
+ * at the next balance". Its opening reads the statement at `end(month(s) − 1)`
+ * by exact date, and an ordinary snapshot on the 1st does nothing to that read:
+ * an April statement followed by a snapshot on 1 May still opens May. The carry
+ * interval of that April statement ends on 30 April; its reach ends with May.
+ *
+ * ## Both worlds, not one
+ *
+ * `s` is taken after the **latest** row that differs between the two worlds,
+ * so a balance moved from April to August past an untouched June balance is
+ * still judged through the first untouched balance after August — the world
+ * before the correction stops at June, the world after does not. A deleted
+ * balance leaves its predecessor carrying further, and the same rule covers
+ * it: the rows that differ are the deleted one's, and nothing unchanged after
+ * it has moved.
+ *
+ * With no such balance there is nothing to stop at, and the reach runs to the
+ * current month, where the evidence itself ends. That fallback is what keeps
+ * this an optimisation rather than a rule the correctness depends on.
+ */
+export type ValuationReach =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'through'; readonly period: string }
+  | { readonly kind: 'current' };
+
+/** Everything an engine could read from one balance, as one comparable string. */
+const valuationKey = (record: ValuationRecord): string =>
+  [
+    record.id,
+    record.positionId,
+    record.valuedOn,
+    record.amount.toString(),
+    record.datePrecision,
+    record.source,
+  ].join('|');
+
+export function valuationReachOf(
+  write: ResolvedWrite,
+  valuations: ReadonlyMap<string, readonly ValuationRecord[]>,
+): ValuationReach {
+  const positions = new Set<string>();
+  for (const change of write.changes) {
+    for (const facts of [change.before, change.after]) {
+      if (facts?.kind === 'valuation') positions.add(facts.positionId);
+    }
+  }
+  if (positions.size === 0) return { kind: 'none' };
+
+  // The world after, through the one overlay the impact itself uses.
+  const after = overlayValuations(valuations, write.changes);
+
+  let reach: string | null = null;
+  for (const positionId of [...positions].sort()) {
+    const left = new Map((valuations.get(positionId) ?? []).map((row) => [valuationKey(row), row]));
+    const right = new Map((after.get(positionId) ?? []).map((row) => [valuationKey(row), row]));
+
+    const differing = [
+      ...[...left].filter(([key]) => !right.has(key)),
+      ...[...right].filter(([key]) => !left.has(key)),
+    ].map(([, row]) => row.valuedOn as string);
+    if (differing.length === 0) continue;
+
+    const last = differing.sort().at(-1) as string;
+    const reset = [...left]
+      .filter(([key, row]) => right.has(key) && row.valuedOn > last)
+      .map(([, row]) => row.valuedOn as string)
+      .sort()[0];
+    if (reset === undefined) return { kind: 'current' };
+
+    const period = periodOf(reset);
+    if (reach === null || period > reach) reach = period;
+  }
+  return reach === null ? { kind: 'none' } : { kind: 'through', period: reach };
+}
+
+/* -------------------------------------------------------------------------- */
 /* The window                                                                  */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * The window one correction is evaluated over: which months, and the exact
+ * dates the dated reads are bounded by.
+ *
+ * One value, computed once and handed to both the loader and the impact, so
+ * the rows that are read and the months that are judged cannot drift apart.
+ * A month that is never judged must not be read, and a month that is judged
+ * must never be missing its rows.
+ */
+export interface CorrectionWindow {
+  /** Every month this correction could change, ascending. */
+  readonly periods: readonly string[];
+  /** The first day of the earliest of them. */
+  readonly from: PlainDate;
+  /** The last day of the latest of them: the dated reads stop here. */
+  readonly through: PlainDate;
+}
+
+export function correctionWindow(
+  write: ResolvedWrite,
+  today: PlainDate,
+  history: ValuationHistory,
+): CorrectionWindow {
+  const periods = candidatePeriods(write, today, history.valuations);
+  const first = periods[0] ?? monthLabel(monthKey(today));
+  const last = periods[periods.length - 1] ?? first;
+  return {
+    periods,
+    from: startOfMonthKey(monthKeyOfPeriod(first)),
+    through: endOfMonthKey(monthKeyOfPeriod(last)),
+  };
+}
 
 /**
  * Every month a correction could conceivably change, ascending.
@@ -106,56 +297,32 @@ export interface CorrectionEvidence {
  *
  *  - a **flow** changes its own month's reconciliation and nothing later. A
  *    month is reconciled between two statement balances, and a flow is neither;
- *  - a **valuation** is opening evidence for the months after it and carries
- *    until the next authoritative balance, so it reaches forward;
+ *  - a **balance** is opening evidence for the months after it, until the
+ *    balances that follow it make both worlds read the same again — see
+ *    `valuationReachOf`, which proves that month from the history or falls
+ *    back to the current one;
  *  - a **dormant episode** is open-ended until something wakes the account, so
- *    it reaches forward too.
+ *    it reaches the current month.
  *
- * Forward means "to the current month", which is where the evidence itself
- * stops. It is not an arbitrary horizon: nothing after today exists to change.
- * The months that turn out to be unaffected are dropped from the result later,
- * so a wide candidate range costs in-memory work, never a wider read.
+ * Nothing reaches past the current month: nothing after today exists to
+ * change. The months that turn out to be unaffected are dropped from the
+ * result later, so a wide candidate range costs in-memory work, never a wider
+ * read than the window.
  */
-/**
- * The window one correction is evaluated over: which months, and the exact
- * dates the flow reads are bounded by.
- *
- * One value, computed once and handed to both the loader and the impact, so
- * the rows that are read and the months that are judged cannot drift apart.
- * A month that is never judged must not be read, and a month that is judged
- * must never be missing its rows.
- */
-export interface CorrectionWindow {
-  /** Every month this correction could change, ascending. */
-  readonly periods: readonly string[];
-  /** The first day of the earliest of them. */
-  readonly from: PlainDate;
-  /** The last day of the latest of them: the flow reads stop here. */
-  readonly through: PlainDate;
-}
-
-export function correctionWindow(write: ResolvedWrite, today: PlainDate): CorrectionWindow {
-  const periods = candidatePeriods(write, today);
-  const first = periods[0] ?? monthLabel(monthKey(today));
-  const last = periods[periods.length - 1] ?? first;
-  return {
-    periods,
-    from: startOfMonthKey(monthKeyOfPeriod(first)),
-    through: endOfMonthKey(monthKeyOfPeriod(last)),
-  };
-}
-
-export function candidatePeriods(write: ResolvedWrite, today: PlainDate): readonly string[] {
+export function candidatePeriods(
+  write: ResolvedWrite,
+  today: PlainDate,
+  valuations: ReadonlyMap<string, readonly ValuationRecord[]>,
+): readonly string[] {
   const current = monthLabel(monthKey(today));
   const touched = new Set<string>();
-  let reachesForward = false;
+  let reachesCurrent = false;
 
   for (const change of write.changes) {
     for (const facts of [change.before, change.after]) {
       if (facts === null) continue;
       const date = financialDateOfFacts(facts);
       if (date !== null) touched.add(periodOf(date));
-      if (facts.kind === 'valuation') reachesForward = true;
       // The scheduled date of an occurrence is not a financial period, but
       // whether that occurrence is satisfied decides its own month's
       // completeness and its `suggested_income_missing` (12.6, 30.10).
@@ -171,14 +338,18 @@ export function candidatePeriods(write: ResolvedWrite, today: PlainDate): readon
     for (const anchor of [effect.before.dormantFrom, effect.after.dormantFrom]) {
       if (anchor === null) continue;
       touched.add(periodOf(anchor));
-      reachesForward = true;
+      reachesCurrent = true;
     }
   }
+
+  const reach = valuationReachOf(write, valuations);
+  if (reach.kind === 'current') reachesCurrent = true;
+  if (reach.kind === 'through') touched.add(reach.period);
 
   if (touched.size === 0) touched.add(current);
   const sorted = [...touched].sort();
   const first = sorted[0] as string;
-  const last = reachesForward ? current : (sorted[sorted.length - 1] as string);
+  const last = reachesCurrent ? current : (sorted[sorted.length - 1] as string);
 
   const months: string[] = [];
   for (
@@ -211,33 +382,30 @@ function financialDateOfFacts(facts: SourceFacts): string | null {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Load the window, in a fixed number of bulk reads (23.2).
+ * Load the rest of the evidence over the window, in a fixed number of bulk
+ * statements (23.2).
  *
- * Eight statements, none of them per month, per position, per flow or per
- * template. They are issued one after another rather than in parallel, because
- * one transaction is one connection (ADR 0010 §8).
+ * None of them is per month, per position, per flow or per template, so the
+ * count does not grow with the window. They are issued one after another
+ * rather than in parallel, because one transaction is one connection (ADR 0010
+ * §8). The valuation history is **not** read again here: it was read once to
+ * compute the window, and it is the same history the engines reason over.
  *
- * The flows are bounded on **both** sides by the correction's own window: from
- * the first day of the earliest month it could change to the last day of the
- * latest. A 2021 expense correction is judged over 2021 alone, so reading
- * through today would pull five years of rows no part of the derivation can
- * look at. A balance or a dormant episode legitimately reaches the current
- * month, and its window says so.
- *
- * The valuations keep ADR 0004 §3's no-lower-bound rule instead: a month's
- * opening may be a balance carried from years earlier, and windowing them would
- * turn a carried balance into `missing` and a reconcilable month into
- * `unavailable`. They are bounded above by today, not by the window, because
- * `findSpanIntervals` reads every account's whole history (8.7).
+ * The flows, templates and resolved occurrences are bounded on **both** sides
+ * by the window: from the first day of the earliest month it could change to
+ * the last day of the latest. A 2021 expense correction is judged over 2021
+ * alone, and a 2021 balance correction over the months up to the first
+ * untouched balance after it, so reading through today would pull years of
+ * rows no part of the derivation can look at.
  */
 export async function loadCorrectionEvidenceIn(
   tx: Transaction,
   today: PlainDate,
+  history: ValuationHistory,
   window: CorrectionWindow,
 ): Promise<CorrectionEvidence> {
   const { from, through } = window;
 
-  const financial = await loadFinancialWindowIn(tx, today);
   const income = await listIncomeEntriesIn(tx, from, through);
   const expenses = await listExpenseEntriesIn(tx, from, through);
   const transfers = await listTransfersIn(tx, from, through);
@@ -251,23 +419,13 @@ export async function loadCorrectionEvidenceIn(
   const resolved = await listResolvedOccurrencesInRangeIn(tx, from, through);
   const settings = await findUserSettingsIn(tx);
 
-  const valuations = new Map<string, ValuationRecord[]>();
-  for (const row of financial.valuations) {
-    const list = valuations.get(row.positionId);
-    const record = toValuationRecord(row);
-    if (list === undefined) valuations.set(row.positionId, [record]);
-    else list.push(record);
-  }
-
   const kindOf = new Map(categories.map((category) => [category.id, category.kind]));
 
   return {
     today: plainDate(today),
-    positions: financial.positions.map(toPositionRecord),
-    valuations,
-    accountTypes: new Map(
-      financial.positions.map((row) => [row.id, row.accountType ?? 'checking']),
-    ),
+    positions: history.positions,
+    valuations: history.valuations,
+    accountTypes: history.accountTypes,
     income: income.map(toIncomeFlow),
     expenses: expenses.map((row) => toExpenseFlow(row, kindOf)),
     categoryIds: new Map(expenses.map((row) => [row.id, row.categoryId])),
@@ -358,6 +516,53 @@ function valuationRecordOf(
   };
 }
 
+/**
+ * One balance change, applied to a position's history in place.
+ *
+ * Out by the date it had, in at the date it will have. M1 makes the date the
+ * row's identity within an account, so a re-dated balance is one row moving
+ * rather than two rows existing.
+ */
+function applyValuationChange(
+  valuations: Map<string, readonly ValuationRecord[]>,
+  change: IdentifiedSourceChange,
+  id: string,
+): void {
+  const before = change.before?.kind === 'valuation' ? change.before : null;
+  const after = change.after?.kind === 'valuation' ? change.after : null;
+  const positionId = (after ?? before)?.positionId ?? '';
+  const existing = valuations.get(positionId) ?? [];
+
+  const kept = existing.filter((record) => before === null || record.valuedOn !== before.valuedOn);
+  const next =
+    after === null
+      ? kept
+      : [...kept.filter((record) => record.valuedOn !== after.valuedOn), valuationRecordOf(after, id)];
+  valuations.set(
+    positionId,
+    [...next].sort((a, b) => (a.valuedOn < b.valuedOn ? -1 : a.valuedOn > b.valuedOn ? 1 : 0)),
+  );
+}
+
+/**
+ * The balance histories after a correction, and nothing else.
+ *
+ * The same arm `overlayCorrection` applies — not a second statement of it — for
+ * the one caller that needs the after-world's balances before the rest of the
+ * evidence exists: the window.
+ */
+export function overlayValuations(
+  valuations: ReadonlyMap<string, readonly ValuationRecord[]>,
+  changes: readonly IdentifiedSourceChange[],
+): ReadonlyMap<string, readonly ValuationRecord[]> {
+  const next = new Map<string, readonly ValuationRecord[]>(valuations);
+  for (const change of changes) {
+    const facts = change.after ?? change.before;
+    if (facts.kind === 'valuation') applyValuationChange(next, change, overlayId(change));
+  }
+  return next;
+}
+
 function replace<T>(list: readonly T[], id: string, next: T | null, idOf: (item: T) => string): T[] {
   const without = list.filter((item) => idOf(item) !== id);
   return next === null ? without : [...without, next];
@@ -434,29 +639,7 @@ export function overlayCorrection(
         break;
       }
       case 'valuation': {
-        type Valuation = Extract<SourceFacts, { kind: 'valuation' }>;
-        const before = change.before === null ? null : (change.before as Valuation);
-        const after = change.after === null ? null : (change.after as Valuation);
-        const positionId = (after ?? before)?.positionId ?? '';
-        const existing = valuations.get(positionId) ?? [];
-
-        // Out by the date it had, in at the date it will have. M1 makes the
-        // date the row's identity within an account, so a re-dated balance is
-        // one row moving rather than two rows existing.
-        const kept = existing.filter(
-          (record) => before === null || record.valuedOn !== before.valuedOn,
-        );
-        const next =
-          after === null
-            ? kept
-            : [
-                ...kept.filter((record) => record.valuedOn !== after.valuedOn),
-                valuationRecordOf(after, id),
-              ];
-        valuations.set(
-          positionId,
-          [...next].sort((a, b) => (a.valuedOn < b.valuedOn ? -1 : a.valuedOn > b.valuedOn ? 1 : 0)),
-        );
+        applyValuationChange(valuations, change, id);
         break;
       }
       case 'cash_dormancy': {

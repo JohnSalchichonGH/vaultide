@@ -10,6 +10,10 @@ import type {
   StructuralChange,
 } from '@vaultide/application';
 import { dayTitle, monthTitle } from '@/features/monthly/presentation';
+import {
+  SETTLEMENT_LABEL as INCOME_SETTLEMENT_LABEL,
+  incomeKindLabel,
+} from '@/features/monthly/income-presentation';
 
 /**
  * Turning a correction preview into something a person can read (blueprint
@@ -80,25 +84,44 @@ function day(labels: CorrectionLabels, value: string | null): string | null {
   return value === null ? null : dayTitle(value, labels.locale);
 }
 
-/** The fields of one source fact, in the order a reader wants them. */
+/** An amount in its own currency, or absent — never a stand-in zero. */
+function money(amount: string | null, currency: string): string | null {
+  return amount === null ? null : `${amount} ${currency}`;
+}
+
+/**
+ * The fields of one source fact, in the order a reader wants them.
+ *
+ * Every fact a person can revise from a Phase 3 editor has a row here, because
+ * the review is the consent: a salary whose only change is its gross amount, or
+ * an expense whose only change is its one-off mark, is still a revision of a
+ * closed month, and a review that listed nothing as changed would be asking the
+ * user to agree to something it did not show them. Identity — ids, versions,
+ * the scheduled occurrence a row materializes — is deliberately absent.
+ */
 function fieldsOf(facts: SourceFacts, labels: CorrectionLabels): Record<string, string | null> {
   switch (facts.kind) {
     case 'income':
       return {
+        Kind: incomeKindLabel(facts.incomeKind),
         Date: day(labels, facts.receivedOn),
-        Amount: `${facts.netAmount} ${facts.currency}`,
-        'Paid into': SETTLEMENT_LABEL[facts.settlement] ?? facts.settlement,
+        // Net and gross are two facts, and "Amount" beside a gross figure
+        // would not say which one it is.
+        Net: money(facts.netAmount, facts.currency),
+        Gross: money(facts.grossAmount, facts.currency),
+        'Paid into': INCOME_SETTLEMENT_LABEL[facts.settlement] ?? facts.settlement,
         Account: accountName(labels, facts.cashPositionId),
         Description: facts.description,
       };
     case 'expense':
       return {
         Date: day(labels, facts.incurredOn),
-        Amount: `${facts.amount} ${facts.currency}`,
+        Amount: money(facts.amount, facts.currency),
         Category: labels.categories[facts.categoryId] ?? 'A category',
         'Paid from': SETTLEMENT_LABEL[facts.settlement] ?? facts.settlement,
         Account: accountName(labels, facts.cashPositionId),
         Description: facts.description,
+        'One-off': facts.isOneOff ? 'Yes' : 'No',
       };
     case 'transfer':
       return {

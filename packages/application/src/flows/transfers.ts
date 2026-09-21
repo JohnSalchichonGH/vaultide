@@ -522,8 +522,17 @@ function transferFactsOf(facts: TransferFacts, resolved: ResolvedFacts, descript
   };
 }
 
-/** A fee as the aggregate would save it, with the category it is filed under. */
-function feeFactsOf(fee: FeeToSave, transferId: string | null): ExpenseSourceFacts {
+/**
+ * A fee as the aggregate would save it, with the category it is filed under.
+ *
+ * The aggregate never writes a fee's one-off mark, so a fee keeps the flag it
+ * has and a new one starts without it.
+ */
+function feeFactsOf(
+  fee: FeeToSave,
+  transferId: string | null,
+  isOneOff: boolean,
+): ExpenseSourceFacts {
   const columns = feeColumnsOf(fee);
   return {
     kind: 'expense',
@@ -535,6 +544,7 @@ function feeFactsOf(fee: FeeToSave, transferId: string | null): ExpenseSourceFac
     settlement: 'tracked_cash',
     cashPositionId: columns.cashPositionId,
     description: null,
+    isOneOff,
     transferId,
     templateId: null,
     occurrenceDate: null,
@@ -624,7 +634,7 @@ export async function resolveCreateTransferIn(
         : [
             created(
               { scope: 'prospective', kind: 'expense', role: 'transfer_fee', owner: null },
-              feeFactsOf(desiredFee, null),
+              feeFactsOf(desiredFee, null, false),
             ),
           ]),
       ...dormancy.map(dormancyChange),
@@ -698,7 +708,10 @@ export async function resolveUpdateTransferIn(
     storedFee === null && desiredFee === null
       ? null
       : storedFee === null
-        ? created(feeIdentity(args.transferId, null), feeFactsOf(desiredFee as FeeToSave, args.transferId))
+        ? created(
+            feeIdentity(args.transferId, null),
+            feeFactsOf(desiredFee as FeeToSave, args.transferId, false),
+          )
         : desiredFee === null
           ? deleted(
               feeIdentity(args.transferId, storedFee),
@@ -707,7 +720,7 @@ export async function resolveUpdateTransferIn(
           : updated(
               feeIdentity(args.transferId, storedFee),
               expenseFacts(storedFee, kindOf.get(storedFee.categoryId) ?? 'transfer_fee'),
-              feeFactsOf(desiredFee, args.transferId),
+              feeFactsOf(desiredFee, args.transferId, storedFee.isOneOff),
             );
 
   return {

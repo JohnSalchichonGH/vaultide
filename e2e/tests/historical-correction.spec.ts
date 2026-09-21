@@ -4,7 +4,7 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
  * Historical Correction, end to end (blueprint 15.3, 30.22; ADR 0010; §108–§111
  * of the slice prompt).
  *
- * Three journeys, and each is a rule the product promises rather than a
+ * Four journeys, and each is a rule the product promises rather than a
  * rendering check:
  *
  *  - **a past month-end balance is corrected.** Edit it, read what it will
@@ -13,6 +13,9 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
  *  - **a recorded row is moved into another month.** The editor is where the
  *    date changes; the review is where both months are named; Back keeps the
  *    edit; the row lands in the month it now belongs to;
+ *  - **a fact no figure reads is corrected.** A gross-only salary edit is still
+ *    a revision of a closed month, so it is reviewed — and the review shows the
+ *    gross it is changing, with the unchanged net beside it;
  *  - **an ordinary-looking save wakes an account out of a dormant period.**
  *    Nothing about recording a balance looks historical, and the product stops
  *    and explains before it rewrites those months.
@@ -269,6 +272,63 @@ test.describe('moving a recorded row into another month', () => {
     await expect(page.getByTestId('income-entry')).toHaveCount(0);
     await page.goto('/monthly/2026-10');
     await expect(page.getByTestId('entry-received-on')).toHaveValue('2026-10-03');
+  });
+});
+
+test.describe('correcting a fact no figure reads', () => {
+  test('a gross-only salary correction shows the gross it is changing, then saves it', async ({
+    page,
+    request,
+  }) => {
+    test.slow();
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': OCTOBER_6 });
+    await onboard(page, request, uniqueEmail('e2e-gross'));
+
+    await accountWithAugustStatement(page, { name: 'Everyday', type: 'checking', august: '1000.00' });
+    await recordSnapshot(page, '3100.00', '2026-09-30');
+    await page.getByTestId('confirm-statement-2026-09').click();
+    await expect(page.getByTestId('month-end-2026-09')).toHaveCount(0);
+
+    // A September salary with both figures, through the product's own form.
+    await page.goto('/monthly/2026-09');
+    await page.getByTestId('income-add-toggle').click();
+    await page.getByTestId('income-kind').selectOption('employment');
+    await fillTestId(page, 'income-received-on', '2026-09-25');
+    await fillTestId(page, 'income-net', '2100.00');
+    await fillTestId(page, 'income-gross', '2600.00');
+    await page.getByTestId('income-account').selectOption({ label: 'Everyday' });
+    await page.getByTestId('income-submit').click();
+    await expect(page.getByTestId('income-saved')).toContainText('Income added.');
+
+    // --- only the gross moves -----------------------------------------------
+    const gross = page.getByTestId('entry-gross');
+    await gross.fill('2700.00');
+    await gross.press('Tab');
+
+    // A recorded row in a closed month is being revised, so this is the
+    // review and not a save — and the review has to show what it is about.
+    await expect(review(page)).toBeVisible();
+    const grossRow = review(page).locator('[data-testid="correction-field"][data-field="Gross"]');
+    await expect(grossRow).toHaveAttribute('data-changed', 'true');
+    await expect(grossRow.getByTestId('correction-before')).toContainText('2600');
+    await expect(grossRow.getByTestId('correction-after')).toContainText('2700');
+
+    // Net sits beside it, unchanged, and is not presented as a change.
+    const netRow = review(page).locator('[data-testid="correction-field"][data-field="Net"]');
+    await expect(netRow).toHaveAttribute('data-changed', 'false');
+    await expect(netRow.getByTestId('correction-before')).toContainText('2100');
+    await expect(netRow.getByTestId('correction-after')).toContainText('2100');
+    await expect(
+      review(page).locator('[data-testid="correction-field"][data-changed="true"]'),
+    ).toHaveCount(1);
+
+    await review(page).getByTestId('correction-confirm').click();
+    await expect(review(page)).toHaveCount(0);
+
+    // The row holds the corrected gross, and the net it always had.
+    await page.reload();
+    await expect(page.getByTestId('entry-gross')).toHaveValue('2700.00');
+    await expect(page.getByTestId('entry-net')).toHaveValue('2100.00');
   });
 });
 

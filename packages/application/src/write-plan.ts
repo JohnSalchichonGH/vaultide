@@ -106,6 +106,16 @@ export interface ExpenseSourceFacts {
   readonly settlement: string;
   readonly cashPositionId: string | null;
   readonly description: string | null;
+  /**
+   * The user's own "one-off" mark.
+   *
+   * No engine reads it — the rolling baseline deliberately does not consult it
+   * — but Monthly lets a person set it on an expense, and a historical expense
+   * whose only change is this flag is still a revision of a closed month. So it
+   * is a fact the review has to be able to show; otherwise that review would
+   * open with nothing on it changed.
+   */
+  readonly isOneOff: boolean;
   /** The transfer this row is the fee of, when it is one (M14). */
   readonly transferId: string | null;
   readonly templateId: string | null;

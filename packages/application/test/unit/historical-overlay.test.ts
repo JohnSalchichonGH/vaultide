@@ -5,6 +5,7 @@ import {
   completedInputOf,
   monthToDateInputOf,
   overlayCorrection,
+  valuationReachOf,
   type CorrectionEvidence,
 } from '../../src/corrections/evidence';
 import { monthKeyOfPeriod } from '../../src/corrections/classify';
@@ -183,6 +184,7 @@ describe('the overlay', () => {
           settlement: 'tracked_cash',
           cashPositionId: 'pos-1',
           description: null,
+          isOneOff: false,
           transferId: 'tr-1',
           templateId: null,
           occurrenceDate: null,
@@ -265,11 +267,14 @@ describe('the overlay', () => {
 });
 
 describe('the candidate window (§32)', () => {
+  const history = () => evidence().valuations;
+
   it('is the flow’s own month when only flows move', () => {
     expect(
       candidatePeriods(
         write([updated(existingIncome, incomeFacts('2026-08-25', '2500'), incomeFacts('2026-08-26', '2500'))]),
         TODAY,
+        history(),
       ),
     ).toEqual(['2026-08']);
   });
@@ -279,6 +284,7 @@ describe('the candidate window (§32)', () => {
       candidatePeriods(
         write([updated(existingIncome, incomeFacts('2026-07-25', '2500'), incomeFacts('2026-09-05', '2500'))]),
         TODAY,
+        history(),
       ),
     ).toEqual(['2026-07', '2026-08', '2026-09']);
   });
@@ -289,19 +295,10 @@ describe('the candidate window (§32)', () => {
       templateId: 'tpl-1',
       occurrenceDate: '2026-08-25',
     };
-    expect(candidatePeriods(write([deleted(existingIncome, facts)]), TODAY)).toEqual([
+    expect(candidatePeriods(write([deleted(existingIncome, facts)]), TODAY, history())).toEqual([
       '2026-08',
       '2026-09',
     ]);
-  });
-
-  it('reaches forward to the current month for a balance, which is later months’ opening', () => {
-    expect(
-      candidatePeriods(
-        write([updated(existingValuation, valuationFacts('2026-06-30', '900'), valuationFacts('2026-06-30', '800'))]),
-        TODAY,
-      ),
-    ).toEqual(['2026-06', '2026-07', '2026-08', '2026-09']);
   });
 
   it('reaches forward for a dormant episode, which is open-ended until something wakes it', () => {
@@ -311,7 +308,7 @@ describe('the candidate window (§32)', () => {
       after: { isDormant: false, dormantFrom: null },
       via: 'clear',
     };
-    expect(candidatePeriods(write([dormancyChange(effect)], [effect]), TODAY)).toEqual([
+    expect(candidatePeriods(write([dormancyChange(effect)], [effect]), TODAY, history())).toEqual([
       '2026-07',
       '2026-08',
       '2026-09',
@@ -322,7 +319,139 @@ describe('the candidate window (§32)', () => {
     const periods = candidatePeriods(
       write([updated(existingValuation, valuationFacts('2026-09-14', '900'), valuationFacts('2026-09-14', '800'))]),
       TODAY,
+      history(),
     );
     expect(periods).toEqual(['2026-09']);
+  });
+});
+
+/**
+ * How far a corrected balance reaches (§5 of the corrective pass).
+ *
+ * Pure: the rule is a function of the two balance histories alone, and these
+ * cases are the four ways a simpler rule gets it wrong. The integration suite
+ * proves the same bounds against real reads, and that the bounded derivation
+ * says exactly what the one through the current month says.
+ */
+describe('a corrected balance reaches the month of the first untouched balance after it', () => {
+  const history = () => evidence().valuations;
+  const record = (
+    id: string,
+    valuedOn: string,
+    amount: string,
+    datePrecision: 'exact' | 'month_end' = 'month_end',
+  ) => ({
+    id,
+    positionId: 'pos-1',
+    valuedOn: plainDate(valuedOn),
+    amount: new Decimal(amount),
+    source: 'entered' as const,
+    datePrecision,
+  });
+  const facts = (
+    valuedOn: string,
+    amount: string,
+    datePrecision: 'exact' | 'month_end' = 'month_end',
+  ) => ({ ...valuationFacts(valuedOn, amount), datePrecision });
+  const identity = (id: string) => ({ scope: 'existing', kind: 'valuation', id }) as const;
+  const histories = (...rows: ReturnType<typeof record>[]) => new Map([['pos-1', rows]]);
+
+  it('stops at the month of the next untouched balance, not at the current month', () => {
+    const reach = valuationReachOf(
+      write([updated(identity('val-jul'), facts('2026-07-31', '1000'), facts('2026-07-31', '800'))]),
+      history(),
+    );
+    // August's untouched statement makes both worlds read the same from then on.
+    expect(reach).toEqual({ kind: 'through', period: '2026-08' });
+    expect(
+      candidatePeriods(
+        write([updated(identity('val-jul'), facts('2026-07-31', '1000'), facts('2026-07-31', '800'))]),
+        TODAY,
+        history(),
+      ),
+    ).toEqual(['2026-07', '2026-08']);
+  });
+
+  it('keeps the month of a snapshot dated the very next day, which still opens on the statement', () => {
+    // The June statement's carry interval ends on 30 June — the snapshot on
+    // 1 July takes over from there. July's opening still reads the statement
+    // at end(June) by exact date, so July can differ and must be judged.
+    const valuations = histories(
+      record('val-jun', '2026-06-30', '1000'),
+      record('val-jul-1', '2026-07-01', '1000', 'exact'),
+      record('val-jul', '2026-07-31', '1200'),
+    );
+    const reach = valuationReachOf(
+      write([updated(identity('val-jun'), facts('2026-06-30', '1000'), facts('2026-06-30', '900'))]),
+      valuations,
+    );
+    expect(reach).toEqual({ kind: 'through', period: '2026-07' });
+  });
+
+  it('judges a moved balance through the first untouched balance after **both** of its dates', () => {
+    // May → July, across an untouched June balance. The world before would
+    // stop at June; the world after has the moved row in July.
+    const valuations = histories(
+      record('val-may', '2026-05-31', '1000'),
+      record('val-jun', '2026-06-30', '1100'),
+      record('val-aug', '2026-08-31', '1200'),
+    );
+    const reach = valuationReachOf(
+      write([updated(identity('val-may'), facts('2026-05-31', '1000'), facts('2026-07-31', '1000'))]),
+      valuations,
+    );
+    expect(reach).toEqual({ kind: 'through', period: '2026-08' });
+  });
+
+  it('lets a predecessor carry further when a balance is deleted, until the next untouched one', () => {
+    const valuations = histories(
+      record('val-may', '2026-05-31', '1000'),
+      record('val-jun', '2026-06-30', '1100'),
+      record('val-aug', '2026-08-31', '1200'),
+    );
+    const reach = valuationReachOf(
+      write([deleted(identity('val-jun'), facts('2026-06-30', '1100'))]),
+      valuations,
+    );
+    expect(reach).toEqual({ kind: 'through', period: '2026-08' });
+  });
+
+  it('runs to the current month when no untouched balance follows', () => {
+    const reach = valuationReachOf(
+      write([updated(existingValuation, facts('2026-08-31', '900'), facts('2026-08-31', '850'))]),
+      history(),
+    );
+    expect(reach).toEqual({ kind: 'current' });
+    expect(
+      candidatePeriods(
+        write([updated(existingValuation, facts('2026-08-31', '900'), facts('2026-08-31', '850'))]),
+        TODAY,
+        history(),
+      ),
+    ).toEqual(['2026-08', '2026-09']);
+  });
+
+  it('reaches nothing when the correction leaves every engine input as it was', () => {
+    // A note is not something any engine reads.
+    const reach = valuationReachOf(
+      write([
+        updated(
+          identity('val-jul'),
+          { ...facts('2026-07-31', '1000'), note: null },
+          { ...facts('2026-07-31', '1000'), note: 'from the paper statement' },
+        ),
+      ]),
+      history(),
+    );
+    expect(reach).toEqual({ kind: 'none' });
+  });
+
+  it('is not a thing a flow correction has', () => {
+    expect(
+      valuationReachOf(
+        write([updated(existingIncome, incomeFacts('2026-08-25', '2500'), incomeFacts('2026-08-26', '2500'))]),
+        history(),
+      ),
+    ).toEqual({ kind: 'none' });
   });
 });

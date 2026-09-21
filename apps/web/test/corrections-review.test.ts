@@ -604,3 +604,171 @@ describe('the historical first-assertion note (§7)', () => {
     expect(isHistorical('2026-10-01', '2026-10-05')).toBe(false);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* Consent: every revisable fact is on the review                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The review is the consent, so it has to show what is being corrected (§3 of
+ * the final corrective pass).
+ *
+ * A historical salary whose only change is its gross amount is still a
+ * revision of a closed month, and the server rightly asks for the review. If
+ * the review then listed nothing as changed it would be asking the user to
+ * agree to something it did not show them. These go through
+ * `summarizeSources` and the dialog itself — the transformation that feeds
+ * the screen — not through the raw facts.
+ */
+describe('the review shows every fact a person can revise', () => {
+  const income = (over: Record<string, unknown> = {}) => ({
+    kind: 'income' as const,
+    incomeKind: 'employment',
+    receivedOn: '2026-09-25',
+    netAmount: '2100',
+    grossAmount: '2600' as string | null,
+    currency: 'EUR',
+    settlement: 'tracked_cash',
+    cashPositionId: 'pos-1',
+    description: null,
+    templateId: null,
+    occurrenceDate: null,
+    ...over,
+  });
+
+  const incomePreview = (before: ReturnType<typeof income>, after: ReturnType<typeof income>) =>
+    preview({
+      sourceScope: [
+        { identity: { scope: 'existing', kind: 'income', id: 'inc-1' }, operation: 'update' },
+      ],
+      // A gross amount feeds no figure the product computes, so the honest
+      // impact is no family at all. The source section is what explains it.
+      periods: [
+        {
+          kind: 'completed',
+          month: '2026-09',
+          before: { status: 'reliable', buckets: [], completeness: null },
+          after: { status: 'reliable', buckets: [], completeness: null },
+          tags: [],
+        },
+      ],
+      structuralChanges: [],
+      sourceChanges: [
+        {
+          identity: { scope: 'existing', kind: 'income', id: 'inc-1' },
+          operation: 'update',
+          before,
+          after,
+        },
+      ],
+    });
+
+  const field = (value: CorrectionPreview, label: string) => {
+    const summary = summarizeSources(value, LABELS)[0];
+    return summary?.fields.find((item) => item.label === label);
+  };
+
+  it('shows a gross-only correction as Gross, with Net unchanged beside it', () => {
+    const value = incomePreview(income(), income({ grossAmount: '2700' }));
+
+    expect(field(value, 'Gross')).toEqual({
+      label: 'Gross',
+      before: '2600 EUR',
+      after: '2700 EUR',
+      changed: true,
+    });
+    expect(field(value, 'Net')).toEqual({
+      label: 'Net',
+      before: '2100 EUR',
+      after: '2100 EUR',
+      changed: false,
+    });
+    // Nothing is called "Amount" once there are two amounts to tell apart.
+    expect(field(value, 'Amount')).toBeUndefined();
+
+    // And the dialog marks exactly that row as the one that changed.
+    const html = render(value);
+    expect(html).toMatch(/data-field="Gross" data-changed="true"/u);
+    expect(html).toMatch(/data-field="Net" data-changed="false"/u);
+  });
+
+  it('shows a gross amount added where there was none, and never as zero', () => {
+    const value = incomePreview(income({ grossAmount: null }), income({ grossAmount: '2700' }));
+
+    expect(field(value, 'Gross')).toEqual({
+      label: 'Gross',
+      before: null,
+      after: '2700 EUR',
+      changed: true,
+    });
+    // Absent is the dialog's own dash, on the before side — not a zero.
+    expect(render(value)).toMatch(
+      /data-field="Gross" data-changed="true"><dt[^>]*>Gross<\/dt><dd[^>]*>—<\/dd><dd[^>]*>2700 EUR<\/dd>/u,
+    );
+  });
+
+  it('shows a gross amount removed, and never as zero', () => {
+    const value = incomePreview(income({ grossAmount: '2700' }), income({ grossAmount: null }));
+
+    expect(field(value, 'Gross')).toEqual({
+      label: 'Gross',
+      before: '2700 EUR',
+      after: null,
+      changed: true,
+    });
+    expect(render(value)).toMatch(
+      /data-field="Gross" data-changed="true"><dt[^>]*>Gross<\/dt><dd[^>]*>2700 EUR<\/dd><dd[^>]*>—<\/dd>/u,
+    );
+  });
+
+  it('shows a kind-only correction in words', () => {
+    const value = incomePreview(income(), income({ incomeKind: 'bonus' }));
+
+    expect(field(value, 'Kind')).toEqual({
+      label: 'Kind',
+      before: 'Salary',
+      after: 'Bonus',
+      changed: true,
+    });
+    const html = render(value);
+    expect(html).toContain('Salary');
+    expect(html).toContain('Bonus');
+    expect(html).not.toContain('employment');
+  });
+
+  it('shows an expense whose only change is its one-off mark', () => {
+    const expense = (isOneOff: boolean) => ({
+      kind: 'expense' as const,
+      categoryId: 'cat-1',
+      categoryKind: 'food',
+      incurredOn: '2026-09-12',
+      amount: '40',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId: 'pos-1',
+      description: null,
+      isOneOff,
+      transferId: null,
+      templateId: null,
+      occurrenceDate: null,
+    });
+    const value = preview({
+      sourceChanges: [
+        {
+          identity: { scope: 'existing', kind: 'expense', id: 'exp-1' },
+          operation: 'update',
+          before: expense(false),
+          after: expense(true),
+        },
+      ],
+    });
+
+    expect(field(value, 'One-off')).toEqual({
+      label: 'One-off',
+      before: 'No',
+      after: 'Yes',
+      changed: true,
+    });
+    expect(field(value, 'Amount')?.changed).toBe(false);
+  });
+});

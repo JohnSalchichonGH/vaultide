@@ -60,6 +60,7 @@ const expense = (incurredOn: string, overrides: Partial<ExpenseSourceFacts> = {}
   settlement: 'tracked_cash',
   cashPositionId: 'pos-1',
   description: null,
+  isOneOff: false,
   transferId: null,
   templateId: null,
   occurrenceDate: null,

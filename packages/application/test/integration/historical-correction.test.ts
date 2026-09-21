@@ -1,7 +1,14 @@
 import pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { sql, withUser, withoutUser } from '@vaultide/db';
-import { monthKeyOf } from '@vaultide/finance';
+import { sql, withUser, withUserRead, withoutUser } from '@vaultide/db';
+import {
+  addMonths,
+  endOfMonthKey,
+  monthKey,
+  monthKeyOf,
+  monthLabel,
+  startOfMonthKey,
+} from '@vaultide/finance';
 import { createHarness, type Harness } from '../helpers/harness';
 import { testContext, type RequestContext } from '../../src/context';
 import { provisionUser } from '../../src/users/provisioning';
@@ -21,6 +28,16 @@ import {
   type CorrectionDraft,
   type CorrectionPreview,
 } from '../../src/corrections/index';
+import { monthKeyOfPeriod, sourcePeriodsOf } from '../../src/corrections/classify';
+import {
+  correctionWindow,
+  loadCorrectionEvidenceIn,
+  loadValuationHistoryIn,
+  overlayCorrection,
+} from '../../src/corrections/evidence';
+import { withFingerprint } from '../../src/corrections/fingerprint';
+import { deriveImpact } from '../../src/corrections/impact';
+import { resolveCorrectionIn } from '../../src/corrections/resolve';
 
 /**
  * Historical Correction against a real database (blueprint 15.3, 30.22; ADR
@@ -1325,6 +1342,134 @@ describe('the impact tags name the families that actually move (§36, §44)', ()
   });
 });
 
+
+/* -------------------------------------------------------------------------- */
+/* Consent facts                                                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The facts a person can revise reach the preview, and nothing is invented to
+ * go with them (§3 of the final corrective pass).
+ *
+ * Each of these is a revision of a closed month, so the ceremony is required.
+ * The source change carries the fact that moved; the tags stay what the family
+ * projections derive — which for a gross amount, an income kind that stays
+ * external income, or a one-off mark, is no family at all.
+ */
+describe('a correction of a fact no figure reads is still reviewed, and shown', () => {
+  const salaryWithGross = () =>
+    createIncomeEntry(flows(), OCT_5, {
+      kind: 'employment',
+      receivedOn: '2026-09-25',
+      netAmount: '2100.00',
+      grossAmount: '2600.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId: bbva,
+    });
+
+  it('carries a gross-only correction, derives no family for it, and commits it', async () => {
+    await september();
+    const entry = await salaryWithGross();
+    const draft: CorrectionDraft = {
+      kind: 'income_update',
+      entryId: entry.id,
+      expectedVersion: entry.version,
+      grossAmount: '2700.00',
+    };
+
+    const result = await preview(draft);
+    const change = result.sourceChanges[0];
+    expect(change?.before).toMatchObject({ grossAmount: '2600', netAmount: '2100' });
+    expect(change?.after).toMatchObject({ grossAmount: '2700', netAmount: '2100' });
+    expect(result.periods.find((period) => period.month === '2026-09')?.tags).toEqual([]);
+
+    expect(await confirm(draft, result.fingerprint)).toMatchObject({ status: 'committed' });
+    const stored = await withUser(harness.db, { userId: USER_A }, async (tx) => {
+      const rows = await tx.execute(
+        sql`SELECT gross_amount::text AS gross, net_amount::text AS net
+              FROM income_entries WHERE id = ${entry.id}`,
+      );
+      return rows.rows[0] as { gross: string; net: string };
+    });
+    expect(Number(stored.gross)).toBe(2700);
+    expect(Number(stored.net)).toBe(2100);
+  });
+
+  it('carries a kind-only correction and derives only what the kind moves', async () => {
+    await september();
+    const entry = await salaryWithGross();
+
+    // Salary → bonus: both are external income (12.5), so no figure moves.
+    const bonus = await preview({
+      kind: 'income_update',
+      entryId: entry.id,
+      expectedVersion: entry.version,
+      incomeKind: 'bonus',
+    });
+    expect(bonus.sourceChanges[0]?.before).toMatchObject({ incomeKind: 'employment' });
+    expect(bonus.sourceChanges[0]?.after).toMatchObject({ incomeKind: 'bonus' });
+    expect(bonus.periods.find((period) => period.month === '2026-09')?.tags).toEqual([]);
+
+    // Salary → money in from outside: still cash in, no longer income.
+    const inflow = await preview({
+      kind: 'income_update',
+      entryId: entry.id,
+      expectedVersion: entry.version,
+      incomeKind: 'external_inflow',
+    });
+    const tags = inflow.periods.find((period) => period.month === '2026-09')?.tags ?? [];
+    expect(tags).toEqual(expect.arrayContaining(['income', 'savings']));
+    expect(tags).not.toContain('reconciliation');
+  });
+
+  it('carries an expense whose only change is its one-off mark', async () => {
+    await september();
+    const entry = await shopping('2026-09-12', '40.00');
+
+    const result = await preview({
+      kind: 'expense_update',
+      entryId: entry.id,
+      expectedVersion: entry.version,
+      isOneOff: true,
+    });
+    expect(result.sourceChanges[0]?.before).toMatchObject({ isOneOff: false });
+    expect(result.sourceChanges[0]?.after).toMatchObject({ isOneOff: true });
+    expect(result.periods.find((period) => period.month === '2026-09')?.tags).toEqual([]);
+  });
+
+  it('leaves a fee’s one-off mark as it was when the transfer is corrected', async () => {
+    await september();
+    const saved = await createCashTransfer(flows(), OCT_5, {
+      occurredOn: '2026-09-20',
+      fromPositionId: bbva,
+      toPositionId: savings,
+      fromAmount: '100.00',
+      toAmount: '100.00',
+      fee: { amount: '2.00', cashPositionId: bbva, incurredOn: '2026-09-20' },
+    });
+    const fee = saved.fee;
+    if (fee === null) throw new Error('expected a fee');
+
+    const result = await preview({
+      kind: 'transfer_update',
+      transferId: saved.transfer.id,
+      expectedVersion: saved.transfer.version,
+      occurredOn: '2026-09-20',
+      fromPositionId: bbva,
+      toPositionId: savings,
+      fromAmount: '100.00',
+      toAmount: '100.00',
+      description: saved.transfer.description,
+      fee: { amount: '3.00', cashPositionId: bbva, incurredOn: '2026-09-20' },
+      expectedFee: { state: 'version', feeId: fee.id, version: fee.version },
+    });
+    const feeChange = result.sourceChanges.find((change) => change.identity.kind === 'expense');
+    expect(feeChange?.before).toMatchObject({ isOneOff: false, amount: '2' });
+    expect(feeChange?.after).toMatchObject({ isOneOff: false, amount: '3' });
+  });
+});
+
 /* -------------------------------------------------------------------------- */
 /* The current period's contract                                               */
 /* -------------------------------------------------------------------------- */
@@ -1637,49 +1782,132 @@ describe('the preview reads its own window and no more (§6)', () => {
     }
   });
 
-  it('lets a balance correction reach the current month, and says so in its bounds', async () => {
+  /** A cash account with nothing but one 2021 statement: nothing ever follows it. */
+  async function lonelyAccount(): Promise<string> {
+    const lonely = (
+      await createCashAccount(positions(), OCT_5, {
+        name: 'Old savings',
+        currency: 'EUR',
+        accountType: 'savings',
+        openedOn: null,
+      })
+    ).id;
+    await statement(lonely, '2021-04-30', '400.00');
+    return lonely;
+  }
+
+  const correctAmount = (
+    row: { id: string; version: number },
+    valuedOn: string,
+    amount: string,
+    datePrecision: 'exact' | 'month_end' = 'month_end',
+  ): CorrectionDraft => ({
+    kind: 'valuation_update',
+    valuationId: row.id,
+    expectedVersion: row.version,
+    valuedOn,
+    amount,
+    datePrecision,
+  });
+
+  it('stops an old balance correction at the first untouched balance after it (§6.1)', async () => {
     await longHistory();
     const anchor = await valuationOn(bbva, '2021-04-30');
 
-    const { statements } = await capturing(() =>
-      preview({
-        kind: 'valuation_update',
-        valuationId: anchor.id,
-        expectedVersion: anchor.version,
-        valuedOn: '2021-04-30',
-        amount: '1100.00',
-        datePrecision: 'month_end',
-      }),
+    const { result, statements } = await capturing(() =>
+      preview(correctAmount(anchor, '2021-04-30', '1100.00')),
     );
 
+    // The May 2021 statement is untouched in both worlds, so nothing after
+    // May can read April's balance any more — five years of later rows are
+    // not loaded to find that out.
     const bounds = flowBounds(statements);
     expect(bounds.length).toBeGreaterThanOrEqual(3);
     for (const bound of bounds) {
-      // A balance is opening evidence for every month after it, so its window
-      // legitimately runs to the end of the current one.
+      expect(bound).toEqual(['2021-04-01', '2021-05-31']);
+    }
+    expect(result.periods.every((period) => period.month <= '2021-05')).toBe(true);
+  });
+
+  it('judges the month of a next-day snapshot, which still opens on the corrected statement (§6.2)', async () => {
+    // April's statement, an ordinary snapshot on 1 May, and May's statement.
+    // The snapshot ends April's carry on 30 April — but May's opening is
+    // `close(April)`, read by exact date, so May still depends on April.
+    // A window that stopped where the carry stops would never judge May.
+    await statement(bbva, '2021-04-30', '1000.00');
+    await recordValuation(positions(), OCT_5, {
+      positionId: bbva,
+      valuedOn: '2021-05-01',
+      amount: '1000.00',
+      datePrecision: 'exact',
+    });
+    await statement(bbva, '2021-05-31', '900.00');
+    // The other account's statements, so May is reconcilable at all.
+    await statement(savings, '2021-04-30', '50.00');
+    await statement(savings, '2021-05-31', '50.00');
+    await september();
+    const april = await valuationOn(bbva, '2021-04-30');
+
+    const { result, statements } = await capturing(() =>
+      preview(correctAmount(april, '2021-04-30', '1100.00')),
+    );
+
+    for (const bound of flowBounds(statements)) {
+      expect(bound).toEqual(['2021-04-01', '2021-05-31']);
+    }
+    // May is judged, and it moved: its cash change is measured from April's
+    // statement.
+    const may = result.periods.find((period) => period.month === '2021-05');
+    expect(may?.tags).toEqual(expect.arrayContaining(['reconciliation', 'spending']));
+    // Only the amount moved, so April's one-day carry interval did not.
+    expect(result.structuralChanges.filter((change) => change.kind === 'valuation_carry')).toEqual(
+      [],
+    );
+  });
+
+  it('reaches the current month when no untouched balance ever follows (§6.3)', async () => {
+    await longHistory();
+    const lonely = await lonelyAccount();
+    const only = await valuationOn(lonely, '2021-04-30');
+
+    const { statements } = await capturing(() => preview(correctAmount(only, '2021-04-30', '450.00')));
+
+    for (const bound of flowBounds(statements)) {
+      // Nothing proves an earlier month safe, so the fallback holds.
       expect(bound).toEqual(['2021-04-01', '2026-10-31']);
     }
   });
 
-  it('issues the same number of statements for a 2-month and a 66-month window', async () => {
+  it('covers a moved balance through the first untouched balance after both of its dates (§6.4)', async () => {
+    // April → July, across an untouched June statement. The world before
+    // would be done by June; the world after has the moved statement in July.
+    await statement(bbva, '2021-04-30', '1000.00');
+    await statement(bbva, '2021-06-30', '1100.00');
+    await statement(bbva, '2021-09-30', '1300.00');
+    await september();
+    const april = await valuationOn(bbva, '2021-04-30');
+
+    const { result, statements } = await capturing(() =>
+      preview(correctAmount(april, '2021-07-31', '1000.00')),
+    );
+
+    for (const bound of flowBounds(statements)) {
+      expect(bound).toEqual(['2021-04-01', '2021-09-30']);
+    }
+    // July and August genuinely differ — the successor of the row as it was
+    // (June) would have stopped the window before either was judged.
+    const months = result.periods.map((period) => period.month);
+    expect(months).toEqual(expect.arrayContaining(['2021-07', '2021-08']));
+  });
+
+  it('issues the same number of statements for a 2-month and a 66-month window (§6.5)', async () => {
     await longHistory();
+    const lonely = await lonelyAccount();
     const near = await valuationOn(bbva, '2026-09-30');
-    const far = await valuationOn(bbva, '2021-04-30');
+    const far = await valuationOn(lonely, '2021-04-30');
 
-    const correct = (row: { id: string; version: number }, valuedOn: string) => ({
-      kind: 'valuation_update' as const,
-      valuationId: row.id,
-      expectedVersion: row.version,
-      valuedOn,
-      amount: '1234.00',
-      datePrecision: 'month_end' as const,
-    });
-
-    // The same operation over two windows: a balance reaches forward to the
-    // current month, so September 2026 spans two months and April 2021 spans
-    // sixty-six.
-    const narrow = await capturing(() => preview(correct(near, '2026-09-30')));
-    const wide = await capturing(() => preview(correct(far, '2021-04-30')));
+    const narrow = await capturing(() => preview(correctAmount(near, '2026-09-30', '1234.00')));
+    const wide = await capturing(() => preview(correctAmount(far, '2021-04-30', '1234.00')));
 
     // Two windows of very different size, as the reads themselves report them.
     expect(flowBounds(narrow.statements)[0]).toEqual(['2026-09-01', '2026-10-31']);
@@ -1688,8 +1916,100 @@ describe('the preview reads its own window and no more (§6)', () => {
     const loads = (captured: readonly Statement[]): number =>
       captured.filter((entry) => /^\s*select/iu.test(entry.text)).length;
     // Identical: the count is a property of the derivation, not of the number
-    // of months in the window.
+    // of months in the window — and the balance history is read once.
     expect(loads(wide.statements)).toBe(loads(narrow.statements));
     expect(loads(narrow.statements)).toBeLessThan(24);
+    const historyReads = (captured: readonly Statement[]): number =>
+      captured.filter((entry) => /from "position_valuations"/iu.test(entry.text)).length;
+    expect(historyReads(narrow.statements)).toBe(historyReads(wide.statements));
+  });
+
+  it('says exactly what the derivation through the current month says (§6.6)', async () => {
+    // Nontrivial: a next-day snapshot, flows in the judged months and in the
+    // months beyond the bound, and a recent September.
+    await statement(bbva, '2021-04-30', '1000.00');
+    await recordValuation(positions(), OCT_5, {
+      positionId: bbva,
+      valuedOn: '2021-05-01',
+      amount: '1000.00',
+      datePrecision: 'exact',
+    });
+    await statement(bbva, '2021-05-31', '900.00');
+    await statement(savings, '2021-04-30', '50.00');
+    await statement(savings, '2021-05-31', '50.00');
+    await salary('2021-05-10', '400.00');
+    await createExpenseEntry(flows(), OCT_5, {
+      categoryId: groceries,
+      incurredOn: '2021-05-12',
+      amount: '500.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId: bbva,
+    });
+    await salary('2022-02-10', '999.00');
+    await september();
+    const april = await valuationOn(bbva, '2021-04-30');
+    const draft = correctAmount(april, '2021-04-30', '1100.00');
+
+    const derived = await withUserRead(harness.db, { userId: USER_A }, async (tx) => {
+      const resolved = await resolveCorrectionIn(tx, OCT_5, draft, { lock: false });
+      const write = resolved.plan;
+      const history = await loadValuationHistoryIn(tx, OCT_5.today);
+      const bounded = correctionWindow(write, OCT_5.today, history);
+
+      // The old rule, reconstructed for this comparison only: every month
+      // from the first touched one to the current one.
+      const months: string[] = [];
+      for (
+        let month = monthKeyOfPeriod(bounded.periods[0] as string);
+        monthLabel(month) <= '2026-10';
+        month = monthKey(addMonths(startOfMonthKey(month), 1))
+      ) {
+        months.push(monthLabel(month));
+      }
+      const conservative = {
+        periods: months,
+        from: bounded.from,
+        through: endOfMonthKey(monthKeyOfPeriod('2026-10')),
+      };
+
+      const previewOver = async (window: typeof bounded) => {
+        const before = await loadCorrectionEvidenceIn(tx, OCT_5.today, history, window);
+        const after = overlayCorrection(before, write);
+        const sourcePeriods = sourcePeriodsOf(write);
+        const impact = deriveImpact(write, before, after, sourcePeriods, window);
+        return withFingerprint({
+          sourceScope: write.changes.map((change) => ({
+            identity: change.identity,
+            operation: change.operation,
+          })),
+          sourcePeriods,
+          periods: impact.periods,
+          structuralChanges: impact.structuralChanges,
+          sourceChanges: write.changes,
+        });
+      };
+
+      return {
+        boundedWindow: bounded,
+        conservativeWindow: conservative,
+        bounded: await previewOver(bounded),
+        conservative: await previewOver(conservative),
+      };
+    });
+
+    // Not vacuous: the bound really is much narrower than the old rule.
+    expect(derived.boundedWindow.through).toBe('2021-05-31');
+    expect(derived.conservativeWindow.periods.length).toBe(67);
+    expect(derived.boundedWindow.periods.length).toBe(2);
+
+    // And the two say the same thing, down to the fingerprint.
+    expect(derived.bounded.periods).toEqual(derived.conservative.periods);
+    expect(derived.bounded.structuralChanges).toEqual(derived.conservative.structuralChanges);
+    expect(derived.bounded.sourcePeriods).toEqual(derived.conservative.sourcePeriods);
+    expect(derived.bounded.fingerprint).toBe(derived.conservative.fingerprint);
+
+    // The production preview is the bounded one.
+    expect((await preview(draft)).fingerprint).toBe(derived.bounded.fingerprint);
   });
 });

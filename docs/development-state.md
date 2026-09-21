@@ -316,11 +316,16 @@ their row locks, which a `read only` transaction cannot do at all.
   change in memory, derives AFTER through the same engines, and hashes the
   semantic difference. A row that does not exist yet carries a deterministic
   semantic identity, never a fabricated database id. One window value decides
-  both what is read and what is judged: the flow reads are bounded on **both**
-  sides by it, so a 2021 correction reads 2021 and a balance or dormant episode
-  that genuinely reaches the current month says so. Valuations keep their
-  no-lower-bound rule, because a month's opening may be carried from years
-  earlier.
+  both what is read and what is judged, and the dated reads are bounded on
+  **both** sides by it: a 2021 flow correction reads 2021. A corrected balance
+  may reach forward, and the balance history — read once, before the window —
+  decides how far: through the month of the first balance that is untouched in
+  both the world before the correction and the world after it and dated after
+  every row the correction moves. That month is kept rather than dropped,
+  because its opening still reads the previous month's statement by exact date.
+  With no such balance, and for a dormant episode, the reach runs to the current
+  month. Valuations keep their no-lower-bound rule, because a month's opening
+  may be carried from years earlier.
 - **The impact tags are derived, not assumed.** Each of the six families is
   projected onto the figures it is actually derived from, over the interval that
   family's own contract uses, and a tag appears exactly when its projection
