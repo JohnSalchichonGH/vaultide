@@ -1,4 +1,5 @@
 import {
+  addDays,
   classifyBucketInterval,
   completedMonthCompleteness,
   endOfMonthKey,
@@ -20,24 +21,29 @@ import {
   type MtdBucketResult,
   type PlainDate,
 } from '@vaultide/finance';
-import type { IdentifiedSourceChange, ResolvedWrite, SourceFacts } from '../write-plan';
-import { monthKeyOfPeriod, periodOf } from './classify';
+import type { ResolvedWrite } from '../write-plan';
+import { monthKeyOfPeriod } from './classify';
 import {
-  candidatePeriods,
+  completedFamiliesOf,
+  currentFamiliesOf,
+  movedFamilies,
+  type CorrectionScope,
+  type FamilyFigures,
+} from './families';
+import {
   completedInputOf,
   completenessInputOf,
   monthToDateInputOf,
   spanAccountsOf,
   type CorrectionEvidence,
+  type CorrectionWindow,
 } from './evidence';
 import {
-  IMPACT_TAG_ORDER,
   type CompletedBucketImpact,
   type CompletedPeriodState,
   type CompletenessImpact,
   type CurrentBucketState,
   type CurrentPeriodState,
-  type ImpactTag,
   type IssueIdentity,
   type PeriodImpact,
   type SavingsImpactState,
@@ -66,6 +72,15 @@ import {
  * (§78). Both are advisory metadata that move no status, total or residual, so
  * leaving them out changes no structural fact.
  */
+
+/**
+ * One period, derived once: the state the preview publishes and the family
+ * figures the tags come from.
+ */
+export interface PeriodAnalysis<T> {
+  readonly state: T;
+  readonly families: FamilyFigures;
+}
 
 /* -------------------------------------------------------------------------- */
 /* Issue identity                                                              */
@@ -211,23 +226,43 @@ function completedBucketImpact(
   };
 }
 
-export function completedStateOf(
+/**
+ * One completed month, asked once: the structural state the preview publishes,
+ * and the family figures the tags are derived from.
+ *
+ * Both come out of the same two engine calls. Deriving them separately would
+ * reconcile the month twice per side, and the second answer could only ever
+ * agree with the first.
+ */
+export function completedAnalysisOf(
   evidence: CorrectionEvidence,
   month: MonthKey,
-): CompletedPeriodState {
+  scope: CorrectionScope,
+): PeriodAnalysis<CompletedPeriodState> {
   const reconciliation = reconcileCompletedMonth(completedInputOf(evidence, month));
   const completeness = completedMonthCompleteness(completenessInputOf(evidence, month));
+  const completenessImpact: CompletenessImpact = {
+    state: completeness.state,
+    satisfied: completeness.satisfied,
+    required: completeness.required,
+  };
 
   return {
-    status: reconciliation.monthStatus,
-    buckets: [...reconciliation.buckets]
-      .map((bucket) => completedBucketImpact(evidence, month, bucket))
-      .sort((a, b) => byText(a.currency, b.currency)),
-    completeness: {
-      state: completeness.state,
-      satisfied: completeness.satisfied,
-      required: completeness.required,
+    state: {
+      status: reconciliation.monthStatus,
+      buckets: [...reconciliation.buckets]
+        .map((bucket) => completedBucketImpact(evidence, month, bucket))
+        .sort((a, b) => byText(a.currency, b.currency)),
+      completeness: completenessImpact,
     },
+    families: completedFamiliesOf(
+      evidence,
+      month,
+      reconciliation.buckets,
+      reconciliation.monthStatus,
+      completenessImpact,
+      scope,
+    ),
   };
 }
 
@@ -265,94 +300,50 @@ function currentBucketState(
   };
 }
 
-export function currentStateOf(evidence: CorrectionEvidence): CurrentPeriodState {
+/**
+ * The current month, in the two shapes the reporting contract already has
+ * (8.6, 30.15 item 3, 30.16 item 6).
+ *
+ * `sourceOnlyThrough` is not a free choice here. `monthToDateReportingOf` and
+ * `monthToDateSavingsFrom` already answer it — `asOf ?? today` — and a preview
+ * that answered it differently would tell a user their source-only figures run
+ * through a date the pages they are about to look at never used. With a `D`
+ * everything stops at `D`, the two untracked settlements included; without one
+ * there is no interval at all and those two, which never needed it, run to
+ * today.
+ */
+export function currentAnalysisOf(
+  evidence: CorrectionEvidence,
+  scope: CorrectionScope,
+): PeriodAnalysis<CurrentPeriodState> {
   const result: MonthToDateResult = reconcileMonthToDate(monthToDateInputOf(evidence));
 
   if (result.asOf === null) {
     return {
-      kind: 'no_tracked_interval',
-      asOf: null,
-      status: 'unavailable',
-      reason: 'mtd_no_common_date',
-      sourceOnlyThrough: evidence.today,
+      state: {
+        kind: 'no_tracked_interval',
+        asOf: null,
+        status: 'unavailable',
+        reason: 'mtd_no_common_date',
+        sourceOnlyThrough: evidence.today,
+      },
+      families: currentFamiliesOf(evidence, null, result.status, null, scope),
     };
   }
 
+  const asOf = result.asOf;
   return {
-    kind: 'tracked_interval',
-    asOf: result.asOf,
-    status: result.status as 'provisional' | 'unresolved' | 'unavailable',
-    sourceOnlyThrough: evidence.today,
-    buckets: [...result.buckets]
-      .map((bucket) => currentBucketState(evidence, bucket, result.asOf))
-      .sort((a, b) => byText(a.currency, b.currency)),
+    state: {
+      kind: 'tracked_interval',
+      asOf,
+      status: result.status as 'provisional' | 'unresolved' | 'unavailable',
+      sourceOnlyThrough: asOf,
+      buckets: [...result.buckets]
+        .map((bucket) => currentBucketState(evidence, bucket, asOf))
+        .sort((a, b) => byText(a.currency, b.currency)),
+    },
+    families: currentFamiliesOf(evidence, asOf, result.status, result.buckets, scope),
   };
-}
-
-/* -------------------------------------------------------------------------- */
-/* Tags                                                                        */
-/* -------------------------------------------------------------------------- */
-
-function sortedTags(tags: Iterable<ImpactTag>): readonly ImpactTag[] {
-  const present = new Set(tags);
-  return IMPACT_TAG_ORDER.filter((tag) => present.has(tag));
-}
-
-/** Which output families the source changes themselves touch, in one period. */
-function sourceTagsIn(
-  changes: readonly IdentifiedSourceChange[],
-  period: string,
-): Set<ImpactTag> {
-  const tags = new Set<ImpactTag>();
-  const consider = (facts: SourceFacts | null): void => {
-    if (facts === null) return;
-    if (facts.kind === 'income' && periodOf(facts.receivedOn) === period) {
-      tags.add('income');
-      if (facts.settlement === 'tracked_cash') tags.add('reconciliation');
-      tags.add('savings');
-    }
-    if (facts.kind === 'expense' && periodOf(facts.incurredOn) === period) {
-      if (facts.settlement === 'third_party') {
-        // Information, not spending: in no total at all (7.4).
-        tags.add('memo');
-      } else {
-        tags.add('spending');
-        tags.add('savings');
-      }
-      if (facts.settlement === 'tracked_cash') {
-        tags.add('reconciliation');
-        tags.add('categories');
-      }
-    }
-    if (facts.kind === 'transfer' && periodOf(facts.occurredOn) === period) {
-      tags.add('reconciliation');
-    }
-    if (facts.kind === 'valuation' && periodOf(facts.valuedOn) === period) {
-      tags.add('reconciliation');
-    }
-    if (facts.kind === 'cash_dormancy' && facts.dormantFrom !== null && periodOf(facts.dormantFrom) === period) {
-      tags.add('reconciliation');
-    }
-  };
-
-  for (const change of changes) {
-    consider(change.before);
-    consider(change.after);
-  }
-  return tags;
-}
-
-/** Which families the engines themselves report differently. */
-function engineTags(before: unknown, after: unknown, kind: 'completed' | 'current'): Set<ImpactTag> {
-  const tags = new Set<ImpactTag>();
-  if (JSON.stringify(before) === JSON.stringify(after)) return tags;
-  tags.add('reconciliation');
-  // A bucket whose evidence or status moved recalculates the figures derived
-  // from it, and 12.5 derives savings from exactly those figures.
-  tags.add('spending');
-  tags.add('savings');
-  if (kind === 'completed') tags.add('categories');
-  return tags;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -396,10 +387,12 @@ function spanChanges(
 /**
  * A balance's carry interval: the stretch it is the account's value over (8.1).
  *
- * From its own date to the day before the next authoritative balance, or open
- * when nothing follows it. Derived from the evidence rather than assumed over a
- * fixed horizon, because that is the real consequence of moving or removing a
- * historical balance (§46).
+ * From its own date to the day **before** the next authoritative balance, or
+ * open when nothing follows it. A balance dated `d` already owns `d`, so a
+ * successor on the 10th ends its predecessor on the 9th; naming the 10th would
+ * have the two of them both owning that day. Derived from the evidence rather
+ * than assumed over a fixed horizon, because that is the real consequence of
+ * moving or removing a historical balance (§46).
  */
 function carryIntervalOf(
   evidence: CorrectionEvidence,
@@ -410,9 +403,9 @@ function carryIntervalOf(
   if (!records.some((record) => record.valuedOn === valuedOn)) return null;
   const next = records
     .filter((record) => record.valuedOn > valuedOn)
-    .map((record) => record.valuedOn as string)
+    .map((record) => record.valuedOn)
     .sort(byText)[0];
-  return { from: valuedOn, to: next === undefined ? null : next };
+  return { from: valuedOn, to: next === undefined ? null : addDays(next, -1) };
 }
 
 function carryChanges(
@@ -486,57 +479,70 @@ const structuralOrder = (change: StructuralChange): string =>
 /**
  * Derive one correction's whole impact from two views of the same evidence.
  *
- * A candidate period is **reported** when its before and after states differ,
- * or when it is one of the correction's own source periods — a user editing an
- * August record needs to see August named whether or not August's structure
- * moved. Every other candidate is dropped, which is what keeps the result
- * compact when a correction reaches a long way forward.
+ * A candidate period is **reported** when its structural state differs, when
+ * one of its output families moves, or when it is one of the correction's own
+ * source periods — a user editing an August record needs to see August named
+ * whether or not anything about August moved. Every other candidate is
+ * dropped, which is what keeps the result compact when a correction reaches a
+ * long way forward.
  */
 export function deriveImpact(
   write: ResolvedWrite,
   before: CorrectionEvidence,
   after: CorrectionEvidence,
   sourcePeriods: readonly string[],
+  window: CorrectionWindow,
 ): CorrectionImpact {
   const today = before.today;
   const current = monthLabel(monthKey(today));
   const sources = new Set(sourcePeriods);
   const periods: PeriodImpact[] = [];
   const structural: StructuralChange[] = [...spanChanges(before, after), ...dormancyChanges(write), ...carryChanges(write, before, after)];
+  const scopeOf = (side: 'before' | 'after', period: string): CorrectionScope => ({
+    side,
+    changes: write.changes,
+    period,
+  });
 
-  for (const period of candidatePeriods(write, today)) {
+  for (const period of window.periods) {
     const month = monthKeyOfPeriod(period);
 
     if (period === current && !isMonthCompleted(month, today)) {
-      const left = currentStateOf(before);
-      const right = currentStateOf(after);
-      const differs = JSON.stringify(left) !== JSON.stringify(right);
-      const tags = sortedTags([
-        ...engineTags(left, right, 'current'),
-        ...sourceTagsIn(write.changes, period),
-      ]);
-      if (!differs && !sources.has(period)) continue;
+      const left = currentAnalysisOf(before, scopeOf('before', period));
+      const right = currentAnalysisOf(after, scopeOf('after', period));
+      const tags = movedFamilies(left.families, right.families);
+      const differs = JSON.stringify(left.state) !== JSON.stringify(right.state);
+      if (!differs && tags.length === 0 && !sources.has(period)) continue;
 
-      periods.push({ kind: 'current', month: period, before: left, after: right, tags });
-      if (left.kind === 'tracked_interval' && right.kind === 'tracked_interval') {
-        structural.push(...currentStructural(period, left, right));
+      periods.push({
+        kind: 'current',
+        month: period,
+        before: left.state,
+        after: right.state,
+        tags,
+      });
+      if (left.state.kind === 'tracked_interval' && right.state.kind === 'tracked_interval') {
+        structural.push(...currentStructural(period, left.state, right.state));
       }
       continue;
     }
 
     if (!isMonthCompleted(month, today)) continue;
 
-    const left = completedStateOf(before, month);
-    const right = completedStateOf(after, month);
-    const differs = JSON.stringify(left) !== JSON.stringify(right);
-    if (!differs && !sources.has(period)) continue;
+    const left = completedAnalysisOf(before, month, scopeOf('before', period));
+    const right = completedAnalysisOf(after, month, scopeOf('after', period));
+    const tags = movedFamilies(left.families, right.families);
+    const differs = JSON.stringify(left.state) !== JSON.stringify(right.state);
+    if (!differs && tags.length === 0 && !sources.has(period)) continue;
 
-    const tags = sortedTags([
-      ...engineTags(left, right, 'completed'),
-      ...sourceTagsIn(write.changes, period),
-    ]);
-    periods.push({ kind: 'completed', month: period, before: left, after: right, tags });
-    structural.push(...completedStructural(period, left, right));
+    periods.push({
+      kind: 'completed',
+      month: period,
+      before: left.state,
+      after: right.state,
+      tags,
+    });
+    structural.push(...completedStructural(period, left.state, right.state));
   }
 
   return {

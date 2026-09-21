@@ -1,3 +1,4 @@
+import pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql, withUser, withoutUser } from '@vaultide/db';
 import { monthKeyOf } from '@vaultide/finance';
@@ -1153,5 +1154,542 @@ describe('the current month’s impact (8.6, 30.13; §103)', () => {
     expect(JSON.stringify(period?.before.kind === 'tracked_interval' ? period.before.buckets : null)).toBe(
       JSON.stringify(period?.after.kind === 'tracked_interval' ? period.after.buckets : null),
     );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Impact tags                                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What the six tags promise (§36, §44, §45).
+ *
+ * A tag says "this family of figures will read differently afterwards", so each
+ * one has to be earned by a figure actually moving. These cases are the four
+ * ways the two cheap rules got it wrong: tagging by record type claimed an
+ * income, reconciliation and savings effect for a description edit and for a
+ * record dated after `D`; tagging by structural difference lost a corrected
+ * balance whose residual moved without moving a status, and claimed a category
+ * effect for any completed month that changed at all.
+ */
+describe('the impact tags name the families that actually move (§36, §44)', () => {
+  const periodOf = (result: CorrectionPreview, month: string) => {
+    const period = result.periods.find((item) => item.month === month);
+    if (period === undefined) throw new Error(`no period ${month} in ${result.periods.map((p) => p.month).join()}`);
+    return period;
+  };
+
+  const categoryNamed = async (name: string): Promise<string> => {
+    const row = (await listCategories(harness.db, USER_A)).find((item) => item.name === name);
+    if (row === undefined) throw new Error(`no category ${name}`);
+    return row.id;
+  };
+
+  it('claims nothing month-to-date for a record moved in after `D` (§2.1, case A)', async () => {
+    await september();
+    for (const id of [bbva, savings]) {
+      await recordValuation(positions(), OCT_5, {
+        positionId: id,
+        valuedOn: '2026-10-02',
+        amount: id === bbva ? '7800.00' : '2000.00',
+        datePrecision: 'exact',
+      });
+    }
+    const entry = await salary('2026-09-10', '500.00');
+
+    const result = await preview({
+      kind: 'income_update',
+      entryId: entry.id,
+      expectedVersion: entry.version,
+      receivedOn: '2026-10-04',
+    });
+
+    // October is named — the record lives there now — and claims no effect on
+    // the families its month-to-date figures stop at `D` for.
+    const october = periodOf(result, '2026-10');
+    expect(october.kind).toBe('current');
+    expect(october.tags).toEqual([]);
+
+    // September, which actually lost the income, says so.
+    expect(periodOf(result, '2026-09').tags).toEqual(
+      expect.arrayContaining(['reconciliation', 'spending', 'savings', 'income']),
+    );
+  });
+
+  it('keeps spending and savings for a balance whose residual moves under stable statuses (case B)', async () => {
+    await september();
+    const closing = await valuationOn(bbva, '2026-09-30');
+
+    const result = await preview({
+      kind: 'valuation_update',
+      valuationId: closing.id,
+      expectedVersion: closing.version,
+      valuedOn: '2026-09-30',
+      // A hundred euro less closing cash: `Δ` falls, so `TrackedTotalSpending`
+      // and the unclassified residual both rise. No status crosses a boundary.
+      amount: '7700.00',
+      datePrecision: 'month_end',
+    });
+
+    const september9 = periodOf(result, '2026-09');
+    if (september9.kind !== 'completed') throw new Error('expected a completed month');
+
+    // Nothing structural moved: this is exactly the case "compare the DTOs"
+    // would have reported as no impact at all.
+    expect(september9.after.status).toBe(september9.before.status);
+    expect(september9.after.completeness).toEqual(september9.before.completeness);
+    expect(september9.after.buckets.map((bucket) => bucket.status)).toEqual(
+      september9.before.buckets.map((bucket) => bucket.status),
+    );
+    expect(september9.after.buckets.map((bucket) => bucket.issues)).toEqual(
+      september9.before.buckets.map((bucket) => bucket.issues),
+    );
+    expect(
+      result.structuralChanges.filter((change) =>
+        ['month_status', 'bucket_status', 'completeness', 'issue'].includes(change.kind),
+      ),
+    ).toEqual([]);
+
+    // The figures moved all the same, and the tags say which.
+    expect(september9.tags).toEqual(expect.arrayContaining(['reconciliation', 'spending', 'savings']));
+    // And case E: no category total moved, so no category claim (§2.2 E).
+    expect(september9.tags).not.toContain('categories');
+    expect(september9.tags).not.toContain('income');
+  });
+
+  it('reports a description-only correction as memo and nothing else (case C)', async () => {
+    await september();
+    const entry = await salary('2026-09-10', '500.00');
+
+    const result = await preview({
+      kind: 'income_update',
+      entryId: entry.id,
+      expectedVersion: entry.version,
+      description: 'September bonus, paid late',
+    });
+
+    expect(periodOf(result, '2026-09').tags).toEqual(['memo']);
+  });
+
+  it('reports a same-kind category correction as a category effect alone (case D)', async () => {
+    await september();
+    const eatingOut = await categoryNamed('Eating out');
+    const entry = await shopping('2026-09-12', '40.00');
+
+    const result = await preview({
+      kind: 'expense_update',
+      entryId: entry.id,
+      expectedVersion: entry.version,
+      // Groceries and Eating out are both `food`: every kind-derived figure is
+      // untouched and the two breakdown rows are not.
+      categoryId: eatingOut,
+    });
+
+    expect(periodOf(result, '2026-09').tags).toEqual(['categories']);
+  });
+
+  it('adds savings when the corrected category is a different kind (case D)', async () => {
+    await september();
+    const fees = await categoryNamed('Investment fees');
+    const entry = await shopping('2026-09-12', '40.00');
+
+    const result = await preview({
+      kind: 'expense_update',
+      entryId: entry.id,
+      expectedVersion: entry.version,
+      // `interest_and_fees` is a non-consumption bucket, so 12.5's consumption
+      // remainder moves with it. `property_operating` would not: Phase 3 has
+      // no property positions, so 12.3 sends every one of those to Spending.
+      categoryId: fees,
+    });
+
+    const tags = periodOf(result, '2026-09').tags;
+    expect(tags).toEqual(expect.arrayContaining(['savings', 'categories']));
+    // `ΣK` is the same money either way, so the identity itself is untouched.
+    expect(tags).not.toContain('reconciliation');
+  });
+
+  it('reports a third-party expense correction as memo, never as spending (case C)', async () => {
+    await september();
+    const entry = await shopping('2026-09-12', '30.00', 'third_party');
+
+    const result = await preview({
+      kind: 'expense_update',
+      entryId: entry.id,
+      expectedVersion: entry.version,
+      amount: '45.00',
+    });
+
+    // In no total at all (7.4), so it moves the informational figure only.
+    expect(periodOf(result, '2026-09').tags).toEqual(['memo']);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The current period's contract                                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `asOf` and `sourceOnlyThrough` are the reporting contract's, not a second
+ * opinion (30.15 item 3, 30.16 item 6).
+ *
+ * `monthToDateReportingOf` and `monthToDateSavingsFrom` already answer both:
+ * `D` when there is one, today when there is not. A preview that answered
+ * differently would name a date the pages the user is about to look at never
+ * used.
+ */
+describe('the current period reports `D` the way reporting does (§3)', () => {
+  it('stops the tracked arm and its source-only figures at `D`', async () => {
+    await september();
+    for (const id of [bbva, savings]) {
+      await recordValuation(positions(), OCT_5, {
+        positionId: id,
+        valuedOn: '2026-10-02',
+        amount: id === bbva ? '7800.00' : '2000.00',
+        datePrecision: 'exact',
+      });
+    }
+    const entry = await salary('2026-09-10', '500.00');
+
+    const result = await preview({
+      kind: 'income_update',
+      entryId: entry.id,
+      expectedVersion: entry.version,
+      receivedOn: '2026-10-04',
+    });
+    const october = result.periods.find((item) => item.month === '2026-10');
+    if (october?.kind !== 'current') throw new Error('expected the current month');
+    if (october.after.kind !== 'tracked_interval') throw new Error('expected a tracked interval');
+
+    expect(october.after.asOf).toBe('2026-10-02');
+    // Not 2026-10-05: with a `D`, everything stops at `D`.
+    expect(october.after.sourceOnlyThrough).toBe('2026-10-02');
+    expect(october.before.kind === 'tracked_interval' ? october.before.sourceOnlyThrough : null).toBe(
+      '2026-10-02',
+    );
+  });
+
+  it('runs source-only figures to today when there is no interval at all', async () => {
+    await september();
+    const entry = await salary('2026-09-10', '500.00');
+
+    const result = await preview({
+      kind: 'income_update',
+      entryId: entry.id,
+      expectedVersion: entry.version,
+      receivedOn: '2026-10-02',
+    });
+    const october = result.periods.find((item) => item.month === '2026-10');
+    if (october?.kind !== 'current') throw new Error('expected the current month');
+
+    expect(october.after).toEqual({
+      kind: 'no_tracked_interval',
+      asOf: null,
+      status: 'unavailable',
+      reason: 'mtd_no_common_date',
+      // The two settlements never needed an interval, so they keep running.
+      sourceOnlyThrough: '2026-10-05',
+    });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Valuation carry intervals                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A balance owns its own day (§4, 8.1, M1).
+ *
+ * So the stretch it is the account's value over ends the day **before** the
+ * next authoritative balance. Naming the successor's own date would have two
+ * balances owning it, which is not a thing the product can mean.
+ */
+describe('a balance carries to the day before the next one (§4)', () => {
+  const carryOf = (result: CorrectionPreview, positionId: string) => {
+    const change = result.structuralChanges.find(
+      (item) => item.kind === 'valuation_carry' && item.positionId === positionId,
+    );
+    if (change === undefined || change.kind !== 'valuation_carry') {
+      throw new Error('no carry change');
+    }
+    return change;
+  };
+
+  it('ends on the day before a balance recorded the very next day', async () => {
+    await statement(bbva, '2026-08-31', '5000.00');
+    await recordValuation(positions(), OCT_5, {
+      positionId: bbva,
+      valuedOn: '2026-09-01',
+      amount: '5100.00',
+      datePrecision: 'exact',
+    });
+    const anchor = await valuationOn(bbva, '2026-08-31');
+
+    const carry = carryOf(
+      await preview({
+        kind: 'valuation_update',
+        valuationId: anchor.id,
+        expectedVersion: anchor.version,
+        valuedOn: '2026-08-30',
+        amount: '5000.00',
+        datePrecision: 'exact',
+      }),
+      bbva,
+    );
+
+    // 31 August, ending the day before 1 September — a one-day interval.
+    expect(carry.before).toEqual({ from: '2026-08-31', to: '2026-08-31' });
+    expect(carry.after).toEqual({ from: '2026-08-30', to: '2026-08-31' });
+  });
+
+  it('spans the gap to the day before a balance several days later', async () => {
+    await statement(bbva, '2026-08-31', '5000.00');
+    await recordValuation(positions(), OCT_5, {
+      positionId: bbva,
+      valuedOn: '2026-09-10',
+      amount: '5100.00',
+      datePrecision: 'exact',
+    });
+    const anchor = await valuationOn(bbva, '2026-08-31');
+
+    const carry = carryOf(
+      await preview({
+        kind: 'valuation_update',
+        valuationId: anchor.id,
+        expectedVersion: anchor.version,
+        valuedOn: '2026-09-02',
+        amount: '5000.00',
+        datePrecision: 'exact',
+      }),
+      bbva,
+    );
+
+    expect(carry.before).toEqual({ from: '2026-08-31', to: '2026-09-09' });
+    expect(carry.after).toEqual({ from: '2026-09-02', to: '2026-09-09' });
+  });
+
+  it('stays open-ended when nothing follows it, and closes when something does', async () => {
+    await statement(bbva, '2026-08-31', '5000.00');
+    const anchor = await valuationOn(bbva, '2026-08-31');
+
+    // Nothing later exists: the balance is still the account's value today.
+    const open = carryOf(
+      await preview({
+        kind: 'valuation_update',
+        valuationId: anchor.id,
+        expectedVersion: anchor.version,
+        valuedOn: '2026-08-20',
+        amount: '5000.00',
+        datePrecision: 'exact',
+      }),
+      bbva,
+    );
+    expect(open.before).toEqual({ from: '2026-08-31', to: null });
+    expect(open.after).toEqual({ from: '2026-08-20', to: null });
+
+    // Removing it removes the interval altogether.
+    const removed = carryOf(
+      await preview({
+        kind: 'valuation_delete',
+        valuationId: anchor.id,
+        expectedVersion: anchor.version,
+      }),
+      bbva,
+    );
+    expect(removed.before).toEqual({ from: '2026-08-31', to: null });
+    expect(removed.after).toBeNull();
+  });
+
+  it('moves the boundary with the balance that moved (30 August → 9 September)', async () => {
+    await statement(bbva, '2026-08-31', '5000.00');
+    await recordValuation(positions(), OCT_5, {
+      positionId: bbva,
+      valuedOn: '2026-09-10',
+      amount: '5100.00',
+      datePrecision: 'exact',
+    });
+    const later = await valuationOn(bbva, '2026-09-10');
+
+    // Moving the *successor* later extends the predecessor's reach with it.
+    const result = await preview({
+      kind: 'valuation_update',
+      valuationId: later.id,
+      expectedVersion: later.version,
+      valuedOn: '2026-09-20',
+      amount: '5100.00',
+      datePrecision: 'exact',
+    });
+    const carry = carryOf(result, bbva);
+    expect(carry.before).toEqual({ from: '2026-09-10', to: null });
+    expect(carry.after).toEqual({ from: '2026-09-20', to: null });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The evidence window                                                         */
+/* -------------------------------------------------------------------------- */
+
+/** One statement the driver actually sent, with the values bound to it. */
+interface Statement {
+  readonly text: string;
+  readonly values: readonly unknown[];
+}
+
+/**
+ * Capture the SQL one call sends.
+ *
+ * At the driver, because that is the only place the real statement exists:
+ * a repository that says it takes two bounds and passes one would look
+ * identical from above.
+ */
+async function capturing<T>(run: () => Promise<T>): Promise<{
+  readonly result: T;
+  readonly statements: readonly Statement[];
+}> {
+  const statements: Statement[] = [];
+  // Seen as a plain function rather than as a method, so taking a reference to
+  // it is not the unbound-method mistake the lint rule is really about.
+  const driver = pg.Client.prototype as unknown as {
+    query: (this: void, ...args: unknown[]) => unknown;
+  };
+  const original = driver.query;
+
+  driver.query = function patched(this: unknown, ...args: unknown[]) {
+    const first = args[0] as string | { text?: string; values?: unknown[] } | undefined;
+    const text = typeof first === 'string' ? first : (first?.text ?? '');
+    const bound = Array.isArray(args[1])
+      ? args[1]
+      : typeof first === 'string'
+        ? []
+        : (first?.values ?? []);
+    statements.push({ text, values: bound });
+    return Reflect.apply(original, this, args) as unknown;
+  };
+
+  try {
+    return { result: await run(), statements };
+  } finally {
+    driver.query = original;
+  }
+}
+
+/** Every dated read of a flow table, as the pair of bounds it sent. */
+const flowBounds = (statements: readonly Statement[]): string[][] =>
+  statements
+    .filter((statement) => /from "(income_entries|expense_entries|transfers)"/iu.test(statement.text))
+    .map((statement) =>
+      statement.values.filter(
+        (value): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/u.test(value),
+      ),
+    )
+    .filter((bounds) => bounds.length === 2);
+
+/**
+ * What a preview is allowed to read (§6, 23.2, ADR 0010 §8).
+ *
+ * Two properties, and the second is the one an earlier version got wrong: the
+ * **count** of statements does not grow with the window, and the **rows** are
+ * bounded by the window on both sides. Reading every flow through today made
+ * correcting a five-year-old expense load five years of later rows that no
+ * part of the derivation is allowed to look at.
+ *
+ * Asserted at the driver, because that is the only place the real statement
+ * exists: a repository that says it takes two bounds and passes one would look
+ * identical from above.
+ */
+describe('the preview reads its own window and no more (§6)', () => {
+  /** A 2021 expense, a 2021 balance, and a lot of evidence after both. */
+  async function longHistory(): Promise<{ id: string; version: number }> {
+    await statement(bbva, '2021-04-30', '1000.00');
+    await statement(bbva, '2021-05-31', '900.00');
+    const old = await createExpenseEntry(flows(), OCT_5, {
+      categoryId: groceries,
+      incurredOn: '2021-05-12',
+      amount: '100.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId: bbva,
+    });
+    await september();
+    return old;
+  }
+
+  it('stops an isolated old flow correction at its own month end', async () => {
+    const old = await longHistory();
+
+    const { result, statements } = await capturing(() =>
+      preview({
+        kind: 'expense_update',
+        entryId: old.id,
+        expectedVersion: old.version,
+        amount: '120.00',
+      }),
+    );
+
+    // An expense is neither of a month's endpoints, so it reaches no later
+    // month: May 2021 is the whole window.
+    expect(result.periods.map((period) => period.month)).toEqual(['2021-05']);
+
+    const bounds = flowBounds(statements);
+    expect(bounds.length).toBeGreaterThanOrEqual(3);
+    for (const bound of bounds) {
+      expect(bound).toEqual(['2021-05-01', '2021-05-31']);
+    }
+  });
+
+  it('lets a balance correction reach the current month, and says so in its bounds', async () => {
+    await longHistory();
+    const anchor = await valuationOn(bbva, '2021-04-30');
+
+    const { statements } = await capturing(() =>
+      preview({
+        kind: 'valuation_update',
+        valuationId: anchor.id,
+        expectedVersion: anchor.version,
+        valuedOn: '2021-04-30',
+        amount: '1100.00',
+        datePrecision: 'month_end',
+      }),
+    );
+
+    const bounds = flowBounds(statements);
+    expect(bounds.length).toBeGreaterThanOrEqual(3);
+    for (const bound of bounds) {
+      // A balance is opening evidence for every month after it, so its window
+      // legitimately runs to the end of the current one.
+      expect(bound).toEqual(['2021-04-01', '2026-10-31']);
+    }
+  });
+
+  it('issues the same number of statements for a 2-month and a 66-month window', async () => {
+    await longHistory();
+    const near = await valuationOn(bbva, '2026-09-30');
+    const far = await valuationOn(bbva, '2021-04-30');
+
+    const correct = (row: { id: string; version: number }, valuedOn: string) => ({
+      kind: 'valuation_update' as const,
+      valuationId: row.id,
+      expectedVersion: row.version,
+      valuedOn,
+      amount: '1234.00',
+      datePrecision: 'month_end' as const,
+    });
+
+    // The same operation over two windows: a balance reaches forward to the
+    // current month, so September 2026 spans two months and April 2021 spans
+    // sixty-six.
+    const narrow = await capturing(() => preview(correct(near, '2026-09-30')));
+    const wide = await capturing(() => preview(correct(far, '2021-04-30')));
+
+    // Two windows of very different size, as the reads themselves report them.
+    expect(flowBounds(narrow.statements)[0]).toEqual(['2026-09-01', '2026-10-31']);
+    expect(flowBounds(wide.statements)[0]).toEqual(['2021-04-01', '2026-10-31']);
+
+    const loads = (captured: readonly Statement[]): number =>
+      captured.filter((entry) => /^\s*select/iu.test(entry.text)).length;
+    // Identical: the count is a property of the derivation, not of the number
+    // of months in the window.
+    expect(loads(wide.statements)).toBe(loads(narrow.statements));
+    expect(loads(narrow.statements)).toBeLessThan(24);
   });
 });

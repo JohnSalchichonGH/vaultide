@@ -91,6 +91,7 @@ function evidence(overrides: Partial<CorrectionEvidence> = {}): CorrectionEviden
       },
     ],
     expenses: [],
+    categoryIds: new Map(),
     transfers: [],
     templates: [],
     resolvedOccurrences: [{ templateId: 'tpl-1', occurrenceDate: '2026-08-25' }],

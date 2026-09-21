@@ -73,6 +73,16 @@ export interface CorrectionEvidence {
   readonly accountTypes: ReadonlyMap<string, string>;
   readonly income: readonly IncomeFlow[];
   readonly expenses: readonly ExpenseFlow[];
+  /**
+   * Each expense's own category, by flow id.
+   *
+   * `ExpenseFlow` carries the category's **kind**, because that is all 7.4
+   * needs to classify it. The by-category decomposition the Spending page
+   * shows is keyed on the category itself (30.14), and two categories of the
+   * same kind are two rows there, so the identity travels beside the flow
+   * rather than inside a finance type that has no use for it.
+   */
+  readonly categoryIds: ReadonlyMap<string, string>;
   readonly transfers: readonly TransferFlow[];
   readonly templates: readonly CompletenessTemplate[];
   readonly resolvedOccurrences: readonly { templateId: string; occurrenceDate: string }[];
@@ -106,6 +116,35 @@ export interface CorrectionEvidence {
  * The months that turn out to be unaffected are dropped from the result later,
  * so a wide candidate range costs in-memory work, never a wider read.
  */
+/**
+ * The window one correction is evaluated over: which months, and the exact
+ * dates the flow reads are bounded by.
+ *
+ * One value, computed once and handed to both the loader and the impact, so
+ * the rows that are read and the months that are judged cannot drift apart.
+ * A month that is never judged must not be read, and a month that is judged
+ * must never be missing its rows.
+ */
+export interface CorrectionWindow {
+  /** Every month this correction could change, ascending. */
+  readonly periods: readonly string[];
+  /** The first day of the earliest of them. */
+  readonly from: PlainDate;
+  /** The last day of the latest of them: the flow reads stop here. */
+  readonly through: PlainDate;
+}
+
+export function correctionWindow(write: ResolvedWrite, today: PlainDate): CorrectionWindow {
+  const periods = candidatePeriods(write, today);
+  const first = periods[0] ?? monthLabel(monthKey(today));
+  const last = periods[periods.length - 1] ?? first;
+  return {
+    periods,
+    from: startOfMonthKey(monthKeyOfPeriod(first)),
+    through: endOfMonthKey(monthKeyOfPeriod(last)),
+  };
+}
+
 export function candidatePeriods(write: ResolvedWrite, today: PlainDate): readonly string[] {
   const current = monthLabel(monthKey(today));
   const touched = new Set<string>();
@@ -178,38 +217,42 @@ function financialDateOfFacts(facts: SourceFacts): string | null {
  * template. They are issued one after another rather than in parallel, because
  * one transaction is one connection (ADR 0010 §8).
  *
- * The flows are bounded below by the earliest month the correction touches and
- * above by today, which is the correction's own reach rather than a guess. The
- * valuations keep ADR 0004 §3's no-lower-bound rule: a month's opening may be a
- * balance carried from years earlier, and windowing them would turn a carried
- * balance into `missing` and a reconcilable month into `unavailable`.
+ * The flows are bounded on **both** sides by the correction's own window: from
+ * the first day of the earliest month it could change to the last day of the
+ * latest. A 2021 expense correction is judged over 2021 alone, so reading
+ * through today would pull five years of rows no part of the derivation can
+ * look at. A balance or a dormant episode legitimately reaches the current
+ * month, and its window says so.
+ *
+ * The valuations keep ADR 0004 §3's no-lower-bound rule instead: a month's
+ * opening may be a balance carried from years earlier, and windowing them would
+ * turn a carried balance into `missing` and a reconcilable month into
+ * `unavailable`. They are bounded above by today, not by the window, because
+ * `findSpanIntervals` reads every account's whole history (8.7).
  */
 export async function loadCorrectionEvidenceIn(
   tx: Transaction,
   today: PlainDate,
-  periods: readonly string[],
+  window: CorrectionWindow,
 ): Promise<CorrectionEvidence> {
-  const first = periods[0] ?? monthLabel(monthKey(today));
-  const from = startOfMonthKey(monthKeyOfPeriod(first));
-  const last = periods[periods.length - 1] ?? first;
-  const occurrencesThrough = endOfMonthKey(monthKeyOfPeriod(last));
+  const { from, through } = window;
 
-  const window = await loadFinancialWindowIn(tx, today);
-  const income = await listIncomeEntriesIn(tx, from, today);
-  const expenses = await listExpenseEntriesIn(tx, from, today);
-  const transfers = await listTransfersIn(tx, from, today);
+  const financial = await loadFinancialWindowIn(tx, today);
+  const income = await listIncomeEntriesIn(tx, from, through);
+  const expenses = await listExpenseEntriesIn(tx, from, through);
+  const transfers = await listTransfersIn(tx, from, through);
   // Archived categories included: an expense keeps its category, and the kind
   // of an archived one still decides how that expense is classified (R12).
   const categories = await listCategoryRecordsIn(tx, { includeArchived: true });
   // Templates regardless of `archived_at` (30.10): archiving is present-tense
   // visibility, and a template archived today still expected a salary last
   // September.
-  const templates = await listTemplatesForRangeIn(tx, from, occurrencesThrough);
-  const resolved = await listResolvedOccurrencesInRangeIn(tx, from, occurrencesThrough);
+  const templates = await listTemplatesForRangeIn(tx, from, through);
+  const resolved = await listResolvedOccurrencesInRangeIn(tx, from, through);
   const settings = await findUserSettingsIn(tx);
 
   const valuations = new Map<string, ValuationRecord[]>();
-  for (const row of window.valuations) {
+  for (const row of financial.valuations) {
     const list = valuations.get(row.positionId);
     const record = toValuationRecord(row);
     if (list === undefined) valuations.set(row.positionId, [record]);
@@ -220,13 +263,14 @@ export async function loadCorrectionEvidenceIn(
 
   return {
     today: plainDate(today),
-    positions: window.positions.map(toPositionRecord),
+    positions: financial.positions.map(toPositionRecord),
     valuations,
     accountTypes: new Map(
-      window.positions.map((row) => [row.id, row.accountType ?? 'checking']),
+      financial.positions.map((row) => [row.id, row.accountType ?? 'checking']),
     ),
     income: income.map(toIncomeFlow),
     expenses: expenses.map((row) => toExpenseFlow(row, kindOf)),
+    categoryIds: new Map(expenses.map((row) => [row.id, row.categoryId])),
     transfers: transfers.map(toTransferFlow),
     templates: templates.map(toCompletenessTemplate),
     resolvedOccurrences: resolved.map((row) => ({
@@ -336,6 +380,7 @@ export function overlayCorrection(
 ): CorrectionEvidence {
   let income = [...evidence.income];
   let expenses = [...evidence.expenses];
+  const categoryIds = new Map(evidence.categoryIds);
   let transfers = [...evidence.transfers];
   const valuations = new Map<string, readonly ValuationRecord[]>(evidence.valuations);
   let positions = [...evidence.positions];
@@ -372,11 +417,12 @@ export function overlayCorrection(
         break;
       }
       case 'expense': {
-        const after =
-          change.after === null
-            ? null
-            : expenseFlowOf(change.after as Extract<SourceFacts, { kind: 'expense' }>, id);
+        const facts =
+          change.after === null ? null : (change.after as Extract<SourceFacts, { kind: 'expense' }>);
+        const after = facts === null ? null : expenseFlowOf(facts, id);
         expenses = replace(expenses, id, after, (flow) => flow.id);
+        if (facts === null) categoryIds.delete(id);
+        else categoryIds.set(id, facts.categoryId);
         break;
       }
       case 'transfer': {
@@ -449,7 +495,16 @@ export function overlayCorrection(
     }
   }
 
-  return { ...evidence, income, expenses, transfers, valuations, positions, resolvedOccurrences };
+  return {
+    ...evidence,
+    income,
+    expenses,
+    categoryIds,
+    transfers,
+    valuations,
+    positions,
+    resolvedOccurrences,
+  };
 }
 
 /* -------------------------------------------------------------------------- */

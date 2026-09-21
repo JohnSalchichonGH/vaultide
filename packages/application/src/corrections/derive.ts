@@ -3,7 +3,7 @@ import type { RequestContext } from '../context';
 import type { FxService } from '../fx/service';
 import { classifyHistorical, sourcePeriodsOf } from './classify';
 import type { CorrectionDraft } from './draft';
-import { candidatePeriods, loadCorrectionEvidenceIn, overlayCorrection } from './evidence';
+import { correctionWindow, loadCorrectionEvidenceIn, overlayCorrection } from './evidence';
 import { withFingerprint } from './fingerprint';
 import { deriveImpact } from './impact';
 import { resolveCorrectionIn, type CorrectionPlan } from './resolve';
@@ -93,11 +93,12 @@ export async function previewFromPlanIn(
   resolved: CorrectionPlan,
 ): Promise<CorrectionPreview> {
   const write = resolved.plan;
-  const periods = candidatePeriods(write, ctx.today);
-  const before = await loadCorrectionEvidenceIn(tx, ctx.today, periods);
+  // One window, used to read and to judge: see `correctionWindow`.
+  const window = correctionWindow(write, ctx.today);
+  const before = await loadCorrectionEvidenceIn(tx, ctx.today, window);
   const after = overlayCorrection(before, write);
   const sourcePeriods = sourcePeriodsOf(write);
-  const impact = deriveImpact(write, before, after, sourcePeriods);
+  const impact = deriveImpact(write, before, after, sourcePeriods, window);
 
   return withFingerprint({
     sourceScope: scopeOf(resolved),
