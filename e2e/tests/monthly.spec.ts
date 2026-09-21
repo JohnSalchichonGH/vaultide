@@ -142,6 +142,22 @@ async function recordSnapshot(page: Page, amount: string, on: string): Promise<v
   await expect(page.getByTestId('valuation-history')).toContainText(on);
 }
 
+/**
+ * Confirm the Historical Correction a save became, where its dates make one.
+ *
+ * Every edit to a month that has already closed — and every save whose dormant
+ * consequence reaches one — goes through Review → Confirm before it is written
+ * (30.22 item 1; ADR 0010 §1). These journeys are about what the product does
+ * with the record afterwards, so they step through the review the way a person
+ * would and then assert exactly what they always asserted.
+ */
+async function confirmCorrection(page: Page): Promise<void> {
+  const review = page.getByTestId('correction-review');
+  await expect(review).toBeVisible();
+  await review.getByTestId('correction-confirm').click();
+  await expect(review).toHaveCount(0);
+}
+
 test.describe('the monthly page', () => {
   test('a person opens this month, reviews last month, and hides and restores an advisory', async ({
     page,
@@ -563,9 +579,14 @@ test.describe('the monthly income editor', () => {
     await expect(page.getByTestId('income-occurrence')).toHaveCount(1);
     await expect(page.getByTestId('occurrence-status')).toHaveText('Recorded');
 
-    // And it cannot be pushed out of the month from here.
-    await expect(recorded2.getByTestId('entry-received-on')).toHaveAttribute('min', '2026-10-01');
+    // The date may be corrected into another month — a Historical Correction,
+    // whose review names every month it touches (30.22 item 1) — and never
+    // past today (M5).
     await expect(recorded2.getByTestId('entry-received-on')).toHaveAttribute('max', '2026-10-06');
+    await expect(recorded2.getByTestId('entry-received-on')).not.toHaveAttribute(
+      'min',
+      '2026-10-01',
+    );
 
     // The section never widens the page on a narrow screen (16.5).
     // The section never widens the page on a narrow screen (16.5): a table
@@ -781,9 +802,13 @@ test.describe('the monthly known-expenses editor', () => {
     // The scheduling identity did not move with the financial date.
     await expect(october).toHaveAttribute('data-occurrence-date', '2026-10-15');
     await expect(october.getByTestId('expense-occurrence-status')).toHaveText('Recorded');
-    // …and the date cannot be pushed out of October from here.
-    await expect(october.getByTestId('expense-incurred-on')).toHaveAttribute('min', '2026-10-01');
+    // …and the date may be corrected into another month, through the review,
+    // but never past today (M5, 30.22 item 1).
     await expect(october.getByTestId('expense-incurred-on')).toHaveAttribute('max', '2026-10-06');
+    await expect(october.getByTestId('expense-incurred-on')).not.toHaveAttribute(
+      'min',
+      '2026-10-01',
+    );
 
     // --- A source that costs nothing: skipped, restored, and ended --------------
     await section.getByTestId('expense-source-add-toggle').click();
@@ -986,6 +1011,7 @@ test.describe('monthly cash transfers', () => {
     await expect(edit.getByTestId('transfer-fee-payer').locator('option:checked')).toHaveText('Everyday (EUR)');
     await edit.getByTestId('transfer-fee-amount').fill('1.00');
     await edit.getByTestId('transfer-save').click();
+    await confirmCorrection(page);
     await expect(page.getByTestId('transfer-status')).toHaveText('Transfer saved.');
     await expect(item.getByTestId('transfer-amounts')).toContainText('€250.00');
     await expect(item.getByTestId('transfer-fee')).toContainText('€1.00');
@@ -998,6 +1024,7 @@ test.describe('monthly cash transfers', () => {
     await item.getByTestId('transfer-edit').click();
     await page.getByTestId('transfer-dialog').getByTestId('transfer-fee-toggle').uncheck();
     await page.getByTestId('transfer-dialog').getByTestId('transfer-save').click();
+    await confirmCorrection(page);
     await expect(page.getByTestId('transfer-status')).toHaveText('Transfer saved.');
     await expect(item.getByTestId('transfer-fee')).toHaveCount(0);
     await expect(bucket.getByTestId('identity-K')).toContainText('€0.00');
@@ -1006,6 +1033,7 @@ test.describe('monthly cash transfers', () => {
     // Delete it: the legs go, and the spending stays what the balances say.
     await item.getByTestId('transfer-edit').click();
     await page.getByTestId('transfer-dialog').getByTestId('transfer-delete').click();
+    await confirmCorrection(page);
     await expect(page.getByTestId('transfer-status')).toHaveText('Transfer deleted.');
     await expect(accounts.getByTestId('transfers-empty')).toBeVisible();
     await expect(bucket.getByTestId('identity-Nin')).toContainText('€0.00');
@@ -1078,6 +1106,7 @@ test.describe('monthly cash transfers', () => {
     await edit.getByTestId('transfer-amount-received').fill('541.00');
     await edit.getByTestId('transfer-fee-amount').fill('3.00');
     await edit.getByTestId('transfer-save').click();
+    await confirmCorrection(page);
     await expect(page.getByTestId('transfer-status')).toHaveText('Transfer saved.');
     await expect(page.getByTestId('bucket-USD').getByTestId('identity-Nin')).toContainText('541.00');
     await expect(page.getByTestId('bucket-EUR').getByTestId('identity-K')).toContainText('€0.00');
@@ -1088,6 +1117,7 @@ test.describe('monthly cash transfers', () => {
     await page.goto('/monthly/2026-09');
     await item.getByTestId('transfer-edit').click();
     await page.getByTestId('transfer-dialog').getByTestId('transfer-delete').click();
+    await confirmCorrection(page);
     await expect(page.getByTestId('transfer-status')).toHaveText('Transfer deleted.');
     await expect(page.locator('section#accounts').getByTestId('transfers-empty')).toBeVisible();
     await expect(page.getByTestId('bucket-USD').getByTestId('identity-Nin')).toContainText('0.00');
@@ -1108,6 +1138,9 @@ test.describe('monthly cash transfers', () => {
     await expect(page.getByTestId('edit-submit')).toBeEnabled();
     await page.getByTestId('edit-dormant').check();
     await page.getByTestId('edit-submit').click();
+    // The zero it rests on is August's, so marking it dormant rewrites months
+    // that have closed and goes through the review first (§10).
+    await confirmCorrection(page);
     await expect(page.getByTestId('accounts-success')).toHaveText('Saved.');
 
     // Savings carries at zero, so Everyday's missing 200 reads as spending.
@@ -1125,6 +1158,10 @@ test.describe('monthly cash transfers', () => {
       amount: '200.00',
     });
     await dialog.getByTestId('transfer-save').click();
+    // Savings has been dormant since August's zero, so this ordinary-looking
+    // transfer ends a period that reaches a closed month: it is reviewed
+    // before it is written (§9).
+    await confirmCorrection(page);
     await expect(page.getByTestId('transfer-status')).toHaveText('Transfer added.');
 
     // Recording the transfer cleared dormancy (8.8): Savings now owes September a
@@ -1169,6 +1206,7 @@ test.describe('monthly cash transfers', () => {
     await page.getByTestId('transfer-edit').click();
     await page.getByTestId('transfer-dialog').getByTestId('transfer-amount').fill('150.00');
     await page.getByTestId('transfer-dialog').getByTestId('transfer-save').click();
+    // October's own transfer: a current-month edit, so it simply saves.
     await expect(page.getByTestId('transfer-status')).toHaveText('Transfer saved.');
 
     await staleDialog.getByTestId('transfer-amount').fill('175.00');

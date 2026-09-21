@@ -439,7 +439,10 @@ test.describe('dormant accounts', () => {
     await page.getByTestId(`edit-valuation-${today}`).click();
     await fillTestId(page, 'edit-valuation-amount', '0');
     await page.getByTestId('save-valuation-edit').click();
-    await expect(page.getByTestId('position-native')).toContainText('0.00');
+    // The history itself, not the headline: `€120.00` contains `0.00`, so the
+    // old assertion passed the moment the click was sent and proved nothing
+    // about the save having landed.
+    await expect(page.getByTestId('valuation-history')).toContainText('€0.00');
 
     await page.reload();
     await page.getByTestId('edit-dormant').check();

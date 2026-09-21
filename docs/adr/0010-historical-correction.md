@@ -509,3 +509,31 @@ it.
 other invariant: every state-changing financial action authorizes against the
 session store (ADR 0003). The two are not merged, because they answer different
 questions.
+
+---
+
+## Implementation status
+
+Appended after the fact, and it changes no decision above. Sections 1–4 and
+12–14 were written as the contract a later slice is held to; that slice has now
+been built, and every one of them holds as recorded. Sections 5–11 described the
+prerequisite and are unchanged.
+
+Two things are worth a reader's time because the record could otherwise be read
+as vaguer than the code:
+
+- **the two rules of §1 are one pure function.** `classifyHistorical` judges a
+  resolved write, and the same call answers both questions the product asks: the
+  server guard that refuses an ordinary mutation, and the preview that decides
+  whether the ceremony is needed at all. There is no second statement of what a
+  correction is.
+- **§12's fingerprint is taken over the semantic preview and nothing else.** No
+  reporting-currency value, no exchange rate, no derived monetary total, no
+  generated database id for a row that does not exist yet. That is what makes
+  the consent independent of FX availability and of a reporting-currency switch,
+  and it is why a prospective transfer fee carries a deterministic semantic
+  identity rather than a UUID the commit could never reproduce.
+
+Still not implemented, and still separate known gaps: bulk history, the history
+drawer, undo, restore, `positions.opened_on` correction, and reopening or
+correcting a close (§14).

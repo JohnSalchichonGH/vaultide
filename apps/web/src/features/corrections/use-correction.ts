@@ -43,24 +43,45 @@ export interface PendingCorrection {
 }
 
 export interface CorrectionFlow {
-  /** The open review, or `null`. */
+  /** The correction awaiting consent, or `null`. */
   readonly pending: PendingCorrection | null;
+  /**
+   * Whether the user has stepped **Back** out of the review.
+   *
+   * The correction is still pending — nothing was written, and the draft is
+   * exactly as it was typed — so the editor offers its way back in rather than
+   * leaving the user with an unsaved edit and no control to finish it (§67).
+   */
+  readonly paused: boolean;
   /** Ask, then either save or open the review. */
   readonly attempt: (
     draft: CorrectionDraft,
     save: () => Promise<SaveOutcome>,
   ) => Promise<CorrectionOutcome>;
-  /** Close the review without writing anything. */
-  readonly dismiss: () => void;
+  /** Step back to the editor, keeping the correction. */
+  readonly pause: () => void;
+  /** Open the review again, on the correction that was already prepared. */
+  readonly resume: () => void;
+  /** Forget it: after a commit, or when the user starts something else. */
+  readonly clear: () => void;
 }
 
 export function useCorrection(): CorrectionFlow {
   const [pending, setPending] = useState<PendingCorrection | null>(null);
+  const [paused, setPaused] = useState(false);
 
   return {
     pending,
-    dismiss: () => {
+    paused,
+    pause: () => {
+      setPaused(true);
+    },
+    resume: () => {
+      setPaused(false);
+    },
+    clear: () => {
       setPending(null);
+      setPaused(false);
     },
     attempt: async (draft, save) => {
       const prepared = await previewHistoricalCorrectionAction({ draft });
@@ -73,8 +94,13 @@ export function useCorrection(): CorrectionFlow {
       }
       if (prepared.data.status === 'review_required') {
         setPending({ draft, preview: prepared.data.preview });
+        setPaused(false);
         return { kind: 'review' };
       }
+      // Anything the user goes on to save successfully replaces whatever was
+      // waiting for consent.
+      setPending(null);
+      setPaused(false);
       return { kind: 'saved', result: await save() };
     },
   };

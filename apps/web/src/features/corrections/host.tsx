@@ -23,14 +23,29 @@ export function CorrectionHost({
   const pending = flow.pending;
   if (pending === null) return null;
 
+  // Stepped back: the edit is still unsaved and still needs consent, so the
+  // way back in stays on screen rather than leaving a dead draft (§67).
+  if (flow.paused) {
+    return (
+      <button
+        type="button"
+        data-testid="correction-reopen"
+        className="min-h-6 rounded-[var(--radius-control)] border px-2.5 py-1 text-[length:var(--text-meta)] font-medium"
+        onClick={flow.resume}
+      >
+        Review changes
+      </button>
+    );
+  }
+
   return (
     <CorrectionReview
       draft={pending.draft}
       preview={pending.preview}
       labels={labels}
-      onBack={flow.dismiss}
+      onBack={flow.pause}
       onCommitted={() => {
-        flow.dismiss();
+        flow.clear();
         onCommitted();
       }}
     />

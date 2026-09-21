@@ -16,6 +16,9 @@ import { Label } from '@/components/ui/label';
 import { MoneyText } from '@/components/finance/money-text';
 import { normalizeMoneyInput } from '@/lib/money-input';
 import { useHydrated } from '@/lib/use-hydrated';
+import { CorrectionHost } from '@/features/corrections/host';
+import { DestructiveConfirm, isHistorical } from '@/features/corrections/delete-confirm';
+import { useCorrection } from '@/features/corrections/use-correction';
 
 /**
  * The valuation editor and the month-end section (blueprint 15.2, 15.3, 8.1,
@@ -46,6 +49,7 @@ export function ValuationEditor({ detail, today, locale }: ValuationEditorProps)
   const { position } = detail;
   const router = useRouter();
   const hydrated = useHydrated();
+  const correction = useCorrection();
   const ids = { amount: useId(), date: useId() };
 
   const [amount, setAmount] = useState('');
@@ -60,6 +64,32 @@ export function ValuationEditor({ detail, today, locale }: ValuationEditorProps)
     router.refresh();
   };
 
+  /**
+   * One balance write, asking first whether it rewrites completed history.
+   *
+   * Correcting or deleting a balance in a month that has closed is plainly a
+   * correction. Recording one **today** can be too, and that is the case a
+   * person has no way to see coming: a non-zero balance on an account whose
+   * dormant period began in June ends that period, and those months stop
+   * carrying it at zero (8.8, 30.20; §9, §111).
+   */
+  const write = (
+    draft: Parameters<typeof correction.attempt>[0],
+    send: Parameters<typeof correction.attempt>[1],
+    onSaved: () => void,
+  ): void => {
+    setError(null);
+    startTransition(async () => {
+      const attempted = await correction.attempt(draft, send);
+      if (attempted.kind === 'review') return;
+      if (!attempted.result.ok) {
+        setError(attempted.result.error.message);
+        return;
+      }
+      onSaved();
+    });
+  };
+
   return (
     <div className="space-y-8">
       <section className="space-y-4">
@@ -71,21 +101,21 @@ export function ValuationEditor({ detail, today, locale }: ValuationEditorProps)
             event.preventDefault();
             setError(null);
             setSaved(null);
-            startTransition(async () => {
-              const result = await recordValuationAction({
-                positionId: position.id,
-                amount: normalizeMoneyInput(amount),
-                valuedOn,
-                datePrecision: 'exact',
-              });
-              if (!result.ok) {
-                setError(result.error.message);
-                return;
-              }
-              setSaved(`Balance recorded for ${result.data.valuedOn}.`);
-              setAmount('');
-              refresh();
-            });
+            const args = {
+              positionId: position.id,
+              amount: normalizeMoneyInput(amount),
+              valuedOn,
+              datePrecision: 'exact' as const,
+            };
+            write(
+              { kind: 'valuation_create', ...args },
+              () => recordValuationAction(args),
+              () => {
+                setSaved(`Balance recorded for ${valuedOn}.`);
+                setAmount('');
+                refresh();
+              },
+            );
           }}
         >
           <div className="space-y-1.5">
@@ -232,22 +262,21 @@ export function ValuationEditor({ detail, today, locale }: ValuationEditorProps)
                             disabled={pending}
                             className="rounded-[var(--radius-control)] border px-2 py-1"
                             onClick={() => {
-                              setError(null);
-                              startTransition(async () => {
-                                const result = await correctValuationAction({
-                                  valuationId: valuation.id,
-                                  expectedVersion: valuation.version,
-                                  amount: normalizeMoneyInput(editAmount),
-                                  valuedOn: valuation.valuedOn,
-                                  datePrecision: valuation.datePrecision,
-                                });
-                                if (!result.ok) {
-                                  setError(result.error.message);
-                                  return;
-                                }
-                                setEditing(null);
-                                refresh();
-                              });
+                              const args = {
+                                valuationId: valuation.id,
+                                expectedVersion: valuation.version,
+                                amount: normalizeMoneyInput(editAmount),
+                                valuedOn: valuation.valuedOn,
+                                datePrecision: valuation.datePrecision,
+                              };
+                              write(
+                                { kind: 'valuation_update', ...args },
+                                () => correctValuationAction(args),
+                                () => {
+                                  setEditing(null);
+                                  refresh();
+                                },
+                              );
                             }}
                           >
                             Save
@@ -275,31 +304,29 @@ export function ValuationEditor({ detail, today, locale }: ValuationEditorProps)
                           >
                             Edit
                           </button>
-                          <button
-                            type="button"
-                            data-testid={`delete-valuation-${valuation.valuedOn}`}
+                          <DestructiveConfirm
+                            testId={`delete-valuation-${valuation.valuedOn}`}
+                            label="Delete"
+                            question="Delete this balance?"
                             disabled={pending}
-                            className="rounded-[var(--radius-control)] border px-2 py-1"
-                            onClick={() => {
-                              setError(null);
-                              startTransition(async () => {
-                                // The version this row was rendered at: a
-                                // balance corrected elsewhere refuses rather
-                                // than being deleted (6.3, 20.3).
-                                const result = await deleteValuationAction({
-                                  valuationId: valuation.id,
-                                  expectedVersion: valuation.version,
-                                });
-                                if (!result.ok) {
-                                  setError(result.error.message);
-                                  return;
-                                }
-                                refresh();
-                              });
+                            /* A historical delete is a correction, and its
+                               review is the confirmation (§71). */
+                            skipConfirmation={isHistorical(valuation.valuedOn, today)}
+                            onConfirm={() => {
+                              // The version this row was rendered at: a balance
+                              // corrected elsewhere refuses rather than being
+                              // deleted (6.3, 20.3).
+                              const args = {
+                                valuationId: valuation.id,
+                                expectedVersion: valuation.version,
+                              };
+                              write(
+                                { kind: 'valuation_delete', ...args },
+                                () => deleteValuationAction(args),
+                                refresh,
+                              );
                             }}
-                          >
-                            Delete
-                          </button>
+                          />
                         </div>
                       )}
                     </td>
@@ -314,6 +341,20 @@ export function ValuationEditor({ detail, today, locale }: ValuationEditorProps)
           derived from it simply reads differently afterwards — nothing was stored to go stale.
         </p>
       </section>
+
+      <CorrectionHost
+        flow={correction}
+        labels={{
+          accounts: { [position.id]: position.name },
+          categories: {},
+          locale,
+        }}
+        onCommitted={() => {
+          setEditing(null);
+          setAmount('');
+          refresh();
+        }}
+      />
     </div>
   );
 }

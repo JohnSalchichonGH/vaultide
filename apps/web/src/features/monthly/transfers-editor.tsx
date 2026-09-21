@@ -375,6 +375,10 @@ export function TransferEditor({
   const router = useRouter();
   const hydrated = useHydrated();
   const correction = useCorrection();
+  // What to say once the correction this save became is confirmed. Saving and
+  // deleting are different words, and the review sits between the click and
+  // the outcome.
+  const [correctionMessage, setCorrectionMessage] = useState('Transfer saved.');
   const [pending, startTransition] = useTransition();
   const ids = {
     date: useId(),
@@ -462,6 +466,7 @@ export function TransferEditor({
     message: string,
   ): void => {
     setProblem(null);
+    setCorrectionMessage(message);
     onBusyChange?.(true);
     startTransition(async () => {
       let outcome: TransferOutcome;
@@ -777,7 +782,7 @@ export function TransferEditor({
           locale: formatting.locale,
         }}
         onCommitted={() => {
-          onDone('Transfer saved.');
+          onDone(correctionMessage);
           router.refresh();
         }}
       />

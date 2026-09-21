@@ -122,9 +122,9 @@ logs into this file.
   `docs/adr/0009-reconciliation-corrective-actions.md` is the accepted record of
   the corrective-action decisions.
   `docs/adr/0010-historical-correction.md` freezes the historical-correction
-  design and records the financial write-coordination prerequisite. Freezing
-  that design is **not** implementing it: at this checkpoint only the
-  prerequisite exists.
+  design and records the financial write-coordination prerequisite. A short
+  implementation-status note is appended to it; the decision record itself is
+  unchanged.
 
 Freezing completed Phase 3 slices does not imply acceptance or freeze of Phase 3
 as a whole.
@@ -275,15 +275,73 @@ editing mutex; ADR 0010 §3 and §4.1 say why.
 No migration: the mutex is ephemeral PostgreSQL state, and the versions, audit
 images, reasons and request ids it relies on already exist.
 
+## Historical correction
+
+Implemented on the review branch `feat/historical-correction`, and **awaiting
+independent review**: it is not accepted, not frozen and not
+production-verified (blueprint 15.3, 30.22; ADR 0010).
+
+Every ordinary mutation of mutable financial evidence now **resolves** before it
+applies. A resolver reads what the operation is about, applies every domain
+rule, and produces a plan — which source facts change, before and after, and
+what happens to the dormant episodes those facts touch. The write then applies
+that plan, and the correction ceremony previews it instead:
+
+```
+ordinary   resolve -> guard -> apply
+preview    resolve -> overlay -> impact -> fingerprint
+confirm    resolve -> impact -> fingerprint -> compare -> apply
+```
+
+Preview and Confirm call the same resolvers and the same apply functions the
+ordinary mutations call, so no rule has a second statement. The only difference
+between the read side and the write side is whether the resolving reads take
+their row locks, which a `read only` transaction cannot do at all.
+
+- **What a correction is** has one statement, in
+  `packages/application/src/corrections/classify.ts`: a revision — an update or
+  a delete — of a source fact whose financial period is completed on either
+  side, or a dormancy transition whose dated episode reaches completed history.
+  A single historical creation stays a first assertion; its dormancy
+  consequence is judged on its own terms. A transfer aggregate is judged on
+  every date it carries, the fee's own `incurred_on` included.
+- **The guard is a server boundary, not a flag.** An ordinary write that
+  resolves into a historical revision refuses with
+  `HISTORICAL_REVIEW_REQUIRED` before a row moves. Confirm does not bypass it:
+  it never calls the ordinary entry point, it verifies consent and applies the
+  same plan.
+- **Preview** is one `withUserRead` transaction — repeatable read, read only,
+  no mutex, no provider call — and writes nothing at all. It loads a window
+  bounded by the correction's own reach, derives BEFORE, overlays the resolved
+  change in memory, derives AFTER through the same engines, and hashes the
+  semantic difference. A row that does not exist yet carries a deterministic
+  semantic identity, never a fabricated database id.
+- **Confirm** is a financial mutation like any other, registered in the
+  write-boundary AST check. Its outcome is a typed protocol result —
+  committed, or the impact changed — and `impact_changed` writes nothing.
+- **The interface** keeps its editors. Each save asks the server first; an
+  ordinary one saves as before, and a historical one goes through Review
+  changes → Confirm correction. A current-month delete asks once in place; a
+  historical one goes straight to the review. Adding into a closed month says
+  once that the month will be worked out again. A recorded row's financial date
+  may now be corrected into another month, in the editor, bounded only by M5.
+
+No migration: nothing about a preview, a draft, an impact or a fingerprint is
+persisted.
+
+Still out of scope, and still separate known gaps: bulk history, the history
+drawer, undo, restore, `positions.opened_on` correction, and reopening or
+correcting a close.
+
 ## Next planned work
 
-The next planned Phase 3 area is **historical correction**. Its write-coordination
-prerequisite is implemented; the feature itself is **not started** — there is no
-correction preview, draft, impact model or dialog.
+Phase 3 remains **in progress**. Once historical correction has been
+independently reviewed, released and verified live, the next planned Phase 3
+area is **bulk history entry**, which has **not started**.
 
 Remaining Phase 3 work, in the agreed order:
 
-1. historical correction;
+1. historical correction (implemented on its review branch; awaiting review);
 2. bulk history entry;
 3. the standalone Income pages;
 4. the remaining end-to-end journeys and Phase 3 hardening, including the
