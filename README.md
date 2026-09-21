@@ -52,9 +52,16 @@ progress, but Monthly and Spending are live. What is usable today:
   already knows filled in — and, where nothing explains an unexplained
   difference, offers to record it as a reconciliation adjustment. Vaultide
   suggests; you decide what is recorded, and nothing is written until you
-  confirm it. There is no transaction matching, no bank import and no general
-  editing of past records here: an issue clears because the records changed and
-  the month was worked out again;
+  confirm it. There is no transaction matching and no bank import: an issue
+  clears because the records changed and the month was worked out again;
+- correcting history: changing or deleting a record that belongs to a month
+  already finished — a balance, an income, an expense, a transfer, or an
+  account's dormancy — first shows you what the correction does: the record
+  before and after, which finished months are worked out again, and what
+  changes in them. Nothing is written until you confirm, and if your records
+  changed in the meantime you are shown the new effect instead. The editors are
+  the ones you already use, and the server refuses a change to finished history
+  that did not come through the review;
 - marking a completed month reviewed, and hiding an advisory for that month or
   showing it again. Hiding changes only what the page shows; it resolves
   nothing;
@@ -104,9 +111,15 @@ one new write is the reconciliation adjustment, whose amount, date and
 settlement the server derives from the discrepancy it recomputes. No resolution
 state is stored — an issue clears because the source records changed — and a
 correction offered for the current month is bounded by the date its
-month-to-date reconciliation reaches. This is not the historical-correction
-workflow, which comes later and is what will edit an existing record with its
-effect shown before and after.
+month-to-date reconciliation reaches. Revising a record that already exists
+is historical correction's job, below.
+
+Historical correction is live in production too. Every change to your financial
+records is first worked out as a plan of which records change, before and
+after; a save that would revise a finished month is refused unless it comes
+through the review. The review writes nothing and works the affected months out
+with the same engines the pages use. Confirming works the correction out again,
+commits it only if its effect is still the one you reviewed, and audits it.
 
 In production, Monthly consumes this through one composite read: a month's
 reconciliation, reporting-currency figures and completeness, the cash balances
@@ -122,7 +135,6 @@ built yet.
 
 Phase 3 is **in progress**, and is neither accepted nor frozen. Still to do:
 
-- historical correction;
 - bulk history entry;
 - the standalone Income pages;
 - the remaining end-to-end journeys and hardening;
@@ -175,11 +187,13 @@ packages/application use cases: auth and sessions, mailer, settings, FX service,
                      flows, recurring templates and suggestions, every
                      reconciliation, completeness, savings, reporting and
                      rolling read, the Monthly composite read with its review
-                     state, and the Spending composite read
+                     state, the Spending composite read, and historical
+                     correction's preview and confirm
 packages/config      tsconfig, ESLint (incl. the money-coercion rule), boundaries
 e2e                  Playwright: smoke, the auth and settings flow, the
                      accounts, balances and net-worth journey, and the Monthly,
-                     Spending and corrective-action journeys
+                     Spending, corrective-action and historical-correction
+                     journeys
 scripts/db           role bootstrap, local PostgreSQL, currency reconciliation,
                      live environment and financial-invariant checks
 scripts/backup       dump → verify → encrypt

@@ -100,13 +100,44 @@ logs into this file.
   A blocking issue clears because the source records changed and the server
   recomputed the month. There is no stored resolved-issue state, and advisory
   dismissal stays separate and never automatic. This slice creates records
-  inside the issue's own month; general historical correction remains later
-  work.
+  inside the issue's own month; revising existing history belongs to Historical
+  correction, below.
+
+  **Historical correction** is likewise an independently reviewed,
+  production-verified and frozen completed Phase 3 slice checkpoint:
+  - an existing record whose financial period is completed — on either side of
+    the change — is corrected through a **Review changes → Confirm correction**
+    ceremony, and so is a dormancy change whose dated episode reaches completed
+    history;
+  - the review shows the source facts semantically, before and after, and the
+    historical consequences the change has: which periods are recalculated and
+    which kinds of figure move in each, and the structural changes — a status,
+    completeness or issue moving, a span appearing or disappearing, a balance's
+    carry or a dormant episode being rewritten. It predicts no reporting-currency
+    figure;
+  - the ceremony is a server boundary, not a flag: an ordinary write that would
+    revise completed history is refused before anything is written, so no
+    editor can bypass it;
+  - Preview writes nothing — no source row, no audit, no review state, no
+    exchange rate;
+  - Confirm re-derives the correction under the financial write boundary and
+    commits it only if its impact is still the one the user reviewed; when the
+    world moved in between, nothing is written and the user reviews again;
+  - every historical correction is audited, with an optional reason;
+  - the existing editors — Monthly's Income, Known expenses, Accounts and
+    transfers, the account's balances and its dormancy — are reused rather than
+    duplicated, and a recorded row's financial date can now be corrected into
+    another month.
+
+  A single historical creation stays a first assertion outside the ceremony.
+  Bulk history, the history drawer, undo, restore, `positions.opened_on`
+  correction and reopening or correcting a close remain outside it.
 - **User-facing production:** Phases 0–2 remain the accepted/frozen user-facing
   foundation. Phase 3's Monthly page is in production with Overview, Income,
   Known expenses, Accounts (including cash transfers) and Reconciliation —
   whose issues now carry corrective actions — and so is the standalone Spending
-  page; the rest of Phase 3 remains in progress.
+  page. Historical correction is in production across those editors and the
+  account pages. The rest of Phase 3 remains in progress.
 - **Database migrations:** repository migrations run through
   `0008_dormant_anchor.sql`; the production release workflow
   applies migrations before deploying application code.
@@ -121,10 +152,10 @@ logs into this file.
   standalone Spending implementation decisions.
   `docs/adr/0009-reconciliation-corrective-actions.md` is the accepted record of
   the corrective-action decisions.
-  `docs/adr/0010-historical-correction.md` freezes the historical-correction
-  design and records the financial write-coordination prerequisite. A short
-  implementation-status note is appended to it; the decision record itself is
-  unchanged.
+  `docs/adr/0010-historical-correction.md` is the accepted record of the
+  historical-correction design and the financial write-coordination
+  prerequisite. A short implementation-status note is appended to it; the
+  decision record itself is unchanged.
 
 Freezing completed Phase 3 slices does not imply acceptance or freeze of Phase 3
 as a whole.
@@ -226,10 +257,12 @@ Web surface of Phase 3:
   financial mutations with `financialAction` (ADR 0003). Monthly's Income and
   Known expenses sections are their consumers, as is Spending's reused Add known
   expense, and Monthly Accounts is the user-facing consumer of the transfer flow
-  path.
-- End-to-end coverage now also includes the Monthly, Spending and
-  corrective-action journeys (`monthly`, `spending`, `corrective-actions`),
-  alongside the Phase 0–2 journeys (`smoke`, `auth`, `accounts`).
+  path. `corrections.ts` declares Historical correction's Confirm with
+  `financialAction`; its Preview is an authenticated read that writes nothing.
+- End-to-end coverage now also includes the Monthly, Spending,
+  corrective-action and historical-correction journeys (`monthly`, `spending`,
+  `corrective-actions`, `historical-correction`), alongside the Phase 0–2
+  journeys (`smoke`, `auth`, `accounts`).
 
 ## Financial write coordination
 
@@ -277,9 +310,10 @@ images, reasons and request ids it relies on already exist.
 
 ## Historical correction
 
-Implemented on the review branch `feat/historical-correction`, and **awaiting
-independent review**: it is not accepted, not frozen and not
-production-verified (blueprint 15.3, 30.22; ADR 0010).
+An independently reviewed, production-verified and frozen completed Phase 3
+slice checkpoint (blueprint 15.3, 30.22; ADR 0010). What it gives the product is
+summarised under the current checkpoint; this section records how it is built,
+because later work — bulk history first — extends it rather than restating it.
 
 Every ordinary mutation of mutable financial evidence now **resolves** before it
 applies. A resolver reads what the operation is about, applies every domain
@@ -354,20 +388,19 @@ correcting a close.
 
 ## Next planned work
 
-Phase 3 remains **in progress**. Once historical correction has been
-independently reviewed, released and verified live, the next planned Phase 3
-area is **bulk history entry**, which has **not started**.
+Phase 3 remains **in progress**, and is neither accepted nor frozen as a whole.
+The next planned Phase 3 area is **bulk history entry**, which has **not
+started**.
 
 Remaining Phase 3 work, in the agreed order:
 
-1. historical correction (implemented on its review branch; awaiting review);
-2. bulk history entry;
-3. the standalone Income pages;
-4. the remaining end-to-end journeys and Phase 3 hardening, including the
+1. bulk history entry;
+2. the standalone Income pages;
+3. the remaining end-to-end journeys and Phase 3 hardening, including the
    server/domain enforcement of each currency's minor-unit scale for Phase 3
    flows that acceptance still requires;
-5. a cold whole-Phase-3 review;
-6. Phase 3 acceptance, production verification, and freeze.
+4. a cold whole-Phase-3 review;
+5. Phase 3 acceptance, production verification, and freeze.
 
 The exact scope and subdivision of this work may still be refined by a later
 reviewed task prompt. Do not infer that an item is implemented merely because it
