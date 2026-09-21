@@ -877,21 +877,76 @@ describe('a changed fact is never hidden behind an equal label', () => {
       expect(names.get('pos-2')).toBe('Savings');
     });
 
-    it('adds the least that tells a same-currency pair apart, and never the whole id', () => {
+    /** Whether a label shows an id whole, with or without its hyphens. */
+    const showsWhole = (label: string, id: string): boolean =>
+      label.includes(id) || label.replace(/[^0-9a-z]/giu, '').includes(id.replace(/-/gu, ''));
+
+    it('tells a same-currency group apart without ever showing a whole id', () => {
       const names = accountDisplayNames(TWINS, []);
       const a = names.get(A) as string;
       const b = names.get(B) as string;
-      expect(a).not.toBe(b);
-      expect(a.startsWith('Savings')).toBe(true);
-      expect(b.startsWith('Savings')).toBe(true);
-      // Everything that shares the name is told apart, the old Savings included.
-      expect(names.get('pos-2')).not.toBe('Savings');
-      for (const label of [a, b]) {
-        expect(label).not.toContain(A);
-        expect(label).not.toContain(B);
+      const old = names.get('pos-2') as string;
+      expect(new Set([a, b, old]).size).toBe(3);
+      for (const label of [a, b, old]) expect(label.startsWith('Savings')).toBe(true);
+      // Everything that shares the name is told apart, the old Savings included
+      // — and its id is short enough that any prefix would be all of it.
+      expect(old).not.toBe('Savings');
+      for (const [label, id] of [
+        [a, A],
+        [b, B],
+        [old, 'pos-2'],
+      ] as const) {
+        expect(showsWhole(label, id)).toBe(false);
       }
-      // Stable: the same accounts are named the same way every time.
-      expect(accountDisplayNames(TWINS, []).get(A)).toBe(a);
+      // Deterministic: the same accounts are named the same way every time.
+      expect(accountDisplayNames(TWINS, [])).toEqual(names);
+    });
+
+    it('uses a few leading digits of each id when those tell the pair apart', () => {
+      const names = accountDisplayNames(
+        {
+          ...LABELS,
+          accounts: {
+            [A]: { name: 'Savings', currency: 'EUR' },
+            [B]: { name: 'Savings', currency: 'EUR' },
+          },
+        },
+        [],
+      );
+      expect(names.get(A)).toBe('Savings · #6f1c');
+      expect(names.get(B)).toBe('Savings · #9a8b');
+    });
+
+    it('never shows a whole id, even for two that differ only in their last digit', () => {
+      // The adversarial pair: every compact digit shared but the final one, so
+      // no prefix short of the whole id can tell them apart.
+      const first = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+      const second = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2';
+      const labels = {
+        ...LABELS,
+        accounts: {
+          [first]: { name: 'Savings', currency: 'EUR' },
+          [second]: { name: 'Savings', currency: 'EUR' },
+        },
+      };
+      const names = accountDisplayNames(labels, []);
+      const one = names.get(first) as string;
+      const two = names.get(second) as string;
+
+      expect(one).not.toBe(two);
+      for (const [label, id] of [
+        [one, first],
+        [two, second],
+      ] as const) {
+        expect(label.startsWith('Savings')).toBe(true);
+        expect(label).not.toContain(id);
+        expect(label).not.toContain(id.replace(/-/gu, ''));
+        expect(showsWhole(label, id)).toBe(false);
+        // Nor any long run of either id's digits.
+        expect(label).not.toMatch(/[0-9a-f]{9,}/u);
+      }
+      expect(accountDisplayNames(labels, [])).toEqual(names);
+      expect(accountDisplayNames(labels, []).get(first)).toBe(one);
     });
 
     it('uses the currency when that alone tells the group apart', () => {

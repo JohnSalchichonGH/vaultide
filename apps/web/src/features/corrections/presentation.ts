@@ -153,13 +153,22 @@ const UNKNOWN_ACCOUNT = 'An account';
 
 const compactId = (id: string): string => id.replace(/-/gu, '').toLowerCase();
 
-/** The shortest prefix, four characters at least, that tells these ids apart. */
-function distinctPrefixLength(ids: readonly string[]): number {
-  const longest = Math.max(...ids.map((id) => compactId(id).length));
-  for (let length = 4; length < longest; length += 1) {
+/** The most of an id a label ever shows: eight of a UUID's thirty-two digits. */
+const MAX_ID_PREFIX = 8;
+
+/**
+ * The shortest prefix, four characters at least, that tells these ids apart —
+ * or `null` when none does within `MAX_ID_PREFIX` characters.
+ *
+ * A length is only accepted while it is shorter than **every** id in the group,
+ * so an accepted prefix is never a whole id, whatever shape the ids have.
+ */
+function distinctPrefixLength(ids: readonly string[]): number | null {
+  const shortest = Math.min(...ids.map((id) => compactId(id).length));
+  for (let length = 4; length <= MAX_ID_PREFIX && length < shortest; length += 1) {
     if (new Set(ids.map((id) => compactId(id).slice(0, length))).size === ids.length) return length;
   }
-  return longest;
+  return null;
 }
 
 /**
@@ -172,10 +181,18 @@ function distinctPrefixLength(ids: readonly string[]): number {
  * told apart by the least that does it:
  *
  *  1. the currency, when every account in the group has a different one;
- *  2. otherwise a short prefix of each account's id — stable, the same on every
- *     screen, as short as keeps the group apart and never the whole id. Currency
- *     cannot do this on its own: a salary moved between two accounts is always
- *     moved between two accounts of the salary's own currency.
+ *  2. otherwise a short prefix of each account's id — four to eight of its
+ *     digits, as few as keep the group apart, and never a whole id;
+ *  3. and when no prefix that short separates the group, the account's place in
+ *     it, in id order: "Savings (1 of 2)", "Savings (2 of 2)".
+ *
+ * Currency cannot do this on its own: a salary moved between two accounts is
+ * always moved between two accounts of the salary's own currency.
+ *
+ * Deterministic, not permanent: the same accounts are always named the same
+ * way, but a prefix can lengthen, or a place change, when an account joins or
+ * leaves the group. That is enough for what the names are for — telling apart,
+ * inside one review, the accounts that review shows.
  *
  * The group is every account the caller labelled plus every account the
  * preview mentions, so an account the page did not label still cannot be
@@ -204,7 +221,14 @@ export function accountDisplayNames(
       continue;
     }
     const length = distinctPrefixLength(group);
-    for (const id of group) display.set(id, `${name} · #${compactId(id).slice(0, length)}`);
+    group.forEach((id, index) =>
+      display.set(
+        id,
+        length === null
+          ? `${name} (${String(index + 1)} of ${String(group.length)})`
+          : `${name} · #${compactId(id).slice(0, length)}`,
+      ),
+    );
   }
   return display;
 }
@@ -295,7 +319,9 @@ function yesNo(value: boolean): FieldValue {
  * user to agree to something it did not show them. A balance names its account
  * even though no correction moves it, because a review of several balances is
  * otherwise a list of amounts belonging to nobody. Identity — ids, versions,
- * the scheduled occurrence a row materializes — is never shown.
+ * the scheduled occurrence a row materializes — is never a field here; the only
+ * trace of an id a reader sees is the short tie-breaker `accountDisplayNames`
+ * adds to two accounts that share a name.
  */
 function fieldsOf(facts: SourceFacts, context: FieldContext): Record<string, FieldValue> {
   switch (facts.kind) {
