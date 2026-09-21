@@ -315,7 +315,21 @@ their row locks, which a `read only` transaction cannot do at all.
   bounded by the correction's own reach, derives BEFORE, overlays the resolved
   change in memory, derives AFTER through the same engines, and hashes the
   semantic difference. A row that does not exist yet carries a deterministic
-  semantic identity, never a fabricated database id.
+  semantic identity, never a fabricated database id. One window value decides
+  both what is read and what is judged: the flow reads are bounded on **both**
+  sides by it, so a 2021 correction reads 2021 and a balance or dormant episode
+  that genuinely reaches the current month says so. Valuations keep their
+  no-lower-bound rule, because a month's opening may be carried from years
+  earlier.
+- **The impact tags are derived, not assumed.** Each of the six families is
+  projected onto the figures it is actually derived from, over the interval that
+  family's own contract uses, and a tag appears exactly when its projection
+  moves. So a description-only correction reports only `memo`; a corrected
+  balance that moves the residual without moving a status still reports
+  spending and savings; and a record dated after `D` claims no effect on the
+  current month's `D`-bounded figures. The projections hold native amounts and
+  never leave the derivation — the preview and its fingerprint carry the
+  six-tag conclusion and no monetary total.
 - **Confirm** is a financial mutation like any other, registered in the
   write-boundary AST check. Its outcome is a typed protocol result —
   committed, or the impact changed — and `impact_changed` writes nothing.

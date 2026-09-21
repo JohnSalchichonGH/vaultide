@@ -1627,6 +1627,7 @@ Money inputs are strings validated by `moneyString(currency)`; dates by `plainDa
 | `SCENARIO_INVALID` | definition fails schema (incl. non-PSD correlation matrix) | field messages | no | no |
 | `SCENARIO_INFEASIBLE` | result flag, never thrown | shaded months + reasons (with currency) | no | — |
 | `WRITE_BUSY` | a financial write could not take this user’s write mutex, or a reference-dependency row lock, within the transaction-local `lock_timeout`, after one retry (20.3) | "Another change is still saving. Nothing was saved — try again." | info | user-driven |
+| `HISTORICAL_REVIEW_REQUIRED` | an ordinary financial mutation resolves into a historical correction (30.22 item 1) but was called without the Preview → Confirm ceremony; refused before any row moves | normally not seen: the interface asks first and this answer opens **Review changes**. Reached directly, it says nothing was saved and that the change has to be reviewed | info | through Historical Correction Preview/Confirm, user-driven |
 | `RATE_LIMITED` | auth / export limits | "Try again in N minutes" | info | after window |
 | `INTERNAL` | anything else | generic message + reference id | error (redacted) | maybe |
 
