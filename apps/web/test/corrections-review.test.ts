@@ -18,6 +18,7 @@ const {
   accountDisplayNames,
   compareField,
   describeStructuralChange,
+  reviewAccountNames,
   interpretConfirm,
   rewritesDormancy,
   summarizePeriods,
@@ -306,6 +307,7 @@ describe('what the dialog is given', () => {
       describeStructuralChange(
         { kind: 'dormancy_episode', positionId: 'pos-1', before: null, after: '2026-07-31' },
         LABELS,
+        reviewAccountNames(preview(), LABELS),
       ),
     ).toContain('BBVA');
   });
@@ -1109,5 +1111,259 @@ describe('a changed fact is never hidden behind an equal label', () => {
       after: 'A category',
       changed: true,
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Names are unique across the whole review                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * An account's own name can read exactly like another account's decoration
+ * (the final landing review's blocker).
+ *
+ * A name is any text up to 120 characters, so nothing stops an account being
+ * called "Savings · #6f1c", "Savings (EUR)" or "Savings (1 of 2)". Decorating
+ * inside each same-name group left such an account's plain name equal to
+ * another account's decorated one, and a record moved between the two reviewed
+ * as "Savings · #6f1c → Savings · #6f1c" — marked changed, and unreadable.
+ */
+describe('no two accounts in a review are ever named alike', () => {
+  const A = '6f1c2d3e-0000-4000-8000-00000000000a';
+  const B = '9a8b7c6d-0000-4000-8000-00000000000b';
+  const C = 'c0ffee00-0000-4000-8000-00000000000c';
+  const D = 'd00d0000-0000-4000-8000-00000000000d';
+  const LAST_1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+  const LAST_2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2';
+
+  const labelsOf = (accounts: Record<string, { name: string; currency?: string }>) => ({
+    ...LABELS,
+    accounts,
+  });
+
+  /** Every id's final name, and whether any two ids share one. */
+  const injective = (names: ReadonlyMap<string, string>, ids: readonly string[]): boolean =>
+    new Set(ids.map((id) => names.get(id))).size === new Set(ids).size &&
+    ids.every((id) => names.get(id) !== undefined);
+
+  const showsWhole = (label: string, id: string): boolean =>
+    label.includes(id) || label.replace(/[^0-9a-z]/giu, '').includes(id.replace(/-/gu, ''));
+
+  const incomeIn = (cashPositionId: string) => ({
+    kind: 'income' as const,
+    incomeKind: 'employment',
+    receivedOn: '2026-09-10',
+    netAmount: '500',
+    grossAmount: null,
+    currency: 'EUR',
+    settlement: 'tracked_cash',
+    cashPositionId,
+    description: null,
+    templateId: null,
+    occurrenceDate: null,
+  });
+
+  const moved = (from: string, to: string): CorrectionPreview =>
+    preview({
+      sourceChanges: [
+        {
+          identity: { scope: 'existing', kind: 'income', id: 'row-1' },
+          operation: 'update',
+          before: incomeIn(from),
+          after: incomeIn(to),
+        },
+      ],
+    });
+
+  const accountRow = (value: CorrectionPreview, labels: Parameters<typeof summarizeSources>[1]) =>
+    summarizeSources(value, labels)[0]?.fields.find((field) => field.label === 'Account');
+
+  it('keeps a generated id prefix apart from an account literally called that', () => {
+    const labels = labelsOf({
+      [A]: { name: 'Savings', currency: 'EUR' },
+      [B]: { name: 'Savings', currency: 'EUR' },
+      [C]: { name: 'Savings · #6f1c', currency: 'EUR' },
+    });
+    const names = accountDisplayNames(labels, []);
+
+    expect(injective(names, [A, B, C])).toBe(true);
+    // The account whose own name it is keeps it; the decorated one gives way.
+    expect(names.get(C)).toBe('Savings · #6f1c');
+    expect(names.get(A)).not.toBe(names.get(C));
+    for (const [id, label] of names) expect(showsWhole(label, id)).toBe(false);
+
+    // And at the level that matters: a salary moved from A to C.
+    const row = accountRow(moved(A, C), labels);
+    expect(row?.changed).toBe(true);
+    expect(row?.before).not.toBe(row?.after);
+
+    const html = renderToStaticMarkup(
+      createElement(CorrectionReview, {
+        draft: DRAFT,
+        preview: moved(A, C),
+        labels,
+        onBack: vi.fn(),
+        onCommitted: vi.fn(),
+      }),
+    );
+    expect(html).toMatch(/data-field="Account" data-changed="true"/u);
+    expect(html).toContain(`>${row?.before as string}</dd>`);
+    expect(html).toContain(`>${row?.after as string}</dd>`);
+  });
+
+  it('keeps a generated currency apart from an account literally called that', () => {
+    const labels = labelsOf({
+      [A]: { name: 'Savings', currency: 'EUR' },
+      [B]: { name: 'Savings', currency: 'USD' },
+      [C]: { name: 'Savings (EUR)', currency: 'EUR' },
+    });
+    const names = accountDisplayNames(labels, []);
+
+    expect(injective(names, [A, B, C])).toBe(true);
+    expect(names.get(C)).toBe('Savings (EUR)');
+    expect(names.get(B)).toBe('Savings (USD)');
+
+    const row = accountRow(moved(A, C), labels);
+    expect(row?.changed).toBe(true);
+    expect(row?.before).not.toBe(row?.after);
+  });
+
+  it('keeps a generated place apart from an account literally called that', () => {
+    // The last-digit pair forces the place fallback: no short prefix parts them.
+    const labels = labelsOf({
+      [LAST_1]: { name: 'Savings', currency: 'EUR' },
+      [LAST_2]: { name: 'Savings', currency: 'EUR' },
+      [C]: { name: 'Savings (1 of 2)', currency: 'EUR' },
+    });
+    const names = accountDisplayNames(labels, []);
+
+    expect(injective(names, [LAST_1, LAST_2, C])).toBe(true);
+    expect(names.get(C)).toBe('Savings (1 of 2)');
+    // The b05f3ec guarantee still holds: no id is shown whole, in either form.
+    for (const [id, label] of names) {
+      expect(showsWhole(label, id)).toBe(false);
+      expect(label).not.toMatch(/[0-9a-f]{9,}/u);
+    }
+
+    const row = accountRow(moved(LAST_1, C), labels);
+    expect(row?.changed).toBe(true);
+    expect(row?.before).not.toBe(row?.after);
+  });
+
+  it('keeps going when the first free-looking name is taken as well', () => {
+    // A person who has named accounts after both the decoration and the
+    // first thing a clash would become.
+    const labels = labelsOf({
+      [A]: { name: 'Savings', currency: 'EUR' },
+      [B]: { name: 'Savings', currency: 'EUR' },
+      [C]: { name: 'Savings · #6f1c', currency: 'EUR' },
+      [D]: { name: 'Savings · #6f1c [1]', currency: 'EUR' },
+    });
+    const names = accountDisplayNames(labels, []);
+    expect(injective(names, [A, B, C, D])).toBe(true);
+    expect(names.get(C)).toBe('Savings · #6f1c');
+    expect(names.get(D)).toBe('Savings · #6f1c [1]');
+  });
+
+  it('names an account in a sentence exactly as the table does, labelled or not', () => {
+    // Two accounts the page never labelled, each in its own sentence: under a
+    // per-sentence fallback both read "This account".
+    const value = preview({
+      sourceChanges: [
+        {
+          identity: { scope: 'existing', kind: 'cash_dormancy', id: A },
+          operation: 'update',
+          before: { kind: 'cash_dormancy', positionId: A, isDormant: false, dormantFrom: null },
+          after: { kind: 'cash_dormancy', positionId: A, isDormant: true, dormantFrom: '2026-07-31' },
+        },
+        {
+          identity: { scope: 'existing', kind: 'cash_dormancy', id: B },
+          operation: 'update',
+          before: { kind: 'cash_dormancy', positionId: B, isDormant: false, dormantFrom: null },
+          after: { kind: 'cash_dormancy', positionId: B, isDormant: true, dormantFrom: '2026-08-31' },
+        },
+      ],
+      structuralChanges: [
+        { kind: 'dormancy_episode', positionId: A, before: null, after: '2026-07-31' },
+        { kind: 'dormancy_episode', positionId: B, before: null, after: '2026-08-31' },
+      ],
+    });
+    const labels = labelsOf({});
+    const names = reviewAccountNames(value, labels);
+    const [first, second] = value.structuralChanges.map((change) =>
+      describeStructuralChange(change, labels, names),
+    );
+    expect(names.get(A)).not.toBe(names.get(B));
+    expect(first?.startsWith(names.get(A) as string)).toBe(true);
+    expect(second?.startsWith(names.get(B) as string)).toBe(true);
+    expect(first?.replace(/ becomes.*$/u, '')).not.toBe(second?.replace(/ becomes.*$/u, ''));
+
+    // And the table's Account rows use the same two names.
+    const table = summarizeSources(value, labels).map(
+      (summary) => summary.fields.find((field) => field.label === 'Account')?.after,
+    );
+    expect(table).toEqual([names.get(A), names.get(B)]);
+  });
+
+  it('never lets an account read like the absence of one', () => {
+    // A record corrected from no account to one somebody named exactly what an
+    // empty Account row says.
+    const labels = labelsOf({ [C]: { name: 'No account chosen yet', currency: 'EUR' } });
+    const value = preview({
+      sourceChanges: [
+        {
+          identity: { scope: 'existing', kind: 'income', id: 'row-1' },
+          operation: 'update',
+          before: { ...incomeIn(C), cashPositionId: null },
+          after: incomeIn(C),
+        },
+      ],
+    });
+    const row = accountRow(value, labels);
+    expect(row?.changed).toBe(true);
+    expect(row?.before).toBe('No account chosen yet');
+    expect(row?.after).not.toBe(row?.before);
+  });
+
+  it('gives every account its own name, whatever the mix', () => {
+    const sets: Record<string, { name: string; currency?: string }>[] = [
+      {},
+      { [A]: { name: 'Savings', currency: 'EUR' } },
+      { [A]: { name: 'Savings', currency: 'EUR' }, [B]: { name: 'Savings', currency: 'EUR' } },
+      { [A]: { name: 'Savings', currency: 'EUR' }, [B]: { name: 'Savings', currency: 'USD' } },
+      {
+        [A]: { name: 'Savings', currency: 'EUR' },
+        [B]: { name: 'Savings', currency: 'EUR' },
+        [C]: { name: 'Savings · #6f1c', currency: 'EUR' },
+        [D]: { name: 'Savings (1 of 3)' },
+      },
+      {
+        [LAST_1]: { name: 'Savings', currency: 'EUR' },
+        [LAST_2]: { name: 'Savings', currency: 'EUR' },
+        [C]: { name: 'Savings (1 of 2)' },
+        [D]: { name: 'Savings (1 of 2) [1]' },
+      },
+      {
+        [A]: { name: 'An account', currency: 'EUR' },
+        [C]: { name: 'An account · #9a8b' },
+      },
+    ];
+    // Accounts only the preview mentions join the same review.
+    const mentions: readonly string[][] = [[], [B], [A, B, C], [LAST_1, D], [A, B, LAST_1, LAST_2]];
+
+    for (const accounts of sets) {
+      for (const mention of mentions) {
+        const labels = labelsOf(accounts);
+        const ids = [...new Set([...Object.keys(accounts), ...mention])];
+        const names = accountDisplayNames(labels, mention);
+        expect(injective(names, ids)).toBe(true);
+        for (const id of ids) expect(showsWhole(names.get(id) as string, id)).toBe(false);
+        // Deterministic, and a labelled account's name depends on the labels
+        // alone — which is what lets a sentence name it as the table does.
+        expect(accountDisplayNames(labels, mention)).toEqual(names);
+        const alone = accountDisplayNames(labels, []);
+        for (const id of Object.keys(accounts)) expect(names.get(id)).toBe(alone.get(id));
+      }
+    }
   });
 });

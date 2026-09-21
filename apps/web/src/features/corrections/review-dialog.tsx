@@ -11,6 +11,7 @@ import {
   interpretConfirm,
   rewritesDormancy,
   summarizePeriods,
+  reviewAccountNames,
   summarizeSources,
   type CorrectionLabels,
 } from './presentation';
@@ -66,6 +67,7 @@ export function CorrectionReview({
   const statusId = useId();
 
   const sources = summarizeSources(preview, labels);
+  const names = reviewAccountNames(preview, labels);
   const periods = summarizePeriods(preview, labels);
   const busy = state.kind === 'saving';
 
@@ -187,7 +189,7 @@ export function CorrectionReview({
             <ul className="mt-2 flex flex-col gap-1" data-testid="correction-structural">
               {preview.structuralChanges.map((change, index) => (
                 <li key={`${change.kind}-${String(index)}`} className="text-[length:var(--text-table)]">
-                  {describeStructuralChange(change, labels)}
+                  {describeStructuralChange(change, labels, names)}
                 </li>
               ))}
             </ul>

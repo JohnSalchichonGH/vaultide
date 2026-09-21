@@ -151,6 +151,9 @@ const KIND_TITLE: Readonly<Record<SourceFacts['kind'], string>> = {
 
 const UNKNOWN_ACCOUNT = 'An account';
 
+/** What an Account row says when a record names no account at all. */
+const NO_ACCOUNT = 'No account chosen yet';
+
 const compactId = (id: string): string => id.replace(/-/gu, '').toLowerCase();
 
 /** The most of an id a label ever shows: eight of a UUID's thirty-two digits. */
@@ -171,6 +174,97 @@ function distinctPrefixLength(ids: readonly string[]): number | null {
   return null;
 }
 
+/** One account's name before the review makes every name unique. */
+interface PreferredName {
+  readonly id: string;
+  readonly label: string;
+  /** Whether `label` is the account's own name, undecorated. */
+  readonly own: boolean;
+}
+
+/**
+ * Each account's preferred name, by the rules of `accountDisplayNames`.
+ *
+ * Unique only within a group of accounts that share a name. Across groups a
+ * decorated name can still equal another account's own name, because nothing
+ * stops a person calling an account "Savings (EUR)" — that is `settle`'s job.
+ */
+function preferredNames(ids: readonly string[], labels: CorrectionLabels): PreferredName[] {
+  const byName = new Map<string, string[]>();
+  for (const id of ids) {
+    const name = labels.accounts[id]?.name ?? UNKNOWN_ACCOUNT;
+    byName.set(name, [...(byName.get(name) ?? []), id]);
+  }
+
+  const preferred: PreferredName[] = [];
+  for (const [name, group] of byName) {
+    if (group.length === 1) {
+      preferred.push({ id: group[0] as string, label: name, own: true });
+      continue;
+    }
+    const currencies = group.map((id) => labels.accounts[id]?.currency);
+    if (currencies.every((code) => code !== undefined) && new Set(currencies).size === group.length) {
+      group.forEach((id, index) =>
+        preferred.push({ id, label: `${name} (${currencies[index] as string})`, own: false }),
+      );
+      continue;
+    }
+    const length = distinctPrefixLength(group);
+    group.forEach((id, index) =>
+      preferred.push({
+        id,
+        label:
+          length === null
+            ? `${name} (${String(index + 1)} of ${String(group.length)})`
+            : `${name} · #${compactId(id).slice(0, length)}`,
+        own: false,
+      }),
+    );
+  }
+  return preferred;
+}
+
+/**
+ * Give each account a final name no other account in this review has.
+ *
+ * Every name handed out is first checked against `taken` and then added to
+ * it, so no two accounts can end up with the same one. A preferred name held
+ * by one account only is kept. One held by several stays with the account
+ * whose own, undecorated name it is — at most one can be, because two accounts
+ * with the same own name were decorated as a group — and every other holder
+ * takes the first of "name [1]", "name [2]", … that is still free. Those are
+ * all different strings and `taken` is finite, so a free one is always found.
+ */
+function settle(
+  preferred: readonly PreferredName[],
+  taken: Set<string>,
+  display: Map<string, string>,
+): void {
+  const holders = new Map<string, PreferredName[]>();
+  for (const name of preferred) holders.set(name.label, [...(holders.get(name.label) ?? []), name]);
+
+  const displaced: PreferredName[] = [];
+  for (const [label, group] of holders) {
+    const keeper = group.length === 1 ? group[0] : group.find((name) => name.own);
+    for (const name of group) {
+      if (name === keeper && !taken.has(label)) {
+        taken.add(label);
+        display.set(name.id, label);
+      } else {
+        displaced.push(name);
+      }
+    }
+  }
+
+  for (const name of [...displaced].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+    let index = 1;
+    while (taken.has(`${name.label} [${String(index)}]`)) index += 1;
+    const label = `${name.label} [${String(index)}]`;
+    taken.add(label);
+    display.set(name.id, label);
+  }
+}
+
 /**
  * Every account's name as the review shows it (§68).
  *
@@ -189,48 +283,51 @@ function distinctPrefixLength(ids: readonly string[]): number | null {
  * Currency cannot do this on its own: a salary moved between two accounts is
  * always moved between two accounts of the salary's own currency.
  *
- * Deterministic, not permanent: the same accounts are always named the same
- * way, but a prefix can lengthen, or a place change, when an account joins or
- * leaves the group. That is enough for what the names are for — telling apart,
- * inside one review, the accounts that review shows.
+ * **Every account in the review gets a name no other account in it has.** A
+ * name is any text, so one person's account can be called exactly what another
+ * account's decoration reads — "Savings (EUR)", "Savings · #6f1c". The last
+ * step, `settle`, makes the names unique across the whole review, not just
+ * inside each group: the account whose own name it is keeps it, and the others
+ * become "Savings (EUR) [1]" and so on.
  *
- * The group is every account the caller labelled plus every account the
- * preview mentions, so an account the page did not label still cannot be
- * confused with another one it did not label either.
+ * Deterministic, not permanent: the same accounts are always named the same
+ * way, but a name can change when an account joins or leaves the review.
+ * That is enough for what the names are for — telling apart, inside one
+ * review, the accounts that review shows.
+ *
+ * The accounts the page labelled are named first, from the labels alone, and
+ * the ones only the preview mentions afterwards, around them, so a labelled
+ * account's name never depends on what else the preview mentions. A review
+ * takes all its names from one call, `reviewAccountNames`.
  */
 export function accountDisplayNames(
   labels: CorrectionLabels,
   mentioned: Iterable<string>,
 ): ReadonlyMap<string, string> {
-  const ids = [...new Set([...Object.keys(labels.accounts), ...mentioned])].sort();
-  const byName = new Map<string, string[]>();
-  for (const id of ids) {
-    const name = labels.accounts[id]?.name ?? UNKNOWN_ACCOUNT;
-    byName.set(name, [...(byName.get(name) ?? []), id]);
-  }
+  const labelled = Object.keys(labels.accounts).sort();
+  const unlabelled = [...new Set(mentioned)]
+    .filter((id) => labels.accounts[id] === undefined)
+    .sort();
 
+  // Reserved: a record with no account says so, and an account someone named
+  // exactly that must not read like the absence of one.
+  const taken = new Set<string>([NO_ACCOUNT]);
   const display = new Map<string, string>();
-  for (const [name, group] of byName) {
-    if (group.length === 1) {
-      display.set(group[0] as string, name);
-      continue;
-    }
-    const currencies = group.map((id) => labels.accounts[id]?.currency);
-    if (currencies.every((code) => code !== undefined) && new Set(currencies).size === group.length) {
-      group.forEach((id, index) => display.set(id, `${name} (${currencies[index] as string})`));
-      continue;
-    }
-    const length = distinctPrefixLength(group);
-    group.forEach((id, index) =>
-      display.set(
-        id,
-        length === null
-          ? `${name} (${String(index + 1)} of ${String(group.length)})`
-          : `${name} · #${compactId(id).slice(0, length)}`,
-      ),
-    );
-  }
+  settle(preferredNames(labelled, labels), taken, display);
+  settle(preferredNames(unlabelled, labels), taken, display);
   return display;
+}
+
+/**
+ * The one set of account names a review uses, for its table and its sentences
+ * alike: every account the page labelled and every account the preview
+ * mentions, each with a name no other account in the review has.
+ */
+export function reviewAccountNames(
+  preview: CorrectionPreview,
+  labels: CorrectionLabels,
+): ReadonlyMap<string, string> {
+  return accountDisplayNames(labels, accountsMentioned(preview));
 }
 
 /** Every account a preview mentions, source facts and structural changes alike. */
@@ -273,7 +370,7 @@ interface FieldContext {
 }
 
 function account(context: FieldContext, id: string | null): FieldValue {
-  if (id === null) return { value: null, display: 'No account chosen yet' };
+  if (id === null) return { value: null, display: NO_ACCOUNT };
   return { value: id, display: context.accounts.get(id) ?? UNKNOWN_ACCOUNT };
 }
 
@@ -385,10 +482,7 @@ export function summarizeSources(
   preview: CorrectionPreview,
   labels: CorrectionLabels,
 ): readonly SourceSummary[] {
-  const context: FieldContext = {
-    labels,
-    accounts: accountDisplayNames(labels, accountsMentioned(preview)),
-  };
+  const context: FieldContext = { labels, accounts: reviewAccountNames(preview, labels) };
 
   return preview.sourceChanges.map((change) => {
     const facts = change.after ?? change.before;
@@ -530,18 +624,16 @@ const COMPLETENESS_WORD: Readonly<Record<string, string>> = {
 };
 
 /**
- * An account's name inside a sentence: the same collision-safe name the source
- * table uses, or "This account" for one the page did not label.
+ * One sentence per structural consequence, from its canonical identity (§42).
+ *
+ * `names` is the review's own `reviewAccountNames`, so an account a sentence
+ * names reads exactly as it does in the table above it, and no two accounts in
+ * the review — labelled or not — are ever named alike.
  */
-function accountInSentence(labels: CorrectionLabels, positionId: string): string {
-  if (labels.accounts[positionId] === undefined) return 'This account';
-  return accountDisplayNames(labels, [positionId]).get(positionId) ?? 'This account';
-}
-
-/** One sentence per structural consequence, from its canonical identity (§42). */
 export function describeStructuralChange(
   change: StructuralChange,
   labels: CorrectionLabels,
+  names: ReadonlyMap<string, string>,
 ): string {
   switch (change.kind) {
     case 'span':
@@ -565,7 +657,7 @@ export function describeStructuralChange(
         ? `${monthTitle(change.month, labels.locale)} raises a new reconciliation issue.`
         : `A reconciliation issue in ${monthTitle(change.month, labels.locale)} clears.`;
     case 'valuation_carry': {
-      const name = accountInSentence(labels, change.positionId);
+      const name = names.get(change.positionId) ?? 'This account';
       if (change.after === null) {
         return `${name} no longer carries a balance from ${dayTitle((change.before as { from: string }).from, labels.locale)}.`;
       }
@@ -576,7 +668,7 @@ export function describeStructuralChange(
       }.`;
     }
     case 'dormancy_episode': {
-      const name = accountInSentence(labels, change.positionId);
+      const name = names.get(change.positionId) ?? 'This account';
       if (change.before === null) {
         return `${name} becomes dormant from ${dayTitle(change.after as string, labels.locale)}, so months from then on carry it at zero.`;
       }
