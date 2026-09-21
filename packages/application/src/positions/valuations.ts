@@ -326,17 +326,30 @@ function requireValuationIn(
  * ## Reads, then decisions
  *
  * Each resolver below reads what its operation is about and hands those rows to
- * a pure decision that holds every rule: the balance's own rules first
- * (`assertValuationAllowed`), then the decision about where it lands among the
- * rows already there (`decide…Valuation`). The decisions perform no IO, take no
- * lock and read no clock — `today` arrives as an argument — so the same rule
- * judges the same rows whoever loaded them: the ordinary write, the correction
- * preview (which reads without locks) and Historical Confirm (which reads under
- * them).
+ * a pure decision (`decide…Valuation`) that holds every rule: the balance's own
+ * rules (`assertValuationAllowed`), then where it lands among the rows already
+ * there, the version the caller saw and the dormant episode it ends. The
+ * decisions perform no IO, take no lock and read no clock — `today` arrives as
+ * an argument — so the same rule judges the same rows whoever loaded them: the
+ * ordinary write, the correction preview (which reads without locks) and
+ * Historical Confirm (which reads under them).
  *
- * The two steps are separate because a read sits between them: the balance's
- * own rules need only its account, and a refused date is refused before the
- * row on that date is looked up at all.
+ * The resolvers also ask the balance's own rules **before** they read the row
+ * on the balance's date, so a refused date is refused without that read. The
+ * decision asks them again, and that is deliberate: a decision is complete on
+ * its own, for a caller that has loaded everything first, and asked of the one
+ * account it is also planning for.
+ *
+ * ## Every row is the operation's own
+ *
+ * A decision is handed rows somebody else loaded. Each one is checked to be the
+ * row the operation names — the account it is about, the balance it corrects or
+ * removes, the balance already on the date — before anything is judged, and a
+ * mismatch is refused as the programming error it is. Otherwise a caller that
+ * paired an operation with the wrong row would get a confident, well-formed plan
+ * for a row nobody asked about. Missing and foreign ids stay the loaders'
+ * business: RLS makes them read as absent, and the resolvers turn that into
+ * `NOT_FOUND`.
  */
 
 /**
@@ -380,15 +393,22 @@ function occupantOf(
 /**
  * Record a new balance, given its account and whatever the date already holds.
  *
- * `occupant` is the account's balance on `args.valuedOn`, if it has one. The
- * balance's own rules (`assertValuationAllowed`) are the caller's to ask first.
+ * `position` is the account `args.positionId` names; `occupant` is that
+ * account's balance on `args.valuedOn`, if it has one.
  */
 export function decideRecordValuation(
+  today: PlainDate,
   position: PositionRow,
   args: ValuationArgs,
   occupant: ValuationRow | undefined,
 ): ValuationWritePlan {
-  if (occupantOf(occupant, position.id, args.valuedOn) !== undefined) {
+  if (position.id !== args.positionId) {
+    throw new Error('a valuation decision was handed another account');
+  }
+  const onDate = occupantOf(occupant, position.id, args.valuedOn);
+
+  assertValuationAllowed(today, position, args);
+  if (onDate !== undefined) {
     // M1: one valuation per position per date. A second one is not a
     // correction, it is an ambiguity — the editor offers to correct instead.
     throw new DuplicateConflictError(
@@ -433,9 +453,10 @@ export async function resolveRecordValuationIn(
   args: ValuationArgs,
 ): Promise<ValuationWritePlan> {
   const position = await requirePositionIn(tx, args.positionId);
+  // Before the date's row is read, so a refused balance is refused without it.
   assertValuationAllowed(ctx.today, position, args);
   const occupant = await findValuationOnIn(tx, args.positionId, args.valuedOn);
-  return decideRecordValuation(position, args, occupant);
+  return decideRecordValuation(ctx.today, position, args, occupant);
 }
 
 /**
@@ -536,10 +557,18 @@ export interface CorrectValuationArgs {
 }
 
 /**
- * A decision about a balance is given that balance's own account. Like
- * `occupantOf`, a mismatch is a caller's mistake and is refused as one.
+ * A decision about a stored balance is given the balance the operation names,
+ * and that balance's own account. A mismatch is a caller's mistake and is
+ * refused as one.
  */
-function assertOwnBalance(position: PositionRow, existing: ValuationRow): void {
+function assertOwnBalance(
+  position: PositionRow,
+  existing: ValuationRow,
+  valuationId: string,
+): void {
+  if (existing.id !== valuationId) {
+    throw new Error('a valuation decision was handed another balance');
+  }
   if (existing.positionId !== position.id) {
     throw new Error('a valuation decision was handed another account');
   }
@@ -549,22 +578,28 @@ function assertOwnBalance(position: PositionRow, existing: ValuationRow): void {
  * Correct a balance, given the row as it stands, its account, and whatever the
  * target date already holds.
  *
- * `occupant` is the account's balance on `args.valuedOn`, if it has one. When
- * the date does not move that is the row being corrected, and it is not a
- * clash. The balance's own rules (`assertValuationAllowed`) are the caller's to
- * ask first.
+ * `existing` is the balance `args.valuationId` names and `position` its
+ * account; `occupant` is that account's balance on `args.valuedOn`, if it has
+ * one. When the date does not move that is the row being corrected, and it is
+ * not a clash.
  */
 export function decideCorrectValuation(
+  today: PlainDate,
   position: PositionRow,
   existing: ValuationRow,
   args: CorrectValuationArgs,
   occupant: ValuationRow | undefined,
 ): ValuationWritePlan {
-  assertOwnBalance(position, existing);
-  if (
-    args.valuedOn !== existing.valuedOn &&
-    occupantOf(occupant, position.id, args.valuedOn) !== undefined
-  ) {
+  assertOwnBalance(position, existing, args.valuationId);
+  const onTarget = occupantOf(occupant, position.id, args.valuedOn);
+  const moves = args.valuedOn !== existing.valuedOn;
+  if (!moves && onTarget !== undefined && onTarget.id !== existing.id) {
+    // M1 makes the row on the balance's own date that balance.
+    throw new Error('a valuation decision was handed another balance on the same date');
+  }
+
+  assertValuationAllowed(today, position, args);
+  if (moves && onTarget !== undefined) {
     throw new DuplicateConflictError(`There is already a balance for ${args.valuedOn}.`);
   }
 
@@ -620,6 +655,8 @@ export async function resolveCorrectValuationIn(
   if (existing === undefined) throw new NotFoundError('That balance no longer exists.');
 
   const position = await requirePositionIn(tx, existing.positionId);
+  // Before the target date's row is read, so a refused balance is refused
+  // without it.
   assertValuationAllowed(ctx.today, position, args);
 
   // Only a date that moves can clash, so only then is it read.
@@ -627,7 +664,7 @@ export async function resolveCorrectValuationIn(
     args.valuedOn === existing.valuedOn
       ? undefined
       : await findValuationOnIn(tx, existing.positionId, args.valuedOn);
-  return decideCorrectValuation(position, existing, args, occupant);
+  return decideCorrectValuation(ctx.today, position, existing, args, occupant);
 }
 
 async function correctValuationIn(
@@ -676,13 +713,16 @@ export interface RemoveValuationArgs {
   readonly reason?: string | undefined;
 }
 
-/** Remove a balance, given the row as it stands and its account. */
+/**
+ * Remove a balance, given the row as it stands and its account: `existing` is
+ * the balance `args.valuationId` names and `position` its account.
+ */
 export function decideRemoveValuation(
   position: PositionRow,
   existing: ValuationRow,
   args: RemoveValuationArgs,
 ): ValuationWritePlan {
-  assertOwnBalance(position, existing);
+  assertOwnBalance(position, existing, args.valuationId);
   if (position.status === 'closed' && existing.valuedOn === position.closedOn) {
     // Answered before the version, because it is true of the row at every
     // version: the closing balance of a closed account is not deletable here

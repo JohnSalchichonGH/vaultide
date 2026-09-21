@@ -6,6 +6,7 @@ import type {
   RecurringTemplateTermRow,
 } from '@vaultide/db';
 import {
+  DomainError,
   DuplicateConflictError,
   ImpossibleOperationError,
   NotFoundError,
@@ -89,6 +90,9 @@ const skip = (occurrenceDate: string): RecurringTemplateSkipRow => ({
   version: 1,
 });
 
+/** The occurrence of template `tpl-1` scheduled on `occurrenceDate`. */
+const claim = (occurrenceDate: string, templateId = 'tpl-1') => ({ templateId, occurrenceDate });
+
 const accept = (occurrenceDate: string, overrides: Record<string, unknown> = {}) => ({
   templateId: 'tpl-1',
   occurrenceDate,
@@ -98,50 +102,50 @@ const accept = (occurrenceDate: string, overrides: Record<string, unknown> = {})
 describe('claiming an occurrence', () => {
   it('claims a scheduled occurrence of a live template', () => {
     const live = template();
-    expect(assertClaimableOccurrence(live, '2026-08-25')).toBe(live);
+    expect(assertClaimableOccurrence(live, claim('2026-08-25'))).toBe(live);
   });
 
   it('answers not found for a template that is gone', () => {
-    expect(() => assertClaimableOccurrence(undefined, '2026-08-25')).toThrow(NotFoundError);
+    expect(() => assertClaimableOccurrence(undefined, claim('2026-08-25'))).toThrow(NotFoundError);
   });
 
   it('refuses an archived template, whatever its schedule held', () => {
     const archived = template({ archivedAt: new Date('2026-09-01T00:00:00Z') });
-    expect(() => assertClaimableOccurrence(archived, '2026-08-25')).toThrow(ImpossibleOperationError);
+    expect(() => assertClaimableOccurrence(archived, claim('2026-08-25'))).toThrow(ImpossibleOperationError);
   });
 
   it('refuses a date the schedule does not contain, before its start or after its end', () => {
-    expect(() => assertClaimableOccurrence(template(), '2026-08-24')).toThrow(ValidationError);
-    expect(() => assertClaimableOccurrence(template(), '2025-12-25')).toThrow(ValidationError);
+    expect(() => assertClaimableOccurrence(template(), claim('2026-08-24'))).toThrow(ValidationError);
+    expect(() => assertClaimableOccurrence(template(), claim('2025-12-25'))).toThrow(ValidationError);
     const ended = template({ endDate: '2026-06-30' });
-    expect(() => assertClaimableOccurrence(ended, '2026-07-25')).toThrow(ValidationError);
-    expect(() => assertClaimableOccurrence(ended, '2026-06-25')).not.toThrow();
+    expect(() => assertClaimableOccurrence(ended, claim('2026-07-25'))).toThrow(ValidationError);
+    expect(() => assertClaimableOccurrence(ended, claim('2026-06-25'))).not.toThrow();
   });
 
   it('lets a future occurrence be claimed early only while it is the next one unresolved', () => {
     const resolved = new Set(['2026-09-25']);
     expect(() =>
-      assertEarliestUnresolvedOccurrence(template(), '2026-10-25', TODAY, resolved),
+      assertEarliestUnresolvedOccurrence(template(), claim('2026-10-25'), TODAY, resolved),
     ).not.toThrow();
     expect(() =>
-      assertEarliestUnresolvedOccurrence(template(), '2026-11-25', TODAY, resolved),
+      assertEarliestUnresolvedOccurrence(template(), claim('2026-11-25'), TODAY, resolved),
     ).toThrow(/The next one still to record is 2026-10-25/u);
     expect(() =>
-      assertEarliestUnresolvedOccurrence(template(), '2026-11-25', TODAY, new Set(['2026-10-25'])),
+      assertEarliestUnresolvedOccurrence(template(), claim('2026-11-25'), TODAY, new Set(['2026-10-25'])),
     ).not.toThrow();
   });
 
   it('says so when a source has no upcoming date left to record early', () => {
     const ending = template({ endDate: '2026-09-30' });
     expect(() =>
-      assertEarliestUnresolvedOccurrence(ending, '2026-10-25', TODAY, new Set()),
+      assertEarliestUnresolvedOccurrence(ending, claim('2026-10-25'), TODAY, new Set()),
     ).toThrow(/no upcoming date left/u);
   });
 
   it('refuses an occurrence already skipped, and one already materialized', () => {
-    expect(() => assertNotSkipped(undefined)).not.toThrow();
-    expect(() => assertNotSkipped(skip('2026-08-25'))).toThrow(DuplicateConflictError);
-    expect(() => assertNotSkipped(skip('2026-08-25'))).toThrow(/Un-skip it first/u);
+    expect(() => assertNotSkipped(undefined, claim('2026-08-25'))).not.toThrow();
+    expect(() => assertNotSkipped(skip('2026-08-25'), claim('2026-08-25'))).toThrow(DuplicateConflictError);
+    expect(() => assertNotSkipped(skip('2026-08-25'), claim('2026-08-25'))).toThrow(/Un-skip it first/u);
     expect(() => assertNotMaterialized(false)).not.toThrow();
     expect(() => assertNotMaterialized(true)).toThrow(/already been recorded/u);
   });
@@ -233,5 +237,85 @@ describe('accepting an occurrence', () => {
     expect(
       decideAcceptedAmounts(template(), [term('2026-01-25', '0.00')], accept('2026-08-25')),
     ).toMatchObject({ amount: '0' });
+  });
+});
+
+/**
+ * A refusal that is a caller's mistake: a plain `Error`, never a domain code a
+ * person would be shown. A template that is missing or foreign stays
+ * `NOT_FOUND` at the claim, which reads under RLS; these are the rows a caller
+ * mis-associated.
+ */
+function expectInternal(run: () => unknown, message: RegExp): void {
+  let caught: unknown;
+  try {
+    run();
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBeInstanceOf(Error);
+  expect(caught).not.toBeInstanceOf(DomainError);
+  expect((caught as Error).message).toMatch(message);
+}
+
+describe('a decision is only ever about the occurrence its operation names', () => {
+  const other = template({ id: 'tpl-2', name: 'Bonus' });
+  const termOf = (templateId: string, amount: string): RecurringTemplateTermRow => ({
+    ...term('2026-01-25', amount),
+    id: `term-${templateId}`,
+    templateId,
+  });
+
+  it('refuses to claim an occurrence of template A against template B', () => {
+    expectInternal(
+      () => assertClaimableOccurrence(other, claim('2026-08-25')),
+      /another template/u,
+    );
+    expectInternal(
+      () => assertEarliestUnresolvedOccurrence(other, claim('2026-10-25'), TODAY, new Set()),
+      /another template/u,
+    );
+  });
+
+  it('refuses another occurrence’s skip rather than reporting it as this one’s', () => {
+    // Before, this answered CONFLICT_DUPLICATE — a confident "already skipped"
+    // about an occurrence nobody skipped.
+    expectInternal(
+      () => assertNotSkipped(skip('2026-07-25'), claim('2026-08-25')),
+      /skip of another occurrence/u,
+    );
+    expectInternal(
+      () =>
+        assertNotSkipped({ ...skip('2026-08-25'), templateId: 'tpl-2' }, claim('2026-08-25')),
+      /skip of another occurrence/u,
+    );
+  });
+
+  it('refuses to date or price an acceptance of template A from template B', () => {
+    expectInternal(
+      () => decideAcceptance(TODAY, other, accept('2026-08-25')),
+      /another template/u,
+    );
+    expectInternal(
+      () => decideAcceptedAmounts(other, [termOf('tpl-2', '999.00')], accept('2026-08-25')),
+      /another template/u,
+    );
+  });
+
+  it('refuses template B’s terms for template A rather than choosing among them', () => {
+    // Before, B's 777 became A's amount. Filtering B's term out instead would
+    // have answered "no amount for that date" — just as wrong, just as confident.
+    expectInternal(
+      () =>
+        decideAcceptedAmounts(
+          template(),
+          [termOf('tpl-1', '2100.00'), termOf('tpl-2', '777.00')],
+          accept('2026-08-25'),
+        ),
+      /terms of another template/u,
+    );
+    expect(
+      decideAcceptedAmounts(template(), [termOf('tpl-1', '2100.00')], accept('2026-08-25')),
+    ).toMatchObject({ amount: '2100' });
   });
 });

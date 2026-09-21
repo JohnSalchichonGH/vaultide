@@ -198,7 +198,22 @@ function scheduleOf(template: RecurringTemplateRow) {
  *
  * They are separate rather than one because reads sit between them: an
  * occurrence already skipped is refused before anything else is looked up.
+ *
+ * Each is handed the occurrence it judges, and checks that the template, the
+ * terms and the skip it is given belong to that occurrence before it judges
+ * anything. A mismatch is refused as the programming error it is — never
+ * filtered, which would turn a mis-grouped term into a confident "no amount" —
+ * so a caller that paired an occurrence with another template's rows gets no
+ * plan at all. A template that is missing or foreign stays the loader's
+ * business: RLS makes it read as absent, and that is `NOT_FOUND`.
  */
+
+/** The template a decision is handed is the one the occurrence names. */
+function assertOwnTemplate(template: RecurringTemplateRow, templateId: string): void {
+  if (template.id !== templateId) {
+    throw new Error('an occurrence decision was handed another template');
+  }
+}
 
 /**
  * The template an occurrence is claimed from: it exists, it is not archived,
@@ -209,9 +224,11 @@ function scheduleOf(template: RecurringTemplateRow) {
  */
 export function assertClaimableOccurrence(
   template: RecurringTemplateRow | undefined,
-  occurrenceDate: string,
+  claim: OccurrenceRef,
 ): RecurringTemplateRow {
   if (template === undefined) throw new NotFoundError('That source no longer exists.');
+  assertOwnTemplate(template, claim.templateId);
+  const occurrenceDate = claim.occurrenceDate;
   if (template.archivedAt !== null) {
     throw new ImpossibleOperationError(
       'This source is archived, so its suggestions are no longer offered.',
@@ -237,13 +254,14 @@ export function assertClaimableOccurrence(
  */
 export function assertEarliestUnresolvedOccurrence(
   template: RecurringTemplateRow,
-  occurrenceDate: string,
+  claim: OccurrenceRef,
   today: string,
   resolved: ReadonlySet<string>,
 ): void {
+  assertOwnTemplate(template, claim.templateId);
   const eligible = nextUnresolvedOccurrence(scheduleOf(template), plainDate(today), resolved);
 
-  if (eligible === undefined || eligible !== occurrenceDate) {
+  if (eligible === undefined || eligible !== claim.occurrenceDate) {
     throw new ValidationError(
       eligible === undefined
         ? 'This source has no upcoming date left to record early.'
@@ -253,8 +271,20 @@ export function assertEarliestUnresolvedOccurrence(
   }
 }
 
-/** An occurrence already skipped is resolved; it is un-skipped before anything else (20.3). */
-export function assertNotSkipped(skip: RecurringTemplateSkipRow | undefined): void {
+/**
+ * An occurrence already skipped is resolved; it is un-skipped before anything
+ * else (20.3). `skip` is the claimed occurrence's own skip, if it has one.
+ */
+export function assertNotSkipped(
+  skip: RecurringTemplateSkipRow | undefined,
+  claim: OccurrenceRef,
+): void {
+  if (
+    skip !== undefined &&
+    (skip.templateId !== claim.templateId || skip.occurrenceDate !== claim.occurrenceDate)
+  ) {
+    throw new Error('an occurrence decision was handed the skip of another occurrence');
+  }
   if (skip !== undefined) {
     throw new DuplicateConflictError(
       'This occurrence is already marked as skipped. Un-skip it first if it did happen after all.',
@@ -289,7 +319,7 @@ async function claimOccurrenceIn(
     options.lock
       ? await lockTemplateIn(tx, args.templateId)
       : await findTemplateIn(tx, args.templateId),
-    args.occurrenceDate,
+    args,
   );
 
   // Asked here, under the template's lock, so a concurrent acceptance of the
@@ -298,10 +328,10 @@ async function claimOccurrenceIn(
   // interface.
   if (args.today !== undefined && args.occurrenceDate > args.today) {
     const resolved = new Set(await listResolvedOccurrenceDatesIn(tx, args.templateId));
-    assertEarliestUnresolvedOccurrence(template, args.occurrenceDate, args.today, resolved);
+    assertEarliestUnresolvedOccurrence(template, args, args.today, resolved);
   }
 
-  assertNotSkipped(await findSkipIn(tx, args.templateId, args.occurrenceDate));
+  assertNotSkipped(await findSkipIn(tx, args.templateId, args.occurrenceDate), args);
   assertNotMaterialized(await hasMaterializedOccurrenceIn(tx, args.templateId, args.occurrenceDate));
 
   return template;
@@ -370,6 +400,8 @@ export function decideAcceptance(
   template: RecurringTemplateRow,
   args: AcceptSuggestionArgs,
 ): { readonly financialDate: string } {
+  assertOwnTemplate(template, args.templateId);
+
   // An expense has no gross figure to carry (6.2: `expense_entries` has no such
   // column), so a stated one is refused rather than silently dropped.
   if (args.grossAmount !== undefined && template.kind !== 'income') {
@@ -432,6 +464,11 @@ export function decideAcceptedAmounts(
   readonly grossAmount: string | null;
   readonly cashPositionId: string | null;
 } {
+  assertOwnTemplate(template, args.templateId);
+  if (termRows.some((row) => row.templateId !== template.id)) {
+    throw new Error('an occurrence decision was handed the terms of another template');
+  }
+
   const terms = termRows.map((row) => ({
     id: row.id,
     templateId: row.templateId,

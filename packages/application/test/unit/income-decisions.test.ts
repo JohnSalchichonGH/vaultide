@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { plainDate } from '@vaultide/finance';
 import type { IncomeEntryRow, PositionRecord as PositionRow } from '@vaultide/db';
-import { NotFoundError, ValidationError, VersionConflictError } from '../../src/errors';
+import { DomainError, NotFoundError, ValidationError, VersionConflictError } from '../../src/errors';
 import {
   decideIncomeCreate,
   decideIncomeDelete,
@@ -192,9 +192,9 @@ describe('creating an income entry', () => {
   });
 
   it('plans a first assertion, waking the dormant account it lands on', () => {
-    const { columns } = decideIncomeCreate(TODAY, create());
+    const decision = decideIncomeCreate(TODAY, create());
     const asleep = cash({ isDormant: true, dormantFrom: '2026-06-30' });
-    const plan = planIncomeCreate(columns, asleep);
+    const plan = planIncomeCreate(decision, asleep);
 
     expect(plan).toMatchObject({
       operation: 'create',
@@ -209,12 +209,12 @@ describe('creating an income entry', () => {
       'prospective:income:entry:-',
       'existing:cash_dormancy:pos-cash',
     ]);
-    expect(planIncomeCreate(columns, cash()).dormancy).toEqual([]);
+    expect(planIncomeCreate(decision, cash()).dormancy).toEqual([]);
   });
 
   it('names the occurrence it materializes by its schedule identity', () => {
-    const { columns } = decideIncomeCreate(TODAY, create());
-    const plan = planIncomeCreate(columns, cash(), {
+    const decision = decideIncomeCreate(TODAY, create());
+    const plan = planIncomeCreate(decision, cash(), {
       templateId: 'tpl-1',
       occurrenceDate: '2026-09-01',
     });
@@ -229,9 +229,9 @@ describe('creating an income entry', () => {
   });
 
   it('refuses a leg that is not the one its columns name', () => {
-    const { columns } = decideIncomeCreate(TODAY, create());
-    expect(() => planIncomeCreate(columns, null)).toThrow(/another account/u);
-    expect(() => planIncomeCreate(columns, cash({ id: 'pos-other' }))).toThrow(/another account/u);
+    const decision = decideIncomeCreate(TODAY, create());
+    expect(() => planIncomeCreate(decision, null)).toThrow(/another account/u);
+    expect(() => planIncomeCreate(decision, cash({ id: 'pos-other' }))).toThrow(/another account/u);
   });
 });
 
@@ -302,12 +302,12 @@ describe('correcting an income entry', () => {
 
   it('keeps the occurrence a recurring row fulfils when its financial date moves', () => {
     const recurring = entry({ templateId: 'tpl-1', occurrenceDate: '2026-09-01', receivedOn: '2026-08-31' });
-    const { columns } = decideIncomeUpdate(TODAY, recurring, {
+    const decision = decideIncomeUpdate(TODAY, recurring, {
       entryId: 'inc-1',
       expectedVersion: 4,
       receivedOn: '2026-09-02',
     });
-    const plan = planIncomeUpdate(recurring, columns, cash());
+    const plan = planIncomeUpdate(decision, cash());
 
     expect(plan.occurrence).toEqual({ templateId: 'tpl-1', occurrenceDate: '2026-09-01' });
     expect(plan.changes[0]).toMatchObject({
@@ -324,12 +324,12 @@ describe('correcting an income entry', () => {
   });
 
   it('wakes the dormant account the corrected entry is attributed to', () => {
-    const { columns } = decideIncomeUpdate(TODAY, entry(), {
+    const decision = decideIncomeUpdate(TODAY, entry(), {
       entryId: 'inc-1',
       expectedVersion: 4,
       netAmount: '2200.00',
     });
-    const plan = planIncomeUpdate(entry(), columns, cash({ isDormant: true, dormantFrom: '2026-06-30' }));
+    const plan = planIncomeUpdate(decision, cash({ isDormant: true, dormantFrom: '2026-06-30' }));
     expect(plan.dormancy).toHaveLength(1);
   });
 });
@@ -353,5 +353,72 @@ describe('deleting an income entry', () => {
     expect(() => decideIncomeDelete(entry(), { entryId: 'inc-1', expectedVersion: 3 })).toThrow(
       VersionConflictError,
     );
+  });
+});
+
+/**
+ * A refusal that is a caller's mistake: a plain `Error`, never a domain code a
+ * person would be shown. Missing and foreign ids stay `NOT_FOUND` at the
+ * resolvers, which read under RLS; these are the rows a caller mis-associated.
+ */
+function expectInternal(run: () => unknown, message: RegExp): void {
+  let caught: unknown;
+  try {
+    run();
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBeInstanceOf(Error);
+  expect(caught).not.toBeInstanceOf(DomainError);
+  expect((caught as Error).message).toMatch(message);
+}
+
+describe('a decision is only ever about the entry its operation names', () => {
+  it('refuses to correct entry A with the row of entry B, even at the same version', () => {
+    expectInternal(
+      () =>
+        decideIncomeUpdate(TODAY, entry({ id: 'inc-2' }), {
+          entryId: 'inc-1',
+          expectedVersion: 4,
+          netAmount: '9.00',
+        }),
+      /another entry/u,
+    );
+  });
+
+  it('refuses to delete entry A by deleting entry B, even at the same version', () => {
+    expectInternal(
+      () => decideIncomeDelete(entry({ id: 'inc-2' }), { entryId: 'inc-1', expectedVersion: 4 }),
+      /another entry/u,
+    );
+  });
+
+  it('plans a correction for the entry its decision judged, and offers no way to name another', () => {
+    const decision = decideIncomeUpdate(TODAY, entry(), {
+      entryId: 'inc-1',
+      expectedVersion: 4,
+      netAmount: '9.00',
+    });
+    expect(decision.existing.id).toBe('inc-1');
+
+    const plan = planIncomeUpdate(decision, cash());
+    expect(plan.existing?.id).toBe('inc-1');
+    expect(plan.changes[0]?.identity).toEqual({ scope: 'existing', kind: 'income', id: 'inc-1' });
+
+    // The row a plan is made for travels inside the decision. The shape that
+    // took it separately — and so could pair A's decision with B's row — does
+    // not type-check any more.
+    // @ts-expect-error — a plan is given a decision and a leg, never a row of its own
+    expect(() => planIncomeUpdate(entry({ id: 'inc-2' }), decision.columns, cash())).toThrow();
+  });
+
+  it('refuses a cash leg that is not the account its decision named', () => {
+    const decision = decideIncomeUpdate(TODAY, entry(), {
+      entryId: 'inc-1',
+      expectedVersion: 4,
+      netAmount: '9.00',
+    });
+    expectInternal(() => planIncomeUpdate(decision, cash({ id: 'pos-other' })), /another account/u);
+    expectInternal(() => planIncomeUpdate(decision, null), /another account/u);
   });
 });
