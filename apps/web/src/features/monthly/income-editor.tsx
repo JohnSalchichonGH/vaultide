@@ -35,6 +35,7 @@ import { cn } from '@/lib/utils';
 import { dayTitle, incomeEntryAnchorId, monthTitle } from '@/features/monthly/presentation';
 import type { IncomeKind, IncomeSettlement } from '@vaultide/validation';
 import { CorrectionHost } from '@/features/corrections/host';
+import { accountLabelsOf } from '@/features/corrections/presentation';
 import { runCorrectableSave } from '@/features/corrections/save';
 import { useCorrection } from '@/features/corrections/use-correction';
 import {
@@ -1298,9 +1299,7 @@ function EntryFields({
       <CorrectionHost
         flow={correction}
         labels={{
-          accounts: Object.fromEntries(
-            accounts.map((account) => [account.positionId, account.name]),
-          ),
+          accounts: accountLabelsOf(accounts),
           categories: {},
           locale: formatting.locale,
         }}

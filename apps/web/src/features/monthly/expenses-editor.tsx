@@ -37,6 +37,7 @@ import { cn } from '@/lib/utils';
 import { dayTitle, expenseEntryAnchorId, monthTitle } from '@/features/monthly/presentation';
 import type { ExpenseSettlement } from '@vaultide/validation';
 import { CorrectionHost } from '@/features/corrections/host';
+import { accountLabelsOf } from '@/features/corrections/presentation';
 import {
   DestructiveConfirm,
   HISTORICAL_CREATION_NOTE,
@@ -1444,9 +1445,7 @@ function EntryFields({
       <CorrectionHost
         flow={correction}
         labels={{
-          accounts: Object.fromEntries(
-            accounts.map((account) => [account.positionId, account.name]),
-          ),
+          accounts: accountLabelsOf(accounts),
           categories: Object.fromEntries(
             eligibleCategories.map((category) => [category.categoryId, category.name]),
           ),

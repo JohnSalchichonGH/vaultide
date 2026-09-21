@@ -37,7 +37,7 @@ import {
   untouchedUnchangedTargets,
 } from '@/features/monthly/accounts-presentation';
 import { CorrectionHost } from '@/features/corrections/host';
-import type { CorrectionLabels } from '@/features/corrections/presentation';
+import { accountLabelsOf, type CorrectionLabels } from '@/features/corrections/presentation';
 import { runCorrectableSave } from '@/features/corrections/save';
 import { useCorrection, type CorrectionFlow } from '@/features/corrections/use-correction';
 import {
@@ -344,11 +344,15 @@ const NAME_CELL =
  * sees, which is why renaming an account changes no consent.
  */
 function correctionLabels(
-  accounts: readonly { readonly positionId: string; readonly name: string }[],
+  accounts: readonly {
+    readonly positionId: string;
+    readonly name: string;
+    readonly currency: string;
+  }[],
   formatting: Formatting,
 ): CorrectionLabels {
   return {
-    accounts: Object.fromEntries(accounts.map((account) => [account.positionId, account.name])),
+    accounts: accountLabelsOf(accounts),
     categories: {},
     locale: formatting.locale,
   };

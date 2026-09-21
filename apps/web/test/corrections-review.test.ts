@@ -15,6 +15,8 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn(), push: 
 const { CorrectionReview } = await import('@/features/corrections/review-dialog');
 const {
   IMPACT_TAG_LABEL,
+  accountDisplayNames,
+  compareField,
   describeStructuralChange,
   interpretConfirm,
   rewritesDormancy,
@@ -42,7 +44,10 @@ const { attemptCorrection } = await import('@/features/corrections/use-correctio
  */
 
 const LABELS = {
-  accounts: { 'pos-1': 'BBVA', 'pos-2': 'Savings' },
+  accounts: {
+    'pos-1': { name: 'BBVA', currency: 'EUR' },
+    'pos-2': { name: 'Savings', currency: 'EUR' },
+  },
   categories: { 'cat-1': 'Groceries' },
   locale: 'en-GB',
 };
@@ -283,7 +288,15 @@ describe('the current month’s note (§69)', () => {
 describe('what the dialog is given', () => {
   it('summarizes a source by its meaningful fields alone', () => {
     const [summary] = summarizeSources(preview(), LABELS);
-    expect(summary?.fields.map((field) => field.label)).toEqual(['Date', 'Balance', 'Kind']);
+    // A balance names its account: a review of several balances would
+    // otherwise be a list of amounts belonging to nobody.
+    expect(summary?.fields.map((field) => field.label)).toEqual(['Account', 'Date', 'Balance', 'Kind']);
+    expect(summary?.fields.find((field) => field.label === 'Account')).toEqual({
+      label: 'Account',
+      before: 'BBVA',
+      after: 'BBVA',
+      changed: false,
+    });
     expect(summary?.fields.find((field) => field.label === 'Balance')?.changed).toBe(true);
     expect(summary?.fields.find((field) => field.label === 'Date')?.changed).toBe(false);
   });
@@ -770,5 +783,276 @@ describe('the review shows every fact a person can revise', () => {
       changed: true,
     });
     expect(field(value, 'Amount')?.changed).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Identity is not a label                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Two different stored facts are never "unchanged" because their words match
+ * (the final landing review's blocker).
+ *
+ * Account names are not unique, so a salary moved between two EUR accounts
+ * both called Savings once reviewed as "Savings → Savings, unchanged" — a
+ * closed month revised with nothing on the screen saying what. Whether a row
+ * changed is now decided on the stored fact, and same-named accounts are told
+ * apart in what the reader sees. Same currency on purpose throughout: currency
+ * alone cannot tell these two apart, so a fix that leant on it would fail here.
+ */
+describe('a changed fact is never hidden behind an equal label', () => {
+  const A = '6f1c2d3e-0000-4000-8000-00000000000a';
+  const B = '9a8b7c6d-0000-4000-8000-00000000000b';
+  const TWINS = {
+    ...LABELS,
+    accounts: {
+      ...LABELS.accounts,
+      [A]: { name: 'Savings', currency: 'EUR' },
+      [B]: { name: 'Savings', currency: 'EUR' },
+    },
+  };
+
+  const onlyChange = (
+    before: CorrectionPreview['sourceChanges'][number]['before'],
+    after: CorrectionPreview['sourceChanges'][number]['after'],
+    kind: 'income' | 'expense' | 'transfer' | 'valuation' = 'income',
+  ): CorrectionPreview =>
+    preview({
+      sourceChanges: [
+        {
+          identity: { scope: 'existing', kind, id: 'row-1' },
+          operation: 'update',
+          before,
+          after,
+        } as CorrectionPreview['sourceChanges'][number],
+      ],
+    });
+
+  const fieldsOf = (value: CorrectionPreview, index = 0) =>
+    summarizeSources(value, TWINS)[index]?.fields ?? [];
+  const field = (value: CorrectionPreview, label: string, index = 0) =>
+    fieldsOf(value, index).find((item) => item.label === label);
+  const changedLabels = (value: CorrectionPreview, index = 0) =>
+    fieldsOf(value, index)
+      .filter((item) => item.changed)
+      .map((item) => item.label);
+
+  describe('the comparison itself', () => {
+    it('reports a change when the facts differ and the words do not', () => {
+      expect(
+        compareField('Account', { value: A, display: 'Savings' }, { value: B, display: 'Savings' }),
+      ).toEqual({ label: 'Account', before: 'Savings', after: 'Savings', changed: true });
+    });
+
+    it('reports no change when the facts are the same, whatever they are written as', () => {
+      expect(
+        compareField(
+          'Net',
+          { value: ['2100', 'EUR'], display: '2100 EUR' },
+          { value: ['2100', 'EUR'], display: '2,100.00 EUR' },
+        ).changed,
+      ).toBe(false);
+      expect(
+        compareField('Account', { value: A, display: 'Savings' }, { value: A, display: 'Savings' })
+          .changed,
+      ).toBe(false);
+    });
+
+    it('never treats an absent fact as a zero, or a zero as absent', () => {
+      expect(
+        compareField('Gross', null, { value: ['0', 'EUR'], display: '0 EUR' }).changed,
+      ).toBe(true);
+      expect(
+        compareField('Gross', { value: ['0', 'EUR'], display: '0 EUR' }, { value: null, display: null })
+          .changed,
+      ).toBe(true);
+    });
+  });
+
+  describe('telling same-named accounts apart', () => {
+    it('leaves a name that is its own alone', () => {
+      const names = accountDisplayNames(LABELS, []);
+      expect(names.get('pos-1')).toBe('BBVA');
+      expect(names.get('pos-2')).toBe('Savings');
+    });
+
+    it('adds the least that tells a same-currency pair apart, and never the whole id', () => {
+      const names = accountDisplayNames(TWINS, []);
+      const a = names.get(A) as string;
+      const b = names.get(B) as string;
+      expect(a).not.toBe(b);
+      expect(a.startsWith('Savings')).toBe(true);
+      expect(b.startsWith('Savings')).toBe(true);
+      // Everything that shares the name is told apart, the old Savings included.
+      expect(names.get('pos-2')).not.toBe('Savings');
+      for (const label of [a, b]) {
+        expect(label).not.toContain(A);
+        expect(label).not.toContain(B);
+      }
+      // Stable: the same accounts are named the same way every time.
+      expect(accountDisplayNames(TWINS, []).get(A)).toBe(a);
+    });
+
+    it('uses the currency when that alone tells the group apart', () => {
+      const names = accountDisplayNames(
+        {
+          ...LABELS,
+          accounts: {
+            [A]: { name: 'Savings', currency: 'EUR' },
+            [B]: { name: 'Savings', currency: 'USD' },
+          },
+        },
+        [],
+      );
+      expect(names.get(A)).toBe('Savings (EUR)');
+      expect(names.get(B)).toBe('Savings (USD)');
+    });
+
+    it('tells apart two accounts the page never labelled', () => {
+      const names = accountDisplayNames({ ...LABELS, accounts: {} }, [A, B]);
+      expect(names.get(A)).not.toBe(names.get(B));
+    });
+  });
+
+  const income = (cashPositionId: string) => ({
+    kind: 'income' as const,
+    incomeKind: 'employment',
+    receivedOn: '2026-09-10',
+    netAmount: '500',
+    grossAmount: null,
+    currency: 'EUR',
+    settlement: 'tracked_cash',
+    cashPositionId,
+    description: 'September salary',
+    templateId: null,
+    occurrenceDate: null,
+  });
+
+  const expense = (cashPositionId: string, transferId: string | null = null) => ({
+    kind: 'expense' as const,
+    categoryId: 'cat-1',
+    categoryKind: 'food',
+    incurredOn: '2026-09-12',
+    amount: '40',
+    currency: 'EUR',
+    settlement: 'tracked_cash',
+    cashPositionId,
+    description: null,
+    isOneOff: false,
+    transferId,
+    templateId: null,
+    occurrenceDate: null,
+  });
+
+  const transfer = (fromPositionId: string, toPositionId: string) => ({
+    kind: 'transfer' as const,
+    occurredOn: '2026-09-20',
+    fromPositionId,
+    fromCurrency: 'EUR',
+    fromAmount: '100',
+    toPositionId,
+    toCurrency: 'EUR',
+    toAmount: '100',
+    description: null,
+  });
+
+  it('shows an income moved between two Savings accounts as a change of account', () => {
+    const value = onlyChange(income(A), income(B));
+    const row = field(value, 'Account');
+    expect(row?.changed).toBe(true);
+    expect(row?.before).not.toBe(row?.after);
+    expect(changedLabels(value)).toEqual(['Account']);
+
+    // The dialog marks it, and prints two different names.
+    const html = renderToStaticMarkup(
+      createElement(CorrectionReview, {
+        draft: DRAFT,
+        preview: value,
+        labels: TWINS,
+        onBack: vi.fn(),
+        onCommitted: vi.fn(),
+      }),
+    );
+    expect(html).toMatch(/data-field="Account" data-changed="true"/u);
+    expect(html).toContain(row?.before as string);
+    expect(html).toContain(row?.after as string);
+  });
+
+  it('shows an expense paid from the other Savings account as a change of account', () => {
+    const value = onlyChange(expense(A), expense(B), 'expense');
+    expect(field(value, 'Account')?.changed).toBe(true);
+    expect(field(value, 'Account')?.before).not.toBe(field(value, 'Account')?.after);
+    expect(changedLabels(value)).toEqual(['Account']);
+  });
+
+  it('shows a transfer whose sending side moved between the two', () => {
+    const value = onlyChange(transfer(A, 'pos-1'), transfer(B, 'pos-1'), 'transfer');
+    expect(field(value, 'From')?.changed).toBe(true);
+    expect(field(value, 'From')?.before).not.toBe(field(value, 'From')?.after);
+    expect(changedLabels(value)).toEqual(['From']);
+  });
+
+  it('shows a transfer whose receiving side moved between the two', () => {
+    const value = onlyChange(transfer('pos-1', A), transfer('pos-1', B), 'transfer');
+    expect(field(value, 'To')?.changed).toBe(true);
+    expect(field(value, 'To')?.before).not.toBe(field(value, 'To')?.after);
+    expect(changedLabels(value)).toEqual(['To']);
+  });
+
+  it('shows a transfer fee now paid from the other Savings account', () => {
+    const value = onlyChange(expense(A, 'tr-1'), expense(B, 'tr-1'), 'expense');
+    expect(field(value, 'Account')?.changed).toBe(true);
+    expect(field(value, 'Account')?.before).not.toBe(field(value, 'Account')?.after);
+  });
+
+  it('names the account of every balance, told apart when two share a name', () => {
+    const balance = (positionId: string) => ({
+      kind: 'valuation' as const,
+      positionId,
+      valuedOn: '2026-10-05',
+      amount: '120',
+      currency: 'EUR',
+      datePrecision: 'exact' as const,
+      note: null,
+    });
+    const value = preview({
+      sourceChanges: [
+        {
+          identity: { scope: 'prospective', kind: 'valuation', role: 'valuation', owner: A },
+          operation: 'create',
+          before: null,
+          after: balance(A),
+        },
+        {
+          identity: { scope: 'prospective', kind: 'valuation', role: 'valuation', owner: B },
+          operation: 'create',
+          before: null,
+          after: balance(B),
+        },
+      ],
+    });
+
+    const first = field(value, 'Account', 0)?.after;
+    const second = field(value, 'Account', 1)?.after;
+    expect(first).toBeTruthy();
+    expect(second).toBeTruthy();
+    expect(first).not.toBe(second);
+    expect(first?.startsWith('Savings')).toBe(true);
+  });
+
+  it('decides a category change on the category, not on its name', () => {
+    // Two categories the page did not label read the same way, and are still
+    // two different categories.
+    const value = onlyChange(
+      { ...expense('pos-1'), categoryId: 'cat-archived-1' },
+      { ...expense('pos-1'), categoryId: 'cat-archived-2' },
+      'expense',
+    );
+    expect(field(value, 'Category')).toMatchObject({
+      before: 'A category',
+      after: 'A category',
+      changed: true,
+    });
   });
 });

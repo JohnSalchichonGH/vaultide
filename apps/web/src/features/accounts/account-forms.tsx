@@ -598,7 +598,7 @@ export function EditPositionForm({ position, today }: { position: PositionDto; t
       <CorrectionHost
         flow={correction}
         labels={{
-          accounts: { [position.id]: position.name },
+          accounts: { [position.id]: { name: position.name, currency: position.currency } },
           categories: {},
           locale: 'en-GB',
         }}

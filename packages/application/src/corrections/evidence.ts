@@ -68,7 +68,16 @@ import { periodOf, monthKeyOfPeriod } from './classify';
 export interface CorrectionEvidence {
   readonly today: PlainDate;
   readonly positions: readonly PositionRecord[];
-  /** Valuations by position id, ascending by date. No lower bound (ADR 0004 §3). */
+  /**
+   * Valuations by position id, in **no guaranteed order**. No lower bound (ADR
+   * 0004 §3).
+   *
+   * The loader returns each position's rows newest first, and the overlay
+   * re-sorts a corrected position's rows oldest first. Nothing may depend on
+   * either: every reader asks by date — the latest on or before one, the row
+   * on one, whether any exists before or inside one — never by position in the
+   * list.
+   */
   readonly valuations: ReadonlyMap<string, readonly ValuationRecord[]>;
   readonly accountTypes: ReadonlyMap<string, string>;
   readonly income: readonly IncomeFlow[];
@@ -111,7 +120,7 @@ export interface CorrectionEvidence {
  */
 export interface ValuationHistory {
   readonly positions: readonly PositionRecord[];
-  /** Valuations by position id, ascending by date. */
+  /** Valuations by position id, in no guaranteed order: see `CorrectionEvidence.valuations`. */
   readonly valuations: ReadonlyMap<string, readonly ValuationRecord[]>;
   readonly accountTypes: ReadonlyMap<string, string>;
 }

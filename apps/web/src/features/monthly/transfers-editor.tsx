@@ -52,6 +52,7 @@ import {
   type TransferOutcome,
 } from '@/features/monthly/transfers-presentation';
 import { CorrectionHost } from '@/features/corrections/host';
+import { accountLabelsOf } from '@/features/corrections/presentation';
 import { transferCreationNote } from '@/features/corrections/delete-confirm';
 import { useCorrection } from '@/features/corrections/use-correction';
 
@@ -794,9 +795,7 @@ export function TransferEditor({
       <CorrectionHost
         flow={correction}
         labels={{
-          accounts: Object.fromEntries(
-            accounts.map((account) => [account.positionId, account.name]),
-          ),
+          accounts: accountLabelsOf(accounts),
           categories: {},
           locale: formatting.locale,
         }}

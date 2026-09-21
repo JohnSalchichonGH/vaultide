@@ -4,7 +4,7 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
  * Historical Correction, end to end (blueprint 15.3, 30.22; ADR 0010; §108–§111
  * of the slice prompt).
  *
- * Four journeys, and each is a rule the product promises rather than a
+ * Five journeys, and each is a rule the product promises rather than a
  * rendering check:
  *
  *  - **a past month-end balance is corrected.** Edit it, read what it will
@@ -16,6 +16,9 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
  *  - **a fact no figure reads is corrected.** A gross-only salary edit is still
  *    a revision of a closed month, so it is reviewed — and the review shows the
  *    gross it is changing, with the unchanged net beside it;
+ *  - **a record moves between two accounts of the same name.** Names are not
+ *    unique, so the review decides the change on the account itself and tells
+ *    the two apart on screen;
  *  - **an ordinary-looking save wakes an account out of a dormant period.**
  *    Nothing about recording a balance looks historical, and the product stops
  *    and explains before it rewrites those months.
@@ -181,7 +184,17 @@ test.describe('correcting a past month-end balance', () => {
     await expect(review(page).getByRole('heading', { name: 'Review changes' })).toBeVisible();
 
     // Before → after, on the fields a person cares about.
-    await expect(review(page).getByTestId('correction-before').first()).toContainText('30 Sept 2026');
+    await expect(
+      review(page)
+        .locator('[data-testid="correction-field"][data-field="Date"]')
+        .getByTestId('correction-before'),
+    ).toContainText('30 Sept 2026');
+    // A balance says whose balance it is.
+    await expect(
+      review(page)
+        .locator('[data-testid="correction-field"][data-field="Account"]')
+        .getByTestId('correction-after'),
+    ).toContainText('Everyday');
     await expect(review(page)).toContainText('1900');
     await expect(review(page)).toContainText('2100');
     // Neither an id nor the consent fingerprint is shown.
@@ -329,6 +342,96 @@ test.describe('correcting a fact no figure reads', () => {
     await page.reload();
     await expect(page.getByTestId('entry-gross')).toHaveValue('2700.00');
     await expect(page.getByTestId('entry-net')).toHaveValue('2100.00');
+  });
+});
+
+test.describe('moving a record between two accounts of the same name', () => {
+  /** The ids of every account currently listed as `name`, from their links. */
+  async function idsNamed(page: Page, name: string): Promise<string[]> {
+    const links = page.getByRole('link', { name, exact: true });
+    const ids: string[] = [];
+    for (let index = 0; index < (await links.count()); index += 1) {
+      const href = await links.nth(index).getAttribute('href');
+      if (href !== null) ids.push(href.split('?')[0]?.split('/').at(-1) as string);
+    }
+    return ids;
+  }
+
+  /** A second account with a name that is already taken, and its id. */
+  async function anotherAccountNamed(
+    page: Page,
+    name: string,
+    known: readonly string[],
+  ): Promise<string> {
+    await page.goto('/accounts?tab=cash');
+    await expect(page.getByTestId('account-submit')).toBeEnabled();
+    await fillTestId(page, 'account-name', name);
+    await page.getByTestId('account-currency').selectOption('EUR');
+    await page.getByTestId('account-type').selectOption('savings');
+    await fillTestId(page, 'account-balance', '400.00');
+    await fillTestId(page, 'account-balance-date', '2026-08-31');
+    await page.getByTestId('account-submit').click();
+    await expect(page.getByText(`${name} added.`)).toBeVisible();
+    await expect(page.getByRole('link', { name, exact: true })).toHaveCount(known.length + 1);
+
+    const id = (await idsNamed(page, name)).find((candidate) => !known.includes(candidate));
+    if (id === undefined) throw new Error('the new account has no link');
+    await page.goto(`/accounts/${id}`);
+    await page.getByTestId('confirm-statement-2026-08').click();
+    await expect(page.getByTestId('month-end-2026-08')).toHaveCount(0);
+    return id;
+  }
+
+  test('an account-only correction says which Savings it left and which it joined', async ({
+    page,
+    request,
+  }) => {
+    test.slow();
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': OCTOBER_6 });
+    await onboard(page, request, uniqueEmail('e2e-twins'));
+
+    // Two EUR accounts, both called Savings: nothing forbids it.
+    await accountWithAugustStatement(page, { name: 'Savings', type: 'savings', august: '1000.00' });
+    const first = page.url().split('?')[0]?.split('/').at(-1) as string;
+    const second = await anotherAccountNamed(page, 'Savings', [first]);
+    expect(second).not.toBe(first);
+
+    // A September salary into the first of them.
+    await page.goto('/monthly/2026-09');
+    await page.getByTestId('income-add-toggle').click();
+    await page.getByTestId('income-kind').selectOption('employment');
+    await fillTestId(page, 'income-received-on', '2026-09-25');
+    await fillTestId(page, 'income-net', '500.00');
+    await page.getByTestId('income-account').selectOption(first);
+    await page.getByTestId('income-submit').click();
+    await expect(page.getByTestId('income-saved')).toContainText('Income added.');
+    await expect(page.getByTestId('entry-account')).toHaveValue(first);
+
+    // --- only the account moves, to the other Savings ------------------------
+    await page.getByTestId('entry-account').selectOption(second);
+
+    await expect(review(page)).toBeVisible();
+    const accountRow = review(page).locator('[data-testid="correction-field"][data-field="Account"]');
+    await expect(accountRow).toHaveAttribute('data-changed', 'true');
+
+    // Two different names on screen, though both accounts are called Savings.
+    const before = (await accountRow.getByTestId('correction-before').textContent()) ?? '';
+    const after = (await accountRow.getByTestId('correction-after').textContent()) ?? '';
+    expect(before.startsWith('Savings')).toBe(true);
+    expect(after.startsWith('Savings')).toBe(true);
+    expect(before).not.toBe(after);
+
+    // And nothing else is presented as changed.
+    await expect(
+      review(page).locator('[data-testid="correction-field"][data-changed="true"]'),
+    ).toHaveCount(1);
+
+    await review(page).getByTestId('correction-confirm').click();
+    await expect(review(page)).toHaveCount(0);
+
+    // The row now belongs to the second Savings.
+    await page.reload();
+    await expect(page.getByTestId('entry-account')).toHaveValue(second);
   });
 });
 

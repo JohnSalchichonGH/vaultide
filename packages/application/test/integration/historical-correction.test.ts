@@ -1438,6 +1438,68 @@ describe('a correction of a fact no figure reads is still reviewed, and shown', 
     expect(result.periods.find((period) => period.month === '2026-09')?.tags).toEqual([]);
   });
 
+  /**
+   * The landing review's counterexample, end to end on the server: two EUR
+   * accounts both called Savings. A move between them changes no figure the
+   * engines compute, so the tags stay empty — and the preview still carries
+   * both ids, which is what the review decides the change on.
+   */
+  it('carries both accounts when a record moves between two accounts of the same name', async () => {
+    await september();
+    const twin = (
+      await createCashAccount(positions(), OCT_5, {
+        name: 'Savings',
+        currency: 'EUR',
+        accountType: 'savings',
+        openedOn: null,
+      })
+    ).id;
+    await statement(twin, '2026-08-31', '100.00');
+    await statement(twin, '2026-09-30', '100.00');
+
+    const entry = await salary('2026-09-10', '500.00', savings);
+    const moved = await preview({
+      kind: 'income_update',
+      entryId: entry.id,
+      expectedVersion: entry.version,
+      cashPositionId: twin,
+    });
+    expect(moved.sourceChanges[0]?.before).toMatchObject({ cashPositionId: savings });
+    expect(moved.sourceChanges[0]?.after).toMatchObject({ cashPositionId: twin });
+    expect(moved.periods.find((period) => period.month === '2026-09')?.tags).toEqual([]);
+
+    // A transfer's two sides and its fee's payer, each moved to the twin.
+    const saved = await createCashTransfer(flows(), OCT_5, {
+      occurredOn: '2026-09-20',
+      fromPositionId: savings,
+      toPositionId: bbva,
+      fromAmount: '50.00',
+      toAmount: '50.00',
+      fee: { amount: '1.00', cashPositionId: savings, incurredOn: '2026-09-20' },
+    });
+    const fee = saved.fee;
+    if (fee === null) throw new Error('expected a fee');
+    const rerouted = await preview({
+      kind: 'transfer_update',
+      transferId: saved.transfer.id,
+      expectedVersion: saved.transfer.version,
+      occurredOn: '2026-09-20',
+      fromPositionId: twin,
+      toPositionId: bbva,
+      fromAmount: '50.00',
+      toAmount: '50.00',
+      description: saved.transfer.description,
+      fee: { amount: '1.00', cashPositionId: twin, incurredOn: '2026-09-20' },
+      expectedFee: { state: 'version', feeId: fee.id, version: fee.version },
+    });
+    const transferChange = rerouted.sourceChanges.find((change) => change.identity.kind === 'transfer');
+    expect(transferChange?.before).toMatchObject({ fromPositionId: savings });
+    expect(transferChange?.after).toMatchObject({ fromPositionId: twin });
+    const feeChange = rerouted.sourceChanges.find((change) => change.identity.kind === 'expense');
+    expect(feeChange?.before).toMatchObject({ cashPositionId: savings });
+    expect(feeChange?.after).toMatchObject({ cashPositionId: twin });
+  });
+
   it('leaves a fee’s one-off mark as it was when the transfer is corrected', async () => {
     await september();
     const saved = await createCashTransfer(flows(), OCT_5, {

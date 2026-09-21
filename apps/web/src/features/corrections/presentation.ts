@@ -25,12 +25,43 @@ import {
  * structural facts move — it does not work out any of them for itself (§84).
  *
  * Names are resolved for readability and nothing else. A category or an account
- * is identified by its id everywhere that matters; the label is what the reader
- * sees, and renaming one changes no consent (§75).
+ * is identified by its id everywhere that matters — including whether a row
+ * changed — and the label is only what the reader sees. Renaming one changes no
+ * consent (§75), and two that share a name are never mistaken for each other.
  */
 
+/**
+ * What the review knows about one account: its name, and its currency where
+ * the caller has it. Currency is only ever used to tell two same-named
+ * accounts apart; it is never shown for an account whose name is its own.
+ */
+export interface AccountLabel {
+  readonly name: string;
+  readonly currency?: string;
+}
+
+/** The account labels a page already holds, by id, for the review. */
+export function accountLabelsOf(
+  accounts: readonly {
+    readonly positionId: string;
+    readonly name: string;
+    readonly currency: string;
+  }[],
+): Readonly<Record<string, AccountLabel>> {
+  return Object.fromEntries(
+    accounts.map((row) => [row.positionId, { name: row.name, currency: row.currency }]),
+  );
+}
+
 export interface CorrectionLabels {
-  readonly accounts: Readonly<Record<string, string>>;
+  readonly accounts: Readonly<Record<string, AccountLabel>>;
+  /**
+   * Category names by id. A live category's name is unique per user
+   * (`categories_user_name_uidx`, partial on `archived_at IS NULL`), and the
+   * editors pass live categories only, so two entries here never share a name.
+   * An archived or unknown category falls back to "A category" — and whether
+   * it changed is decided by its id, never by that fallback (see `compareField`).
+   */
   readonly categories: Readonly<Record<string, string>>;
   readonly locale: string;
 }
@@ -52,6 +83,45 @@ export interface SourceSummary {
   readonly operation: 'create' | 'update' | 'delete';
   readonly fields: readonly FieldChange[];
 }
+
+/**
+ * One side of a review row, kept as two things that must not be confused.
+ *
+ * `value` is the stored fact itself — an id, an exact amount with its currency,
+ * an ISO date, an enum code — and it alone decides whether the row changed.
+ * `display` is what a person reads, and it may lose information: two accounts
+ * can share a name, a label can stand for several codes, a date can be written
+ * the same way twice. Deciding "changed" from the display is how a correction
+ * that moved a salary between two accounts called Savings once reviewed as
+ * nothing having changed at all.
+ */
+export interface FieldValue {
+  readonly value: string | boolean | null | readonly (string | null)[];
+  readonly display: string | null;
+}
+
+/**
+ * Compare one field, semantically, and render it.
+ *
+ * The order is the rule: equality is decided on the stored facts first, and the
+ * words are only attached afterwards. `null` on a side means the fact is absent
+ * there — a record that does not exist yet, or a gross amount nobody entered —
+ * which is never the same as a zero.
+ */
+export function compareField(
+  label: string,
+  before: FieldValue | null,
+  after: FieldValue | null,
+): FieldChange {
+  return {
+    label,
+    before: before?.display ?? null,
+    after: after?.display ?? null,
+    changed: JSON.stringify(before?.value ?? null) !== JSON.stringify(after?.value ?? null),
+  };
+}
+
+const plain = (value: string | null): FieldValue => ({ value, display: value });
 
 const SETTLEMENT_LABEL: Readonly<Record<string, string>> = {
   tracked_cash: 'From a tracked account',
@@ -75,18 +145,144 @@ const KIND_TITLE: Readonly<Record<SourceFacts['kind'], string>> = {
   cash_dormancy: 'Dormant period',
 };
 
-function accountName(labels: CorrectionLabels, id: string | null): string | null {
-  if (id === null) return 'No account chosen yet';
-  return labels.accounts[id] ?? 'An account';
+/* -------------------------------------------------------------------------- */
+/* Account names, told apart                                                   */
+/* -------------------------------------------------------------------------- */
+
+const UNKNOWN_ACCOUNT = 'An account';
+
+const compactId = (id: string): string => id.replace(/-/gu, '').toLowerCase();
+
+/** The shortest prefix, four characters at least, that tells these ids apart. */
+function distinctPrefixLength(ids: readonly string[]): number {
+  const longest = Math.max(...ids.map((id) => compactId(id).length));
+  for (let length = 4; length < longest; length += 1) {
+    if (new Set(ids.map((id) => compactId(id).slice(0, length))).size === ids.length) return length;
+  }
+  return longest;
 }
 
-function day(labels: CorrectionLabels, value: string | null): string | null {
-  return value === null ? null : dayTitle(value, labels.locale);
+/**
+ * Every account's name as the review shows it (§68).
+ *
+ * Account names are **not** unique — nothing stops a person having two EUR
+ * accounts called Savings — so a name alone cannot tell a reader which account
+ * a record left and which it arrived in. An account whose name is its own is
+ * shown by that name and nothing more. Where names collide, the whole group is
+ * told apart by the least that does it:
+ *
+ *  1. the currency, when every account in the group has a different one;
+ *  2. otherwise a short prefix of each account's id — stable, the same on every
+ *     screen, as short as keeps the group apart and never the whole id. Currency
+ *     cannot do this on its own: a salary moved between two accounts is always
+ *     moved between two accounts of the salary's own currency.
+ *
+ * The group is every account the caller labelled plus every account the
+ * preview mentions, so an account the page did not label still cannot be
+ * confused with another one it did not label either.
+ */
+export function accountDisplayNames(
+  labels: CorrectionLabels,
+  mentioned: Iterable<string>,
+): ReadonlyMap<string, string> {
+  const ids = [...new Set([...Object.keys(labels.accounts), ...mentioned])].sort();
+  const byName = new Map<string, string[]>();
+  for (const id of ids) {
+    const name = labels.accounts[id]?.name ?? UNKNOWN_ACCOUNT;
+    byName.set(name, [...(byName.get(name) ?? []), id]);
+  }
+
+  const display = new Map<string, string>();
+  for (const [name, group] of byName) {
+    if (group.length === 1) {
+      display.set(group[0] as string, name);
+      continue;
+    }
+    const currencies = group.map((id) => labels.accounts[id]?.currency);
+    if (currencies.every((code) => code !== undefined) && new Set(currencies).size === group.length) {
+      group.forEach((id, index) => display.set(id, `${name} (${currencies[index] as string})`));
+      continue;
+    }
+    const length = distinctPrefixLength(group);
+    for (const id of group) display.set(id, `${name} · #${compactId(id).slice(0, length)}`);
+  }
+  return display;
 }
 
-/** An amount in its own currency, or absent — never a stand-in zero. */
-function money(amount: string | null, currency: string): string | null {
-  return amount === null ? null : `${amount} ${currency}`;
+/** Every account a preview mentions, source facts and structural changes alike. */
+function accountsMentioned(preview: CorrectionPreview): string[] {
+  const ids: string[] = [];
+  for (const change of preview.sourceChanges) {
+    for (const facts of [change.before, change.after]) {
+      if (facts === null) continue;
+      switch (facts.kind) {
+        case 'income':
+        case 'expense':
+          if (facts.cashPositionId !== null) ids.push(facts.cashPositionId);
+          break;
+        case 'transfer':
+          if (facts.fromPositionId !== null) ids.push(facts.fromPositionId);
+          if (facts.toPositionId !== null) ids.push(facts.toPositionId);
+          break;
+        case 'valuation':
+        case 'cash_dormancy':
+          ids.push(facts.positionId);
+          break;
+      }
+    }
+  }
+  for (const change of preview.structuralChanges) {
+    if (change.kind === 'valuation_carry' || change.kind === 'dormancy_episode') {
+      ids.push(change.positionId);
+    }
+  }
+  return ids;
+}
+
+/* -------------------------------------------------------------------------- */
+/* The fields                                                                  */
+/* -------------------------------------------------------------------------- */
+
+interface FieldContext {
+  readonly labels: CorrectionLabels;
+  readonly accounts: ReadonlyMap<string, string>;
+}
+
+function account(context: FieldContext, id: string | null): FieldValue {
+  if (id === null) return { value: null, display: 'No account chosen yet' };
+  return { value: id, display: context.accounts.get(id) ?? UNKNOWN_ACCOUNT };
+}
+
+function day(context: FieldContext, value: string | null): FieldValue {
+  return { value, display: value === null ? null : dayTitle(value, context.labels.locale) };
+}
+
+/** An exact amount in its own currency, or absent — never a stand-in zero. */
+function money(amount: string | null, currency: string): FieldValue {
+  return amount === null
+    ? { value: null, display: null }
+    : { value: [amount, currency], display: `${amount} ${currency}` };
+}
+
+/** One side of a transfer: which account, and exactly how much in its currency. */
+function leg(
+  context: FieldContext,
+  positionId: string | null,
+  amount: string,
+  currency: string,
+): FieldValue {
+  return {
+    value: [positionId, amount, currency],
+    display: `${account(context, positionId).display ?? ''} · ${amount} ${currency}`,
+  };
+}
+
+function coded(code: string, labels: Readonly<Record<string, string>>): FieldValue {
+  return { value: code, display: labels[code] ?? code };
+}
+
+function yesNo(value: boolean): FieldValue {
+  return { value, display: value ? 'Yes' : 'No' };
 }
 
 /**
@@ -96,52 +292,58 @@ function money(amount: string | null, currency: string): string | null {
  * the review is the consent: a salary whose only change is its gross amount, or
  * an expense whose only change is its one-off mark, is still a revision of a
  * closed month, and a review that listed nothing as changed would be asking the
- * user to agree to something it did not show them. Identity — ids, versions,
- * the scheduled occurrence a row materializes — is deliberately absent.
+ * user to agree to something it did not show them. A balance names its account
+ * even though no correction moves it, because a review of several balances is
+ * otherwise a list of amounts belonging to nobody. Identity — ids, versions,
+ * the scheduled occurrence a row materializes — is never shown.
  */
-function fieldsOf(facts: SourceFacts, labels: CorrectionLabels): Record<string, string | null> {
+function fieldsOf(facts: SourceFacts, context: FieldContext): Record<string, FieldValue> {
   switch (facts.kind) {
     case 'income':
       return {
-        Kind: incomeKindLabel(facts.incomeKind),
-        Date: day(labels, facts.receivedOn),
+        Kind: { value: facts.incomeKind, display: incomeKindLabel(facts.incomeKind) },
+        Date: day(context, facts.receivedOn),
         // Net and gross are two facts, and "Amount" beside a gross figure
         // would not say which one it is.
         Net: money(facts.netAmount, facts.currency),
         Gross: money(facts.grossAmount, facts.currency),
-        'Paid into': INCOME_SETTLEMENT_LABEL[facts.settlement] ?? facts.settlement,
-        Account: accountName(labels, facts.cashPositionId),
-        Description: facts.description,
+        'Paid into': coded(facts.settlement, INCOME_SETTLEMENT_LABEL),
+        Account: account(context, facts.cashPositionId),
+        Description: plain(facts.description),
       };
     case 'expense':
       return {
-        Date: day(labels, facts.incurredOn),
+        Date: day(context, facts.incurredOn),
         Amount: money(facts.amount, facts.currency),
-        Category: labels.categories[facts.categoryId] ?? 'A category',
-        'Paid from': SETTLEMENT_LABEL[facts.settlement] ?? facts.settlement,
-        Account: accountName(labels, facts.cashPositionId),
-        Description: facts.description,
-        'One-off': facts.isOneOff ? 'Yes' : 'No',
+        Category: {
+          value: facts.categoryId,
+          display: context.labels.categories[facts.categoryId] ?? 'A category',
+        },
+        'Paid from': coded(facts.settlement, SETTLEMENT_LABEL),
+        Account: account(context, facts.cashPositionId),
+        Description: plain(facts.description),
+        'One-off': yesNo(facts.isOneOff),
       };
     case 'transfer':
       return {
-        Date: day(labels, facts.occurredOn),
-        From: `${accountName(labels, facts.fromPositionId) ?? ''} · ${facts.fromAmount} ${facts.fromCurrency}`,
-        To: `${accountName(labels, facts.toPositionId) ?? ''} · ${facts.toAmount} ${facts.toCurrency}`,
-        Description: facts.description,
+        Date: day(context, facts.occurredOn),
+        From: leg(context, facts.fromPositionId, facts.fromAmount, facts.fromCurrency),
+        To: leg(context, facts.toPositionId, facts.toAmount, facts.toCurrency),
+        Description: plain(facts.description),
       };
     case 'valuation':
       return {
-        Date: day(labels, facts.valuedOn),
-        Balance: `${facts.amount} ${facts.currency}`,
-        Kind: PRECISION_LABEL[facts.datePrecision] ?? facts.datePrecision,
-        Note: facts.note,
+        Account: account(context, facts.positionId),
+        Date: day(context, facts.valuedOn),
+        Balance: money(facts.amount, facts.currency),
+        Kind: coded(facts.datePrecision, PRECISION_LABEL),
+        Note: plain(facts.note),
       };
     case 'cash_dormancy':
       return {
-        Account: accountName(labels, facts.positionId),
-        Dormant: facts.isDormant ? 'Yes' : 'No',
-        'Dormant from': day(labels, facts.dormantFrom),
+        Account: account(context, facts.positionId),
+        Dormant: yesNo(facts.isDormant),
+        'Dormant from': day(context, facts.dormantFrom),
       };
   }
 }
@@ -150,26 +352,27 @@ function fieldsOf(facts: SourceFacts, labels: CorrectionLabels): Record<string, 
  * The correction's own source facts, before and after.
  *
  * Only the fields that mean something to a person: no database id, no version,
- * no timestamp and no fingerprint (§68).
+ * no timestamp and no fingerprint (§68). A row with nothing to show on either
+ * side is left out — unless its facts differ, which is never hidden.
  */
 export function summarizeSources(
   preview: CorrectionPreview,
   labels: CorrectionLabels,
 ): readonly SourceSummary[] {
+  const context: FieldContext = {
+    labels,
+    accounts: accountDisplayNames(labels, accountsMentioned(preview)),
+  };
+
   return preview.sourceChanges.map((change) => {
     const facts = change.after ?? change.before;
-    const before = change.before === null ? null : fieldsOf(change.before, labels);
-    const after = change.after === null ? null : fieldsOf(change.after, labels);
+    const before = change.before === null ? null : fieldsOf(change.before, context);
+    const after = change.after === null ? null : fieldsOf(change.after, context);
     const keys = [...new Set([...Object.keys(before ?? {}), ...Object.keys(after ?? {})])];
 
     const fields = keys
-      .map((label) => ({
-        label,
-        before: before?.[label] ?? null,
-        after: after?.[label] ?? null,
-        changed: (before?.[label] ?? null) !== (after?.[label] ?? null),
-      }))
-      .filter((field) => field.before !== null || field.after !== null);
+      .map((label) => compareField(label, before?.[label] ?? null, after?.[label] ?? null))
+      .filter((field) => field.before !== null || field.after !== null || field.changed);
 
     return { title: KIND_TITLE[facts.kind], operation: change.operation, fields };
   });
@@ -300,6 +503,15 @@ const COMPLETENESS_WORD: Readonly<Record<string, string>> = {
   stale: 'stale',
 };
 
+/**
+ * An account's name inside a sentence: the same collision-safe name the source
+ * table uses, or "This account" for one the page did not label.
+ */
+function accountInSentence(labels: CorrectionLabels, positionId: string): string {
+  if (labels.accounts[positionId] === undefined) return 'This account';
+  return accountDisplayNames(labels, [positionId]).get(positionId) ?? 'This account';
+}
+
 /** One sentence per structural consequence, from its canonical identity (§42). */
 export function describeStructuralChange(
   change: StructuralChange,
@@ -327,7 +539,7 @@ export function describeStructuralChange(
         ? `${monthTitle(change.month, labels.locale)} raises a new reconciliation issue.`
         : `A reconciliation issue in ${monthTitle(change.month, labels.locale)} clears.`;
     case 'valuation_carry': {
-      const name = labels.accounts[change.positionId] ?? 'This account';
+      const name = accountInSentence(labels, change.positionId);
       if (change.after === null) {
         return `${name} no longer carries a balance from ${dayTitle((change.before as { from: string }).from, labels.locale)}.`;
       }
@@ -338,7 +550,7 @@ export function describeStructuralChange(
       }.`;
     }
     case 'dormancy_episode': {
-      const name = labels.accounts[change.positionId] ?? 'This account';
+      const name = accountInSentence(labels, change.positionId);
       if (change.before === null) {
         return `${name} becomes dormant from ${dayTitle(change.after as string, labels.locale)}, so months from then on carry it at zero.`;
       }
