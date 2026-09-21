@@ -30,6 +30,7 @@ import {
   plainDate,
   startOfMonth,
   type MonthKey,
+  type PlainDate,
 } from '@vaultide/finance';
 import type { RequestContext } from '../context';
 import { withUserWrite } from '../coordination';
@@ -53,6 +54,7 @@ import {
   deleted,
   dormancyChange,
   mergeSupport,
+  prospectiveValuation,
   realDormancyEffects,
   updated,
   type DormancyEffect,
@@ -142,7 +144,11 @@ async function requirePositionIn(tx: Transaction, positionId: string): Promise<P
 }
 
 /** The two frozen date rules, applied to one valuation date. */
-function assertDateRules(ctx: RequestContext, valuedOn: string, precision: 'exact' | 'month_end'): void {
+function assertDateRules(
+  ctx: Pick<RequestContext, 'today'>,
+  valuedOn: string,
+  precision: 'exact' | 'month_end',
+): void {
   const date = plainDate(valuedOn);
 
   if (date > ctx.today) {
@@ -316,18 +322,73 @@ function requireValuationIn(
   return findValuationIn(tx, valuationId, options.lock ? { lock: 'update' } : {});
 }
 
-export async function resolveRecordValuationIn(
-  tx: Transaction,
-  ctx: RequestContext,
-  args: ValuationArgs,
-): Promise<ValuationWritePlan> {
-  const position = await requirePositionIn(tx, args.positionId);
-  assertDateRules(ctx, args.valuedOn, args.datePrecision);
-  assertSign(position, args.amount);
-  assertWithinPositionWindow(position, args.valuedOn);
+/*
+ * ## Reads, then decisions
+ *
+ * Each resolver below reads what its operation is about and hands those rows to
+ * a pure decision that holds every rule: the balance's own rules first
+ * (`assertValuationAllowed`), then the decision about where it lands among the
+ * rows already there (`decide…Valuation`). The decisions perform no IO, take no
+ * lock and read no clock — `today` arrives as an argument — so the same rule
+ * judges the same rows whoever loaded them: the ordinary write, the correction
+ * preview (which reads without locks) and Historical Confirm (which reads under
+ * them).
+ *
+ * The two steps are separate because a read sits between them: the balance's
+ * own rules need only its account, and a refused date is refused before the
+ * row on that date is looked up at all.
+ */
 
-  const existing = await findValuationOnIn(tx, args.positionId, args.valuedOn);
-  if (existing !== undefined) {
+/**
+ * The rules a balance obeys on its own terms: its date and precision (M5, R15),
+ * its sign (6.2) and its account's open window (M4).
+ *
+ * Asked of the account the balance belongs to, as loaded by the caller.
+ */
+export function assertValuationAllowed(
+  today: PlainDate,
+  position: PositionRow,
+  value: {
+    readonly valuedOn: string;
+    readonly amount: string;
+    readonly datePrecision: 'exact' | 'month_end';
+  },
+): void {
+  assertDateRules({ today }, value.valuedOn, value.datePrecision);
+  assertSign(position, value.amount);
+  assertWithinPositionWindow(position, value.valuedOn);
+}
+
+/**
+ * The balance a date already holds, checked to be about the date asked.
+ *
+ * A decision handed the row of another account or another date would reach a
+ * confident wrong answer, so the mismatch is refused as the programming error
+ * it is rather than judged.
+ */
+function occupantOf(
+  occupant: ValuationRow | undefined,
+  positionId: string,
+  valuedOn: string,
+): ValuationRow | undefined {
+  if (occupant !== undefined && (occupant.positionId !== positionId || occupant.valuedOn !== valuedOn)) {
+    throw new Error('a valuation decision was handed the balance of another date');
+  }
+  return occupant;
+}
+
+/**
+ * Record a new balance, given its account and whatever the date already holds.
+ *
+ * `occupant` is the account's balance on `args.valuedOn`, if it has one. The
+ * balance's own rules (`assertValuationAllowed`) are the caller's to ask first.
+ */
+export function decideRecordValuation(
+  position: PositionRow,
+  args: ValuationArgs,
+  occupant: ValuationRow | undefined,
+): ValuationWritePlan {
+  if (occupantOf(occupant, position.id, args.valuedOn) !== undefined) {
     // M1: one valuation per position per date. A second one is not a
     // correction, it is an ambiguity — the editor offers to correct instead.
     throw new DuplicateConflictError(
@@ -356,7 +417,7 @@ export async function resolveRecordValuationIn(
     revision: false,
     changes: [
       created(
-        { scope: 'prospective', kind: 'valuation', role: 'valuation', owner: position.id },
+        prospectiveValuation(position.id, args.valuedOn),
         valuationFactsOf(position.id, position.currency, columns),
       ),
       ...dormancy.map(dormancyChange),
@@ -364,6 +425,17 @@ export async function resolveRecordValuationIn(
     dormancy,
     support: [{ currency: position.currency, from: args.valuedOn }],
   };
+}
+
+export async function resolveRecordValuationIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: ValuationArgs,
+): Promise<ValuationWritePlan> {
+  const position = await requirePositionIn(tx, args.positionId);
+  assertValuationAllowed(ctx.today, position, args);
+  const occupant = await findValuationOnIn(tx, args.positionId, args.valuedOn);
+  return decideRecordValuation(position, args, occupant);
 }
 
 /**
@@ -463,25 +535,37 @@ export interface CorrectValuationArgs {
   readonly reason?: string | undefined;
 }
 
-export async function resolveCorrectValuationIn(
-  tx: Transaction,
-  ctx: RequestContext,
+/**
+ * A decision about a balance is given that balance's own account. Like
+ * `occupantOf`, a mismatch is a caller's mistake and is refused as one.
+ */
+function assertOwnBalance(position: PositionRow, existing: ValuationRow): void {
+  if (existing.positionId !== position.id) {
+    throw new Error('a valuation decision was handed another account');
+  }
+}
+
+/**
+ * Correct a balance, given the row as it stands, its account, and whatever the
+ * target date already holds.
+ *
+ * `occupant` is the account's balance on `args.valuedOn`, if it has one. When
+ * the date does not move that is the row being corrected, and it is not a
+ * clash. The balance's own rules (`assertValuationAllowed`) are the caller's to
+ * ask first.
+ */
+export function decideCorrectValuation(
+  position: PositionRow,
+  existing: ValuationRow,
   args: CorrectValuationArgs,
-  options: ResolveOptions = { lock: true },
-): Promise<ValuationWritePlan> {
-  const existing = await requireValuationIn(tx, args.valuationId, options);
-  if (existing === undefined) throw new NotFoundError('That balance no longer exists.');
-
-  const position = await requirePositionIn(tx, existing.positionId);
-  assertDateRules(ctx, args.valuedOn, args.datePrecision);
-  assertSign(position, args.amount);
-  assertWithinPositionWindow(position, args.valuedOn);
-
-  if (args.valuedOn !== existing.valuedOn) {
-    const clash = await findValuationOnIn(tx, existing.positionId, args.valuedOn);
-    if (clash !== undefined) {
-      throw new DuplicateConflictError(`There is already a balance for ${args.valuedOn}.`);
-    }
+  occupant: ValuationRow | undefined,
+): ValuationWritePlan {
+  assertOwnBalance(position, existing);
+  if (
+    args.valuedOn !== existing.valuedOn &&
+    occupantOf(occupant, position.id, args.valuedOn) !== undefined
+  ) {
+    throw new DuplicateConflictError(`There is already a balance for ${args.valuedOn}.`);
   }
 
   // Checked here as well as by the update itself, so a **preview** — which
@@ -524,6 +608,26 @@ export async function resolveCorrectValuationIn(
       { currency: position.currency, from: existing.valuedOn },
     ]),
   };
+}
+
+export async function resolveCorrectValuationIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: CorrectValuationArgs,
+  options: ResolveOptions = { lock: true },
+): Promise<ValuationWritePlan> {
+  const existing = await requireValuationIn(tx, args.valuationId, options);
+  if (existing === undefined) throw new NotFoundError('That balance no longer exists.');
+
+  const position = await requirePositionIn(tx, existing.positionId);
+  assertValuationAllowed(ctx.today, position, args);
+
+  // Only a date that moves can clash, so only then is it read.
+  const occupant =
+    args.valuedOn === existing.valuedOn
+      ? undefined
+      : await findValuationOnIn(tx, existing.positionId, args.valuedOn);
+  return decideCorrectValuation(position, existing, args, occupant);
 }
 
 async function correctValuationIn(
@@ -572,15 +676,13 @@ export interface RemoveValuationArgs {
   readonly reason?: string | undefined;
 }
 
-export async function resolveRemoveValuationIn(
-  tx: Transaction,
+/** Remove a balance, given the row as it stands and its account. */
+export function decideRemoveValuation(
+  position: PositionRow,
+  existing: ValuationRow,
   args: RemoveValuationArgs,
-  options: ResolveOptions = { lock: true },
-): Promise<ValuationWritePlan> {
-  const existing = await requireValuationIn(tx, args.valuationId, options);
-  if (existing === undefined) throw new NotFoundError('That balance no longer exists.');
-
-  const position = await requirePositionIn(tx, existing.positionId);
+): ValuationWritePlan {
+  assertOwnBalance(position, existing);
   if (position.status === 'closed' && existing.valuedOn === position.closedOn) {
     // Answered before the version, because it is true of the row at every
     // version: the closing balance of a closed account is not deletable here
@@ -619,6 +721,18 @@ export async function resolveRemoveValuationIn(
     dormancy,
     support: [],
   };
+}
+
+export async function resolveRemoveValuationIn(
+  tx: Transaction,
+  args: RemoveValuationArgs,
+  options: ResolveOptions = { lock: true },
+): Promise<ValuationWritePlan> {
+  const existing = await requireValuationIn(tx, args.valuationId, options);
+  if (existing === undefined) throw new NotFoundError('That balance no longer exists.');
+
+  const position = await requirePositionIn(tx, existing.positionId);
+  return decideRemoveValuation(position, existing, args);
 }
 
 async function removeValuationIn(
@@ -1067,10 +1181,7 @@ export async function resolveQuickUpdateIn(
 
     changes.push(
       existing === null
-        ? created(
-            { scope: 'prospective', kind: 'valuation', role: 'valuation', owner: position.id },
-            after,
-          )
+        ? created(prospectiveValuation(position.id, ctx.today), after)
         : updated(
             { scope: 'existing', kind: 'valuation', id: existing.id },
             valuationFacts(existing, position.currency),

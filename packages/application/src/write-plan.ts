@@ -55,8 +55,9 @@ export type SourceIdentity =
       readonly role: ProspectiveRole;
       /**
        * The aggregate or schedule the prospective row belongs to — a transfer
-       * id for its fee, a `templateId#occurrenceDate` for an occurrence — or
-       * `null` for a row that belongs to nothing but itself.
+       * id for its fee, a `templateId#occurrenceDate` for an occurrence, a
+       * `positionId#valuedOn` for a balance — or `null` for a row that belongs
+       * to nothing but itself.
        */
       readonly owner: string | null;
     };
@@ -66,6 +67,25 @@ export function identityKey(identity: SourceIdentity): string {
   return identity.scope === 'existing'
     ? `existing:${identity.kind}:${identity.id}`
     : `prospective:${identity.kind}:${identity.role}:${identity.owner ?? '-'}`;
+}
+
+/**
+ * The identity of a balance that does not exist yet.
+ *
+ * M1 makes a balance's date its identity within an account — one valuation per
+ * position per date — so the date is part of what a prospective balance is.
+ * Named by its account alone, two new balances of one account in the same plan
+ * would be one source fact, and a fingerprint that sorts by identity could no
+ * longer tell them apart. Every writer of a new balance names it here, so the
+ * preview and the confirm of the same balance always agree on what it is.
+ */
+export function prospectiveValuation(positionId: string, valuedOn: string): SourceIdentity {
+  return {
+    scope: 'prospective',
+    kind: 'valuation',
+    role: 'valuation',
+    owner: `${positionId}#${valuedOn}`,
+  };
 }
 
 /* -------------------------------------------------------------------------- */

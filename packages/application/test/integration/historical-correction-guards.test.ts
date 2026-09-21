@@ -498,6 +498,51 @@ describe('every path that can end a historical dormant episode (§99)', () => {
     expect((await valuationOn(savings, '2026-10-05')).id).toBeDefined();
   });
 
+  it('names a balance it would create by its account and its date, in preview and confirm alike', async () => {
+    await dormantSince(savings, '2026-08-31');
+    const args = {
+      positionId: savings,
+      valuedOn: '2026-10-02',
+      amount: '400.00',
+      datePrecision: 'exact' as const,
+    };
+
+    // The same unchanged state previewed twice is the same consent, and the
+    // balance that does not exist yet is named by what makes it one: its
+    // account and its date (M1), never a generated id.
+    const first = await preview({ kind: 'valuation_create', ...args });
+    const second = await preview({ kind: 'valuation_create', ...args });
+    expect(second.fingerprint).toBe(first.fingerprint);
+    expect(first.sourceScope).toContainEqual({
+      identity: {
+        scope: 'prospective',
+        kind: 'valuation',
+        role: 'valuation',
+        owner: `${savings}#2026-10-02`,
+      },
+      operation: 'create',
+    });
+
+    const quick = await preview({ kind: 'quick_update', entries: [{ positionId: savings, amount: '400.00' }] });
+    expect(quick.sourceScope).toContainEqual({
+      identity: {
+        scope: 'prospective',
+        kind: 'valuation',
+        role: 'valuation',
+        owner: `${savings}#2026-10-05`,
+      },
+      operation: 'create',
+    });
+
+    // And the confirm, re-deriving it under the write boundary, agrees.
+    const outcome = await confirmHistoricalCorrection(corrections(), OCT_5, {
+      draft: { kind: 'valuation_create', ...args },
+      fingerprint: first.fingerprint,
+    });
+    expect(outcome.status).toBe('committed');
+    expect((await valuationOn(savings, '2026-10-02')).id).toBeDefined();
+  });
+
   it('quickUpdate writing a zero into it stays ordinary: a zero is not money', async () => {
     await dormantSince(savings, '2026-08-31');
 
