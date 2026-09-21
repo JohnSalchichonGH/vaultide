@@ -15,6 +15,7 @@ import {
   type OccurrenceRef,
   type RecurringTemplateRow,
   type RecurringTemplateSkipRow,
+  type RecurringTemplateTermRow,
   type Transaction,
 } from '@vaultide/db';
 import {
@@ -182,11 +183,40 @@ function scheduleOf(template: RecurringTemplateRow) {
   };
 }
 
-/** The occurrence must be one this template actually has (6.2). */
-function assertScheduledOccurrence(
-  template: RecurringTemplateRow,
+/*
+ * ## The occurrence rules, as decisions
+ *
+ * Claiming an occurrence — for an acceptance or a skip — and accepting one are
+ * a handful of rules, each asked of rows the caller has read: the template, its
+ * terms, the occurrence's skip and whether a flow already carries it, and for a
+ * future occurrence what the template has already resolved. The functions
+ * below hold those rules and perform no IO, take no lock and read no clock.
+ * `claimOccurrenceIn` and `resolveAcceptSuggestionIn` read, in the order they
+ * always have, and ask them between the reads; the correction preview (no
+ * locks) and Historical Confirm (under them) reach them through those same
+ * functions.
+ *
+ * They are separate rather than one because reads sit between them: an
+ * occurrence already skipped is refused before anything else is looked up.
+ */
+
+/**
+ * The template an occurrence is claimed from: it exists, it is not archived,
+ * and the occurrence is one of its scheduled dates (6.2, 30.10).
+ *
+ * Archiving withdraws a source from new acceptances and skips; it rewrites no
+ * history, and it does not change what the schedule contained.
+ */
+export function assertClaimableOccurrence(
+  template: RecurringTemplateRow | undefined,
   occurrenceDate: string,
-): void {
+): RecurringTemplateRow {
+  if (template === undefined) throw new NotFoundError('That source no longer exists.');
+  if (template.archivedAt !== null) {
+    throw new ImpossibleOperationError(
+      'This source is archived, so its suggestions are no longer offered.',
+    );
+  }
   const dates = occurrencesInRange(
     scheduleOf(template),
     plainDate(occurrenceDate),
@@ -196,6 +226,46 @@ function assertScheduledOccurrence(
     throw new ValidationError('That is not one of this source’s scheduled dates.', {
       occurrenceDate: ['This source has no occurrence on that date.'],
     });
+  }
+  return template;
+}
+
+/**
+ * A future occurrence may be materialized only if it is the next one nothing
+ * has resolved (30.10). `resolved` holds every occurrence date of the template
+ * that a flow or a skip already carries.
+ */
+export function assertEarliestUnresolvedOccurrence(
+  template: RecurringTemplateRow,
+  occurrenceDate: string,
+  today: string,
+  resolved: ReadonlySet<string>,
+): void {
+  const eligible = nextUnresolvedOccurrence(scheduleOf(template), plainDate(today), resolved);
+
+  if (eligible === undefined || eligible !== occurrenceDate) {
+    throw new ValidationError(
+      eligible === undefined
+        ? 'This source has no upcoming date left to record early.'
+        : `The next one still to record is ${eligible}. Record that one before this, so nothing is left with a gap behind it.`,
+      { occurrenceDate: ['This is not the next date still to record.'] },
+    );
+  }
+}
+
+/** An occurrence already skipped is resolved; it is un-skipped before anything else (20.3). */
+export function assertNotSkipped(skip: RecurringTemplateSkipRow | undefined): void {
+  if (skip !== undefined) {
+    throw new DuplicateConflictError(
+      'This occurrence is already marked as skipped. Un-skip it first if it did happen after all.',
+    );
+  }
+}
+
+/** An occurrence a flow already carries is resolved, and is not materialized twice (20.3). */
+export function assertNotMaterialized(materialized: boolean): void {
+  if (materialized) {
+    throw new DuplicateConflictError('This occurrence has already been recorded.');
   }
 }
 
@@ -215,50 +285,24 @@ async function claimOccurrenceIn(
   // transaction. Confirm takes it for real, so an occurrence somebody else
   // recorded in between is still the existing conflict rather than a changed
   // impact (§12 of the slice prompt).
-  const template = options.lock
-    ? await lockTemplateIn(tx, args.templateId)
-    : await findTemplateIn(tx, args.templateId);
-  if (template === undefined) throw new NotFoundError('That source no longer exists.');
-  if (template.archivedAt !== null) {
-    throw new ImpossibleOperationError(
-      'This source is archived, so its suggestions are no longer offered.',
-    );
-  }
-  assertScheduledOccurrence(template, args.occurrenceDate);
+  const template = assertClaimableOccurrence(
+    options.lock
+      ? await lockTemplateIn(tx, args.templateId)
+      : await findTemplateIn(tx, args.templateId),
+    args.occurrenceDate,
+  );
 
-  // A future occurrence may be materialized only if it is the next one nothing
-  // has resolved (30.10). Computed here, under the template's lock, so a
-  // concurrent acceptance of the earlier occurrence cannot slip in between the
-  // decision and the write — and so the rule holds against any caller, not only
-  // against a well-behaved interface.
+  // Asked here, under the template's lock, so a concurrent acceptance of the
+  // earlier occurrence cannot slip in between the decision and the write — and
+  // so the rule holds against any caller, not only against a well-behaved
+  // interface.
   if (args.today !== undefined && args.occurrenceDate > args.today) {
     const resolved = new Set(await listResolvedOccurrenceDatesIn(tx, args.templateId));
-    const eligible = nextUnresolvedOccurrence(
-      scheduleOf(template),
-      plainDate(args.today),
-      resolved,
-    );
-
-    if (eligible === undefined || eligible !== args.occurrenceDate) {
-      throw new ValidationError(
-        eligible === undefined
-          ? 'This source has no upcoming date left to record early.'
-          : `The next one still to record is ${eligible}. Record that one before this, so nothing is left with a gap behind it.`,
-        { occurrenceDate: ['This is not the next date still to record.'] },
-      );
-    }
+    assertEarliestUnresolvedOccurrence(template, args.occurrenceDate, args.today, resolved);
   }
 
-  const skip = await findSkipIn(tx, args.templateId, args.occurrenceDate);
-  if (skip !== undefined) {
-    throw new DuplicateConflictError(
-      'This occurrence is already marked as skipped. Un-skip it first if it did happen after all.',
-    );
-  }
-
-  if (await hasMaterializedOccurrenceIn(tx, args.templateId, args.occurrenceDate)) {
-    throw new DuplicateConflictError('This occurrence has already been recorded.');
-  }
+  assertNotSkipped(await findSkipIn(tx, args.templateId, args.occurrenceDate));
+  assertNotMaterialized(await hasMaterializedOccurrenceIn(tx, args.templateId, args.occurrenceDate));
 
   return template;
 }
@@ -317,15 +361,15 @@ export type AcceptWritePlan = ResolvedWrite & {
     | { readonly kind: 'expense'; readonly expense: ExpenseWritePlan }
   );
 
-export async function resolveAcceptSuggestionIn(
-  tx: Transaction,
-  ctx: RequestContext,
+/**
+ * An acceptance on its own terms: a gross amount only for income, and the
+ * financial date its occurrence allows (M5, 30.10).
+ */
+export function decideAcceptance(
+  today: PlainDate,
+  template: RecurringTemplateRow,
   args: AcceptSuggestionArgs,
-  options: ResolveOptions = { lock: true },
-): Promise<AcceptWritePlan> {
-  const template = await findTemplateIn(tx, args.templateId);
-  if (template === undefined) throw new NotFoundError('That source no longer exists.');
-
+): { readonly financialDate: string } {
   // An expense has no gross figure to carry (6.2: `expense_entries` has no such
   // column), so a stated one is refused rather than silently dropped.
   if (args.grossAmount !== undefined && template.kind !== 'income') {
@@ -342,19 +386,17 @@ export async function resolveAcceptSuggestionIn(
   //
   // Early materialization: the occurrence is still ahead, so it is reachable
   // only through the explicit mode, only if it is the next unresolved one
-  // (checked under the lock below), and its financial date is today by
+  // (`assertEarliestUnresolvedOccurrence`, asked where the occurrence is
+  // claimed, under the template's lock), and its financial date is today by
   // definition rather than by choice (30.10).
-  const isFutureOccurrence = args.occurrenceDate > ctx.today;
-  let financialDate: string;
-
-  if (isFutureOccurrence) {
+  if (args.occurrenceDate > today) {
     if (args.receivedToday !== true) {
       throw new ValidationError(
         'This has not happened yet. Accept it on the day, or say that you received it today.',
         { occurrenceDate: ['This date has not arrived yet.'] },
       );
     }
-    if (args.financialDate !== undefined && args.financialDate !== ctx.today) {
+    if (args.financialDate !== undefined && args.financialDate !== today) {
       // Recording something ahead of its date says it arrived *today*. Any
       // other date would be a claim about a day nothing was known to happen.
       throw new ValidationError(
@@ -362,18 +404,35 @@ export async function resolveAcceptSuggestionIn(
         { financialDate: ['This has to be today.'] },
       );
     }
-    financialDate = ctx.today;
-  } else {
-    financialDate = args.financialDate ?? args.occurrenceDate;
-    if (financialDate > ctx.today) {
-      throw new ValidationError(
-        'This has not happened yet. Accept it on the day, or say that you received it today.',
-        { financialDate: ['This date is in the future.'] },
-      );
-    }
+    return { financialDate: today };
   }
 
-  const terms = (await listTermsIn(tx, args.templateId)).map((row) => ({
+  const financialDate = args.financialDate ?? args.occurrenceDate;
+  if (financialDate > today) {
+    throw new ValidationError(
+      'This has not happened yet. Accept it on the day, or say that you received it today.',
+      { financialDate: ['This date is in the future.'] },
+    );
+  }
+  return { financialDate };
+}
+
+/**
+ * What an acceptance materializes, from the template and its terms: the amount
+ * and gross of the term the occurrence falls under unless the caller states
+ * this occurrence's own, and the template's own account unless the caller names
+ * another.
+ */
+export function decideAcceptedAmounts(
+  template: RecurringTemplateRow,
+  termRows: readonly RecurringTemplateTermRow[],
+  args: AcceptSuggestionArgs,
+): {
+  readonly amount: string;
+  readonly grossAmount: string | null;
+  readonly cashPositionId: string | null;
+} {
+  const terms = termRows.map((row) => ({
     id: row.id,
     templateId: row.templateId,
     effectiveFrom: plainDate(row.effectiveFrom),
@@ -414,6 +473,25 @@ export async function resolveAcceptSuggestionIn(
 
   const cashPositionId =
     args.cashPositionId === undefined ? template.cashPositionId : args.cashPositionId;
+
+  return { amount, grossAmount, cashPositionId };
+}
+
+export async function resolveAcceptSuggestionIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: AcceptSuggestionArgs,
+  options: ResolveOptions = { lock: true },
+): Promise<AcceptWritePlan> {
+  const template = await findTemplateIn(tx, args.templateId);
+  if (template === undefined) throw new NotFoundError('That source no longer exists.');
+
+  const { financialDate } = decideAcceptance(ctx.today, template, args);
+  const { amount, grossAmount, cashPositionId } = decideAcceptedAmounts(
+    template,
+    await listTermsIn(tx, args.templateId),
+    args,
+  );
 
   const occurrence = { templateId: args.templateId, occurrenceDate: args.occurrenceDate };
 
