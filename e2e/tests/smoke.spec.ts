@@ -128,7 +128,8 @@ test.describe('the public homepage', () => {
       'Income, expenses & transfers',
       'Spending over time',
       'Fix reconciliation issues',
-      'Historical corrections and income',
+      'Correct past records',
+      'Older history and income',
       'Investments',
       'Debts & mortgages',
       'Property',
@@ -137,16 +138,21 @@ test.describe('the public homepage', () => {
     ]) {
       await expect(roadmap.getByText(entry, { exact: true })).toBeVisible();
     }
-    // Correcting a reconciliation issue is something the product does now, not
-    // something it promises: the title sits under Available now, what is next is
-    // correcting history, and the title that promised both together is gone.
+    // Correcting a reconciliation issue and correcting past records are things
+    // the product does now, not things it promises: both titles sit under
+    // Available now, what is next is older history and income, and the titles
+    // that promised shipped work are gone.
     await expect(
       page.getByTestId('roadmap-available').getByText('Fix reconciliation issues', { exact: true }),
     ).toBeVisible();
     await expect(
-      page.getByTestId('roadmap-next').getByText('Historical corrections and income', { exact: true }),
+      page.getByTestId('roadmap-available').getByText('Correct past records', { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId('roadmap-next').getByText('Older history and income', { exact: true }),
     ).toBeVisible();
     await expect(roadmap.getByText('Corrections and income over time')).toHaveCount(0);
+    await expect(roadmap.getByText('Historical corrections and income')).toHaveCount(0);
     // Planned work is described on the page, not behind a control.
     await expect(
       roadmap.getByText(

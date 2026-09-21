@@ -107,6 +107,10 @@ export const ROADMAP = {
           title: 'Fix reconciliation issues',
           text: 'When a month does not add up, Vaultide takes you to the balance, income, expense or transfer that would explain it, with what it already knows filled in. It suggests; you decide what is recorded, and nothing is written until you confirm it.',
         },
+        {
+          title: 'Correct past records',
+          text: 'Change or delete a balance, income, expense or transfer that belongs to a finished month, and see what the correction does — the record before and after, and which months are worked out again — before anything is saved.',
+        },
       ],
     },
     {
@@ -114,8 +118,8 @@ export const ROADMAP = {
       label: 'Next up',
       entries: [
         {
-          title: 'Historical corrections and income',
-          text: 'Correct past records with their effect shown before and after, enter older history faster, and see your income across months in a dedicated view.',
+          title: 'Older history and income',
+          text: 'Enter older history faster, several months of balances and recurring income at a time, and see your income across months in a dedicated view.',
         },
       ],
     },
