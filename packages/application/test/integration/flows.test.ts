@@ -324,6 +324,40 @@ describe('income entries', () => {
     expect(audit[1]?.after).toMatchObject({ netAmount: '2150.00000000' });
   });
 
+  it('keeps the gross a correction leaves out, clears it for null and sets it for an amount', async () => {
+    const created = await createIncomeEntry(deps(), SEPT_15, {
+      kind: 'employment',
+      receivedOn: '2026-09-15',
+      netAmount: '2100.00',
+      grossAmount: '3000.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId: bbva,
+    });
+    expect(created.grossAmount).toBe('3000.00000000');
+
+    const netOnly = await updateIncomeEntry(deps(), SEPT_15, {
+      entryId: created.id,
+      expectedVersion: created.version,
+      netAmount: '2150.00',
+    });
+    expect(netOnly).toMatchObject({ netAmount: '2150.00000000', grossAmount: '3000.00000000' });
+
+    const cleared = await updateIncomeEntry(deps(), SEPT_15, {
+      entryId: created.id,
+      expectedVersion: netOnly.version,
+      grossAmount: null,
+    });
+    expect(cleared).toMatchObject({ netAmount: '2150.00000000', grossAmount: null });
+
+    const set = await updateIncomeEntry(deps(), SEPT_15, {
+      entryId: created.id,
+      expectedVersion: cleared.version,
+      grossAmount: '3050.00',
+    });
+    expect(set.grossAmount).toBe('3050.00000000');
+  });
+
   it('deletes with a before-image', async () => {
     const created = await createIncomeEntry(deps(), SEPT_15, {
       kind: 'employment',

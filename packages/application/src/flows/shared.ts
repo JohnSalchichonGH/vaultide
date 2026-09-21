@@ -31,25 +31,33 @@ export interface FlowDependencies {
 }
 
 /**
- * A cash account of this user, or `NOT_FOUND`.
+ * A position as loaded, as a cash account of this user, or `NOT_FOUND`.
  *
  * Another user's id and a nonexistent id produce the same error with the same
  * message, so an id cannot be probed for existence (17.3). RLS makes the read
  * return nothing either way; this turns that into the right error.
  */
-export async function requireCashAccountIn(
-  tx: Transaction,
-  positionId: string,
-): Promise<PositionRow> {
-  const position = await findPositionIn(tx, positionId);
+export function asCashAccount(position: PositionRow | undefined): PositionRow {
   if (position === undefined || position.kind !== 'cash') {
     throw new NotFoundError('That account no longer exists.');
   }
   return position;
 }
 
+/** A cash account of this user, read inside the caller's transaction, or `NOT_FOUND`. */
+export async function requireCashAccountIn(
+  tx: Transaction,
+  positionId: string,
+): Promise<PositionRow> {
+  return asCashAccount(await findPositionIn(tx, positionId));
+}
+
 /** No actual financial record may be dated after today (M5, R17). */
-export function assertNotFuture(ctx: RequestContext, date: string, field: string): void {
+export function assertNotFuture(
+  ctx: Pick<RequestContext, 'today'>,
+  date: string,
+  field: string,
+): void {
   if (date > ctx.today) {
     throw new ValidationError('This date is in the future. Records can only be dated up to today.', {
       [field]: ['This date is in the future.'],
@@ -93,38 +101,88 @@ export function assertCurrencyMatches(position: PositionRow, currency: string): 
   }
 }
 
+/** The cash leg a tracked flow asks for: a named account, or none yet. */
+export interface TrackedCashLegRequest {
+  readonly cashPositionId: string | null;
+  readonly currency: string;
+  /** The flow's financial date. */
+  readonly on: string;
+  /** The field a refusal about that date is reported against. */
+  readonly dateField: string;
+}
+
 /**
- * Resolve the cash leg of a tracked flow.
+ * What the caller read to judge a tracked flow's cash leg.
  *
- * With an account: check ownership, currency and the participation window.
- * Without one: check that *some* cash account of that currency participates on
- * the date, because 8.1 requires it and a null-leg flow in a currency with no
- * account is the blocking `flow_without_cash_account` issue. What this never
- * does is treat the missing account as evidence the flow was untracked —
- * settlement is a stated fact, never an inference (§30.9 item 1).
- *
- * Inside the caller's transaction, so an account closed or deleted between the
- * check and the write cannot make the flow land in a bucket nothing reconciles.
+ * For a named account, the position that id resolved to — read by the
+ * application layer under RLS, and `undefined` when nothing came back. For no
+ * account, whether any cash account of the currency takes part in the flow's
+ * month (8.1): the null leg's whole question, answered by the loader.
  */
-export async function resolveTrackedCashLegIn(
-  tx: Transaction,
-  args: { cashPositionId: string | null; currency: string; on: string; dateField: string },
-): Promise<PositionRow | null> {
-  if (args.cashPositionId === null) {
-    const participates = await hasParticipatingCashAccountIn(tx, args.currency, args.on);
-    if (!participates) {
+export type TrackedCashLegEvidence =
+  | { readonly kind: 'account'; readonly position: PositionRow | undefined }
+  | { readonly kind: 'unattributed'; readonly participates: boolean };
+
+/**
+ * Judge the cash leg of a tracked flow, from what was read for it.
+ *
+ * With an account: ownership, currency and the participation window. Without
+ * one: that *some* cash account of that currency participates, because 8.1
+ * requires it and a null-leg flow in a currency with no account is the blocking
+ * `flow_without_cash_account` issue. What this never does is treat the missing
+ * account as evidence the flow was untracked — settlement is a stated fact,
+ * never an inference (§30.9 item 1).
+ *
+ * Returns the account the flow attaches to, or `null` for a tracked flow
+ * awaiting attribution. Pure: every fact it needs is in `evidence`.
+ */
+export function decideTrackedCashLeg(
+  request: TrackedCashLegRequest,
+  evidence: TrackedCashLegEvidence,
+): PositionRow | null {
+  if (request.cashPositionId === null) {
+    if (evidence.kind !== 'unattributed') {
+      throw new Error('a null cash leg was judged against an account');
+    }
+    if (!evidence.participates) {
       throw new ValidationError(
-        `You have no ${args.currency} cash account open on ${args.on}, so this flow has nothing to reconcile against. Choose an account, or add one.`,
+        `You have no ${request.currency} cash account open on ${request.on}, so this flow has nothing to reconcile against. Choose an account, or add one.`,
         { cashPositionId: ['Choose the account this went through.'] },
       );
     }
     return null;
   }
 
-  const position = await requireCashAccountIn(tx, args.cashPositionId);
-  assertCurrencyMatches(position, args.currency);
-  assertAccountParticipates(position, args.on, args.dateField);
+  if (evidence.kind !== 'account') {
+    throw new Error('a named cash leg was judged without its account');
+  }
+  const position = asCashAccount(evidence.position);
+  if (position.id !== request.cashPositionId) {
+    throw new Error('a cash leg was judged against another account');
+  }
+  assertCurrencyMatches(position, request.currency);
+  assertAccountParticipates(position, request.on, request.dateField);
   return position;
+}
+
+/**
+ * Resolve the cash leg of a tracked flow: read what it names, then judge it.
+ *
+ * Inside the caller's transaction, so an account closed or deleted between the
+ * check and the write cannot make the flow land in a bucket nothing reconciles.
+ */
+export async function resolveTrackedCashLegIn(
+  tx: Transaction,
+  args: TrackedCashLegRequest,
+): Promise<PositionRow | null> {
+  const evidence: TrackedCashLegEvidence =
+    args.cashPositionId === null
+      ? {
+          kind: 'unattributed',
+          participates: await hasParticipatingCashAccountIn(tx, args.currency, args.on),
+        }
+      : { kind: 'account', position: await findPositionIn(tx, args.cashPositionId) };
+  return decideTrackedCashLeg(args, evidence);
 }
 
 /* -------------------------------------------------------------------------- */

@@ -5,8 +5,10 @@ import {
   updateIncomeEntryIn as updateIncomeEntryRowIn,
   type IncomeEntryRow,
   type OccurrenceRef,
+  type PositionRecord as PositionRow,
   type Transaction,
 } from '@vaultide/db';
+import type { PlainDate } from '@vaultide/finance';
 import { allowedIncomeSettlements, type IncomeKind, type IncomeSettlement } from '@vaultide/validation';
 import type { RequestContext } from '../context';
 import { withUserWrite } from '../coordination';
@@ -31,6 +33,7 @@ import {
   clearDormancyEffect,
   resolveTrackedCashLegIn,
   type FlowDependencies,
+  type TrackedCashLegRequest,
 } from './shared';
 
 /**
@@ -159,35 +162,68 @@ function incomeFactsOf(
   };
 }
 
-/**
- * Resolve a new income entry, whoever is creating it.
+/*
+ * ## Decisions, reads, plans
  *
- * Exported because the reconciliation adjustment and a recurring acceptance are
- * ordinary income entries whose amount and occurrence identity their own
- * services derive (ADR 0009 §5, ADR 0010 §15). Everything a direct caller gets
- * — the settlement matrix, the null-leg rule, the future-date rule and the
- * dormancy consequence — they get too.
+ * Each income resolver below is three steps, and only the middle one reads:
+ *
+ * ```text
+ * decideIncome…     every rule the entry obeys on its own terms, the columns it
+ *                   will have, and the cash leg it names          (pure)
+ * the cash leg      read and judged by `resolveTrackedCashLegIn`  (reads)
+ * planIncome…       the resolved write: facts, identity, dormancy  (pure)
+ * ```
+ *
+ * The decisions and plans perform no IO, take no lock and read no clock —
+ * `today` arrives as an argument — so the same rule judges the same rows
+ * whoever loaded them: the ordinary write, the correction preview and
+ * Historical Confirm. A delete names no leg, so it is one decision.
  */
-export async function resolveIncomeCreateIn(
-  tx: Transaction,
-  ctx: RequestContext,
-  args: IncomeEntryArgs,
-  occurrence?: OccurrenceRef,
-): Promise<IncomeWritePlan> {
-  assertNotFuture(ctx, args.receivedOn, 'receivedOn');
+
+/** An income write judged on its own terms, and the cash leg it still needs judged. */
+export interface IncomeDecision {
+  readonly columns: IncomeColumns;
+  /** The tracked-cash leg to judge, or `null` for income not received in tracked cash. */
+  readonly leg: TrackedCashLegRequest | null;
+}
+
+/** The tracked-cash leg an income entry with these columns needs judged, if any. */
+function incomeLegOf(columns: IncomeColumns): TrackedCashLegRequest | null {
+  return columns.settlement === 'tracked_cash'
+    ? {
+        cashPositionId: columns.cashPositionId,
+        currency: columns.currency,
+        on: columns.receivedOn,
+        dateField: 'receivedOn',
+      }
+    : null;
+}
+
+/**
+ * The leg a plan is given must be the one its columns name: the account the
+ * entry attaches to, or none. A mismatch is a caller's mistake.
+ */
+function assertLegMatches(columns: IncomeColumns, leg: PositionRow | null): void {
+  if ((leg?.id ?? null) !== columns.cashPositionId) {
+    throw new Error('an income plan was given the cash leg of another account');
+  }
+}
+
+/** The occurrence a stored row fulfils, when it fulfils one. */
+function occurrenceOfRow(row: IncomeEntryRow): OccurrenceRef | undefined {
+  return row.templateId === null || row.occurrenceDate === null
+    ? undefined
+    : { templateId: row.templateId, occurrenceDate: row.occurrenceDate };
+}
+
+/**
+ * A new income entry on its own terms: not in the future (M5), a settlement
+ * Phase 3 records for its kind (7.4), and a cash position only when it is
+ * tracked cash.
+ */
+export function decideIncomeCreate(today: PlainDate, args: IncomeEntryArgs): IncomeDecision {
+  assertNotFuture({ today }, args.receivedOn, 'receivedOn');
   assertIncomeSettlementAllowed(args.kind, args.settlement);
-
-  const cashPositionId = args.settlement === 'tracked_cash' ? (args.cashPositionId ?? null) : null;
-
-  const leg =
-    args.settlement === 'tracked_cash'
-      ? await resolveTrackedCashLegIn(tx, {
-          cashPositionId,
-          currency: args.currency,
-          on: args.receivedOn,
-          dateField: 'receivedOn',
-        })
-      : null;
 
   const columns: IncomeColumns = {
     kind: args.kind,
@@ -196,11 +232,24 @@ export async function resolveIncomeCreateIn(
     grossAmount: args.grossAmount ?? null,
     currency: args.currency,
     settlement: args.settlement,
-    cashPositionId,
+    cashPositionId: args.settlement === 'tracked_cash' ? (args.cashPositionId ?? null) : null,
     description: args.description ?? null,
     tags: args.tags,
     isOneOff: args.isOneOff,
   };
+  return { columns, leg: incomeLegOf(columns) };
+}
+
+/**
+ * The resolved creation, given its judged cash leg and the occurrence it
+ * materializes, if it materializes one.
+ */
+export function planIncomeCreate(
+  columns: IncomeColumns,
+  leg: PositionRow | null,
+  occurrence?: OccurrenceRef,
+): IncomeWritePlan {
+  assertLegMatches(columns, leg);
   const dormancy = realDormancyEffects(leg === null ? [] : [clearDormancyEffect(leg)]);
 
   return {
@@ -227,7 +276,112 @@ export async function resolveIncomeCreateIn(
       ...dormancy.map(dormancyChange),
     ],
     dormancy,
-    support: [{ currency: args.currency, from: args.receivedOn }],
+    support: [{ currency: columns.currency, from: columns.receivedOn }],
+  };
+}
+
+/**
+ * Resolve a new income entry, whoever is creating it.
+ *
+ * Exported because the reconciliation adjustment and a recurring acceptance are
+ * ordinary income entries whose amount and occurrence identity their own
+ * services derive (ADR 0009 §5, ADR 0010 §15). Everything a direct caller gets
+ * — the settlement matrix, the null-leg rule, the future-date rule and the
+ * dormancy consequence — they get too.
+ */
+export async function resolveIncomeCreateIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: IncomeEntryArgs,
+  occurrence?: OccurrenceRef,
+): Promise<IncomeWritePlan> {
+  const decision = decideIncomeCreate(ctx.today, args);
+  const leg = decision.leg === null ? null : await resolveTrackedCashLegIn(tx, decision.leg);
+  return planIncomeCreate(decision.columns, leg, occurrence);
+}
+
+/**
+ * A correction of a stored income entry on its own terms: the version the
+ * caller saw, then the corrected entry's date and settlement, exactly as a new
+ * one would be judged. What the correction leaves out keeps its stored value;
+ * `grossAmount: null` clears the gross, and the currency never moves.
+ */
+export function decideIncomeUpdate(
+  today: PlainDate,
+  existing: IncomeEntryRow,
+  args: UpdateIncomeEntryArgs,
+): IncomeDecision {
+  if (existing.version !== args.expectedVersion) {
+    // Asked here as well as by the update, so a preview — which writes nothing
+    // and never reaches the update — refuses a stale draft for the same reason
+    // a save does (§59 of the slice prompt).
+    throw new VersionConflictError('This entry changed while you were editing it.');
+  }
+
+  const kind = args.kind ?? existing.kind;
+  const settlement = args.settlement ?? existing.settlement;
+  const receivedOn = args.receivedOn ?? existing.receivedOn;
+  const netAmount = args.netAmount ?? existing.netAmount;
+
+  assertNotFuture({ today }, receivedOn, 'receivedOn');
+  assertIncomeSettlementAllowed(kind, settlement);
+
+  const requestedCash =
+    args.cashPositionId === undefined ? existing.cashPositionId : args.cashPositionId;
+
+  const columns: IncomeColumns = {
+    kind,
+    receivedOn,
+    netAmount,
+    grossAmount: args.grossAmount === undefined ? existing.grossAmount : args.grossAmount,
+    currency: existing.currency,
+    settlement,
+    cashPositionId: settlement === 'tracked_cash' ? requestedCash : null,
+    description: args.description === undefined ? existing.description : args.description,
+    tags: args.tags,
+    isOneOff: args.isOneOff,
+  };
+  return { columns, leg: incomeLegOf(columns) };
+}
+
+/**
+ * The resolved correction, given the stored row, the columns its decision
+ * produced and its judged cash leg.
+ *
+ * `occurrence_date` is the scheduling identity of the occurrence the row
+ * fulfilled, so moving the financial date must not move it (§30.9 item 2): the
+ * facts carry the stored pair, and the columns have no field for it.
+ */
+export function planIncomeUpdate(
+  existing: IncomeEntryRow,
+  columns: IncomeColumns,
+  leg: PositionRow | null,
+): IncomeWritePlan {
+  assertLegMatches(columns, leg);
+  const dormancy = realDormancyEffects(leg === null ? [] : [clearDormancyEffect(leg)]);
+  const occurrence = occurrenceOfRow(existing);
+
+  return {
+    operation: 'update',
+    existing,
+    // `decideIncomeUpdate` has already held the caller to this version.
+    expectedVersion: existing.version,
+    columns,
+    occurrence,
+    revision: true,
+    changes: [
+      updated(
+        { scope: 'existing', kind: 'income', id: existing.id },
+        incomeFacts(existing),
+        incomeFactsOf(columns, occurrence),
+      ),
+      ...dormancy.map(dormancyChange),
+    ],
+    dormancy,
+    support: mergeSupport([
+      { currency: existing.currency, from: columns.receivedOn },
+      { currency: existing.currency, from: existing.receivedOn },
+    ]),
   };
 }
 
@@ -243,94 +397,17 @@ export async function resolveIncomeUpdateIn(
     options.lock ? { lock: 'update' } : {},
   );
   if (existing === undefined) throw new NotFoundError('That income entry no longer exists.');
-  if (existing.version !== args.expectedVersion) {
-    // Asked here as well as by the update, so a preview — which writes nothing
-    // and never reaches the update — refuses a stale draft for the same reason
-    // a save does (§59 of the slice prompt).
-    throw new VersionConflictError('This entry changed while you were editing it.');
-  }
 
-  const kind = args.kind ?? existing.kind;
-  const settlement = args.settlement ?? existing.settlement;
-  const receivedOn = args.receivedOn ?? existing.receivedOn;
-  const netAmount = args.netAmount ?? existing.netAmount;
-
-  assertNotFuture(ctx, receivedOn, 'receivedOn');
-  assertIncomeSettlementAllowed(kind, settlement);
-
-  const requestedCash =
-    args.cashPositionId === undefined ? existing.cashPositionId : args.cashPositionId;
-  const cashPositionId = settlement === 'tracked_cash' ? requestedCash : null;
-
-  const leg =
-    settlement === 'tracked_cash'
-      ? await resolveTrackedCashLegIn(tx, {
-          cashPositionId,
-          currency: existing.currency,
-          on: receivedOn,
-          dateField: 'receivedOn',
-        })
-      : null;
-
-  const columns: IncomeColumns = {
-    kind,
-    receivedOn,
-    netAmount,
-    grossAmount: args.grossAmount === undefined ? existing.grossAmount : args.grossAmount,
-    currency: existing.currency,
-    settlement,
-    cashPositionId,
-    description: args.description === undefined ? existing.description : args.description,
-    tags: args.tags,
-    isOneOff: args.isOneOff,
-  };
-  const dormancy = realDormancyEffects(leg === null ? [] : [clearDormancyEffect(leg)]);
-
-  return {
-    operation: 'update',
-    existing,
-    expectedVersion: args.expectedVersion,
-    columns,
-    // `occurrence_date` is the scheduling identity of the occurrence this row
-    // fulfilled, so moving the financial date must not move it (§30.9 item 2).
-    // The patch has no such field, and the facts carry the stored pair.
-    occurrence:
-      existing.templateId === null || existing.occurrenceDate === null
-        ? undefined
-        : { templateId: existing.templateId, occurrenceDate: existing.occurrenceDate },
-    revision: true,
-    changes: [
-      updated(
-        { scope: 'existing', kind: 'income', id: existing.id },
-        incomeFacts(existing),
-        incomeFactsOf(
-          columns,
-          existing.templateId === null || existing.occurrenceDate === null
-            ? undefined
-            : { templateId: existing.templateId, occurrenceDate: existing.occurrenceDate },
-        ),
-      ),
-      ...dormancy.map(dormancyChange),
-    ],
-    dormancy,
-    support: mergeSupport([
-      { currency: existing.currency, from: receivedOn },
-      { currency: existing.currency, from: existing.receivedOn },
-    ]),
-  };
+  const decision = decideIncomeUpdate(ctx.today, existing, args);
+  const leg = decision.leg === null ? null : await resolveTrackedCashLegIn(tx, decision.leg);
+  return planIncomeUpdate(existing, decision.columns, leg);
 }
 
-export async function resolveIncomeDeleteIn(
-  tx: Transaction,
+/** The resolved delete of a stored income entry, at the version the caller saw. */
+export function decideIncomeDelete(
+  existing: IncomeEntryRow,
   args: DeleteIncomeEntryArgs,
-  options: ResolveOptions = { lock: true },
-): Promise<IncomeWritePlan> {
-  const existing = await findIncomeEntryIn(
-    tx,
-    args.entryId,
-    options.lock ? { lock: 'update' } : {},
-  );
-  if (existing === undefined) throw new NotFoundError('That income entry no longer exists.');
+): IncomeWritePlan {
   if (existing.version !== args.expectedVersion) {
     throw new VersionConflictError(
       'This entry changed after you opened it. Reload to see what it says now.',
@@ -349,6 +426,20 @@ export async function resolveIncomeDeleteIn(
     dormancy: [],
     support: [],
   };
+}
+
+export async function resolveIncomeDeleteIn(
+  tx: Transaction,
+  args: DeleteIncomeEntryArgs,
+  options: ResolveOptions = { lock: true },
+): Promise<IncomeWritePlan> {
+  const existing = await findIncomeEntryIn(
+    tx,
+    args.entryId,
+    options.lock ? { lock: 'update' } : {},
+  );
+  if (existing === undefined) throw new NotFoundError('That income entry no longer exists.');
+  return decideIncomeDelete(existing, args);
 }
 
 /** The one writer for all three income operations, and for both callers. */
