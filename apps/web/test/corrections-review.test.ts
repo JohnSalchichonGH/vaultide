@@ -21,8 +21,15 @@ const {
   summarizePeriods,
   summarizeSources,
 } = await import('@/features/corrections/presentation');
-const { DestructiveConfirm, HISTORICAL_CREATION_NOTE, addsToCompletedMonth, isHistorical } =
-  await import('@/features/corrections/delete-confirm');
+const {
+  DestructiveConfirm,
+  HISTORICAL_CREATION_NOTE,
+  HISTORICAL_FEE_CREATION_NOTE,
+  addsToCompletedMonth,
+  isHistorical,
+  transferCreationNote,
+} = await import('@/features/corrections/delete-confirm');
+const { attemptCorrection } = await import('@/features/corrections/use-correction');
 
 /**
  * The review dialog and the words it puts on screen (blueprint 15.3, 16.6;
@@ -404,5 +411,196 @@ describe('what Confirm answered (§70, §112)', () => {
     const html = render(preview({ fingerprint: 'hc-v1:bbbb' }));
     expect(html).toContain('data-testid="correction-confirm"');
     expect(html).toContain('data-testid="correction-reason"');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The gap between asking and saving                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Preview and the ordinary save are two round trips (§5).
+ *
+ * Another writer can commit in between, so `not_required` followed by
+ * `HISTORICAL_REVIEW_REQUIRED` is reachable and always will be. The server is
+ * safe — the guard refuses before a row moves — but the interface has a
+ * protocol to finish: that refusal is exactly the answer the asking was for,
+ * so it becomes the review rather than an error the user cannot act on.
+ */
+describe('a guard refusal after not_required becomes the review (§5)', () => {
+  const ok = { ok: true } as const;
+  const guardRefused = {
+    ok: false,
+    error: {
+      code: 'HISTORICAL_REVIEW_REQUIRED',
+      message: 'This changes a month that is already closed. Nothing was saved.',
+    },
+  } as const;
+
+  const notRequired = { ok: true, data: { status: 'not_required' } } as const;
+  const reviewRequired = (over = {}) =>
+    ({ ok: true, data: { status: 'review_required', preview: preview(over) } }) as const;
+
+  function ports(answers: readonly unknown[]) {
+    const opened: { draft: CorrectionDraft; preview: CorrectionPreview }[] = [];
+    const asked: CorrectionDraft[] = [];
+    let forgotten = 0;
+    let next = 0;
+    return {
+      opened,
+      asked,
+      get forgotten() {
+        return forgotten;
+      },
+      ports: {
+        ask: (draft: CorrectionDraft) => {
+          asked.push(draft);
+          const answer = answers[next];
+          next += 1;
+          return Promise.resolve(answer as never);
+        },
+        open: (draft: CorrectionDraft, shown: CorrectionPreview) => {
+          opened.push({ draft, preview: shown });
+        },
+        forget: () => {
+          forgotten += 1;
+        },
+      },
+    };
+  }
+
+  it('asks once more and opens the review on the fresh preview', async () => {
+    const fresh = reviewRequired({ fingerprint: 'hc-v1:fresh' });
+    const harness = ports([notRequired, fresh]);
+    const save = vi.fn().mockResolvedValue(guardRefused);
+
+    const outcome = await attemptCorrection(harness.ports, DRAFT, save);
+
+    expect(outcome).toEqual({ kind: 'review' });
+    // Exactly one save attempt, and exactly two previews: no loop.
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(harness.asked).toHaveLength(2);
+    // The same draft both times: nothing the user typed was discarded.
+    expect(harness.asked[0]).toBe(DRAFT);
+    expect(harness.asked[1]).toBe(DRAFT);
+    expect(harness.opened).toHaveLength(1);
+    expect(harness.opened[0]?.draft).toBe(DRAFT);
+    expect(harness.opened[0]?.preview.fingerprint).toBe('hc-v1:fresh');
+  });
+
+  it('refuses rather than looping when the second answer is not_required again', async () => {
+    const harness = ports([notRequired, notRequired]);
+    const save = vi.fn().mockResolvedValue(guardRefused);
+
+    const outcome = await attemptCorrection(harness.ports, DRAFT, save);
+
+    expect(outcome).toEqual({ kind: 'refused', result: guardRefused });
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(harness.asked).toHaveLength(2);
+    expect(harness.opened).toHaveLength(0);
+  });
+
+  it('leaves every other refusal exactly as it was', async () => {
+    for (const code of ['CONFLICT_VERSION', 'CONFLICT_DUPLICATE', 'VALIDATION_ERROR', 'WRITE_BUSY']) {
+      const refusal = { ok: false, error: { code, message: `${code} happened` } } as const;
+      const harness = ports([notRequired]);
+      const save = vi.fn().mockResolvedValue(refusal);
+
+      const outcome = await attemptCorrection(harness.ports, DRAFT, save);
+
+      // The save's own answer, reported once, with no second preview: a
+      // version conflict is not something re-asking could resolve.
+      expect(outcome).toEqual({ kind: 'saved', result: refusal });
+      expect(harness.asked).toHaveLength(1);
+      expect(harness.opened).toHaveLength(0);
+    }
+  });
+
+  it('saves ordinarily when nothing moved, and reviews when the first answer already says so', async () => {
+    const plain = ports([notRequired]);
+    const saveOk = vi.fn().mockResolvedValue(ok);
+    expect(await attemptCorrection(plain.ports, DRAFT, saveOk)).toEqual({ kind: 'saved', result: ok });
+    expect(plain.asked).toHaveLength(1);
+    expect(plain.forgotten).toBe(1);
+
+    const historical = ports([reviewRequired()]);
+    const never = vi.fn();
+    expect(await attemptCorrection(historical.ports, DRAFT, never)).toEqual({ kind: 'review' });
+    // Nothing was sent: the review comes before the write, never after it.
+    expect(never).not.toHaveBeenCalled();
+    expect(historical.opened).toHaveLength(1);
+  });
+
+  it('reports a refused preview without ever calling the save', async () => {
+    const refusal = {
+      ok: false,
+      error: { code: 'CONFLICT_VERSION', message: 'Changed elsewhere — reload.' },
+    } as const;
+    const harness = ports([refusal]);
+    const save = vi.fn();
+
+    expect(await attemptCorrection(harness.ports, DRAFT, save)).toEqual({
+      kind: 'refused',
+      result: refusal,
+    });
+    expect(save).not.toHaveBeenCalled();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Adding into a closed month                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A first assertion into a closed month saves ordinarily and says so once
+ * (§7, 30.22 item 2).
+ *
+ * The transfer case is the one worth its own copy: the aggregate carries two
+ * independent financial dates, and a fee may be dated in another month than
+ * the transfer that owns it (ADR 0006 §5). Deciding from the page's month
+ * alone would miss exactly that.
+ */
+describe('the historical first-assertion note (§7)', () => {
+  it('names the transfer when the transfer itself is historical', () => {
+    expect(
+      transferCreationNote({
+        occurredOn: '2026-09-20',
+        feeIncurredOn: '2026-09-20',
+        today: '2026-10-05',
+      }),
+    ).toBe(HISTORICAL_CREATION_NOTE);
+  });
+
+  it('names the fee when only the fee reaches back', () => {
+    expect(
+      transferCreationNote({
+        occurredOn: '2026-10-02',
+        feeIncurredOn: '2026-09-28',
+        today: '2026-10-05',
+      }),
+    ).toBe(HISTORICAL_FEE_CREATION_NOTE);
+  });
+
+  it('says nothing when both dates are in the open month', () => {
+    expect(
+      transferCreationNote({
+        occurredOn: '2026-10-02',
+        feeIncurredOn: '2026-10-02',
+        today: '2026-10-05',
+      }),
+    ).toBeNull();
+    // A transfer with no fee at all is judged on its own date alone.
+    expect(
+      transferCreationNote({ occurredOn: '2026-10-02', feeIncurredOn: null, today: '2026-10-05' }),
+    ).toBeNull();
+    expect(
+      transferCreationNote({ occurredOn: '2026-09-02', feeIncurredOn: null, today: '2026-10-05' }),
+    ).toBe(HISTORICAL_CREATION_NOTE);
+  });
+
+  it('is the same judgement a recorded balance makes about its own date', () => {
+    // The valuation editor asks exactly this of the date the user chose.
+    expect(isHistorical('2026-09-30', '2026-10-05')).toBe(true);
+    expect(isHistorical('2026-10-01', '2026-10-05')).toBe(false);
   });
 });

@@ -52,6 +52,7 @@ import {
   type TransferOutcome,
 } from '@/features/monthly/transfers-presentation';
 import { CorrectionHost } from '@/features/corrections/host';
+import { transferCreationNote } from '@/features/corrections/delete-confirm';
 import { useCorrection } from '@/features/corrections/use-correction';
 
 /**
@@ -542,6 +543,24 @@ export function TransferEditor({
             {readOnlyText(base.readOnly, base.fee)}
           </p>
         )}
+
+        {/* A first assertion into a closed month says so once and saves
+            ordinarily; either of the aggregate's two dates can be the one
+            that reaches back (§72, ADR 0006 §5). */}
+        {base !== null
+          ? null
+          : (() => {
+              const note = transferCreationNote({
+                occurredOn: draft.occurredOn,
+                feeIncurredOn: draft.fee.enabled ? draft.fee.incurredOn : null,
+                today,
+              });
+              return note === null ? null : (
+                <p className={META} data-testid="transfer-historical-note">
+                  {note}
+                </p>
+              );
+            })()}
 
         <div className="grid gap-3 sm:grid-cols-2">
           <TextField

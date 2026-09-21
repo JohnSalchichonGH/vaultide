@@ -134,3 +134,36 @@ export function addsToCompletedMonth(bounds: {
 }): boolean {
   return bounds.max < bounds.today;
 }
+
+/**
+ * The fee's own date is the one in a closed month.
+ *
+ * A transfer aggregate carries two independent financial dates, and a fee may
+ * legitimately fall in a different month from the transfer that owns it
+ * (ADR 0006 §5). Saying "this adds to a month that is already closed" beside
+ * an October transfer would read as a mistake, so the fee case says which fact
+ * it means.
+ */
+export const HISTORICAL_FEE_CREATION_NOTE =
+  'The fee on this transfer is dated in a month that is already closed. Vaultide will work that month out again after saving.';
+
+/**
+ * What a newly created transfer should say before it is saved, if anything.
+ *
+ * Judged on **both** dates rather than on the page's month: a transfer added
+ * from a completed month's page is a first assertion into that month, and so is
+ * a current-month transfer whose fee the user dated in September.
+ */
+export function transferCreationNote(args: {
+  readonly occurredOn: string;
+  /** The fee's date, or `null` when the transfer carries no fee. */
+  readonly feeIncurredOn: string | null;
+  readonly today: string;
+}): string | null {
+  const historical = (date: string | null): boolean =>
+    date !== null && date !== '' && isHistorical(date, args.today);
+
+  if (historical(args.occurredOn)) return HISTORICAL_CREATION_NOTE;
+  if (historical(args.feeIncurredOn)) return HISTORICAL_FEE_CREATION_NOTE;
+  return null;
+}

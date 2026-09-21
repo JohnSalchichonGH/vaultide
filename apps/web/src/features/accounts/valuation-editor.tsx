@@ -17,7 +17,11 @@ import { MoneyText } from '@/components/finance/money-text';
 import { normalizeMoneyInput } from '@/lib/money-input';
 import { useHydrated } from '@/lib/use-hydrated';
 import { CorrectionHost } from '@/features/corrections/host';
-import { DestructiveConfirm, isHistorical } from '@/features/corrections/delete-confirm';
+import {
+  DestructiveConfirm,
+  HISTORICAL_CREATION_NOTE,
+  isHistorical,
+} from '@/features/corrections/delete-confirm';
 import { useCorrection } from '@/features/corrections/use-correction';
 
 /**
@@ -157,6 +161,19 @@ export function ValuationEditor({ detail, today, locale }: ValuationEditorProps)
             {pending ? 'Saving…' : 'Record'}
           </button>
         </form>
+        {/* Recording a balance into a closed month is a first assertion: it
+            saves ordinarily and says the consequence once (30.22 item 2, §72).
+            If that same balance would also end a dormant episode anchored in a
+            closed month it is a revision after all, and the server's preview
+            opens the review instead (§9, §111). */}
+        {isHistorical(valuedOn, today) ? (
+          <p
+            className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]"
+            data-testid="record-valuation-historical-note"
+          >
+            {HISTORICAL_CREATION_NOTE}
+          </p>
+        ) : null}
         <p className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">
           Today is {today}. A balance can never be dated later — a figure for a day that has not
           happened is a forecast, not a record.
