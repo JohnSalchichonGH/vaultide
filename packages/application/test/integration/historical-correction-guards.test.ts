@@ -49,10 +49,12 @@ import {
  *    evidence, and the paths that can end one include several that are
  *    otherwise ordinary creations. Each of them is checked, and each of them
  *    stays ordinary when its consequence does not reach a closed month.
- *  - **the month-closing lifecycle is untouched.** `closePosition`,
+ *  - **month-closing source assertions remain ordinary.** `closePosition`,
  *    `confirmMonthEnd`, `confirmUnchanged` and `confirmUnchangedBatch` write
- *    dates into completed months by design and are not corrections. They keep
- *    their contracts exactly.
+ *    dates into completed months by design, and those writes are not
+ *    corrections. A dormancy consequence of one is classified like any other:
+ *    a confirmed non-zero balance that ends an episode anchored in a closed
+ *    month is reviewed (`confirm-unchanged-dormancy.test.ts`).
  */
 
 const USER_A = '11111111-1111-4111-8111-111111111111';
@@ -755,7 +757,9 @@ describe('every path that can end a historical dormant episode (§99)', () => {
 /* The month-closing lifecycle                                                 */
 /* -------------------------------------------------------------------------- */
 
-describe('the month-closing lifecycle is not a correction (§4, §106)', () => {
+// The source assertions only: what a confirmation's dormancy consequence does
+// is proved in `confirm-unchanged-dormancy.test.ts`.
+describe('month-closing source assertions remain ordinary first assertions (§4, §106)', () => {
   it('confirmUnchanged still carries the previous statement into a closed month', async () => {
     await statement(bbva, '2026-08-31', '5000.00');
 

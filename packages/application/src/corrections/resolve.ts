@@ -27,12 +27,16 @@ import {
   type CashAccountWritePlan,
 } from '../positions/service';
 import {
+  applyConfirmUnchangedPlanIn,
   applyQuickUpdatePlanIn,
   applyValuationPlanIn,
+  resolveConfirmUnchangedBatchIn,
+  resolveConfirmUnchangedIn,
   resolveCorrectValuationIn,
   resolveQuickUpdateIn,
   resolveRecordValuationIn,
   resolveRemoveValuationIn,
+  type ConfirmUnchangedWritePlan,
   type QuickUpdateWritePlan,
   type ValuationWritePlan,
 } from '../positions/valuations';
@@ -73,6 +77,13 @@ export type CorrectionPlan =
   | { readonly family: 'expense'; readonly plan: ExpenseWritePlan }
   | { readonly family: 'transfer'; readonly plan: TransferWritePlan }
   | { readonly family: 'accept'; readonly plan: AcceptWritePlan }
+  /**
+   * A month confirmed unchanged, for one account or several. Its own family
+   * rather than a `valuation` creation: its figure is the server's to read,
+   * its persisted source is `confirmed_unchanged`, and its eligibility rests on
+   * the previous month's statement.
+   */
+  | { readonly family: 'confirm_unchanged'; readonly plan: ConfirmUnchangedWritePlan }
   | { readonly family: 'cash_account'; readonly plan: CashAccountWritePlan };
 
 /** The resolved write every plan carries, whatever family it belongs to. */
@@ -314,6 +325,28 @@ export async function resolveCorrectionIn(
         ),
       };
 
+    case 'confirm_unchanged':
+      return {
+        family: 'confirm_unchanged',
+        plan: await resolveConfirmUnchangedIn(
+          tx,
+          ctx,
+          { positionId: draft.positionId, month: draft.month },
+          options,
+        ),
+      };
+
+    case 'confirm_unchanged_batch':
+      return {
+        family: 'confirm_unchanged',
+        plan: await resolveConfirmUnchangedBatchIn(
+          tx,
+          ctx,
+          { month: draft.month, positionIds: draft.positionIds },
+          options,
+        ),
+      };
+
     case 'cash_account_update':
       return {
         family: 'cash_account',
@@ -366,6 +399,9 @@ export async function applyCorrectionIn(
       return;
     case 'accept':
       await applyAcceptPlanIn(tx, ctx, resolved.plan, reason);
+      return;
+    case 'confirm_unchanged':
+      await applyConfirmUnchangedPlanIn(tx, ctx, resolved.plan, reason);
       return;
     case 'cash_account':
       await applyCashAccountPlanIn(tx, ctx, resolved.plan, reason);

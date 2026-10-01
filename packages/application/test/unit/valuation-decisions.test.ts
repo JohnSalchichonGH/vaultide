@@ -13,7 +13,9 @@ import {
   decideCorrectValuation,
   decideRecordValuation,
   decideRemoveValuation,
+  planConfirmUnchanged,
 } from '../../src/positions/valuations';
+import { classifyHistorical } from '../../src/corrections/classify';
 import { identityKey, prospectiveValuation } from '../../src/write-plan';
 
 /**
@@ -492,5 +494,123 @@ describe('the identity of a balance that does not exist yet', () => {
     const keys = plans.flatMap((plan) => plan.changes.map((change) => identityKey(change.identity)));
     expect(keys).toHaveLength(3);
     expect(new Set(keys).size).toBe(3);
+  });
+});
+
+describe('confirming a month unchanged', () => {
+  // A month's statement carried forward: the previous figure, dated end(M).
+  const confirm = (
+    accounts: readonly { position: PositionRow; previous: ValuationRow }[],
+    scope: 'single' | 'batch' = 'batch',
+  ) => planConfirmUnchanged({ scope, month: '2026-09', valuedOn: '2026-09-30', accounts });
+
+  const savings = (overrides: Partial<PositionRow> = {}) =>
+    cash({ id: 'pos-savings', name: 'Savings', accountType: 'savings', ...overrides });
+  const statementOf = (positionId: string, amount: string) =>
+    row({ id: `val-${positionId}`, positionId, valuedOn: '2026-08-31', amount });
+
+  it('adds one month-end balance per account, at its previous statement, under its own identity', () => {
+    const plan = confirm([
+      { position: cash(), previous: statementOf('pos-cash', '5000.00000000') },
+      { position: savings(), previous: statementOf('pos-savings', '0.00000000') },
+    ]);
+
+    expect(plan.entries.map((entry) => entry.columns)).toEqual([
+      { amount: '5000.00000000', valuedOn: '2026-09-30', datePrecision: 'month_end', note: null },
+      { amount: '0.00000000', valuedOn: '2026-09-30', datePrecision: 'month_end', note: null },
+    ]);
+    expect(plan.changes.map((change) => [change.operation, identityKey(change.identity)])).toEqual([
+      ['create', identityKey(prospectiveValuation('pos-cash', '2026-09-30'))],
+      ['create', identityKey(prospectiveValuation('pos-savings', '2026-09-30'))],
+    ]);
+    expect(plan.changes[0]?.after).toEqual({
+      kind: 'valuation',
+      positionId: 'pos-cash',
+      valuedOn: '2026-09-30',
+      amount: '5000',
+      currency: 'EUR',
+      datePrecision: 'month_end',
+      note: null,
+    });
+  });
+
+  it('is a first assertion, in a closed month too, and warms nothing', () => {
+    const plan = confirm([{ position: cash(), previous: statementOf('pos-cash', '10.00000000') }]);
+
+    expect(plan.revision).toBe(false);
+    expect(plan.support).toEqual([]);
+    expect(plan.dormancy).toEqual([]);
+    expect(classifyHistorical(plan, TODAY).required).toBe(false);
+  });
+
+  it('wakes a dormant account carried forward at a non-zero figure, whatever the episode’s date', () => {
+    // The episode begins after the month being confirmed: waking is not
+    // date-sensitive (8.8; ADR 0007 §4).
+    const plan = confirm(
+      [{ position: savings({ isDormant: true, dormantFrom: '2026-10-01' }), previous: statementOf('pos-savings', '5000.00000000') }],
+      'single',
+    );
+
+    expect(plan.dormancy).toEqual([
+      {
+        positionId: 'pos-savings',
+        before: { isDormant: true, dormantFrom: '2026-10-01' },
+        after: { isDormant: false, dormantFrom: null },
+        via: 'clear',
+      },
+    ]);
+    expect(plan.changes.map((change) => [change.operation, identityKey(change.identity)])).toEqual([
+      ['create', identityKey(prospectiveValuation('pos-savings', '2026-09-30'))],
+      ['update', 'existing:cash_dormancy:pos-savings'],
+    ]);
+  });
+
+  it('keeps a dormant account dormant for a zero carried forward', () => {
+    const plan = confirm([
+      { position: savings({ isDormant: true, dormantFrom: '2026-10-01' }), previous: statementOf('pos-savings', '0.00000000') },
+    ]);
+
+    expect(plan.dormancy).toEqual([]);
+    expect(plan.changes).toHaveLength(1);
+  });
+
+  it('is reviewed exactly when the episode it ends began in a closed month', () => {
+    const waking = (dormantFrom: string) =>
+      confirm([
+        { position: savings({ isDormant: true, dormantFrom }), previous: statementOf('pos-savings', '1.00000000') },
+      ]);
+
+    // 5 October: an episode from 1 October is current, one from 30 September is not.
+    expect(classifyHistorical(waking('2026-10-01'), TODAY)).toEqual({
+      required: false,
+      reasons: [],
+      completedPeriods: [],
+    });
+    expect(classifyHistorical(waking('2026-09-30'), TODAY)).toEqual({
+      required: true,
+      reasons: ['historical_dormancy'],
+      completedPeriods: ['2026-09'],
+    });
+  });
+
+  it('wakes each dormant account once, in account order', () => {
+    const plan = confirm([
+      { position: savings({ isDormant: true, dormantFrom: '2026-10-01' }), previous: statementOf('pos-savings', '1.00000000') },
+      { position: cash({ isDormant: true, dormantFrom: '2026-10-02' }), previous: statementOf('pos-cash', '2.00000000') },
+    ]);
+
+    expect(plan.dormancy.map((effect) => effect.positionId)).toEqual(['pos-cash', 'pos-savings']);
+  });
+
+  it('refuses another account’s statement, and an account named twice', () => {
+    expect(() => confirm([{ position: cash(), previous: statementOf('pos-savings', '1.00000000') }])).toThrow(
+      /another account’s statement/u,
+    );
+    expect(() =>
+      confirm([
+        { position: cash(), previous: statementOf('pos-cash', '1.00000000') },
+        { position: cash(), previous: statementOf('pos-cash', '1.00000000') },
+      ]),
+    ).toThrow(/same account twice/u);
   });
 });

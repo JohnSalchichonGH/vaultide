@@ -1318,8 +1318,9 @@ describe('confirming untouched accounts unchanged, all together', () => {
 
   /**
    * Two accounts with August statements, in the order the batch reaches them:
-   * it locks and writes in id order, so `first` is written inside the
-   * transaction before anything about `second` can fail it.
+   * it locks and resolves in id order, so `first` is found eligible before
+   * anything about `second` fails the request — and, the whole batch being
+   * resolved before its first write, nothing of `first` is ever written.
    */
   async function twoInLockOrder(): Promise<[string, string]> {
     const ids = [await withAugustStatement('One', '1000.00'), await withAugustStatement('Two', '500.00')].sort();

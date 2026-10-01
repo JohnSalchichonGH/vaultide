@@ -520,16 +520,39 @@ export async function lockCashPositionsIn(
   const ids = [...new Set(positionIds)];
   if (ids.length === 0) return [];
 
-  const rows = await tx
+  const rows = await cashPositionsQuery(tx, ids).for('update', { of: [positions, cashAccounts] });
+  return rows.map(toRecord);
+}
+
+/**
+ * The same accounts, read without a lock.
+ *
+ * For the one reader that must not take one: the correction preview runs in a
+ * `READ ONLY` transaction, where PostgreSQL refuses a row lock outright, and
+ * its single coherent snapshot gives it the stability the lock gives a write
+ * (ADR 0010 §8). The query is `lockCashPositionsIn`'s own — the same inner
+ * join, the same id order — so what the preview judges is exactly what the
+ * write will lock.
+ */
+export async function findCashPositionsIn(
+  tx: Transaction,
+  positionIds: readonly string[],
+): Promise<PositionRecord[]> {
+  const ids = [...new Set(positionIds)];
+  if (ids.length === 0) return [];
+
+  const rows = await cashPositionsQuery(tx, ids);
+  return rows.map(toRecord);
+}
+
+function cashPositionsQuery(tx: Transaction, ids: readonly string[]) {
+  return tx
     .select(selection)
     .from(positions)
     .innerJoin(cashAccounts, eq(cashAccounts.positionId, positions.id))
     .leftJoin(otherAssets, eq(otherAssets.positionId, positions.id))
-    .where(inArray(positions.id, ids))
-    .orderBy(asc(positions.id))
-    .for('update', { of: [positions, cashAccounts] });
-
-  return rows.map(toRecord);
+    .where(inArray(positions.id, [...ids]))
+    .orderBy(asc(positions.id));
 }
 
 /** How many valuations a position has — the "may it be deleted?" question. */

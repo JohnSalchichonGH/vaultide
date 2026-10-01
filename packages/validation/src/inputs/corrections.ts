@@ -4,6 +4,7 @@ import { currencyCode } from '../primitives/currency';
 import { moneyString } from '../primitives/money';
 import { plainDate, plainDateNotAfter } from '../primitives/date';
 import { linkedFeeExpectation, transferFeeExpectation } from './flows';
+import { confirmUnchangedBatchInput, confirmUnchangedInput } from './positions';
 
 /**
  * Historical Correction inputs (blueprint 20.1, 30.22; ADR 0010).
@@ -211,6 +212,12 @@ export function correctionDraft(today: string) {
       cashPositionId: z.uuid().nullable().optional(),
       description: description.optional(),
     }),
+
+    // Month-closing confirmations, as intent only: the account or accounts and
+    // the month, by the ordinary actions' own rules. The figure, the dormant
+    // state and the source are the server's to derive.
+    confirmUnchangedInput.extend({ kind: z.literal('confirm_unchanged') }),
+    confirmUnchangedBatchInput.extend({ kind: z.literal('confirm_unchanged_batch') }),
 
     z.object({
       kind: z.literal('cash_account_update'),

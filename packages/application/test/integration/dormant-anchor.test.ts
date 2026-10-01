@@ -527,17 +527,57 @@ describe('confirm unchanged follows the date, not the flag', () => {
     await markDormant();
   });
 
-  it('treats a month before the episode as the ordinary month it is', async () => {
-    const written = await confirmUnchanged(positions(), SEPT_15, { positionId: savings, month: '2026-05' });
-    expect(written).toMatchObject({ valuedOn: '2026-05-31', amount: '500.00000000', source: 'confirmed_unchanged' });
-    // Dated before the episode, so it contradicts nothing about it.
+  /** May's balance as written, or nothing. */
+  async function mayRow() {
+    return withUser(harness.db, { userId: USER_A }, async (tx) => {
+      const result = await tx.execute(
+        sql`SELECT amount::text AS amount, source::text AS source FROM position_valuations
+             WHERE position_id = ${savings} AND valued_on = '2026-05-31'`,
+      );
+      return result.rows[0] as { amount: string; source: string } | undefined;
+    });
+  }
+
+  // A month before the episode is an ordinary month and is confirmed like one
+  // (30.20 item 8) — and the balance it writes is a real one. May's figure is
+  // April's 500, a non-zero balance, and a non-zero balance wakes a dormant
+  // account whatever date it carries (8.8; 30.20 item 6; ADR 0007 §4). The
+  // episode it ends is anchored in June, which has closed, so the ordinary
+  // action refuses having written nothing, and the review writes both as one.
+  it('confirms a month before the episode, and its non-zero figure wakes the account', async () => {
+    await expect(
+      confirmUnchanged(positions(), SEPT_15, { positionId: savings, month: '2026-05' }),
+    ).rejects.toMatchObject({ code: 'HISTORICAL_REVIEW_REQUIRED' });
+    expect(await mayRow()).toBeUndefined();
     expect(await state()).toMatchObject({ dormant: true, from: '2026-06-30' });
+
+    const result = await saveOrCorrect(
+      corrections(),
+      SEPT_15,
+      { kind: 'confirm_unchanged', positionId: savings, month: '2026-05' },
+      () => confirmUnchanged(positions(), SEPT_15, { positionId: savings, month: '2026-05' }),
+    );
+    expect(result.via).toBe('correction');
+    expect(await mayRow()).toEqual({ amount: '500.00000000', source: 'confirmed_unchanged' });
+    expect(await state()).toMatchObject(AWAKE);
   });
 
   it('does the same through the batch action', async () => {
-    const summary = await confirmUnchangedBatch(positions(), SEPT_15, { month: '2026-05', positionIds: [savings] });
-    expect(summary).toMatchObject({ valuedOn: '2026-05-31', confirmed: 1 });
+    await expect(
+      confirmUnchangedBatch(positions(), SEPT_15, { month: '2026-05', positionIds: [savings] }),
+    ).rejects.toMatchObject({ code: 'HISTORICAL_REVIEW_REQUIRED' });
+    expect(await mayRow()).toBeUndefined();
     expect(await state()).toMatchObject({ dormant: true, from: '2026-06-30' });
+
+    const result = await saveOrCorrect(
+      corrections(),
+      SEPT_15,
+      { kind: 'confirm_unchanged_batch', month: '2026-05', positionIds: [savings] },
+      () => confirmUnchangedBatch(positions(), SEPT_15, { month: '2026-05', positionIds: [savings] }),
+    );
+    expect(result.via).toBe('correction');
+    expect(await mayRow()).toEqual({ amount: '500.00000000', source: 'confirmed_unchanged' });
+    expect(await state()).toMatchObject(AWAKE);
   });
 
   it('refuses a month the episode covers, which needs no confirmation', async () => {

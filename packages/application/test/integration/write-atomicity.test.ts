@@ -391,7 +391,7 @@ describe('a valuation and its dormancy consequence commit together (ADR 0010 §1
   });
 });
 
-describe('the confirm paths have no dormancy consequence to repair', () => {
+describe('the confirm paths and the dormancy consequence a new balance has', () => {
   it('confirms a last-day snapshot as a statement without touching dormancy', async () => {
     await balance(bbva, '2026-09-30', '500.00', 'exact', OCT_1);
     const [snapshot] = await positionHistory(positions(), OCT_1, bbva);
@@ -406,7 +406,25 @@ describe('the confirm paths have no dormancy consequence to repair', () => {
     expect(await state(bbva)).toMatchObject(AWAKE);
   });
 
-  it('confirms a month unchanged from the previous statement, and writes nothing else', async () => {
+  it('confirms a month unchanged from the previous statement, and wakes the account as one outcome', async () => {
+    // Emptied today and dormant from today: an episode in the current month,
+    // so ending it is ordinary.
+    await balance(savings, '2026-08-31', '500.00', 'month_end', OCT_1);
+    await balance(savings, '2026-10-01', '0.00', 'exact', OCT_1);
+    await markDormant(savings, OCT_1);
+    expect(await state(savings)).toMatchObject({ dormant: true, from: '2026-10-01' });
+
+    const created = await confirmUnchanged(positions(), OCT_1, {
+      positionId: savings,
+      month: '2026-09',
+    });
+
+    expect(created.amount).toBe('500.00000000');
+    expect(await state(savings)).toMatchObject(AWAKE);
+    expect(await auditActions(created.id)).toEqual(['insert']);
+  });
+
+  it('confirms a month unchanged on an awake account, and writes nothing else', async () => {
     await balance(bbva, '2026-08-31', '500.00', 'month_end', OCT_1);
 
     const created = await confirmUnchanged(positions(), OCT_1, {

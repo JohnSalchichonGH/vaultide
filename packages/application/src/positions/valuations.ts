@@ -1,5 +1,6 @@
 import {
   deleteValuationIn,
+  findCashPositionsIn,
   findLatestValuationIn,
   findPosition,
   findPositionIn,
@@ -14,7 +15,6 @@ import {
   quickUpdateValuationsIn,
   updateValuationIn,
   QuickUpdateConflictError,
-  type AuditContext,
   type PositionRecord as PositionRow,
   type Transaction,
   type ValuationRow,
@@ -853,11 +853,153 @@ export async function confirmMonthEnd(
   );
 }
 
-async function confirmUnchangedIn(
+/* -------------------------------------------------------------------------- */
+/* Confirm unchanged                                                           */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * "Confirm unchanged for this month" (R22, C7), for one account or for several,
+ * resolved before anything is written.
+ *
+ * It writes a real balance: a `month_end` valuation dated `end(M)`, source
+ * `confirmed_unchanged`, carrying the previous month's statement figure, which
+ * the server reads — the request names accounts and a month, never an amount.
+ * So it is a balance like any other, and obeys the rule every new balance
+ * obeys: a non-zero one wakes a dormant account, whatever date it carries (8.8,
+ * v2.1.17 30.20 item 6; ADR 0007 §4). Its source does not exempt it.
+ *
+ * Two things are judged apart, exactly as for any other new balance:
+ *
+ *  - **the balance is a first assertion.** It adds a statement where none
+ *    existed and revises nothing, so it is ordinary even in a month that has
+ *    closed (30.22 item 2). That holds for one account and for several: a
+ *    month-closing confirmation of many accounts is still many first
+ *    assertions, not a revision of history.
+ *  - **its dormancy consequence is judged on its own terms.** Waking an account
+ *    whose dormant episode is anchored in a closed month rewrites that month,
+ *    so the classifier asks for review — for the whole act, because the act is
+ *    one transaction (ADR 0010 §1).
+ *
+ * The plan carries both, so the ordinary actions and Historical Correction's
+ * Preview and Confirm all ask the same resolver, and apply through the same
+ * function.
+ */
+
+/** One account's month carried forward unchanged. */
+export interface ConfirmUnchangedEntry {
+  readonly position: PositionRow;
+  /** The previous month's statement, whose figure is carried forward. */
+  readonly previous: ValuationRow;
+  /** The balance at `end(M)` the confirmation asserts. */
+  readonly columns: ValuationColumns;
+}
+
+/**
+ * A resolved confirmation: every balance it adds, and every dormant episode
+ * those balances end.
+ *
+ * `scope` says which action asked — one account, or the month's untouched
+ * accounts together — because each answers a refusal in its own words.
+ */
+export interface ConfirmUnchangedWritePlan extends ResolvedWrite {
+  readonly scope: 'single' | 'batch';
+  /** `YYYY-MM`. */
+  readonly month: string;
+  /** `end(M)`: the one date every balance in the plan is written on. */
+  readonly valuedOn: string;
+  readonly entries: readonly ConfirmUnchangedEntry[];
+}
+
+/**
+ * The plan for a month's confirmations, from the accounts and the statements
+ * they carry forward, as the caller read them.
+ *
+ * Each account adds one balance, equal to its own previous statement, under the
+ * balance's semantic identity (`prospectiveValuation`). Each that is dormant
+ * and receives a non-zero figure is woken — by `wakesOnNonZero`, the rule every
+ * new balance follows — once, because an account appears in a plan once. No
+ * balance here revises anything, so the plan is not a revision; and nothing is
+ * warmed after the commit, exactly as before (10.4 is not this action's).
+ */
+export function planConfirmUnchanged(args: {
+  readonly scope: 'single' | 'batch';
+  readonly month: string;
+  readonly valuedOn: string;
+  readonly accounts: readonly { readonly position: PositionRow; readonly previous: ValuationRow }[];
+}): ConfirmUnchangedWritePlan {
+  const seen = new Set<string>();
+  const entries = args.accounts.map(({ position, previous }): ConfirmUnchangedEntry => {
+    if (previous.positionId !== position.id) {
+      throw new Error('a confirmation was handed another account’s statement');
+    }
+    if (seen.has(position.id)) {
+      throw new Error('a confirmation was handed the same account twice');
+    }
+    seen.add(position.id);
+    return {
+      position,
+      previous,
+      columns: {
+        amount: previous.amount,
+        valuedOn: args.valuedOn,
+        datePrecision: 'month_end',
+        note: null,
+      },
+    };
+  });
+
+  const dormancy = realDormancyEffects(
+    entries
+      .filter((entry) => wakesOnNonZero(entry.position, entry.columns.amount))
+      .map((entry) => clearDormancyEffect(entry.position)),
+  );
+
+  return {
+    scope: args.scope,
+    month: args.month,
+    valuedOn: args.valuedOn,
+    entries,
+    // First assertions, whatever month they land in (30.22 item 2). Their
+    // dormancy consequence is judged on its own terms.
+    revision: false,
+    changes: [
+      ...entries.map((entry) =>
+        created(
+          prospectiveValuation(entry.position.id, args.valuedOn),
+          valuationFactsOf(entry.position.id, entry.position.currency, entry.columns),
+        ),
+      ),
+      ...dormancy.map(dormancyChange),
+    ],
+    dormancy,
+    support: [],
+  };
+}
+
+const monthLabelOf = (month: MonthKey): string => (month as string).slice(0, 7);
+
+export interface ConfirmUnchangedArgs {
+  readonly positionId: string;
+  /** The month being closed, as `YYYY-MM`. */
+  readonly month: string;
+}
+
+/**
+ * Resolve one account's confirmation, reading everything it rests on.
+ *
+ * The order is the order the refusals have always come in: the account, the
+ * month having ended, the dormant carry, the previous statement, the balance
+ * already on `end(M)`, the account's window. `lock: true` holds the previous
+ * statement `FOR SHARE`, as the write always has, so the figure carried is
+ * still that statement when it commits; the correction preview reads it without
+ * a lock, which its `READ ONLY` transaction cannot take.
+ */
+export async function resolveConfirmUnchangedIn(
   tx: Transaction,
   ctx: RequestContext,
-  args: { positionId: string; month: string },
-): Promise<ValuationRow> {
+  args: ConfirmUnchangedArgs,
+  options: ResolveOptions = { lock: true },
+): Promise<ConfirmUnchangedWritePlan> {
   const position = await requirePositionIn(tx, args.positionId);
 
   const parts = args.month.split('-');
@@ -873,8 +1015,9 @@ async function confirmUnchangedIn(
 
   // 30.20 item 8: a month the account's dormant episode covers carries at zero
   // and needs no confirmation — and writing one could put a non-zero statement
-  // inside the episode. A month **before** `dormant_from` is an ordinary month:
-  // the flag is present-tense and says nothing about it.
+  // inside the episode. A month **before** `dormant_from` is an ordinary month,
+  // confirmed like any other; a non-zero figure written there wakes the account
+  // like any other non-zero balance (8.8).
   const latest = await findLatestValuationIn(tx, args.positionId, end);
   if (carriedByDormancy(position, latest, end)) {
     throw new ImpossibleOperationError(dormantCarryMessage(position.name));
@@ -904,11 +1047,13 @@ async function confirmUnchangedIn(
    * account already carries automatically under R22. Reading them as a
    * "previous month-end balance" would be a wider definition than the blueprint
    * gives.
-   *
-   * Held `FOR SHARE`, as the batch has always held it: the figure carried
-   * forward is still that statement when the confirmation commits.
    */
-  const previous = await findValuationOnIn(tx, args.positionId, previousEnd, { lock: 'share' });
+  const previous = await findValuationOnIn(
+    tx,
+    args.positionId,
+    previousEnd,
+    options.lock ? { lock: 'share' } : {},
+  );
   if (previous === undefined || previous.datePrecision !== 'month_end') {
     throw new IncompleteDataError(
       `${monthName(previousMonth)} has no month-end balance, so there is nothing to carry forward. Close ${monthName(previousMonth)} first, or enter ${monthName(month)}’s statement balance instead.`,
@@ -922,40 +1067,15 @@ async function confirmUnchangedIn(
 
   assertWithinPositionWindow(position, end);
 
-  return insertValuationIn(tx, auditContextOf(ctx), {
-    positionId: args.positionId,
+  return planConfirmUnchanged({
+    scope: 'single',
+    month: monthLabelOf(month),
     valuedOn: end,
-    amount: previous.amount,
-    source: 'confirmed_unchanged',
-    datePrecision: 'month_end',
+    accounts: [{ position, previous }],
   });
 }
 
-/**
- * "Confirm unchanged for this month" (R22, C7).
- *
- * Writes a `month_end` valuation equal to the previous month-end balance, with
- * source `confirmed_unchanged`. This is deliberately an explicit action rather
- * than an assumption: the specification allowed carrying a last-known value
- * forward "when appropriate", and a carried non-zero balance treated as a
- * statement is exactly how a month's spending comes out equal to its income.
- * Only a dormant, zero-balance account carries automatically.
- *
- * Every eligibility read — the account, the dormant carry, the previous
- * statement, an existing balance on `end(M)` — now happens inside the write's
- * own transaction, so the month it judged is the month it writes into. The
- * batch below has held its own locks since it was written; this is the single
- * account catching up (30.22 item 5).
- */
-export async function confirmUnchanged(
-  deps: PositionDependencies,
-  ctx: RequestContext,
-  args: { positionId: string; month: string },
-): Promise<ValuationRow> {
-  return withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
-    confirmUnchangedIn(tx, ctx, args),
-  );
-}
+const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/u;
 
 export interface ConfirmUnchangedBatchArgs {
   /** The month being closed, as `YYYY-MM`. */
@@ -963,126 +1083,26 @@ export interface ConfirmUnchangedBatchArgs {
   readonly positionIds: readonly string[];
 }
 
-export interface ConfirmUnchangedBatchSummary {
-  readonly month: string;
-  readonly valuedOn: string;
-  readonly confirmed: number;
-  readonly positionIds: readonly string[];
-}
-
-const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/u;
-
-async function confirmUnchangedBatchIn(
-  tx: Transaction,
-  ctx: RequestContext,
-  args: {
-    readonly requested: readonly string[];
-    readonly month: MonthKey;
-    readonly end: string;
-    readonly previousMonth: MonthKey;
-    readonly previousEnd: string;
-  },
-): Promise<void> {
-  const audit: AuditContext = auditContextOf(ctx);
-
-  // Locked first, in id order, and held until this transaction ends.
-  const locked = await lockCashPositionsIn(tx, args.requested);
-  const byId = new Map(locked.map((position) => [position.id, position]));
-
-  for (const positionId of args.requested) {
-    const position = byId.get(positionId);
-    if (position === undefined) throw new NotFoundError('That account no longer exists.');
-    if (carriedByDormancy(position, await findLatestValuationIn(tx, position.id, args.end), args.end)) {
-      throw new ImpossibleOperationError(dormantCarryMessage(position.name));
-    }
-    if (position.openedOn !== null && position.openedOn > args.end) {
-      throw new ValidationError(
-        `${position.name} opened after ${monthName(args.month)}. Nothing was confirmed.`,
-      );
-    }
-    if (position.closedOn !== null && position.closedOn <= args.end) {
-      throw new ImpossibleOperationError(
-        `${position.name} closed by the end of ${monthName(args.month)}, so its balance then is zero by definition. Nothing was confirmed.`,
-      );
-    }
-  }
-
-  for (const position of locked) {
-    const previous = await findValuationOnIn(tx, position.id, args.previousEnd, { lock: 'share' });
-    if (previous === undefined || previous.datePrecision !== 'month_end') {
-      throw new IncompleteDataError(
-        `${position.name}: ${monthName(args.previousMonth)} has no month-end balance, so there is nothing to carry forward. Nothing was confirmed.`,
-      );
-    }
-
-    const existing = await findValuationOnIn(tx, position.id, args.end);
-    if (existing !== undefined) {
-      throw new DuplicateConflictError(
-        `${position.name} already has a balance for ${args.end}, so nothing was confirmed. Reload to see it.`,
-      );
-    }
-
-    await insertValuationIn(tx, audit, {
-      positionId: position.id,
-      valuedOn: args.end,
-      amount: previous.amount,
-      source: 'confirmed_unchanged',
-      datePrecision: 'month_end',
-    });
-  }
+/** A batch request that passed every rule needing no database state. */
+interface ConfirmUnchangedBatchRequest {
+  readonly month: MonthKey;
+  readonly end: string;
+  readonly previousMonth: MonthKey;
+  readonly previousEnd: string;
+  /** The requested accounts in id order: the order they are locked in. */
+  readonly requested: readonly string[];
 }
 
 /**
- * "Confirm all untouched as unchanged" (15.3, R22): `confirmUnchanged` for
- * several accounts of one month, as one act.
- *
- * Each account gets exactly what the single action writes — a `month_end`
- * valuation dated `end(M)`, source `confirmed_unchanged`, equal to its own
- * **previous month's statement balance** — and under the same rules. The
- * request names accounts, never amounts: every figure is read here.
- *
- * Everything the database decides happens in **one transaction** (20.3), and
- * that is the point rather than a detail. Eligibility is read from rows this
- * transaction has locked — `lockCashPositionsIn` holds each account's
- * `positions` and `cash_accounts` row for its whole length — so an account
- * cannot be closed or marked dormant between being judged eligible and being
- * confirmed. A preliminary read outside the transaction would have been a
- * snapshot of a state somebody else was free to change.
- *
- * Within it:
- *
- *  - every requested id must resolve to a cash account of this user. Another
- *    user's id, a nonexistent one and a position of another kind are all simply
- *    absent from the locked set and read the same (17.2, 17.3);
- *  - an account whose dormant episode covers `end(M)`, or that is not yet open
- *    by then or closed by then, is refused rather than skipped: dormancy carries
- *    at zero without a confirmation (R22), and a request naming one was not
- *    built from this page. A month before `dormant_from` is an ordinary month
- *    (v2.1.17 30.20 item 8);
- *  - the previous statement is read and held (`FOR SHARE`), so the figure
- *    carried forward is still that statement when the confirmation commits;
- *  - an existing balance on `end(M)` is never rewritten, whatever it is. A
- *    statement is corrected through its own editor, and an ordinary snapshot on
- *    the last day is confirmed, not replaced;
- *  - any of those fails the whole request and nothing is written, because a
- *    half-confirmed month is exactly the state that makes a total quietly wrong.
- *
- * Accounts are locked and written in id order, so two overlapping requests
- * queue rather than deadlock, and the unique `(position_id, valued_on)`
- * constraint settles a race with any other write on `end(M)`. Every audit row
- * carries the one request id.
- *
- * The transaction is now the per-user write mutex's (30.22 item 5). The row
- * locks stay: they encode local invariants and are the defence against
- * anything this service does not own.
+ * The rules a batch request obeys before any row is read: a month, that has
+ * ended, at least one account, and no account twice — refused, never silently
+ * de-duplicated, because a request naming one twice was not built from the
+ * page.
  */
-export async function confirmUnchangedBatch(
-  deps: PositionDependencies,
-  ctx: RequestContext,
+function prepareConfirmUnchangedBatch(
+  today: PlainDate,
   args: ConfirmUnchangedBatchArgs,
-): Promise<ConfirmUnchangedBatchSummary> {
-  // Everything that needs no database state is settled first, so a malformed
-  // request never opens a transaction.
+): ConfirmUnchangedBatchRequest {
   if (!MONTH_PATTERN.test(args.month)) {
     throw new ValidationError('That is not a month.', { month: ['Expected YYYY-MM.'] });
   }
@@ -1090,7 +1110,7 @@ export async function confirmUnchangedBatch(
   const month = monthKeyOf(Number(parts[0]), Number(parts[1]));
   const end = endOfMonthKey(month);
 
-  if (!isMonthClosable(month, ctx.today)) {
+  if (!isMonthClosable(month, today)) {
     throw new ValidationError(
       'This month has not ended yet. Confirm it from the first day of the next month.',
       { month: ['This month has not ended yet.'] },
@@ -1106,26 +1126,247 @@ export async function confirmUnchangedBatch(
   }
 
   const previousMonth = monthKey(addMonths(startOfMonth(end), -1));
-  const previousEnd = endOfMonthKey(previousMonth);
-  const requested = [...args.positionIds].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return {
+    month,
+    end,
+    previousMonth,
+    previousEnd: endOfMonthKey(previousMonth),
+    requested: [...args.positionIds].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),
+  };
+}
+
+/**
+ * Resolve a month's confirmation for several accounts, in full, before anything
+ * is written.
+ *
+ * Every account is judged and every statement read first, and only then is a
+ * plan returned, so a refusal for any one of them leaves nothing written — and
+ * so the correction preview can show the whole act before it happens.
+ *
+ * `lock: true` locks the accounts first, in id order, and holds them
+ * (`lockCashPositionsIn`): an account cannot be closed or marked dormant
+ * between being judged and being confirmed, and two overlapping requests queue
+ * rather than deadlock. Each previous statement is held `FOR SHARE`. The
+ * preview, `lock: false`, reads the same rows in the same order without a lock.
+ *
+ *  - every requested id must be a cash account of this user. Another user's id,
+ *    a nonexistent one and a position of another kind are all simply absent
+ *    and read the same (17.2, 17.3);
+ *  - an account whose dormant episode covers `end(M)`, or that is not yet open
+ *    by then or closed by then, is refused rather than skipped: dormancy carries
+ *    at zero without a confirmation (R22), and a request naming one was not
+ *    built from this page. A month before `dormant_from` is an ordinary month
+ *    (v2.1.17 30.20 item 8);
+ *  - an existing balance on `end(M)` is never rewritten, whatever it is. A
+ *    statement is corrected through its own editor, and an ordinary snapshot on
+ *    the last day is confirmed, not replaced.
+ */
+export async function resolveConfirmUnchangedBatchIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: ConfirmUnchangedBatchArgs,
+  options: ResolveOptions = { lock: true },
+): Promise<ConfirmUnchangedWritePlan> {
+  const request = prepareConfirmUnchangedBatch(ctx.today, args);
+  const { month, end, previousMonth, previousEnd, requested } = request;
+
+  const located = options.lock
+    ? await lockCashPositionsIn(tx, requested)
+    : await findCashPositionsIn(tx, requested);
+  const byId = new Map(located.map((position) => [position.id, position]));
+
+  for (const positionId of requested) {
+    const position = byId.get(positionId);
+    if (position === undefined) throw new NotFoundError('That account no longer exists.');
+    if (carriedByDormancy(position, await findLatestValuationIn(tx, position.id, end), end)) {
+      throw new ImpossibleOperationError(dormantCarryMessage(position.name));
+    }
+    if (position.openedOn !== null && position.openedOn > end) {
+      throw new ValidationError(
+        `${position.name} opened after ${monthName(month)}. Nothing was confirmed.`,
+      );
+    }
+    if (position.closedOn !== null && position.closedOn <= end) {
+      throw new ImpossibleOperationError(
+        `${position.name} closed by the end of ${monthName(month)}, so its balance then is zero by definition. Nothing was confirmed.`,
+      );
+    }
+  }
+
+  const accounts: { position: PositionRow; previous: ValuationRow }[] = [];
+  for (const position of located) {
+    const previous = await findValuationOnIn(
+      tx,
+      position.id,
+      previousEnd,
+      options.lock ? { lock: 'share' } : {},
+    );
+    if (previous === undefined || previous.datePrecision !== 'month_end') {
+      throw new IncompleteDataError(
+        `${position.name}: ${monthName(previousMonth)} has no month-end balance, so there is nothing to carry forward. Nothing was confirmed.`,
+      );
+    }
+
+    const existing = await findValuationOnIn(tx, position.id, end);
+    if (existing !== undefined) {
+      throw new DuplicateConflictError(
+        `${position.name} already has a balance for ${end}, so nothing was confirmed. Reload to see it.`,
+      );
+    }
+
+    accounts.push({ position, previous });
+  }
+
+  return planConfirmUnchanged({ scope: 'batch', month: monthLabelOf(month), valuedOn: end, accounts });
+}
+
+/**
+ * Apply a resolved confirmation: every balance, then every dormant episode
+ * those balances end, in the caller's transaction and under one request id.
+ *
+ * The one writer for both actions and for Historical Confirm, and it decides
+ * nothing: what to write was resolved. That is also why a balance that reached
+ * `end(M)` after the resolution — only a writer outside the financial mutex
+ * could manage it, and the unique `(position_id, valued_on)` constraint stops
+ * it — is answered here, as the same conflict whichever caller asked, and never
+ * as an internal error.
+ */
+export async function applyConfirmUnchangedPlanIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  plan: ConfirmUnchangedWritePlan,
+  reason?: string,
+): Promise<ValuationRow[]> {
+  const audit = auditContextOf(ctx, reason);
+  const written: ValuationRow[] = [];
 
   try {
-    await withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
-      confirmUnchangedBatchIn(tx, ctx, { requested, month, end, previousMonth, previousEnd }),
-    );
+    for (const entry of plan.entries) {
+      written.push(
+        await insertValuationIn(tx, audit, {
+          positionId: entry.position.id,
+          valuedOn: entry.columns.valuedOn,
+          amount: entry.columns.amount,
+          source: 'confirmed_unchanged',
+          datePrecision: 'month_end',
+        }),
+      );
+    }
   } catch (error) {
-    // A balance written on `end(M)` by another request after the check above.
     if (isUniqueViolation(error)) {
       throw new DuplicateConflictError(
-        'One of these accounts got a balance for the month in the meantime, so nothing was confirmed. Reload and try again.',
+        plan.scope === 'batch'
+          ? 'One of these accounts got a balance for the month in the meantime, so nothing was confirmed. Reload and try again.'
+          : `There is already a balance for ${plan.valuedOn}.`,
       );
     }
     throw error;
   }
 
+  await applyDormancyClearsIn(tx, ctx, plan.dormancy);
+  return written;
+}
+
+async function confirmUnchangedIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: ConfirmUnchangedArgs,
+): Promise<ValuationRow> {
+  const plan = await resolveConfirmUnchangedIn(tx, ctx, args);
+  assertNoHistoricalReview(plan, ctx.today);
+  const [written] = await applyConfirmUnchangedPlanIn(tx, ctx, plan);
+  /* v8 ignore next -- a single confirmation's plan always holds one balance. */
+  if (written === undefined) throw new Error('a single confirmation wrote no balance');
+  return written;
+}
+
+/**
+ * "Confirm unchanged for this month" (R22, C7).
+ *
+ * Writes a `month_end` valuation equal to the previous month-end balance, with
+ * source `confirmed_unchanged`. This is deliberately an explicit action rather
+ * than an assumption: the specification allowed carrying a last-known value
+ * forward "when appropriate", and a carried non-zero balance treated as a
+ * statement is exactly how a month's spending comes out equal to its income.
+ * Only a dormant, zero-balance account carries automatically.
+ *
+ * Every eligibility read — the account, the dormant carry, the previous
+ * statement, an existing balance on `end(M)` — happens inside the write's own
+ * transaction, so the month it judged is the month it writes into (30.22 item
+ * 5). A non-zero figure on a dormant account wakes it in that transaction; when
+ * the episode it ends is anchored in a closed month, the action is refused here,
+ * having written nothing, and goes through Review → Confirm instead (30.22
+ * item 1).
+ */
+export async function confirmUnchanged(
+  deps: PositionDependencies,
+  ctx: RequestContext,
+  args: ConfirmUnchangedArgs,
+): Promise<ValuationRow> {
+  return withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    confirmUnchangedIn(tx, ctx, args),
+  );
+}
+
+export interface ConfirmUnchangedBatchSummary {
+  readonly month: string;
+  readonly valuedOn: string;
+  readonly confirmed: number;
+  readonly positionIds: readonly string[];
+}
+
+async function confirmUnchangedBatchIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: ConfirmUnchangedBatchArgs,
+): Promise<void> {
+  const plan = await resolveConfirmUnchangedBatchIn(tx, ctx, args);
+  assertNoHistoricalReview(plan, ctx.today);
+  await applyConfirmUnchangedPlanIn(tx, ctx, plan);
+}
+
+/**
+ * "Confirm all untouched as unchanged" (15.3, R22): `confirmUnchanged` for
+ * several accounts of one month, as one act.
+ *
+ * Each account gets exactly what the single action writes — a `month_end`
+ * valuation dated `end(M)`, source `confirmed_unchanged`, equal to its own
+ * **previous month's statement balance** — and under the same rules. The
+ * request names accounts, never amounts: every figure is read here.
+ *
+ * Everything the database decides happens in **one transaction** (20.3), and
+ * that is the point rather than a detail: every account is judged and every
+ * statement read before the first balance is written, and any refusal fails the
+ * whole request with nothing written, because a half-confirmed month is exactly
+ * the state that makes a total quietly wrong. Every audit row carries the one
+ * request id.
+ *
+ * Its consent is one act as well. When any account it would wake has a dormant
+ * episode anchored in a closed month, the whole request is refused here, having
+ * written nothing, and goes through Review → Confirm as one batch — never some
+ * accounts now and the rest after.
+ *
+ * The transaction is the per-user write mutex's (30.22 item 5). The row locks
+ * stay: they encode local invariants and are the defence against anything this
+ * service does not own.
+ */
+export async function confirmUnchangedBatch(
+  deps: PositionDependencies,
+  ctx: RequestContext,
+  args: ConfirmUnchangedBatchArgs,
+): Promise<ConfirmUnchangedBatchSummary> {
+  // Everything that needs no database state is settled first, so a malformed
+  // request never opens a transaction. The resolver asks the same rules again,
+  // which is what holds them for a caller that reaches it another way.
+  const request = prepareConfirmUnchangedBatch(ctx.today, args);
+
+  await withUserWrite(deps.db, { userId: ctx.userId }, async (tx) =>
+    confirmUnchangedBatchIn(tx, ctx, args),
+  );
+
   return {
-    month: (month as string).slice(0, 7),
-    valuedOn: end,
+    month: monthLabelOf(request.month),
+    valuedOn: request.end,
     confirmed: args.positionIds.length,
     positionIds: [...args.positionIds],
   };

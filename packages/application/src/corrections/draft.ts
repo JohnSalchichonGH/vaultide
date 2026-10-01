@@ -25,9 +25,10 @@ import type { TransferFeeArgs, TransferFeeExpectation, LinkedFeeExpectation } fr
  * Beside them are the otherwise-ordinary operations whose **dormancy
  * consequence** can reach completed history and which therefore need a preview
  * when it does: recording a balance, a quick update, creating a flow, accepting
- * a recurring occurrence, and editing a cash account's dormant flag. They are
- * here because the review has to be able to show and then apply them — not for
- * symmetry. Operations that cannot rewrite history are not in this union.
+ * a recurring occurrence, confirming a month unchanged — for one account or for
+ * several — and editing a cash account's dormant flag. They are here because
+ * the review has to be able to show and then apply them — not for symmetry.
+ * Operations that cannot rewrite history are not in this union.
  */
 
 export interface ValuationUpdateDraft {
@@ -178,6 +179,29 @@ export interface AcceptSuggestionDraft {
   readonly description?: string | undefined;
 }
 
+/**
+ * "Confirm unchanged for this month", for one account.
+ *
+ * Intent only, like every draft: which account and which month. The figure is
+ * the previous month's statement, which the server reads, and whether the
+ * account is dormant is the server's to know — there is no amount, no balance,
+ * no dormant state and no source here to forge.
+ */
+export interface ConfirmUnchangedDraft {
+  readonly kind: 'confirm_unchanged';
+  readonly positionId: string;
+  /** `YYYY-MM`. */
+  readonly month: string;
+}
+
+/** "Confirm all untouched as unchanged": the same intent, for several accounts at once. */
+export interface ConfirmUnchangedBatchDraft {
+  readonly kind: 'confirm_unchanged_batch';
+  /** `YYYY-MM`. */
+  readonly month: string;
+  readonly positionIds: readonly string[];
+}
+
 export interface CashAccountUpdateDraft {
   readonly kind: 'cash_account_update';
   readonly positionId: string;
@@ -204,6 +228,8 @@ export type CorrectionDraft =
   | TransferUpdateDraft
   | TransferDeleteDraft
   | AcceptSuggestionDraft
+  | ConfirmUnchangedDraft
+  | ConfirmUnchangedBatchDraft
   | CashAccountUpdateDraft;
 
 export type CorrectionDraftKind = CorrectionDraft['kind'];
