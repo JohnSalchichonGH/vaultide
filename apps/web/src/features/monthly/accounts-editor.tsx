@@ -14,8 +14,6 @@ import type {
 } from '@vaultide/application';
 import {
   confirmMonthEndAction,
-  confirmUnchangedAction,
-  confirmUnchangedBatchAction,
   correctValuationAction,
   quickUpdateAction,
   recordValuationAction,
@@ -39,6 +37,7 @@ import {
 import { CorrectionHost } from '@/features/corrections/host';
 import { accountLabelsOf, type CorrectionLabels } from '@/features/corrections/presentation';
 import { runCorrectableSave } from '@/features/corrections/save';
+import { saveAllUnchanged, saveUnchanged } from '@/features/corrections/unchanged';
 import { useCorrection, type CorrectionFlow } from '@/features/corrections/use-correction';
 import {
   IDLE,
@@ -558,7 +557,12 @@ function CompletedAccountRow({
                     className={ACTION}
                     onClick={() => {
                       onTouched(positionId);
-                      void run(() => confirmUnchangedAction({ positionId, month }));
+                      // A real balance, so it asks first like one: carrying a
+                      // non-zero figure forward can end a dormant period that
+                      // began in a closed month (8.8, 30.22).
+                      void saveUnchanged(correction, positionId, month, setState, () => {
+                        router.refresh();
+                      });
                     }}
                   >
                     Unchanged this month
@@ -618,9 +622,11 @@ export function CompletedAccountsEditor({
     setTouched((current) => (current.has(positionId) ? current : new Set([...current, positionId])));
   };
 
+  // One act for every untouched account: saved ordinarily, or — when any of
+  // them ends a dormant period anchored in a closed month — one review for all.
   const confirmAll = () => {
     const positionIds = targets.map((account) => account.positionId);
-    void runSave(() => confirmUnchangedBatchAction({ month, positionIds }), setBatch, () => {
+    void saveAllUnchanged(correction, month, positionIds, setBatch, () => {
       router.refresh();
     });
   };

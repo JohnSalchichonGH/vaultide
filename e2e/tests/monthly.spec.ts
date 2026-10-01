@@ -1226,3 +1226,109 @@ test.describe('monthly cash transfers', () => {
     await expect(page.getByTestId('transfer').getByTestId('transfer-amounts')).toContainText('€150.00');
   });
 });
+
+/**
+ * Confirming a month unchanged on a dormant account (blueprint 8.8, 30.20 item
+ * 6, 30.22; ADR 0010 §1).
+ *
+ * On 5 November, with the test clock: three savings accounts were emptied on 1
+ * October and marked dormant from that zero; a fourth never was. September is
+ * before every episode, so each owes September a statement like any account —
+ * and carrying a non-zero August statement forward is a real balance, which
+ * wakes the account. October has closed, so ending an episode that began in it
+ * rewrites a closed month: the confirmation is reviewed first — from the
+ * account's page, from its Monthly row, and from "Confirm all untouched as
+ * unchanged", where one dormant account makes the whole act one review.
+ */
+test.describe('confirming a month unchanged on a dormant account', () => {
+  test('a carried-forward balance that ends a dormant period is reviewed, one account or all at once', async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(240_000);
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': '2026-11-05T10:00:00Z' });
+    await onboard(page, request, uniqueEmail('e2e-monthly-unchanged-dormant'));
+
+    for (const [name, august] of [
+      ['Savings', '5000.00'],
+      ['Holiday', '800.00'],
+      ['Rainy day', '300.00'],
+    ] as const) {
+      await accountWithAugustStatement(page, { name, type: 'savings', august });
+      await recordSnapshot(page, '0.00', '2026-10-01');
+      await expect(page.getByTestId('edit-submit')).toBeEnabled();
+      await page.getByTestId('edit-dormant').check();
+      await page.getByTestId('edit-submit').click();
+      // The zero it rests on is in October, which has closed (30.22 item 1).
+      await confirmCorrection(page);
+      await expect(page.getByTestId('edit-dormant')).toBeChecked();
+    }
+
+    const review = page.getByTestId('correction-review');
+
+    // --- one account, from its own page ----------------------------------------
+    // The browser is on Rainy day's page; its month-end section asks through
+    // the page's one review dialog.
+    await page.getByTestId('confirm-unchanged-2026-09').click();
+    await expect(review).toHaveCount(1);
+    await expect(review.getByTestId('correction-structural')).toContainText('no longer dormant from 1 Oct 2026');
+    await expect(page.getByTestId('month-end-2026-09')).toBeVisible();
+    await review.getByTestId('correction-confirm').click();
+    await expect(review).toHaveCount(0);
+    await expect(page.getByTestId('month-end-2026-09')).toHaveCount(0);
+    await page.reload();
+    await expect(page.getByTestId('edit-submit')).toBeEnabled();
+    await expect(page.getByTestId('edit-dormant')).not.toBeChecked();
+
+    await accountWithAugustStatement(page, { name: 'Everyday', type: 'checking', august: '2000.00' });
+
+    const row = (name: string) => page.getByTestId('monthly-accounts').locator('tbody tr', { hasText: name });
+
+    // October is inside both episodes, so both carry it at zero.
+    await page.goto('/monthly/2026-10');
+    for (const name of ['Savings', 'Holiday']) {
+      await expect(row(name).locator('th')).toContainText('dormant');
+      await expect(row(name).getByTestId('closing-amount')).toHaveCount(0);
+    }
+
+    await page.goto('/monthly/2026-09');
+
+    // --- one account, from its row ---------------------------------------------
+    await row('Savings').getByTestId('confirm-unchanged').click();
+    await expect(review).toBeVisible();
+    await expect(review.getByTestId('correction-structural')).toContainText('no longer dormant from 1 Oct 2026');
+    // Nothing is written until the review is confirmed.
+    await expect(row('Savings').getByTestId('closing-amount')).toHaveValue('');
+    await review.getByTestId('correction-confirm').click();
+    await expect(review).toHaveCount(0);
+
+    await expect(row('Savings').getByTestId('account-closing')).toContainText('Confirmed unchanged');
+    await expect(row('Savings').getByTestId('closing-amount')).toHaveValue('5000.00');
+
+    // --- every untouched account, as one act -------------------------------------
+    await expect(page.getByTestId('confirm-all-unchanged-panel')).toContainText('for the 2 accounts you have not edited here');
+    await page.getByTestId('confirm-all-unchanged').click();
+    await expect(review).toBeVisible();
+    await expect(review.getByTestId('correction-structural')).toContainText('no longer dormant from 1 Oct 2026');
+    // Not even the account that needed no review was saved on its own.
+    await expect(row('Everyday').getByTestId('closing-amount')).toHaveValue('');
+    await review.getByTestId('correction-confirm').click();
+    await expect(review).toHaveCount(0);
+
+    for (const [name, amount] of [
+      ['Holiday', '800.00'],
+      ['Everyday', '2000.00'],
+    ] as const) {
+      await expect(row(name).getByTestId('account-closing')).toContainText('Confirmed unchanged');
+      await expect(row(name).getByTestId('closing-amount')).toHaveValue(amount);
+    }
+
+    // Both are awake: October no longer carries them at zero, and asks each for
+    // a statement of its own.
+    await page.goto('/monthly/2026-10');
+    for (const name of ['Savings', 'Holiday']) {
+      await expect(row(name).locator('th')).not.toContainText('dormant');
+      await expect(row(name).getByTestId('closing-amount')).toBeVisible();
+    }
+  });
+});

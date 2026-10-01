@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation';
 import type { CashMonthStateDto, PositionDetailDto } from '@vaultide/application';
 import {
   confirmMonthEndAction,
-  confirmUnchangedAction,
   correctValuationAction,
   deleteValuationAction,
   recordValuationAction,
@@ -22,7 +21,8 @@ import {
   HISTORICAL_CREATION_NOTE,
   isHistorical,
 } from '@/features/corrections/delete-confirm';
-import { useCorrection } from '@/features/corrections/use-correction';
+import { attemptUnchanged } from '@/features/corrections/unchanged';
+import { useCorrection, type CorrectionFlow } from '@/features/corrections/use-correction';
 
 /**
  * The valuation editor and the month-end section (blueprint 15.2, 15.3, 8.1,
@@ -196,6 +196,7 @@ export function ValuationEditor({ detail, today, locale }: ValuationEditorProps)
           positionId={position.id}
           locale={locale}
           minorUnits={position.minorUnits}
+          correction={correction}
           onDone={refresh}
         />
       ) : null}
@@ -382,18 +383,24 @@ export function ValuationEditor({ detail, today, locale }: ValuationEditorProps)
  * Only months that have actually ended appear here — the server builds the
  * list — so on 30 September this section does not offer September at all, and
  * on 1 October it does.
+ *
+ * "Unchanged this month" asks through the editor's own correction flow, and its
+ * review opens in the editor's one dialog: carrying a non-zero figure forward
+ * can end a dormant period that began in a closed month (8.8, 30.22).
  */
 function MonthEndSection({
   months,
   positionId,
   locale,
   minorUnits,
+  correction,
   onDone,
 }: {
   months: readonly CashMonthStateDto[];
   positionId: string;
   locale: string;
   minorUnits: number;
+  correction: CorrectionFlow;
   onDone: () => void;
 }) {
   const [pending, startTransition] = useTransition();
@@ -486,12 +493,10 @@ function MonthEndSection({
                 onClick={() => {
                   setError(null);
                   startTransition(async () => {
-                    const result = await confirmUnchangedAction({
-                      positionId,
-                      month: month.month,
-                    });
-                    if (!result.ok) {
-                      setError(result.error.message);
+                    const attempted = await attemptUnchanged(correction, positionId, month.month);
+                    if (attempted.kind === 'review') return;
+                    if (!attempted.result.ok) {
+                      setError(attempted.result.error.message);
                       return;
                     }
                     onDone();
