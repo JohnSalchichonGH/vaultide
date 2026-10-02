@@ -14,6 +14,7 @@
     "test:integration": "pnpm --filter @vaultide/db run test:integration && pnpm --filter @vaultide/application run test:integration",
     "test:live": "node scripts/test-live.mjs",
     "test:e2e": "pnpm --filter @vaultide/e2e run test",
+    "test:e2e:local": "node --import tsx scripts/e2e/run-local.mjs",
     "build": "pnpm --filter @vaultide/web run build",
     "verify:prepush": "pnpm run lint && pnpm run typecheck && pnpm run test:unit && pnpm --filter @vaultide/finance exec vitest run --coverage && pnpm run test:integration && pnpm run build",
     "dev": "pnpm --filter @vaultide/web run dev",
