@@ -64,7 +64,8 @@ second deploy while one exists, or start the next slice.
    the merge timestamp.
 3. `git rev-parse origin/main^{tree}` equals `git rev-parse $head^{tree}`, and
    `git log --format='%H %s' $base..origin/main` lists exactly the reviewed commits.
-4. Fast-forward local `main` with `git merge --ff-only origin/main`. The working tree stays clean.
+4. Switch to `main` (`git switch main`), then fast-forward it with `git merge --ff-only origin/main`;
+   run from any other branch, that merge would leave local `main` behind. The working tree stays clean.
 
 ## 4. Post-merge CI
 
