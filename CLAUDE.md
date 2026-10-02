@@ -93,6 +93,8 @@ For UI/E2E-sensitive work, also run the applicable Playwright journeys. Document
 
 Local verification complements rather than replaces CI; the repository's CI may run additional checks. Never claim a check passed unless it actually ran successfully after the last relevant edit.
 
+CI also runs `pnpm audit --audit-level high`, which `pnpm verify:prepush` does not; run it before pushing. A new high or critical advisory that the change did not cause is a repository-wide issue: stop and report it instead of fixing it inside the slice. The `verification-report` skill gives the full sequence and report, including the complete Playwright suite through `pnpm test:e2e:local`.
+
 ## Git, review, and release
 
 `main` is the production checkpoint.
@@ -106,6 +108,7 @@ Local verification complements rather than replaces CI; the repository's CI may 
 - Do not create a PR unless requested; high-risk/cross-cutting work may intentionally use one.
 - Do not start the next slice while the current one is awaiting independent review, CI, deployment, or freeze.
 - Claude does not self-approve a slice. After independent review and explicit authorization, `main` may fast-forward to the exact reviewed SHA.
+- Landing follows the user-invoked `/land-pr` skill, given the PR number and the reviewed base and head SHAs; it stops on any mismatch. The repository's permission ask rules prompt again at any push to `main`, force push, or `gh pr merge`.
 - Do not treat local success or a merge as production closure. Closure requires the exact reviewed main SHA to pass the repository's required CI and be verified live through its normal release path. Never bypass required CI or accept an already-healthy older deployment as evidence for the new release.
 - A slice/phase is frozen only after production verification says the intended release is live.
 
