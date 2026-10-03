@@ -124,12 +124,22 @@ the range a column has to overlap to hold anything a person can type.
 | a stored statement or entry | the same amount, compared exactly as decimals | none |
 | a stored statement or entry | another amount | update — the amount alone |
 | a stored statement or entry | cleared by hand | clear — a hard delete with its audit image |
-| carried, empty, a derived zero, an unrecorded occurrence | an amount, **even the carried one** | create |
-| carried, empty, a derived zero, an unrecorded occurrence | blank | none |
+| carried, empty, a dormant zero, an unrecorded occurrence | an amount, **even the carried one** | create |
+| carried, empty, a dormant zero, an unrecorded occurrence | blank | none |
 
 Clearing an income cell is 15.3's own rule; clearing a balance cell is this
 record's, and it obeys the existing rules — the closing balance of a closed
 account still cannot be removed while it stays closed (6.3).
+
+A derived zero says why it is zero, and the reason decides whether it takes a
+figure. A **dormant** zero is a carry like any other, so a figure typed over it
+records a balance and wakes the account by the ordinary rule. A **closed** zero
+— the account closed inside the month — is zero by definition (8.1) and is
+**never** editable here, not even in a month whose last day is the closing day:
+Monthly shows it as 0 with an explanation, and confirming it unchanged is
+refused for the same reason. The grid labels each by its reason. The ordinary
+valuation rules are not changed by this; it is the grid that does not offer the
+cell.
 
 A carried value retyped is a **create** because a carried figure is not a
 record: typing it is the first assertion that the month ended at that figure.
@@ -142,10 +152,10 @@ the paste. The rectangle starts at the focused cell and maps through the column
 model, never through the cells that happen to be mounted. A **blank** field
 leaves its cell exactly as it was. The paste is judged whole before anything
 changes: a non-blank field outside the grid, on the current month's row, on a
-cell nobody may edit (a snapshot, a skipped or absent occurrence, an archived
-source's missing one, a month outside the account's window) or that is not an
-amount the cell accepts refuses the **whole** paste with a message naming that
-cell, and so does a paste that would pass the limit.
+cell nobody may edit (a snapshot, a closed zero, a skipped or absent
+occurrence, an archived source's missing one, a month outside the account's
+window) or that is not an amount the cell accepts refuses the **whole** paste
+with a message naming that cell, and so does a paste that would pass the limit.
 
 **Numbers.** The user's locale decides the separators, read from
 `Intl.NumberFormat(locale).formatToParts`. Accepted: an optional minus sign,
@@ -231,7 +241,7 @@ already offers both, side by side, with the snapshot's own date in view.
 
 - The grid is keyed on its first row, never on versions.
 - Each edit records the **base** it was typed against: a stored row's id,
-  version and amount; or that the cell was carried, empty, a derived zero, or
+  version and amount; or that the cell was carried, empty, a dormant zero, or
   an unrecorded occurrence.
 - When a newer read arrives — after a commit, a changed impact, a refusal, or
   any refresh — every edit whose base still stands is kept. An edit whose cell

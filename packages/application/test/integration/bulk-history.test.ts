@@ -385,15 +385,34 @@ describe('the grid states every cell (ADR 0011 D3, D5)', () => {
     });
 
     const grid = await page('2026-01');
-    expect(cellOf(grid, savings, '2026-04')).toEqual({ kind: 'derived_zero', reason: 'dormant', editable: true });
+    expect(cellOf(grid, savings, '2026-04')).toEqual({ kind: 'derived_zero', reason: 'dormant' });
     expect(cellOf(grid, opened.id, '2026-05')).toEqual({ kind: 'unavailable', reason: 'not_open' });
     expect(cellOf(grid, opened.id, '2026-06')).toEqual({ kind: 'empty' });
-    expect(cellOf(grid, opened.id, '2026-08')).toEqual({
-      kind: 'derived_zero',
-      reason: 'closed',
-      editable: false,
-    });
+    expect(cellOf(grid, opened.id, '2026-08')).toEqual({ kind: 'derived_zero', reason: 'closed' });
     expect(cellOf(grid, opened.id, '2026-09')).toEqual({ kind: 'unavailable', reason: 'closed' });
+  });
+
+  it('says closed, not editable, for a month whose last day is the closing day', async () => {
+    // Closing needs the latest balance on or before the closing day to be zero,
+    // not a balance on that day: so July can end on the closing day with no
+    // row on it, and its month end is zero by definition (8.1).
+    const closing = await createCashAccount(positions(), OCT_5, {
+      name: 'Closing',
+      currency: 'EUR',
+      accountType: 'checking',
+      openedOn: null,
+    });
+    await statement(closing.id, '2026-06-30', '0');
+    await closePosition(positions(), OCT_5, {
+      positionId: closing.id,
+      expectedVersion: closing.version,
+      closedOn: '2026-07-31',
+    });
+
+    const grid = await page('2026-01');
+    expect(cellOf(grid, closing.id, '2026-06')).toMatchObject({ kind: 'stored', amount: '0' });
+    expect(cellOf(grid, closing.id, '2026-07')).toEqual({ kind: 'derived_zero', reason: 'closed' });
+    expect(cellOf(grid, closing.id, '2026-08')).toEqual({ kind: 'unavailable', reason: 'closed' });
   });
 
   it('places income by occurrence, with skipped, archived and no-occurrence cells', async () => {

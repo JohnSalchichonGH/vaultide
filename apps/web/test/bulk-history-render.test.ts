@@ -41,7 +41,7 @@ const page: BulkHistoryPageDto = {
         },
         { from: '2026-02', through: '2026-02', cell: { kind: 'carried', amount: '1000', since: '2026-01-31' } },
         { from: '2026-03', through: '2026-03', cell: { kind: 'snapshot', valuationId: 'val-2', amount: '950' } },
-        { from: '2026-04', through: '2026-04', cell: { kind: 'derived_zero', reason: 'dormant', editable: true } },
+        { from: '2026-04', through: '2026-04', cell: { kind: 'derived_zero', reason: 'dormant' } },
       ],
     },
     {
@@ -53,7 +53,7 @@ const page: BulkHistoryPageDto = {
       status: 'closed',
       segments: [
         { from: '2026-01', through: '2026-02', cell: { kind: 'empty' } },
-        { from: '2026-03', through: '2026-03', cell: { kind: 'derived_zero', reason: 'closed', editable: false } },
+        { from: '2026-03', through: '2026-03', cell: { kind: 'derived_zero', reason: 'closed' } },
         { from: '2026-04', through: '2026-04', cell: { kind: 'unavailable', reason: 'closed' } },
       ],
     },
@@ -115,10 +115,17 @@ describe('the grid shows each cell as what the server says it is', () => {
     expect(snapshot).not.toContain('<input');
   });
 
-  it('derives zero for a dormant month without recording one, and closes a closed one', () => {
-    expect(cell(markup, '2026-04', 0)).toContain('placeholder="0"');
-    expect(cell(markup, '2026-03', 1)).toContain('0 · closed');
-    expect(cell(markup, '2026-03', 1)).not.toContain('<input');
+  it('labels a derived zero by its reason: a dormant one takes a figure, a closed one never does', () => {
+    const dormant = cell(markup, '2026-04', 0);
+    expect(dormant).toContain('placeholder="0"');
+    expect(dormant).toContain('dormant, carried at 0');
+    expect(dormant).toContain('wakes the account');
+
+    const closed = cell(markup, '2026-03', 1);
+    expect(closed).toContain('0 · closed');
+    expect(markup).toContain('title="Closed this month: its balance at the month end is zero by definition."');
+    expect(closed).not.toContain('dormant');
+    expect(closed).not.toContain('<input');
   });
 
   it('shows income by occurrence, with the day it arrived when that differs', () => {

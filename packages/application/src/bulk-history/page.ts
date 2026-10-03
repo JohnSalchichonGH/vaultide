@@ -116,14 +116,6 @@ export interface BulkPositionHistory {
   readonly rows: ReadonlyMap<string, ValuationRow>;
 }
 
-/** The window every balance obeys (M4): on or after opening, on or before closing. */
-function withinWindow(record: PositionRecord, date: string): boolean {
-  return (
-    (record.openedOn === null || record.openedOn <= date) &&
-    (record.closedOn === null || record.closedOn >= date)
-  );
-}
-
 /** One account's cell for one completed month, in the order 8.1 reads it. */
 export function bulkPositionCellOf(history: BulkPositionHistory, month: MonthKey): BulkPositionCell {
   const { record, valuations } = history;
@@ -159,9 +151,9 @@ export function bulkPositionCellOf(history: BulkPositionHistory, month: MonthKey
 
   switch (cashCloseState(record, valuations, month)) {
     case 'closed_zero':
-      return { kind: 'derived_zero', reason: 'closed', editable: withinWindow(record, end) };
+      return { kind: 'derived_zero', reason: 'closed' };
     case 'dormant_zero':
-      return { kind: 'derived_zero', reason: 'dormant', editable: withinWindow(record, end) };
+      return { kind: 'derived_zero', reason: 'dormant' };
     case 'carried': {
       const latest = latestOnOrBefore(valuations, end);
       /* v8 ignore next -- `carried` means a balance on or before the month end exists. */

@@ -155,7 +155,9 @@ export function baseOf(cell: GridCell | null): CellBase | null {
     case 'empty':
       return { kind: 'empty' };
     case 'derived_zero':
-      return cell.editable ? { kind: 'derived' } : null;
+      // A dormant zero is a carry and takes a figure; a closed one is zero by
+      // definition and takes none.
+      return cell.reason === 'dormant' ? { kind: 'derived' } : null;
     case 'materialized':
       return { kind: 'materialized', id: cell.entryId, version: cell.version, amount: cell.netAmount };
     case 'open':

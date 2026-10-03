@@ -544,6 +544,26 @@ export function BulkHistoryGrid({
 
 const CELL = 'border-b px-2 align-middle';
 
+/**
+ * A derived zero, in words, by the reason the server gave for it. A dormant
+ * zero is a carry a figure may replace; a closed one is zero by definition and
+ * is never editable here.
+ */
+const DERIVED_ZERO: Readonly<
+  Record<'dormant' | 'closed', { readonly cell: string; readonly line: string; readonly hint: string }>
+> = {
+  dormant: {
+    cell: '0 · dormant',
+    line: 'dormant, carried at 0',
+    hint: 'Dormant: carried at 0. A figure here records a balance and wakes the account.',
+  },
+  closed: {
+    cell: '0 · closed',
+    line: 'closed, 0 by definition',
+    hint: 'Closed this month: its balance at the month end is zero by definition.',
+  },
+};
+
 /** What a cell asks of the grid. Read through a ref, so it never changes a cell's props. */
 interface CellActions {
   readonly type: (column: GridColumn, month: string, text: string) => void;
@@ -599,7 +619,7 @@ function GridCellView({
           </td>
         );
       case 'derived_zero':
-        return muted('0 · closed', 'Closed this month: zero by definition.');
+        return muted(DERIVED_ZERO[cell.reason].cell, DERIVED_ZERO[cell.reason].hint);
       case 'unavailable':
         return muted('—', cell.reason === 'not_open' ? 'Not open yet.' : 'Closed.');
       case 'skipped':
@@ -622,7 +642,7 @@ function GridCellView({
     cell.kind === 'carried'
       ? `No statement. Carried from ${dayTitle(cell.since, locale)}; type a figure to record one.`
       : cell.kind === 'derived_zero'
-        ? 'Dormant: carried at 0. A figure here records a balance and wakes the account.'
+        ? DERIVED_ZERO[cell.reason].hint
         : cell.kind === 'stored'
           ? cell.source === 'bulk_entered'
             ? 'Statement balance, entered in bulk.'
@@ -635,9 +655,9 @@ function GridCellView({
               ? `Recorded for ${dayTitle(cell.occurrenceDate, locale)}.`
               : undefined;
   // One short line under the field, for what the field alone cannot say: that
-  // a muted figure is carried and not recorded, that a zero is the dormant
-  // episode's, that a stored row emptied by hand will be removed, or that an
-  // occurrence's money arrived on another day.
+  // a muted figure is carried and not recorded, why a zero is derived, that a
+  // stored row emptied by hand will be removed, or that an occurrence's money
+  // arrived on another day.
   const removing =
     text !== undefined && text.trim() === '' && (cell.kind === 'stored' || cell.kind === 'materialized');
   const secondary = removing
@@ -645,7 +665,7 @@ function GridCellView({
     : cell.kind === 'carried' && text === undefined
       ? 'carried, not recorded'
       : cell.kind === 'derived_zero' && text === undefined
-        ? 'dormant, carried at 0'
+        ? DERIVED_ZERO[cell.reason].line
         : cell.kind === 'materialized' && cell.receivedOn !== cell.occurrenceDate
           ? `received ${dayTitle(cell.receivedOn, locale)}`
           : null;

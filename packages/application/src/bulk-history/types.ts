@@ -61,15 +61,18 @@ export type BulkPositionCell =
    */
   | { readonly kind: 'carried'; readonly amount: string; readonly since: string }
   /**
-   * A zero the evidence derives without a row: the account's current dormant
-   * episode covers `end(M)`, or it closed inside M. `editable` is the same
-   * window rule every balance obeys: a closed month end is outside it.
+   * A zero the evidence derives without a row, and why — which also says
+   * whether a figure may be typed over it:
+   *
+   *  - `dormant`: the account's current dormant episode covers `end(M)`. It is
+   *    a carried zero like any carry, so a figure typed here records a balance
+   *    (and wakes the account, by the ordinary rule);
+   *  - `closed`: the account closed inside M, so its balance at `end(M)` is
+   *    zero by definition (8.1). Never editable here — Monthly shows it as 0
+   *    with an explanation, and confirming it unchanged is refused for the same
+   *    reason — even in a month whose last day is the closing day.
    */
-  | {
-      readonly kind: 'derived_zero';
-      readonly reason: 'dormant' | 'closed';
-      readonly editable: boolean;
-    }
+  | { readonly kind: 'derived_zero'; readonly reason: 'dormant' | 'closed' }
   /** Nothing on or before `end(M)`: a balance may be entered. */
   | { readonly kind: 'empty' }
   /** Outside the account's window: before it opened, or after the month it closed in. */

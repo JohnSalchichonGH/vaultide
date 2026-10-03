@@ -574,6 +574,46 @@ describe('a Bulk History review at scale (ADR 0011 D10)', () => {
   });
 });
 
+describe('a derived zero (ADR 0011 D4)', () => {
+  const grid = gridModelOf(
+    page({
+      columns: [
+        {
+          kind: 'position',
+          positionId: BBVA,
+          positionKind: 'cash',
+          name: 'BBVA',
+          currency: 'EUR',
+          status: 'closed',
+          segments: [
+            { from: '2026-01', through: '2026-03', cell: { kind: 'derived_zero', reason: 'dormant' } },
+            { from: '2026-04', through: '2026-04', cell: { kind: 'derived_zero', reason: 'closed' } },
+            { from: '2026-05', through: '2026-05', cell: { kind: 'unavailable', reason: 'closed' } },
+          ],
+        },
+      ],
+    }),
+    'en-GB',
+  );
+  const bbva = grid.columns[0];
+  if (bbva === undefined) throw new Error('column');
+
+  it('takes a figure over a dormant zero, as a new balance', () => {
+    const typed = typeInto(grid, NO_EDITS, bbva, '2026-02', '10');
+    expect(typed.ok && operations(grid, typed.edits)).toEqual([
+      { kind: 'valuation_create', positionId: BBVA, month: '2026-02', amount: '10' },
+    ]);
+  });
+
+  it('never takes one over a closed zero, typed or pasted, even on the closing month itself', () => {
+    expect(typeInto(grid, NO_EDITS, bbva, '2026-04', '10').ok).toBe(false);
+    const pasted = pasteInto(grid, NO_EDITS, { row: 3, column: 0 }, '10');
+    expect(pasted.ok).toBe(false);
+    if (!pasted.ok) expect(pasted.message).toMatch(/BBVA, April 2026 cannot be edited/u);
+    expect(nextEditable(grid, { row: 2, column: 0 }, 'down')).toBeNull();
+  });
+});
+
 describe('a dormant account woken by income cells alone', () => {
   const SAVINGS = 'pos-savings';
   const preview = {
