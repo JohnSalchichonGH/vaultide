@@ -62,6 +62,10 @@ progress, but Monthly and Spending are live. What is usable today:
   changed in the meantime you are shown the new effect instead. The editors are
   the ones you already use, and the server refuses a change to finished history
   that did not come through the review;
+- entering older history in one grid: past months down the side, each
+  account's month-end balance and each recurring income source across the top,
+  typed or pasted from a spreadsheet. Every save is reviewed as one batch, and
+  nothing is written until you confirm it;
 - marking a completed month reviewed, and hiding an advisory for that month or
   showing it again. Hiding changes only what the page shows; it resolves
   nothing;
@@ -121,6 +125,15 @@ through the review. The review writes nothing and works the affected months out
 with the same engines the pages use. Confirming works the correction out again,
 commits it only if its effect is still the one you reviewed, and audits it.
 
+Bulk History is live in production as well, at `/monthly/[yyyy-mm]/history`:
+one grid of month-end balances and recurring income across past months, typed
+or pasted from a spreadsheet. Each cell says what it holds — recorded, carried
+from an earlier month, a dormant or closed zero — and a paste that cannot land
+is refused whole, naming the cell. Every save, whatever it contains, goes
+through historical correction's review as one batch and commits atomically or
+not at all; there is no other way for the grid to write. The decisions are in
+[ADR 0011](docs/adr/0011-bulk-history.md).
+
 In production, Monthly consumes this through one composite read: a month's
 reconciliation, reporting-currency figures and completeness, the cash balances
 it is measured from, the month's transfers between cash accounts, the income it
@@ -135,7 +148,6 @@ built yet.
 
 Phase 3 is **in progress**, and is neither accepted nor frozen. Still to do:
 
-- bulk history entry;
 - the standalone Income pages;
 - the remaining end-to-end journeys and hardening;
 - a cold review of the whole phase;
@@ -172,8 +184,8 @@ reconciliation identities, rate selection and every edge case.
 apps/web             Next.js App Router: auth pages, onboarding, settings, shell,
                      dashboard, accounts and account detail, Monthly overview,
                      income, known expenses, accounts and reconciliation,
-                     standalone Spending; /api/auth, /api/cron/fx-refresh,
-                     /api/health
+                     the Bulk History grid, standalone Spending; /api/auth,
+                     /api/cron/fx-refresh, /api/health
 packages/finance     pure engines — money, dates, FX, Unavailable/Partial,
                      positions and net worth, flow roles, recurrence,
                      completed-month, month-to-date and span reconciliation,
@@ -187,13 +199,14 @@ packages/application use cases: auth and sessions, mailer, settings, FX service,
                      flows, recurring templates and suggestions, every
                      reconciliation, completeness, savings, reporting and
                      rolling read, the Monthly composite read with its review
-                     state, the Spending composite read, and historical
-                     correction's preview and confirm
+                     state, the Spending composite read, historical
+                     correction's preview and confirm, and the Bulk History
+                     grid read and batch
 packages/config      tsconfig, ESLint (incl. the money-coercion rule), boundaries
 e2e                  Playwright: smoke, the auth and settings flow, the
                      accounts, balances and net-worth journey, and the Monthly,
-                     Spending, corrective-action and historical-correction
-                     journeys
+                     Spending, corrective-action, historical-correction and
+                     Bulk History journeys
 scripts/db           role bootstrap, local PostgreSQL, currency reconciliation,
                      live environment and financial-invariant checks
 scripts/backup       dump → verify → encrypt
@@ -255,6 +268,7 @@ pnpm test:unit           # finance, validation, application, web
 pnpm test:integration    # provisions fresh databases: roles, RLS, seed, backup
 pnpm build
 pnpm test:e2e            # Playwright, desktop + mobile
+pnpm test:e2e:local      # the same suite on a fresh local database
 ```
 
 `pnpm test:integration` needs a PostgreSQL admin URL: either
@@ -263,7 +277,9 @@ database per suite through the same scripts an operator runs, so what it proves
 about roles, RLS and privileges is what production has.
 
 `pnpm test:e2e` needs `DATABASE_URL` for a migrated database; the suite starts
-the production build itself.
+the production build itself. `pnpm test:e2e:local` provisions that database in
+the local cluster, runs the suite against the existing build — so run
+`pnpm build` first — and drops the database afterwards.
 
 ```bash
 pnpm db:verify-currencies   # does the seed still match the approved ECB -> BDI chain?
@@ -296,7 +312,8 @@ policy filtered can never pass verification. Restoring is documented in
   [the dormant anchor](docs/adr/0007-dormant-anchor.md),
   [standalone Spending](docs/adr/0008-standalone-spending.md),
   [reconciliation corrective actions](docs/adr/0009-reconciliation-corrective-actions.md),
-  [historical correction and financial write coordination](docs/adr/0010-historical-correction.md).
+  [historical correction and financial write coordination](docs/adr/0010-historical-correction.md),
+  [Bulk History](docs/adr/0011-bulk-history.md).
 - **Evidence for frozen phases:**
   [`docs/phase-0-acceptance.md`](docs/phase-0-acceptance.md),
   [`docs/phase-1-acceptance.md`](docs/phase-1-acceptance.md),

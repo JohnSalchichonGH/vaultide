@@ -130,14 +130,42 @@ logs into this file.
     another month.
 
   A single historical creation stays a first assertion outside the ceremony.
-  Bulk history, the history drawer, undo, restore, `positions.opened_on`
-  correction and reopening or correcting a close remain outside it.
+  The history drawer, undo, restore, `positions.opened_on` correction and
+  reopening or correcting a close remain outside it.
+
+  **Bulk History** is likewise an independently reviewed, production-verified
+  and frozen completed Phase 3 slice checkpoint (ADR 0011). It builds on a
+  behaviour-preserving extraction of the resolution rules that landed first as
+  its prerequisite (PR #27), and its grid-read query-shape test was corrected
+  after landing (PR #32):
+  - `/monthly/[yyyy-mm]/history` is one grid of past months: completed months
+    from a chosen first month down the side, the current month's row shown and
+    disabled, and a column for each account's month-end balance and each
+    recurring income source. Monthly links to it from every month, and a
+    first-balance issue offers it for the year before the account was first
+    tracked;
+  - figures are typed, or pasted from a spreadsheet. A paste is read in the
+    user's locale and checked whole, and one that cannot land is refused
+    entirely, naming the cell;
+  - every cell says what it holds — recorded, carried from an earlier month, a
+    dormant or closed zero, a last-day snapshot to confirm in Monthly, a skipped
+    or absent occurrence — and only a cell that can take a figure accepts one;
+  - every save is reviewed, whatever it contains: the whole batch goes through
+    Review changes → Confirm correction and commits as one atomic act or not at
+    all. Historical correction's Confirm is its only write path;
+  - one save holds at most 250 changed cells;
+  - unsaved edits survive the grid being read again while what they were typed
+    against still stands, and leaving the page with edits pending asks first.
+
+  The known-expense total column (Phase 7), un-skipping from the grid and any
+  file import remain outside it.
 - **User-facing production:** Phases 0–2 remain the accepted/frozen user-facing
   foundation. Phase 3's Monthly page is in production with Overview, Income,
   Known expenses, Accounts (including cash transfers) and Reconciliation —
   whose issues now carry corrective actions — and so is the standalone Spending
   page. Historical correction is in production across those editors and the
-  account pages. The rest of Phase 3 remains in progress.
+  account pages, and Bulk History beside Monthly. The rest of Phase 3 remains
+  in progress.
 - **Database migrations:** repository migrations run through
   `0008_dormant_anchor.sql`; the production release workflow
   applies migrations before deploying application code.
@@ -156,6 +184,8 @@ logs into this file.
   historical-correction design and the financial write-coordination
   prerequisite. A short implementation-status note is appended to it; the
   decision record itself is unchanged.
+  `docs/adr/0011-bulk-history.md` is the accepted record of the Bulk History
+  decisions, and of its known limits.
 
 Freezing completed Phase 3 slices does not imply acceptance or freeze of Phase 3
 as a whole.
@@ -204,7 +234,12 @@ Monthly adds, on top of that backend:
   snapshot as one, confirming a month unchanged, and updating balances today —
   and the month's cash transfers between the user's own accounts: recording,
   correcting or deleting a transfer within one currency or across two, with its
-  optional linked fee;
+  optional linked fee. Confirming a month unchanged writes a real month-end
+  balance, so a non-zero one wakes a dormant account exactly as recording that
+  balance would. The confirmation stays an ordinary first assertion; only a
+  wake that reaches completed history — a dormant episode that began in a
+  closed month — goes through Historical correction's review, and a Confirm all
+  that needs it is reviewed as one act;
 - **Income**: the recurring income occurrences a month expected and what became
   of each, recording or skipping them and restoring a skip, recording an
   occurrence received early, changing what a source is worth from an occurrence
@@ -259,10 +294,17 @@ Web surface of Phase 3:
   expense, and Monthly Accounts is the user-facing consumer of the transfer flow
   path. `corrections.ts` declares Historical correction's Confirm with
   `financialAction`; its Preview is an authenticated read that writes nothing.
+- Bulk History (`/monthly/[yyyy-mm]/history`) is a production route, served by
+  one read-only grid read (`getBulkHistoryPage`, in
+  `packages/application/src/bulk-history/`). A save is a Historical correction
+  draft of its own family, always reviewed, and written only through that
+  Confirm: it adds no server action, and the financial-action inventory is
+  unchanged.
 - End-to-end coverage now also includes the Monthly, Spending,
-  corrective-action and historical-correction journeys (`monthly`, `spending`,
-  `corrective-actions`, `historical-correction`), alongside the Phase 0–2
-  journeys (`smoke`, `auth`, `accounts`).
+  corrective-action, historical-correction and Bulk History journeys
+  (`monthly`, `spending`, `corrective-actions`, `historical-correction`,
+  `bulk-history`), alongside the Phase 0–2 journeys (`smoke`, `auth`,
+  `accounts`).
 
 ## Financial write coordination
 
@@ -382,25 +424,30 @@ their row locks, which a `read only` transaction cannot do at all.
 No migration: nothing about a preview, a draft, an impact or a fingerprint is
 persisted.
 
-Still out of scope, and still separate known gaps: bulk history, the history
-drawer, undo, restore, `positions.opened_on` correction, and reopening or
-correcting a close.
+Still out of scope, and still separate known gaps: the history drawer, undo,
+restore, `positions.opened_on` correction, and reopening or correcting a close.
 
 ## Next planned work
 
 Phase 3 remains **in progress**, and is neither accepted nor frozen as a whole.
-The next planned Phase 3 area is **bulk history entry**, which has **not
-started**.
+The next planned Phase 3 area is **the standalone Income pages**, which have
+**not started**.
 
 Remaining Phase 3 work, in the agreed order:
 
-1. bulk history entry;
-2. the standalone Income pages;
-3. the remaining end-to-end journeys and Phase 3 hardening, including the
-   server/domain enforcement of each currency's minor-unit scale for Phase 3
-   flows that acceptance still requires;
-4. a cold whole-Phase-3 review;
-5. Phase 3 acceptance, production verification, and freeze.
+1. the standalone Income pages;
+2. the remaining end-to-end journeys and Phase 3 hardening, including:
+   - the server/domain enforcement of each currency's minor-unit scale for
+     Phase 3 flows that acceptance still requires;
+   - two known gaps recorded with Bulk History and not fixed there:
+     - the ordinary record path accepts a non-zero balance dated a closed
+       account's closing day when no balance sits on that day, because
+       closing an account only requires the latest balance on or before that
+       day to be zero;
+     - the Bulk History grid read has no size bound (ADR 0011, "Known
+       limits");
+3. a cold whole-Phase-3 review;
+4. Phase 3 acceptance, production verification, and freeze.
 
 The exact scope and subdivision of this work may still be refined by a later
 reviewed task prompt. Do not infer that an item is implemented merely because it

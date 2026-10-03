@@ -129,7 +129,8 @@ test.describe('the public homepage', () => {
       'Spending over time',
       'Fix reconciliation issues',
       'Correct past records',
-      'Older history and income',
+      'Enter older history',
+      'Income across months',
       'Investments',
       'Debts & mortgages',
       'Property',
@@ -138,10 +139,10 @@ test.describe('the public homepage', () => {
     ]) {
       await expect(roadmap.getByText(entry, { exact: true })).toBeVisible();
     }
-    // Correcting a reconciliation issue and correcting past records are things
-    // the product does now, not things it promises: both titles sit under
-    // Available now, what is next is older history and income, and the titles
-    // that promised shipped work are gone.
+    // Correcting a reconciliation issue, correcting past records and entering
+    // older history are things the product does now, not things it promises:
+    // all three titles sit under Available now, what is next is income across
+    // months, and the titles that promised shipped work are gone.
     await expect(
       page.getByTestId('roadmap-available').getByText('Fix reconciliation issues', { exact: true }),
     ).toBeVisible();
@@ -149,10 +150,14 @@ test.describe('the public homepage', () => {
       page.getByTestId('roadmap-available').getByText('Correct past records', { exact: true }),
     ).toBeVisible();
     await expect(
-      page.getByTestId('roadmap-next').getByText('Older history and income', { exact: true }),
+      page.getByTestId('roadmap-available').getByText('Enter older history', { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId('roadmap-next').getByText('Income across months', { exact: true }),
     ).toBeVisible();
     await expect(roadmap.getByText('Corrections and income over time')).toHaveCount(0);
     await expect(roadmap.getByText('Historical corrections and income')).toHaveCount(0);
+    await expect(roadmap.getByText('Older history and income')).toHaveCount(0);
     // Planned work is described on the page, not behind a control.
     await expect(
       roadmap.getByText(

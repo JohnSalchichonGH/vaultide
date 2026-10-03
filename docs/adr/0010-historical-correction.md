@@ -534,6 +534,7 @@ as vaguer than the code:
   and it is why a prospective transfer fee carries a deterministic semantic
   identity rather than a UUID the commit could never reproduce.
 
-Still not implemented, and still separate known gaps: bulk history, the history
-drawer, undo, restore, `positions.opened_on` correction, and reopening or
-correcting a close (§14).
+Bulk history has since been built on this machinery, as a correction family of
+its own that is always reviewed; ADR 0011 records it. Still not implemented,
+and still separate known gaps: the history drawer, undo, restore,
+`positions.opened_on` correction, and reopening or correcting a close (§14).

@@ -111,6 +111,10 @@ export const ROADMAP = {
           title: 'Correct past records',
           text: 'Change or delete a balance, income, expense or transfer that belongs to a finished month, and see what the correction does — the record before and after, and which months are worked out again — before anything is saved.',
         },
+        {
+          title: 'Enter older history',
+          text: 'Fill in past months in one grid, month-end balances and recurring income, typed or pasted from a spreadsheet, and review the whole batch before anything is saved.',
+        },
       ],
     },
     {
@@ -118,8 +122,8 @@ export const ROADMAP = {
       label: 'Next up',
       entries: [
         {
-          title: 'Older history and income',
-          text: 'Enter older history faster, several months of balances and recurring income at a time, and see your income across months in a dedicated view.',
+          title: 'Income across months',
+          text: 'A dedicated view of your income: net and gross by month and by source, annual totals, and how it has progressed.',
         },
       ],
     },
