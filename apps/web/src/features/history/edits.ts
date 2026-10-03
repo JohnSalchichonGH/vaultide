@@ -1,5 +1,6 @@
 import type { BulkHistoryDraft, BulkHistoryOperation } from '@vaultide/application';
 import { sameDecimal } from '@/features/monthly/autosave';
+import { monthTitle } from '@/features/monthly/presentation';
 import {
   baseOf,
   cellAt,
@@ -186,6 +187,16 @@ export function operationCount(model: GridModel, edits: Edits): number {
   return outcomesOf(model, edits).filter((item) => item.outcome.kind === 'operation').length;
 }
 
+/**
+ * Whether going from `before` to `after` takes the unsaved operations past the
+ * per-save limit. Each side is counted once; an edit that does not add an
+ * operation is never refused, even at the limit.
+ */
+function passesLimit(model: GridModel, before: Edits, after: Edits): boolean {
+  const count = operationCount(model, after);
+  return count > model.maxOperations && count > operationCount(model, before);
+}
+
 export const limitMessage = (limit: number): string =>
   `One save can carry at most ${String(limit)} changed cells. Review and save these, then continue.`;
 
@@ -255,9 +266,7 @@ export function typeInto(
 ): EditResult {
   const next = withText(model, edits, column, month, text);
   if (next === null) return { ok: false, message: 'This cell cannot be edited here.' };
-  if (operationCount(model, next) > model.maxOperations && operationCount(model, next) > operationCount(model, edits)) {
-    return { ok: false, message: limitMessage(model.maxOperations) };
-  }
+  if (passesLimit(model, edits, next)) return { ok: false, message: limitMessage(model.maxOperations) };
   return { ok: true, edits: next };
 }
 
@@ -267,13 +276,6 @@ export function revertCell(edits: Edits, columnKey: string, month: string): Edit
   next.delete(cellKey(columnKey, month));
   return next;
 }
-
-const monthName = (month: string, locale: string): string => {
-  const [year, index] = month.split('-').map(Number) as [number, number];
-  return new Intl.DateTimeFormat(locale, { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(
-    new Date(Date.UTC(year, index - 1, 1)),
-  );
-};
 
 /**
  * Paste a spreadsheet rectangle with its top-left field at `anchor` (ADR 0011
@@ -307,7 +309,7 @@ export function pasteInto(
       if (month === undefined || column === undefined) {
         return { ok: false, message: 'The pasted block reaches past the edge of the grid, so nothing was pasted.' };
       }
-      const where = `${column.name}, ${monthName(month, model.locale)}`;
+      const where = `${column.name}, ${monthTitle(month, model.locale)}`;
       if (month === model.currentMonth) {
         return {
           ok: false,
@@ -335,9 +337,7 @@ export function pasteInto(
     }
   }
 
-  if (operationCount(model, next) > model.maxOperations && operationCount(model, next) > operationCount(model, edits)) {
-    return { ok: false, message: limitMessage(model.maxOperations) };
-  }
+  if (passesLimit(model, edits, next)) return { ok: false, message: limitMessage(model.maxOperations) };
   return { ok: true, edits: next, changed };
 }
 
