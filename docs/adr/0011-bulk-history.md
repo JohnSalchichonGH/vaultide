@@ -366,6 +366,23 @@ changes. A view of that whole history is not the common case — Monthly's links
 open twelve months — and a row-range read is the follow-up if production ever
 needs the thirty-year view lighter.
 
+## Known limits
+
+- **The grid read has no size bound.** It reads every month from the first row
+  through the last completed month, with no cap on how far back that is (D1).
+  On the 23.1 worst case with the first row thirty years back, its DTO is 3.5
+  MB (650 KB gzipped). Monthly's links open twelve months; a read of a bounded
+  row range, fetched as the grid scrolls, is the follow-up if production needs
+  the long view lighter.
+- **The preview's size follows how far back a save reaches, not the 250
+  limit.** A preview carries each affected month's state before and after,
+  account by account, so its size and the time to derive it grow with the
+  window the save reaches — one cell thirty years back reaches as far as two
+  hundred and fifty. The limit bounds how many of those months are the save's
+  own, and so keeps the worst case measured in D2 under 4 MB; it does not bound
+  the window. A single historical correction shares this: correcting one old
+  balance previews every month until a later balance stops its reach.
+
 ## Known oddity, not changed here
 
 A correction never writes a balance's `source`. So a `confirmed_unchanged`
