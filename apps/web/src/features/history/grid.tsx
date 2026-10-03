@@ -1,13 +1,16 @@
 'use client';
 
 import {
+  memo,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type ClipboardEvent,
   type KeyboardEvent,
+  type RefObject,
 } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -115,15 +118,24 @@ export function BulkHistoryGrid({
     const result = rebase(model, edits);
     setSeen(model);
     setEdits(result.kept);
-    if (result.dropped.length > 0) {
-      setDropped(result.dropped);
-      // A review prepared from the old draft is not this grid's draft any more.
-      if (correction.paused) correction.clear();
-    }
+    if (result.dropped.length > 0) setDropped(result.dropped);
     if (result.kept.size === 0) setEdited(false);
   }
 
   const outcomes = useMemo(() => outcomesOf(model, edits), [model, edits]);
+  const current = useMemo(() => draftOf(model, edits), [model, edits]);
+
+  // A review the user stepped back from is resumable only while it is still
+  // the review of these edits. Once a refresh drops a cell, or the user changes
+  // one, it is somebody else's draft: it is let go, and Save asks again.
+  if (
+    correction.paused &&
+    correction.pending !== null &&
+    (!current.ok || JSON.stringify(current.draft) !== JSON.stringify(correction.pending.draft))
+  ) {
+    correction.clear();
+  }
+  const resumable = correction.paused && correction.pending !== null;
   const operations = outcomes.filter((item) => item.outcome.kind === 'operation').length;
   const problems = new Map(
     outcomes.flatMap((item) =>
@@ -133,6 +145,20 @@ export function BulkHistoryGrid({
     ),
   );
   const droppedKeys = new Set(dropped.map((item) => cellKey(item.columnKey, item.month)));
+  const focusedKey =
+    focus === null
+      ? null
+      : cellKey(model.columns[focus.column]?.key ?? '', model.rows[focus.row] ?? '');
+  const problemAt = (key: string): string | null => {
+    const message = problems.get(key);
+    if (message === undefined) return null;
+    const [columnKey = '', month = ''] = key.split('|');
+    const name = model.columns.find((column) => column.key === columnKey)?.name ?? '';
+    return `${name}, ${monthTitle(month, locale)}: ${message}`;
+  };
+  const firstProblem =
+    (focusedKey === null ? null : problemAt(focusedKey)) ??
+    ([...problems.keys()].map(problemAt).find((line) => line !== null) ?? null);
 
   // Leaving with unsaved changes asks first; the edited flag, set by every
   // change, is what says there are any.
@@ -193,7 +219,7 @@ export function BulkHistoryGrid({
   };
 
   const review = async (): Promise<void> => {
-    const prepared = draftOf(model, edits);
+    const prepared = current;
     if (!prepared.ok) {
       setNotice({
         tone: 'error',
@@ -279,6 +305,13 @@ export function BulkHistoryGrid({
     }
   });
 
+  // The cells call back through one stable ref, so a cell re-renders only when
+  // its own text, state or mark changes — not on every keystroke elsewhere.
+  const actions = useRef<CellActions | null>(null);
+  useLayoutEffect(() => {
+    actions.current = { type, focus: setFocus, keyDown: onKeyDown };
+  });
+
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>, position: GridPosition): void => {
     const direction: GridDirection | null =
       event.key === 'Enter'
@@ -341,18 +374,22 @@ export function BulkHistoryGrid({
       <StartControl model={model} edited={edited} />
 
       <div className="flex flex-wrap items-center gap-3">
-        <button
-          type="button"
-          data-testid="bulk-review"
-          className={cn(BUTTON, 'bg-[var(--color-foreground)] text-[var(--color-surface)]')}
-          disabled={preparing || operations === 0 || problems.size > 0}
-          aria-describedby={statusId}
-          onClick={() => {
-            void review();
-          }}
-        >
-          {preparing ? 'Preparing review…' : 'Review changes'}
-        </button>
+        {/* Stepped back from a review that still stands: the host's own button
+            reopens it, so this one is not offered beside it. */}
+        {resumable ? null : (
+          <button
+            type="button"
+            data-testid="bulk-review"
+            className={cn(BUTTON, 'bg-[var(--color-foreground)] text-[var(--color-surface)]')}
+            disabled={preparing || operations === 0 || problems.size > 0}
+            aria-describedby={statusId}
+            onClick={() => {
+              void review();
+            }}
+          >
+            {preparing ? 'Preparing review…' : 'Review changes'}
+          </button>
+        )}
         <button
           type="button"
           data-testid="bulk-discard"
@@ -397,6 +434,12 @@ export function BulkHistoryGrid({
       >
         {notice?.text ?? ''}
       </p>
+
+      {firstProblem === null ? null : (
+        <p className="text-[length:var(--text-meta)] text-[var(--color-negative)]" data-testid="bulk-problem">
+          {firstProblem}
+        </p>
+      )}
 
       {dropped.length > 0 ? (
         <DroppedList
@@ -462,22 +505,17 @@ export function BulkHistoryGrid({
                     {current ? <span className={cn('block', META)}>In progress</span> : null}
                   </th>
                   {model.columns.map((column, columnIndex) => (
-                    <GridCellView
+                    <GridCell
                       key={column.key}
                       model={model}
                       column={column}
                       month={month}
-                      position={{ row, column: columnIndex }}
+                      row={row}
+                      columnIndex={columnIndex}
                       text={edits.get(cellKey(column.key, month))?.text}
                       problem={problems.get(cellKey(column.key, month))}
                       droppedHere={droppedKeys.has(cellKey(column.key, month))}
-                      onType={(text) => {
-                        type(column, month, text);
-                      }}
-                      onFocus={() => {
-                        setFocus({ row, column: columnIndex });
-                      }}
-                      onKeyDown={onKeyDown}
+                      actions={actions}
                     />
                   ))}
                 </tr>
@@ -503,29 +541,35 @@ export function BulkHistoryGrid({
 
 const CELL = 'border-b px-2 align-middle';
 
+/** What a cell asks of the grid. Read through a ref, so it never changes a cell's props. */
+interface CellActions {
+  readonly type: (column: GridColumn, month: string, text: string) => void;
+  readonly focus: (position: GridPosition) => void;
+  readonly keyDown: (event: KeyboardEvent<HTMLInputElement>, position: GridPosition) => void;
+}
+
 function GridCellView({
   model,
   column,
   month,
-  position,
+  row,
+  columnIndex,
   text,
   problem,
   droppedHere,
-  onType,
-  onFocus,
-  onKeyDown,
+  actions,
 }: {
   readonly model: GridModel;
   readonly column: GridColumn;
   readonly month: string;
-  readonly position: GridPosition;
+  readonly row: number;
+  readonly columnIndex: number;
   readonly text: string | undefined;
   readonly problem: string | undefined;
   readonly droppedHere: boolean;
-  readonly onType: (text: string) => void;
-  readonly onFocus: () => void;
-  readonly onKeyDown: (event: KeyboardEvent<HTMLInputElement>, position: GridPosition) => void;
+  readonly actions: RefObject<CellActions | null>;
 }) {
+  const position: GridPosition = { row, column: columnIndex };
   const locale = model.locale;
   const cell = cellAt(model, column, month);
   const where = `${column.name}, ${monthTitle(month, locale)}`;
@@ -587,8 +631,21 @@ function GridCellView({
             : cell.kind === 'materialized'
               ? `Recorded for ${dayTitle(cell.occurrenceDate, locale)}.`
               : undefined;
-  const receivedElsewhere =
-    cell.kind === 'materialized' && cell.receivedOn !== cell.occurrenceDate ? cell.receivedOn : null;
+  // One short line under the field, for what the field alone cannot say: that
+  // a muted figure is carried and not recorded, that a zero is the dormant
+  // episode's, that a stored row emptied by hand will be removed, or that an
+  // occurrence's money arrived on another day.
+  const removing =
+    text !== undefined && text.trim() === '' && (cell.kind === 'stored' || cell.kind === 'materialized');
+  const secondary = removing
+    ? 'will be removed'
+    : cell.kind === 'carried' && text === undefined
+      ? 'carried, not recorded'
+      : cell.kind === 'derived_zero' && text === undefined
+        ? 'dormant, carried at 0'
+        : cell.kind === 'materialized' && cell.receivedOn !== cell.occurrenceDate
+          ? `received ${dayTitle(cell.receivedOn, locale)}`
+          : null;
 
   return (
     <td
@@ -610,27 +667,31 @@ function GridCellView({
         data-testid="bulk-input"
         value={value}
         onChange={(event) => {
-          onType(event.target.value);
+          actions.current?.type(column, month, event.target.value);
         }}
-        onFocus={onFocus}
+        onFocus={() => {
+          actions.current?.focus(position);
+        }}
         onKeyDown={(event) => {
-          onKeyDown(event, position);
+          actions.current?.keyDown(event, position);
         }}
         className={cn(
-          'tabular h-7 w-full min-w-32 rounded-[var(--radius-control)] border bg-[var(--color-surface)] px-1.5 text-right placeholder:text-[var(--color-muted-foreground)]',
+          'tabular h-7 w-full min-w-32 rounded-[var(--radius-control)] border bg-[var(--color-surface)] px-1.5 text-right placeholder:text-[var(--color-muted-foreground)] placeholder:italic',
           text !== undefined && 'border-[var(--color-foreground)]',
           problem !== undefined && 'border-[var(--color-negative)]',
           droppedHere && 'border-[var(--color-warning)]',
         )}
       />
-      {receivedElsewhere === null ? null : (
-        <span className={cn('block text-right leading-tight', META)} data-testid="bulk-received">
-          received {dayTitle(receivedElsewhere, locale)}
+      {secondary === null ? null : (
+        <span className={cn('block text-right leading-tight', META)} data-testid="bulk-secondary">
+          {secondary}
         </span>
       )}
     </td>
   );
 }
+
+const GridCell = memo(GridCellView);
 
 /* -------------------------------------------------------------------------- */
 /* What a refresh could not keep                                               */

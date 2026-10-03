@@ -125,6 +125,8 @@ describe('the grid shows each cell as what the server says it is', () => {
     const paid = cell(markup, '2026-01', 2);
     expect(paid).toContain('value="2100.00"');
     expect(paid).toContain('received 30 Jan 2026');
+    expect(cell(markup, '2026-02', 0)).toContain('carried, not recorded');
+    expect(cell(markup, '2026-04', 0)).toContain('dormant, carried at 0');
     expect(cell(markup, '2026-02', 2)).toContain('Skipped');
     expect(cell(markup, '2026-03', 2)).toContain('data-state="none"');
     expect(cell(markup, '2026-04', 2)).toContain('data-state="open"');
