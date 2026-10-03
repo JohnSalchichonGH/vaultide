@@ -29,6 +29,7 @@ import {
   pickerCurrencies,
 } from '@/features/monthly/income-presentation';
 import { dayTitle, monthTitle, presentIssues } from '@/features/monthly/presentation';
+import { defaultHistoryStart, historyHref } from '@/features/history/routes';
 
 export const metadata: Metadata = { title: 'Monthly' };
 export const dynamic = 'force-dynamic';
@@ -153,6 +154,19 @@ export default async function MonthlyPage({ params }: { params: Promise<{ month:
           previousLabel={monthTitle(navigation.previous, locale)}
           nextLabel={navigation.next === null ? null : monthTitle(navigation.next, locale)}
         />
+        <p className="text-[length:var(--text-meta)]">
+          <Link
+            href={historyHref(
+              page.kind === 'completed' ? page.month : defaultHistoryStart(navigation.current),
+            )}
+            className="underline"
+            data-testid="monthly-bulk-history"
+          >
+            {page.kind === 'completed'
+              ? `Edit history in bulk from ${monthName}`
+              : 'Edit the last twelve months in bulk'}
+          </Link>
+        </p>
         <nav aria-label="Month sections" className="flex flex-wrap gap-4 border-b pb-2 text-[length:var(--text-meta)]">
           <a href="#overview" className="underline">Overview</a>
           <a href="#income" className="underline">Income</a>

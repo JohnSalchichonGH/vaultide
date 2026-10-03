@@ -64,6 +64,12 @@ export interface CorrectionLabels {
    */
   readonly categories: Readonly<Record<string, string>>;
   readonly locale: string;
+  /**
+   * Income source names by template id, for a Bulk History review, which
+   * groups its income cells by the source they belong to. Display only, like
+   * every other label here.
+   */
+  readonly templates?: Readonly<Record<string, string>>;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -720,4 +726,244 @@ export function interpretConfirm(
   return result.data.status === 'impact_changed'
     ? { kind: 'stale', preview: result.data.preview }
     : { kind: 'committed' };
+}
+
+/* -------------------------------------------------------------------------- */
+/* A Bulk History review, at scale                                             */
+/* -------------------------------------------------------------------------- */
+
+/** How many records of one family a review creates, changes and removes. */
+export interface OperationCounts {
+  readonly created: number;
+  readonly updated: number;
+  readonly deleted: number;
+}
+
+/** One account's or one income source's share of a Bulk History save. */
+export interface BulkGroupSummary {
+  readonly key: string;
+  readonly title: string;
+  readonly family: 'valuation' | 'income';
+  readonly counts: OperationCounts;
+  /** The one line shown before the group is expanded. */
+  readonly line: string;
+  /** Every record of the group, one line each — all of them, never a sample. */
+  readonly entries: readonly string[];
+}
+
+export interface BulkReviewSummary {
+  readonly balances: OperationCounts;
+  readonly income: OperationCounts;
+  /** The first and last month the save's own records belong to. */
+  readonly range: { readonly from: string; readonly to: string } | null;
+  readonly headline: string;
+  readonly groups: readonly BulkGroupSummary[];
+  /** The structural consequences not already summarised by a group, all of them. */
+  readonly otherChanges: readonly StructuralChange[];
+}
+
+const ZERO_COUNTS: OperationCounts = { created: 0, updated: 0, deleted: 0 };
+
+const counted = (counts: OperationCounts, operation: 'create' | 'update' | 'delete'): OperationCounts =>
+  operation === 'create'
+    ? { ...counts, created: counts.created + 1 }
+    : operation === 'update'
+      ? { ...counts, updated: counts.updated + 1 }
+      : { ...counts, deleted: counts.deleted + 1 };
+
+/** "3 added, 1 changed, 1 removed", leaving out what did not happen. */
+function countsLine(counts: OperationCounts): string {
+  return [
+    counts.created > 0 ? `${String(counts.created)} added` : null,
+    counts.updated > 0 ? `${String(counts.updated)} changed` : null,
+    counts.deleted > 0 ? `${String(counts.deleted)} removed` : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(', ');
+}
+
+const amountOf = (amount: string | null, currency: string): string =>
+  amount === null ? 'none' : `${amount} ${currency}`;
+
+type CarryChange = Extract<StructuralChange, { kind: 'valuation_carry' }>;
+type DormancyChange = Extract<StructuralChange, { kind: 'dormancy_episode' }>;
+
+/**
+ * The months over which an account's balances carry differently: from the
+ * earliest interval any of its carry changes starts, to the latest one ends —
+ * open when one of them runs on.
+ */
+export function carrySpan(
+  changes: readonly CarryChange[],
+): { readonly from: string; readonly to: string | null } | null {
+  const intervals = changes.flatMap((change) =>
+    [change.before, change.after].filter(
+      (side): side is { readonly from: string; readonly to: string | null } => side !== null,
+    ),
+  );
+  if (intervals.length === 0) return null;
+  const from = intervals.map((interval) => interval.from).sort()[0] as string;
+  if (intervals.some((interval) => interval.to === null)) return { from, to: null };
+  return { from, to: intervals.map((interval) => interval.to as string).sort().at(-1) as string };
+}
+
+interface GroupDraft {
+  readonly title: string;
+  readonly family: 'valuation' | 'income';
+  counts: OperationCounts;
+  readonly entries: string[];
+}
+
+function valuationLine(
+  change: CorrectionPreview['sourceChanges'][number],
+  day: (iso: string) => string,
+): string {
+  const before = change.before?.kind === 'valuation' ? change.before : null;
+  const after = change.after?.kind === 'valuation' ? change.after : null;
+  const facts = after ?? before;
+  /* v8 ignore next -- called for valuation changes only. */
+  if (facts === null) return '';
+  const date = day(facts.valuedOn);
+  if (change.operation === 'create') return `${date} · added · ${amountOf(after?.amount ?? null, facts.currency)}`;
+  if (change.operation === 'delete') return `${date} · removed · ${amountOf(before?.amount ?? null, facts.currency)}`;
+  return `${date} · changed · ${amountOf(before?.amount ?? null, facts.currency)} → ${amountOf(after?.amount ?? null, facts.currency)}`;
+}
+
+function incomeLine(
+  change: CorrectionPreview['sourceChanges'][number],
+  day: (iso: string) => string,
+): string {
+  const before = change.before?.kind === 'income' ? change.before : null;
+  const after = change.after?.kind === 'income' ? change.after : null;
+  const facts = after ?? before;
+  /* v8 ignore next -- called for income changes only. */
+  if (facts === null) return '';
+  const scheduled = day(facts.occurrenceDate ?? facts.receivedOn);
+  const received =
+    facts.occurrenceDate !== null && facts.receivedOn !== facts.occurrenceDate
+      ? ` (received ${day(facts.receivedOn)})`
+      : '';
+  const net = (side: typeof facts | null) => amountOf(side?.netAmount ?? null, facts.currency);
+  if (change.operation === 'create') {
+    const gross = after?.grossAmount == null ? '' : `, gross ${amountOf(after.grossAmount, facts.currency)}`;
+    return `${scheduled}${received} · added · net ${net(after)}${gross}`;
+  }
+  if (change.operation === 'delete') return `${scheduled}${received} · removed · net ${net(before)}`;
+  return `${scheduled}${received} · changed · net ${net(before)} → ${net(after)}`;
+}
+
+/**
+ * A Bulk History review, summarised so a save of hundreds of cells reads in a
+ * few lines (blueprint 15.3; ADR 0011 D10).
+ *
+ * Presentation only: the consent and the fingerprint are the preview's, exactly
+ * as for any other correction, and nothing is left out — every record and
+ * every consequence is still here, behind the line that groups it. Balances
+ * are grouped by account, with the span of months whose carry changes instead
+ * of one sentence per balance; income by the source it belongs to.
+ */
+export function summarizeBulk(
+  preview: CorrectionPreview,
+  labels: CorrectionLabels,
+  names: ReadonlyMap<string, string>,
+): BulkReviewSummary {
+  const day = (iso: string) => dayTitle(iso, labels.locale);
+  let balances = ZERO_COUNTS;
+  let income = ZERO_COUNTS;
+  const groups = new Map<string, GroupDraft>();
+  const groupOf = (key: string, title: string, family: 'valuation' | 'income'): GroupDraft => {
+    const known = groups.get(key);
+    if (known !== undefined) return known;
+    const created: GroupDraft = { title, family, counts: ZERO_COUNTS, entries: [] };
+    groups.set(key, created);
+    return created;
+  };
+
+  for (const change of preview.sourceChanges) {
+    const facts = change.after ?? change.before;
+    if (facts.kind === 'valuation') {
+      balances = counted(balances, change.operation);
+      const group = groupOf(`position:${facts.positionId}`, names.get(facts.positionId) ?? UNKNOWN_ACCOUNT, 'valuation');
+      group.counts = counted(group.counts, change.operation);
+      group.entries.push(valuationLine(change, day));
+    } else if (facts.kind === 'income') {
+      income = counted(income, change.operation);
+      const templateId = facts.templateId ?? 'none';
+      const group = groupOf(`income:${templateId}`, labels.templates?.[templateId] ?? 'An income source', 'income');
+      group.counts = counted(group.counts, change.operation);
+      group.entries.push(incomeLine(change, day));
+    }
+  }
+
+  const carries = preview.structuralChanges.filter(
+    (change): change is CarryChange => change.kind === 'valuation_carry',
+  );
+  const dormancy = preview.structuralChanges.filter(
+    (change): change is DormancyChange => change.kind === 'dormancy_episode',
+  );
+
+  const summaries: BulkGroupSummary[] = [...groups.entries()].map(([key, group]) => {
+    const positionId = key.startsWith('position:') ? key.slice('position:'.length) : null;
+    const ownCarries = carries.filter((change) => change.positionId === positionId);
+    const wakes = dormancy.filter((change) => change.positionId === positionId);
+    const span = carrySpan(ownCarries);
+    const carryLine =
+      span === null
+        ? null
+        : `balances carry differently from ${monthTitle(span.from.slice(0, 7), labels.locale)}${
+            span.to === null ? ' onwards' : ` to ${monthTitle(span.to.slice(0, 7), labels.locale)}`
+          }`;
+    return {
+      key,
+      title: group.title,
+      family: group.family,
+      counts: group.counts,
+      line: [countsLine(group.counts), carryLine, wakes.length > 0 ? 'no longer dormant' : null]
+        .filter((part): part is string => part !== null)
+        .join(' · '),
+      entries: [
+        ...group.entries,
+        ...ownCarries.map((change) => describeStructuralChange(change, labels, names)),
+        ...wakes.map((change) => describeStructuralChange(change, labels, names)),
+      ],
+    };
+  });
+  summaries.sort((a, b) =>
+    a.family !== b.family
+      ? a.family === 'valuation'
+        ? -1
+        : 1
+      : a.title < b.title
+        ? -1
+        : a.title > b.title
+          ? 1
+          : 0,
+  );
+
+  const months = [...preview.sourcePeriods].sort();
+  const first = months[0];
+  const last = months.at(-1);
+  const range = first === undefined || last === undefined ? null : { from: first, to: last };
+  const headline = [
+    countsLine(balances) === '' ? null : `Balances: ${countsLine(balances)}`,
+    countsLine(income) === '' ? null : `Income: ${countsLine(income)}`,
+    range === null
+      ? null
+      : range.from === range.to
+        ? monthTitle(range.from, labels.locale)
+        : `${monthTitle(range.from, labels.locale)} – ${monthTitle(range.to, labels.locale)}`,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(' · ');
+
+  return {
+    balances,
+    income,
+    range,
+    headline,
+    groups: summaries,
+    otherChanges: preview.structuralChanges.filter(
+      (change) => change.kind !== 'valuation_carry' && change.kind !== 'dormancy_episode',
+    ),
+  };
 }

@@ -90,6 +90,11 @@ export interface CorrectionFlow {
     draft: CorrectionDraft,
     save: () => Promise<SaveOutcome>,
   ) => Promise<CorrectionOutcome>;
+  /**
+   * Ask, and open the review: for a draft that has no ordinary save at all
+   * (a Bulk History save; ADR 0011 D7).
+   */
+  readonly prepareReview: (draft: CorrectionDraft) => Promise<ReviewPreparation>;
   /** Step back to the editor, keeping the correction. */
   readonly pause: () => void;
   /** Open the review again, on the correction that was already prepared. */
@@ -160,6 +165,41 @@ export async function attemptCorrection(
   return { kind: 'refused', result: saved };
 }
 
+/** What asking for a review-only draft's review came to. */
+export type ReviewPreparation =
+  /** The review dialog is now open. Nothing has been written. */
+  | { readonly kind: 'review' }
+  /** Resolving it was refused — a stale version, a cell filled elsewhere, a rule. */
+  | { readonly kind: 'refused'; readonly error: { readonly code: string; readonly message: string } }
+  /**
+   * The server said no review is needed for a draft that has no other way to
+   * be saved. That breaks the contract (ADR 0011 D7), so nothing is saved and
+   * the user is told so, rather than the save being attempted some other way.
+   */
+  | { readonly kind: 'broken' };
+
+export const BROKEN_REVIEW_MESSAGE =
+  'Vaultide could not prepare a review of these changes, so nothing was saved. Reload and try again.';
+
+/**
+ * The review-only protocol, as a function of its ports: ask, and open the
+ * review on the answer. There is no ordinary save to fall back to, so
+ * `not_required` is not an instruction to save — it is a broken contract.
+ */
+export async function prepareReviewWith(
+  ports: AttemptPorts,
+  draft: CorrectionDraft,
+): Promise<ReviewPreparation> {
+  const prepared = await ports.ask(draft);
+  if (!prepared.ok) return { kind: 'refused', error: prepared.error };
+  if (prepared.data.status !== 'review_required') {
+    ports.forget();
+    return { kind: 'broken' };
+  }
+  ports.open(draft, prepared.data.preview);
+  return { kind: 'review' };
+}
+
 export function useCorrection(): CorrectionFlow {
   const [pending, setPending] = useState<PendingCorrection | null>(null);
   const [paused, setPaused] = useState(false);
@@ -189,5 +229,6 @@ export function useCorrection(): CorrectionFlow {
     },
     clear: ports.forget,
     attempt: (draft, save) => attemptCorrection(ports, draft, save),
+    prepareReview: (draft) => prepareReviewWith(ports, draft),
   };
 }

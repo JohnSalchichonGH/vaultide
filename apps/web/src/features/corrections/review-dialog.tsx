@@ -10,10 +10,13 @@ import {
   describeStructuralChange,
   interpretConfirm,
   rewritesDormancy,
+  summarizeBulk,
   summarizePeriods,
   reviewAccountNames,
   summarizeSources,
   type CorrectionLabels,
+  type PeriodSummary,
+  type ReviewOutcome,
 } from './presentation';
 
 /**
@@ -45,6 +48,13 @@ export interface CorrectionReviewProps {
   /** Return to the editor with the draft untouched. */
   readonly onBack: () => void;
   readonly onCommitted: () => void;
+  /**
+   * Told when a Confirm wrote nothing — the impact moved, or the save was
+   * refused — so an editor that holds many unsaved cells can take in the
+   * newer state behind the dialog (ADR 0011 D9). Optional: a single-record
+   * editor has nothing to rebase.
+   */
+  readonly onSettled?: ((outcome: Exclude<ReviewOutcome, { kind: 'committed' }>) => void) | undefined;
 }
 
 type State =
@@ -59,6 +69,7 @@ export function CorrectionReview({
   labels,
   onBack,
   onCommitted,
+  onSettled,
 }: CorrectionReviewProps) {
   const [preview, setPreview] = useState(initial);
   const [reason, setReason] = useState('');
@@ -66,7 +77,8 @@ export function CorrectionReview({
   const reasonId = useId();
   const statusId = useId();
 
-  const sources = summarizeSources(preview, labels);
+  const bulk = draft.kind === 'bulk_history';
+  const sources = bulk ? [] : summarizeSources(preview, labels);
   const names = reviewAccountNames(preview, labels);
   const periods = summarizePeriods(preview, labels);
   const busy = state.kind === 'saving';
@@ -82,6 +94,7 @@ export function CorrectionReview({
     const outcome = interpretConfirm(result);
     if (outcome.kind === 'error') {
       setState({ kind: 'error', message: outcome.message, conflict: outcome.conflict });
+      onSettled?.(outcome);
       return;
     }
     if (outcome.kind === 'stale') {
@@ -89,6 +102,7 @@ export function CorrectionReview({
       // they typed is theirs, is not part of the consent, and survives.
       setPreview(outcome.preview);
       setState({ kind: 'stale' });
+      onSettled?.(outcome);
       return;
     }
     setState({ kind: 'idle' });
@@ -110,10 +124,14 @@ export function CorrectionReview({
         ) : null}
 
         <p className={cn(SECTION, META)} data-testid="correction-intro">
-          {rewritesDormancy(preview)
-            ? 'This changes a period an account was recorded as dormant over. Vaultide will recalculate that history once you confirm.'
-            : 'This changes a month that is already closed. Vaultide will recalculate that history once you confirm.'}
+          {bulk
+            ? 'Every Bulk history save is reviewed before anything is written. Vaultide will recalculate the months these changes reach once you confirm.'
+            : rewritesDormancy(preview)
+              ? 'This changes a period an account was recorded as dormant over. Vaultide will recalculate that history once you confirm.'
+              : 'This changes a month that is already closed. Vaultide will recalculate that history once you confirm.'}
         </p>
+
+        {bulk ? <BulkSummary preview={preview} labels={labels} names={names} /> : null}
 
         {/* --- the source, before and after ------------------------------- */}
         {sources.map((source, index) => (
@@ -158,32 +176,22 @@ export function CorrectionReview({
         ))}
 
         {/* --- the months it recalculates --------------------------------- */}
-        <section className={SECTION}>
-          <h4 className={HEADING}>Months Vaultide will recalculate</h4>
-          <ul className="mt-2 flex flex-col gap-2" data-testid="correction-periods">
-            {periods.map((period) => (
-              <li key={period.month} data-testid="correction-period" data-month={period.month}>
-                <span className="font-medium">{period.title}</span>
-                <span className={cn('ml-2', META)}>
-                  {period.isSource ? 'this record’s month' : 'also recalculated'}
-                </span>
-                {period.tags.length > 0 ? (
-                  <span className={cn('ml-2', META)} data-testid="correction-tags">
-                    {period.tags.map((tag) => IMPACT_TAG_LABEL[tag]).join(' · ')}
-                  </span>
-                ) : null}
-                {period.note === null ? null : (
-                  <span className={cn('mt-0.5 block', META)} data-testid="correction-period-note">
-                    {period.note}
-                  </span>
-                )}
-              </li>
-            ))}
-          </ul>
-        </section>
+        {bulk ? (
+          <details className={SECTION} data-testid="correction-periods-group">
+            <summary className={cn(HEADING, 'cursor-pointer')}>
+              Months Vaultide will recalculate ({String(periods.length)})
+            </summary>
+            <PeriodList periods={periods} />
+          </details>
+        ) : (
+          <section className={SECTION}>
+            <h4 className={HEADING}>Months Vaultide will recalculate</h4>
+            <PeriodList periods={periods} />
+          </section>
+        )}
 
         {/* --- what changes that is not a figure -------------------------- */}
-        {preview.structuralChanges.length > 0 ? (
+        {!bulk && preview.structuralChanges.length > 0 ? (
           <section className={SECTION}>
             <h4 className={HEADING}>What else changes</h4>
             <ul className="mt-2 flex flex-col gap-1" data-testid="correction-structural">
@@ -227,7 +235,9 @@ export function CorrectionReview({
         >
           {state.kind === 'error'
             ? state.conflict
-              ? 'This record changed after you opened it. Close this and reload to see what it says now.'
+              ? bulk
+                ? 'A cell in this save changed after you opened the grid, so nothing was saved. Go back to see which.'
+                : 'This record changed after you opened it. Close this and reload to see what it says now.'
               : state.message
             : ''}
         </p>
@@ -257,5 +267,90 @@ export function CorrectionReview({
         </div>
       </div>
     </Modal>
+  );
+}
+
+/** The months a correction recalculates, one line each. */
+function PeriodList({ periods }: { readonly periods: readonly PeriodSummary[] }) {
+  return (
+    <ul className="mt-2 flex flex-col gap-2" data-testid="correction-periods">
+      {periods.map((period) => (
+        <li key={period.month} data-testid="correction-period" data-month={period.month}>
+          <span className="font-medium">{period.title}</span>
+          <span className={cn('ml-2', META)}>
+            {period.isSource ? 'this record’s month' : 'also recalculated'}
+          </span>
+          {period.tags.length > 0 ? (
+            <span className={cn('ml-2', META)} data-testid="correction-tags">
+              {period.tags.map((tag) => IMPACT_TAG_LABEL[tag]).join(' · ')}
+            </span>
+          ) : null}
+          {period.note === null ? null : (
+            <span className={cn('mt-0.5 block', META)} data-testid="correction-period-note">
+              {period.note}
+            </span>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * A Bulk History save at a glance (ADR 0011 D10): the counts and the months it
+ * spans, then one line per account and per income source that opens onto every
+ * record it holds. Nothing is truncated — a group closed is a group folded, not
+ * a group cut short.
+ */
+function BulkSummary({
+  preview,
+  labels,
+  names,
+}: {
+  readonly preview: CorrectionReviewProps['preview'];
+  readonly labels: CorrectionLabels;
+  readonly names: ReadonlyMap<string, string>;
+}) {
+  const summary = summarizeBulk(preview, labels, names);
+  return (
+    <section className={SECTION} data-testid="bulk-review-summary">
+      <h4 className={HEADING}>What this save changes</h4>
+      <p className="mt-1 text-[length:var(--text-table)] font-medium" data-testid="bulk-review-headline">
+        {summary.headline}
+      </p>
+      <ul className="mt-2 flex flex-col gap-1">
+        {summary.groups.map((group) => (
+          <li key={group.key}>
+            <details data-testid="bulk-review-group" data-group={group.key}>
+              <summary className="cursor-pointer text-[length:var(--text-table)]">
+                <span className="font-medium">{group.title}</span>
+                <span className={cn('ml-2', META)}>{group.line}</span>
+              </summary>
+              <ul className="mt-1 ml-4 flex flex-col gap-0.5" data-testid="bulk-review-entries">
+                {group.entries.map((entry, index) => (
+                  <li key={`${group.key}-${String(index)}`} className={cn('tabular', META)}>
+                    {entry}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          </li>
+        ))}
+      </ul>
+      {summary.otherChanges.length > 0 ? (
+        <details className="mt-2" data-testid="bulk-review-other">
+          <summary className={cn(HEADING, 'cursor-pointer')}>
+            Other consequences ({String(summary.otherChanges.length)})
+          </summary>
+          <ul className="mt-1 ml-4 flex flex-col gap-0.5" data-testid="correction-structural">
+            {summary.otherChanges.map((change, index) => (
+              <li key={`${change.kind}-${String(index)}`} className="text-[length:var(--text-table)]">
+                {describeStructuralChange(change, labels, names)}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+    </section>
   );
 }

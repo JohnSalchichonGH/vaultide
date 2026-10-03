@@ -189,15 +189,21 @@ describe('a missing month-end balance', () => {
 });
 
 describe('a first balance', () => {
-  it('offers the earlier balance through the previous month’s editor', () => {
+  it('offers one earlier balance through the previous month’s editor, then many through Bulk History', () => {
     const actions = issueActions(
       issue({ key: 'first_balance', class: 'info', positionId: 'savings' }),
       completed,
     );
-    expect(actions).toHaveLength(1);
+    expect(actions).toHaveLength(2);
     expect(actions[0]?.label).toBe('Enter an earlier balance');
+    expect(actions[0]?.emphasis).toBe('primary');
     expect(actions[0]?.target).toEqual({ kind: 'link', href: '/monthly/2026-08#account-savings' });
     expect(actions[0]?.hint).toContain('August 2026');
+
+    // The year before the month the account was first tracked (ADR 0011 D11).
+    expect(actions[1]?.label).toBe('Enter several earlier balances');
+    expect(actions[1]?.emphasis).toBe('secondary');
+    expect(actions[1]?.target).toEqual({ kind: 'link', href: '/monthly/2025-09/history' });
   });
 });
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { CorrectionReview } from './review-dialog';
+import { CorrectionReview, type CorrectionReviewProps } from './review-dialog';
 import type { CorrectionLabels } from './presentation';
 import type { CorrectionFlow } from './use-correction';
 
@@ -15,10 +15,12 @@ export function CorrectionHost({
   flow,
   labels,
   onCommitted,
+  onSettled,
 }: {
   readonly flow: CorrectionFlow;
   readonly labels: CorrectionLabels;
   readonly onCommitted: () => void;
+  readonly onSettled?: CorrectionReviewProps['onSettled'];
 }) {
   const pending = flow.pending;
   if (pending === null) return null;
@@ -48,6 +50,7 @@ export function CorrectionHost({
         flow.clear();
         onCommitted();
       }}
+      onSettled={onSettled}
     />
   );
 }

@@ -12,7 +12,7 @@ vi.mock('@/server/actions/corrections', () => ({
   confirmHistoricalCorrectionAction: vi.fn(),
 }));
 
-const { attemptCorrection } = await import('@/features/corrections/use-correction');
+const { attemptCorrection, prepareReviewWith } = await import('@/features/corrections/use-correction');
 const { attemptUnchanged, saveAllUnchanged, saveUnchanged } = await import('@/features/corrections/unchanged');
 
 /**
@@ -55,6 +55,7 @@ function flowAnswering(answer: typeof NOT_REQUIRED | typeof REVIEW_REQUIRED) {
     resume: () => undefined,
     clear: () => undefined,
     attempt: (draft, save) => attemptCorrection(ports, draft, save),
+    prepareReview: (draft) => prepareReviewWith(ports, draft),
   };
   return { flow, asked, opened };
 }

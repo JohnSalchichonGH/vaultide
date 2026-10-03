@@ -5,6 +5,7 @@ import {
   expenseEntryAnchorId,
   incomeEntryAnchorId,
 } from '@/features/monthly/presentation';
+import { firstBalanceHistoryStart, historyHref } from '@/features/history/routes';
 import { occurrenceAnchorId, type AddIncomeInitialValues } from '@/features/monthly/income-presentation';
 import type { AddExpenseInitialValues } from '@/features/monthly/expenses-presentation';
 import type { TransferInitialValues } from '@/features/monthly/transfers-presentation';
@@ -245,8 +246,13 @@ const quickUpdate =
   ];
 
 /**
- * One earlier balance, through the editor that already records one (ADR 0009
- * §12). The bulk editor a later slice adds is for many months at once.
+ * Earlier balances, one or many (8.5 `first_balance`, 30.21 item 10; ADR 0009
+ * §12, ADR 0011 D11).
+ *
+ * One balance goes through the editor that already records one: the previous
+ * month's Accounts row. Several go through Bulk History, opened on the year
+ * before the month the account was first tracked, so the months it could not
+ * be reconciled in are the rows on screen.
  */
 const firstBalance: Handler = (issue, context) => {
   const positionId = issue.positionId;
@@ -261,6 +267,12 @@ const firstBalance: Handler = (issue, context) => {
         kind: 'link',
         href: `/monthly/${context.previousMonth}#${accountAnchorId(positionId)}`,
       },
+    }),
+    action(issue, 'earlier-balances', {
+      label: 'Enter several earlier balances',
+      hint: `If you have ${name}’s older statements, Bulk History takes a year of month-end balances at once — typed or pasted from a spreadsheet.`,
+      emphasis: 'secondary',
+      target: { kind: 'link', href: historyHref(firstBalanceHistoryStart(context.month)) },
     }),
   ];
 };
