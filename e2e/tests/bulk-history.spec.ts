@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Dialog, type Locator, type Page } from '@playwright/test';
 
 /**
  * Bulk History, end to end (blueprint 15.3 "Bulk history"; ADR 0011).
@@ -7,9 +7,10 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from '@
  *
  *  - **history is reconstructed from a spreadsheet.** From a completed month
  *    a person opens the grid, sees which balances are stored, carried and
- *    missing, pastes a block of balances and income, reviews it — the review
- *    opens even though every cell is new — steps back, reopens, confirms, and
- *    the months it filled reconcile in Monthly;
+ *    missing, pastes a block of balances and income, is asked before a link
+ *    would take the unsaved block away, reviews it — the review opens even
+ *    though every cell is new — steps back, reopens, confirms, and the months
+ *    it filled reconcile in Monthly;
  *  - **a cell changed in another tab is never saved over.** Two tabs edit the
  *    same grid. The second saves first; the first one's confirm is refused,
  *    keeps its other edit, lists the cell it lost with what is there now, and
@@ -165,11 +166,40 @@ test.describe('reconstructing history in bulk', () => {
     await expect(gridCell(page, '2026-06', 1)).toHaveAttribute('data-state', 'open');
     await expect(page.locator('tr[data-month="2026-10"]').getByTestId('bulk-input')).toHaveCount(0);
 
+    // --- An edit undone leaves nothing unsaved --------------------------------
+    const august = gridCell(page, '2026-08', 0).getByTestId('bulk-input');
+    await august.fill('2100.00');
+    await expect(page.getByTestId('bulk-status')).toContainText('1 changed cell');
+    await expect(page.getByTestId('bulk-start')).toBeDisabled();
+    await august.fill('2000.00');
+    await expect(page.getByTestId('bulk-status')).toContainText('No unsaved changes');
+    await expect(page.getByTestId('bulk-start')).toBeEnabled();
+    await gridCell(page, '2026-07', 0).getByTestId('bulk-input').fill('5');
+    await gridCell(page, '2026-07', 0).getByTestId('bulk-input').press('Escape');
+    await expect(page.getByTestId('bulk-status')).toContainText('No unsaved changes');
+    await expect(page.getByTestId('bulk-start')).toBeEnabled();
+
     // --- A block from a spreadsheet: June and July, balance and salary -------
     await pasteInto(page, gridCell(page, '2026-06', 0), '1,500.00\t2,000.00\r\n1,800.00\t2,000.00\r\n');
     await expect(page.getByTestId('bulk-notice')).toContainText('Pasted 4 cells');
     await expect(gridCell(page, '2026-06', 0).getByTestId('bulk-input')).toHaveValue('1500.00');
     await expect(gridCell(page, '2026-07', 1).getByTestId('bulk-input')).toHaveValue('2000.00');
+    await expect(page.getByTestId('bulk-status')).toContainText('4 changed cells');
+
+    // --- Unsaved edits are not lost by following a link in the app ---------
+    const asked: string[] = [];
+    const stay = (dialog: Dialog) => {
+      asked.push(dialog.message());
+      void dialog.dismiss();
+    };
+    page.on('dialog', stay);
+    await page.getByTestId('bulk-back').click();
+    await expect.poll(() => asked.length).toBe(1);
+    await page.locator('tr[data-month="2026-07"] th a').click();
+    await expect.poll(() => asked.length).toBe(2);
+    page.off('dialog', stay);
+    expect(asked[0]).toContain('not saved');
+    await expect(page).toHaveURL(/\/monthly\/2026-06\/history$/u);
     await expect(page.getByTestId('bulk-status')).toContainText('4 changed cells');
 
     // --- Every cell is new, and the save is still reviewed -------------------
@@ -193,6 +223,13 @@ test.describe('reconstructing history in bulk', () => {
     await expect(gridCell(page, '2026-06', 0)).toHaveAttribute('data-state', 'stored');
     await expect(gridCell(page, '2026-07', 0).getByTestId('bulk-input')).toHaveValue('1800.00');
     await expect(gridCell(page, '2026-07', 1)).toHaveAttribute('data-state', 'materialized');
+
+    // --- Nothing unsaved now, so the way back is not questioned --------------
+    page.on('dialog', stay);
+    await page.getByTestId('bulk-back').click();
+    await expect(page).toHaveURL(/\/monthly\/2026-06$/u);
+    page.off('dialog', stay);
+    expect(asked).toHaveLength(2);
 
     // --- And Monthly reads them: July reconciles from June to July ------------
     await page.goto('/monthly/2026-07');

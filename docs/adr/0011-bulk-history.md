@@ -255,8 +255,14 @@ already offers both, side by side, with the snapshot's own date in view.
   the review of the grid's edits; once a cell changes or is dropped, it is let
   go and Save asks again.
 - A dedicated edited flag, set by every change, says whether anything is
-  unsaved. While it is set the first row cannot be moved and leaving the page
-  asks first.
+  unsaved, and is cleared when no edit remains — the last one undone with
+  Escape, or a figure retyped to what is stored — at which point the first row
+  can be moved again. While it is set the first row cannot be moved, and
+  leaving asks first: the browser's own `beforeunload` question for a reload,
+  closing the tab or another site, and a confirmation before any same-origin
+  link takes the tab away — the row-header months, the link back to Monthly and
+  the app's own navigation. The browser's back and forward buttons inside the
+  app are not guarded.
 
 **Why.** An edit is a statement about a cell as the user saw it. Re-aiming it
 at a version they never saw is the silent overwrite optimistic versions exist

@@ -41,6 +41,27 @@ export const defaultHistoryStart = (currentMonth: string): string => shiftMonth(
 export const firstBalanceHistoryStart = (firstTrackedMonth: string): string =>
   shiftMonth(firstTrackedMonth, -12);
 
+/**
+ * Whether following a link would take this tab away from the page it is on,
+ * inside the app: a same-origin address other than an anchor on this page,
+ * opened in this tab. A link to another site is the browser's own
+ * `beforeunload` question, and one opened elsewhere leaves this page alone.
+ */
+export function leavesThisPage(href: string, target: string, current: string): boolean {
+  if (target !== '' && target !== '_self') return false;
+  let next: URL;
+  let here: URL;
+  try {
+    next = new URL(href, current);
+    here = new URL(current);
+  } catch {
+    return false;
+  }
+  if (next.origin !== here.origin) return false;
+  const samePage = next.pathname === here.pathname && next.search === here.search;
+  return !(samePage && next.hash !== '');
+}
+
 /** Whether `value` is a month the grid can start from: `YYYY-MM`, completed. */
 export function isHistoryStart(value: string, currentMonth: string): boolean {
   return /^\d{4}-(0[1-9]|1[0-2])$/u.test(value) && value < currentMonth;

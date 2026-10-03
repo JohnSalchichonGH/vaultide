@@ -44,7 +44,7 @@ import {
   type GridPosition,
 } from './model';
 import { editableText } from './numbers';
-import { historyHref, isHistoryStart, monthlyHref, shiftMonth } from './routes';
+import { historyHref, isHistoryStart, leavesThisPage, monthlyHref, shiftMonth } from './routes';
 
 /**
  * The Bulk History grid (blueprint 15.2 "Bulk history editor", 15.3; ADR 0011).
@@ -71,6 +71,9 @@ const BUTTON =
   'min-h-9 rounded-[var(--radius-control)] border px-3 text-[length:var(--text-table)] font-medium disabled:opacity-60';
 
 type Notice = { readonly tone: 'error' | 'info'; readonly text: string };
+
+const UNSAVED_LEAVE_MESSAGE =
+  'This grid has changes that are not saved. Leave without saving them?';
 
 function labelsOf(model: GridModel): CorrectionLabels {
   return {
@@ -160,16 +163,38 @@ export function BulkHistoryGrid({
     (focusedKey === null ? null : problemAt(focusedKey)) ??
     ([...problems.keys()].map(problemAt).find((line) => line !== null) ?? null);
 
-  // Leaving with unsaved changes asks first; the edited flag, set by every
-  // change, is what says there are any.
+  // While there are unsaved edits — the edited flag — two ways of leaving ask
+  // first:
+  //
+  //  - `beforeunload` covers a reload, closing the tab, and following a link to
+  //    another site, which the browser asks about in its own words;
+  //  - a capture-phase click guard on the document covers every same-origin
+  //    link: the row-header months, the link back to Monthly and the app's own
+  //    navigation. It runs before Next's `Link` sees the click, and a refusal
+  //    stops the click there, so no client-side navigation starts.
+  //
+  // Not guarded: the browser's own back and forward buttons inside the app,
+  // and a link opened in a new tab or window, which leaves this page as it is.
   useEffect(() => {
     if (!edited) return undefined;
     const onLeave = (event: BeforeUnloadEvent) => {
       event.preventDefault();
     };
+    const onClick = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0) return;
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const anchor = event.target instanceof Element ? event.target.closest('a[href]') : null;
+      if (!(anchor instanceof HTMLAnchorElement)) return;
+      if (!leavesThisPage(anchor.href, anchor.target, window.location.href)) return;
+      if (window.confirm(UNSAVED_LEAVE_MESSAGE)) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
     window.addEventListener('beforeunload', onLeave);
+    document.addEventListener('click', onClick, true);
     return () => {
       window.removeEventListener('beforeunload', onLeave);
+      document.removeEventListener('click', onClick, true);
     };
   }, [edited]);
 
@@ -179,7 +204,9 @@ export function BulkHistoryGrid({
 
   const changed = (next: Edits): void => {
     setEdits(next);
-    setEdited(true);
+    // Set by every change, and cleared when no edit remains — the last one
+    // undone with Escape, or a figure retyped to what is stored.
+    setEdited(next.size > 0);
     // Any change makes a review prepared before it stale.
     if (correction.pending !== null) correction.clear();
   };

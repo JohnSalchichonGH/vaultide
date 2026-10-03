@@ -11,7 +11,7 @@ vi.mock('@/server/actions/corrections', () => ({
 }));
 
 const { gridModelOf, cellAt, nextEditable } = await import('@/features/history/model');
-const { NO_EDITS, draftOf, operationCount, outcomesOf, pasteInto, rebase, typeInto } = await import(
+const { NO_EDITS, draftOf, operationCount, outcomesOf, pasteInto, rebase, revertCell, typeInto } = await import(
   '@/features/history/edits'
 );
 const {
@@ -19,6 +19,7 @@ const {
   firstBalanceHistoryStart,
   historyHref,
   isHistoryStart,
+  leavesThisPage,
   monthlyHref,
   shiftMonth,
 } = await import('@/features/history/routes');
@@ -686,5 +687,38 @@ describe('a dormant account woken by income cells alone', () => {
     const summary = summarizeBulk(mixed, labels, new Map([[SAVINGS, 'Savings']]));
     expect(summary.groups[0]?.line).toBe('1 added · no longer dormant');
     expect(summary.groups.filter((group) => group.title === 'Savings')).toHaveLength(1);
+  });
+});
+
+describe('when nothing is left unsaved', () => {
+  const grid = model();
+  const bbva = `position:${BBVA}`;
+
+  it('forgets an edit retyped back to the stored figure, leaving nothing unsaved', () => {
+    const changedThenBack = typed(grid, [[bbva, '2026-02', '1001'], [bbva, '2026-02', '1000.00']]);
+    expect(changedThenBack.size).toBe(0);
+  });
+
+  it('forgets the last edit undone with Escape', () => {
+    const one = typed(grid, [[bbva, '2026-01', '5']]);
+    expect(one.size).toBe(1);
+    expect(revertCell(one, bbva, '2026-01').size).toBe(0);
+  });
+});
+
+describe('which links leave the grid', () => {
+  const here = 'https://vaultide.app/monthly/2026-06/history';
+
+  it('asks about any same-origin page opened in this tab', () => {
+    expect(leavesThisPage('/monthly/2026-06', '', here)).toBe(true);
+    expect(leavesThisPage('https://vaultide.app/accounts', '_self', here)).toBe(true);
+    expect(leavesThisPage('/monthly/2026-06#account-x', '', here)).toBe(true);
+    expect(leavesThisPage('/monthly/2025-06/history', '', here)).toBe(true);
+  });
+
+  it('leaves alone an anchor on this page, another site, and a new tab', () => {
+    expect(leavesThisPage('#accounts', '', here)).toBe(false);
+    expect(leavesThisPage('https://example.com/', '', here)).toBe(false);
+    expect(leavesThisPage('/accounts', '_blank', here)).toBe(false);
   });
 });
