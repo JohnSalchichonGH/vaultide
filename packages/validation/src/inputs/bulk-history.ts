@@ -21,13 +21,16 @@ import { moneyString, type MoneyStringOptions } from '../primitives/money';
 /**
  * The most operations one Bulk History save may carry (ADR 0011 D2).
  *
- * A designed limit, measured rather than guessed: at this many operations the
- * request body stays well inside Next's default one-megabyte server-action body
- * limit, and Preview and Confirm stay quick enough to hold the per-user write
- * mutex briefly. It bounds one save, never the history range or the grid: the
- * grid refuses an edit that would go past it, the user saves, and continues.
+ * A designed limit, measured rather than guessed, on the 23.1 worst case:
+ * at this many operations the request body stays under 50 KB — well inside
+ * Next's default one-megabyte server-action body limit — the preview's
+ * response stays under 4 MB, and Confirm holds the per-user write mutex for
+ * about the time its history window takes to derive, not much longer. ADR 0011
+ * records the measurements. It bounds one save, never the history range or the
+ * grid: the grid refuses an edit that would go past it, the user saves, and
+ * continues.
  */
-export const BULK_HISTORY_MAX_OPERATIONS = 500;
+export const BULK_HISTORY_MAX_OPERATIONS = 250;
 
 const expectedVersion = z.number().int().positive();
 
