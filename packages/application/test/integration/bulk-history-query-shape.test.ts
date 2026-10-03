@@ -7,6 +7,8 @@ import {
   WRITE_OPEN,
   isLock,
   isWrite,
+  perConnection,
+  record,
   shapes,
 } from '../helpers/statement-shapes';
 import { testContext, type RequestContext } from '../../src/context';
@@ -322,34 +324,41 @@ describe('Confirm', () => {
 });
 
 describe('the grid read', () => {
+  // The snapshot and the currency catalogue run at once, on two pooled
+  // connections, so their statements interleave however they are scheduled:
+  // each connection is compared in its own order.
   const read = () =>
-    shapes(() => getBulkHistoryPage({ db: harness.db }, OCT_5, monthKeyOf(2020, 1)));
+    record(() => getBulkHistoryPage({ db: harness.db }, OCT_5, monthKeyOf(2020, 1)));
 
   it('is one coherent read-only snapshot of a fixed number of statements', async () => {
     const sent = await read();
-    const snapshot = sent.slice(0, sent.indexOf('commit') + 1);
-    expect(snapshot).toEqual([
-      ...READ_OPEN,
-      'select positions',
-      'select position_valuations',
-      'select position_valuations',
-      'select recurring_templates',
-      'select recurring_template_skips',
-      'select income_entries',
-      'commit',
+    // In `perConnection`'s fixed order, which puts the currency read first.
+    expect(perConnection(sent)).toEqual([
+      ['begin', 'select currencies', 'commit'],
+      [
+        ...READ_OPEN,
+        'select positions',
+        'select position_valuations',
+        'select position_valuations',
+        'select recurring_templates',
+        'select recurring_template_skips',
+        'select income_entries',
+        'commit',
+      ],
     ]);
-    expect(sent.filter(isLock)).toEqual([]);
-    expect(sent.filter(isWrite)).toEqual([]);
+    const every = sent.map(({ shape }) => shape);
+    expect(every.filter(isLock)).toEqual([]);
+    expect(every.filter(isWrite)).toEqual([]);
   });
 
   it('sends the same statements over a dense history as over a sparse one', async () => {
-    const sparse = await read();
+    const sparse = perConnection(await read());
     for (const end of ['2026-02-28', '2026-04-30', '2026-06-30', '2026-08-31']) {
       await statement(bbva, end, '7');
     }
     for (const date of ['2026-05-01', '2026-06-01', '2026-07-01', '2026-08-01']) {
       await acceptSuggestion(flows(), OCT_5, { templateId: rent, occurrenceDate: date });
     }
-    expect(await read()).toEqual(sparse);
+    expect(perConnection(await read())).toEqual(sparse);
   });
 });
