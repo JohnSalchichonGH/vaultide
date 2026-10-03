@@ -460,7 +460,10 @@ export function BulkHistoryGrid({
         }}
         onPaste={onPaste}
       >
-        <table className="border-separate border-spacing-0 text-[length:var(--text-table)]">
+        <table
+          aria-label="Month-end balances and income by month"
+          className="border-separate border-spacing-0 text-[length:var(--text-table)]"
+        >
           <thead>
             <tr style={{ height: HEADER_HEIGHT }}>
               <th
