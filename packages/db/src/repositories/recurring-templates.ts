@@ -6,6 +6,7 @@ import { recurringTemplateTerms, recurringTemplates } from '../schema/recurring-
 import { transfers } from '../schema/transfers';
 import { withUser, type Database, type Transaction } from '../client';
 import { recordAudit, type AuditContext } from './audited';
+import type { OccurrenceRef } from './flows';
 
 /**
  * Recurring templates, their terms and their skips (blueprint 6.2, 18.1, 20.3).
@@ -162,6 +163,30 @@ export async function lockTemplateIn(
     .limit(1)
     .for('update');
   return row;
+}
+
+/**
+ * Several templates by id, in one statement, in id order.
+ *
+ * The set-wise claim of a Bulk History save that materializes occurrences of
+ * several sources at once (ADR 0011). `lock: 'update'` is `lockTemplateIn`'s
+ * lock on every one of them — the serialization point of accept against skip
+ * (20.3, §30.8 item 5) — taken in id order so two saves can only queue. Without
+ * it, this is the preview's read of the same rows in the same order.
+ */
+export async function findTemplatesIn(
+  tx: Transaction,
+  templateIds: readonly string[],
+  options: { readonly lock?: 'update' } = {},
+): Promise<RecurringTemplateRow[]> {
+  const ids = [...new Set(templateIds)];
+  if (ids.length === 0) return [];
+  const query = tx
+    .select()
+    .from(recurringTemplates)
+    .where(inArray(recurringTemplates.id, ids))
+    .orderBy(asc(recurringTemplates.id));
+  return options.lock === 'update' ? query.for('update') : query;
 }
 
 export async function insertTemplateIn(
@@ -684,9 +709,66 @@ export async function hasMaterializedOccurrenceIn(
   return rows.rows.length > 0;
 }
 
+/** `(template_id, occurrence_date) IN (…)`, matched on the exact pair. */
+function occurrencePairs(occurrences: readonly OccurrenceRef[]) {
+  return sql.join(
+    occurrences.map((item) => sql`(${item.templateId}::uuid, ${item.occurrenceDate}::date)`),
+    sql`, `,
+  );
+}
+
+/**
+ * Which of these exact occurrences a flow already carries, in one statement.
+ *
+ * The set-wise form of `hasMaterializedOccurrenceIn`, for a Bulk History save
+ * that materializes several occurrences at once (ADR 0011). It returns the
+ * identity of each occurrence it finds rather than a bare "yes", so the caller
+ * can key the answer by `(template_id, occurrence_date)` and no occurrence can
+ * ever be satisfied by another occurrence's row.
+ */
+export async function listMaterializedAtIn(
+  tx: Transaction,
+  occurrences: readonly OccurrenceRef[],
+): Promise<OccurrenceRef[]> {
+  if (occurrences.length === 0) return [];
+  const pairs = occurrencePairs(occurrences);
+  const rows = await tx.execute<{ template_id: string; occurrence_date: string }>(sql`
+    SELECT template_id, occurrence_date::text AS occurrence_date FROM income_entries
+     WHERE (template_id, occurrence_date) IN (${pairs})
+     UNION ALL
+    SELECT template_id, occurrence_date::text AS occurrence_date FROM expense_entries
+     WHERE (template_id, occurrence_date) IN (${pairs})
+     UNION ALL
+    SELECT template_id, occurrence_date::text AS occurrence_date FROM transfers
+     WHERE (template_id, occurrence_date) IN (${pairs})
+  `);
+  return rows.rows.map((row) => ({
+    templateId: row.template_id,
+    occurrenceDate: row.occurrence_date,
+  }));
+}
+
 /* ------------------------------------------------------------------------- */
 /* Skips                                                                      */
 /* ------------------------------------------------------------------------- */
+
+/**
+ * The skips of these exact occurrences, in one statement — the set-wise form
+ * of `findSkipIn` (ADR 0011).
+ */
+export async function listSkipsAtIn(
+  tx: Transaction,
+  occurrences: readonly OccurrenceRef[],
+): Promise<RecurringTemplateSkipRow[]> {
+  if (occurrences.length === 0) return [];
+  return tx
+    .select()
+    .from(recurringTemplateSkips)
+    .where(
+      sql`(${recurringTemplateSkips.templateId}, ${recurringTemplateSkips.occurrenceDate}) in (${occurrencePairs(occurrences)})`,
+    )
+    .orderBy(asc(recurringTemplateSkips.templateId), asc(recurringTemplateSkips.occurrenceDate));
+}
 
 export async function listSkips(
   db: Database,

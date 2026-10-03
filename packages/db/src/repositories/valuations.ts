@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, lte, sql } from 'drizzle-orm';
 import { positionValuations } from '../schema/position-valuations';
 import { withUser, type Database, type Transaction } from '../client';
 import { recordAudit, type AuditContext } from './audited';
@@ -54,6 +54,61 @@ export async function findValuationIn(
     .limit(1);
   const [row] = options.lock === 'update' ? await query.for('update') : await query;
   return row;
+}
+
+/**
+ * Several valuations by id, in one statement, in id order.
+ *
+ * What a Bulk History save resolves its balance updates and clears against
+ * (ADR 0011). `lock: 'update'` takes, set-wise and in id order, the lock
+ * `findValuationIn` takes for one correction or delete; without it this is the
+ * preview's read of the same rows in the same order.
+ */
+export async function findValuationsIn(
+  tx: Transaction,
+  valuationIds: readonly string[],
+  options: { readonly lock?: 'update' } = {},
+): Promise<ValuationRow[]> {
+  const ids = [...new Set(valuationIds)];
+  if (ids.length === 0) return [];
+  const query = tx
+    .select()
+    .from(positionValuations)
+    .where(inArray(positionValuations.id, ids))
+    .orderBy(asc(positionValuations.id));
+  return options.lock === 'update' ? query.for('update') : query;
+}
+
+/** One balance's place: an account and a date (M1 makes the pair its identity). */
+export interface ValuationCell {
+  readonly positionId: string;
+  readonly valuedOn: string;
+}
+
+/**
+ * Whatever already sits on each of these cells, in one statement.
+ *
+ * The set-wise form of `findValuationOnIn`, for a Bulk History save that
+ * creates many balances at once: each new balance needs to know whether its
+ * date is already taken (M1). Matched on the exact `(position_id, valued_on)`
+ * pair — never on the two columns separately, which would return the rows of
+ * other cells too. No lock, exactly as the single read takes none: the unique
+ * constraint is what finally decides an insert.
+ */
+export async function listValuationsAtIn(
+  tx: Transaction,
+  cells: readonly ValuationCell[],
+): Promise<ValuationRow[]> {
+  if (cells.length === 0) return [];
+  const pairs = sql.join(
+    cells.map((cell) => sql`(${cell.positionId}::uuid, ${cell.valuedOn}::date)`),
+    sql`, `,
+  );
+  return tx
+    .select()
+    .from(positionValuations)
+    .where(sql`(${positionValuations.positionId}, ${positionValuations.valuedOn}) in (${pairs})`)
+    .orderBy(asc(positionValuations.positionId), asc(positionValuations.valuedOn));
 }
 
 /**

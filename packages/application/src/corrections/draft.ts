@@ -29,6 +29,11 @@ import type { TransferFeeArgs, TransferFeeExpectation, LinkedFeeExpectation } fr
  * several — and editing a cash account's dormant flag. They are here because
  * the review has to be able to show and then apply them — not for symmetry.
  * Operations that cannot rewrite history are not in this union.
+ *
+ * A Bulk History save is here for a third reason: it has no other write path at
+ * all. Every grid save is reviewed whatever mix of creates, updates and clears
+ * it carries (15.3, 30.22 item 2; ADR 0011 D7), so this union is the only way
+ * one reaches the database.
  */
 
 export interface ValuationUpdateDraft {
@@ -213,6 +218,75 @@ export interface CashAccountUpdateDraft {
   readonly isDormant?: boolean | undefined;
 }
 
+/**
+ * One cell of the history grid, as the user changed it (15.3 "Bulk history";
+ * ADR 0011).
+ *
+ * A balance cell is an account's month end; an income cell is one scheduled
+ * occurrence, named by `(template_id, occurrence_date)` exactly as everywhere
+ * else. An update or a clear names the stored row it is about and the version
+ * the grid showed; the server proves that row **is** the named cell. Nothing
+ * else about the row — its source, its precision, its gross, its account — is
+ * the browser's to say.
+ */
+export type BulkHistoryOperation =
+  | {
+      readonly kind: 'valuation_create';
+      readonly positionId: string;
+      /** `YYYY-MM`; the balance is dated `end(month)`. */
+      readonly month: string;
+      readonly amount: string;
+    }
+  | {
+      readonly kind: 'valuation_update';
+      readonly positionId: string;
+      readonly month: string;
+      readonly valuationId: string;
+      readonly expectedVersion: number;
+      readonly amount: string;
+    }
+  | {
+      readonly kind: 'valuation_clear';
+      readonly positionId: string;
+      readonly month: string;
+      readonly valuationId: string;
+      readonly expectedVersion: number;
+    }
+  | {
+      readonly kind: 'income_create';
+      readonly templateId: string;
+      readonly occurrenceDate: string;
+      readonly netAmount: string;
+    }
+  | {
+      readonly kind: 'income_update';
+      readonly templateId: string;
+      readonly occurrenceDate: string;
+      readonly entryId: string;
+      readonly expectedVersion: number;
+      readonly netAmount: string;
+    }
+  | {
+      readonly kind: 'income_clear';
+      readonly templateId: string;
+      readonly occurrenceDate: string;
+      readonly entryId: string;
+      readonly expectedVersion: number;
+    };
+
+/**
+ * One save of the history grid: every changed cell, as one act.
+ *
+ * Always reviewed, whatever mix it carries (15.3, 30.22 item 2): the thing to
+ * see is the batch's aggregate effect, so there is no ordinary write for it.
+ */
+export interface BulkHistoryDraft {
+  readonly kind: 'bulk_history';
+  /** The grid's first row, `YYYY-MM`. */
+  readonly startMonth: string;
+  readonly operations: readonly BulkHistoryOperation[];
+}
+
 export type CorrectionDraft =
   | ValuationCreateDraft
   | ValuationUpdateDraft
@@ -230,6 +304,7 @@ export type CorrectionDraft =
   | AcceptSuggestionDraft
   | ConfirmUnchangedDraft
   | ConfirmUnchangedBatchDraft
-  | CashAccountUpdateDraft;
+  | CashAccountUpdateDraft
+  | BulkHistoryDraft;
 
 export type CorrectionDraftKind = CorrectionDraft['kind'];

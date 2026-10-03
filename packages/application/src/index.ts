@@ -13,6 +13,7 @@ export * from './observability';
 export * from './services';
 export * from './write-plan';
 export * from './auth/index';
+export * from './bulk-history/index';
 export * from './corrections/index';
 export * from './currencies/index';
 export * from './flows/index';

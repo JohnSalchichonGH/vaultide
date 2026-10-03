@@ -3,6 +3,7 @@ import { incomeKinds, phase3ExpenseSettlements, phase3IncomeSettlements } from '
 import { currencyCode } from '../primitives/currency';
 import { moneyString } from '../primitives/money';
 import { plainDate, plainDateNotAfter } from '../primitives/date';
+import { bulkHistoryDraft } from './bulk-history';
 import { linkedFeeExpectation, transferFeeExpectation } from './flows';
 import { confirmUnchangedBatchInput, confirmUnchangedInput } from './positions';
 
@@ -229,6 +230,10 @@ export function correctionDraft(today: string) {
       notes: description.nullable().optional(),
       isDormant: z.boolean().optional(),
     }),
+
+    // One save of the history grid: many cells, one review, one transaction
+    // (15.3 "Bulk history"; ADR 0011).
+    bulkHistoryDraft(today),
   ]);
 }
 

@@ -1,4 +1,4 @@
-import { and, asc, between, eq, getTableColumns, isNotNull, sql } from 'drizzle-orm';
+import { and, asc, between, eq, getTableColumns, inArray, isNotNull, sql } from 'drizzle-orm';
 import { expenseEntries } from '../schema/expense-entries';
 import { incomeEntries } from '../schema/income-entries';
 import { transfers } from '../schema/transfers';
@@ -212,6 +212,30 @@ export async function findIncomeEntryIn(
   const query = tx.select().from(incomeEntries).where(eq(incomeEntries.id, entryId)).limit(1);
   const [row] = options.lock === 'update' ? await query.for('update') : await query;
   return row;
+}
+
+/**
+ * Several income entries by id, in one statement, in id order.
+ *
+ * What a Bulk History save resolves its income updates and clears against
+ * (ADR 0011). `lock: 'update'` holds every one of them for the rest of the
+ * transaction — the lock `findIncomeEntryIn` takes for a single correction or
+ * delete, taken set-wise and in id order so two saves can only queue. Without
+ * the lock it is the preview's read of the same rows in the same order.
+ */
+export async function findIncomeEntriesIn(
+  tx: Transaction,
+  entryIds: readonly string[],
+  options: { readonly lock?: 'update' } = {},
+): Promise<IncomeEntryRow[]> {
+  const ids = [...new Set(entryIds)];
+  if (ids.length === 0) return [];
+  const query = tx
+    .select()
+    .from(incomeEntries)
+    .where(inArray(incomeEntries.id, ids))
+    .orderBy(asc(incomeEntries.id));
+  return options.lock === 'update' ? query.for('update') : query;
 }
 
 export async function listIncomeEntries(

@@ -7,9 +7,11 @@ import {
   type PositionRecord as PositionRow,
   type Transaction,
 } from '@vaultide/db';
+import { monthKey, participatesIn, plainDate } from '@vaultide/finance';
 import type { RequestContext } from '../context';
 import { NotFoundError, ValidationError } from '../errors';
 import type { FxService } from '../fx/service';
+import { toPositionRecord } from '../positions/mapping';
 import { dormancyChanged, type DormancyEffect, type DormancyState } from '../write-plan';
 
 /**
@@ -163,6 +165,51 @@ export function decideTrackedCashLeg(
   assertCurrencyMatches(position, request.currency);
   assertAccountParticipates(position, request.on, request.dateField);
   return position;
+}
+
+/**
+ * The null leg's question, answered from positions already loaded: does a cash
+ * account of this currency take part in the month the flow is dated in (8.1)?
+ *
+ * The same predicate `hasParticipatingCashAccountIn` asks in SQL — the
+ * **month's** bucket, not the flow's day — stated through finance's own
+ * `participatesIn`, for a caller that has every position in hand and must not
+ * ask once per flow (ADR 0011 D12). An integration test holds the two to the
+ * same answer at every boundary of the window.
+ */
+export function hasParticipatingCashAccount(
+  positions: readonly PositionRow[],
+  currency: string,
+  on: string,
+): boolean {
+  const month = monthKey(plainDate(on));
+  return positions.some(
+    (position) =>
+      position.kind === 'cash' &&
+      position.currency === currency &&
+      participatesIn(toPositionRecord(position), month),
+  );
+}
+
+/**
+ * What a tracked flow's cash leg is judged on, from positions already loaded:
+ * the account it names as found among them, or — for no account — whether one
+ * of its currency participates. The bulk-loaded twin of the reads
+ * `resolveTrackedCashLegIn` makes one flow at a time.
+ */
+export function trackedCashLegEvidenceFrom(
+  request: TrackedCashLegRequest,
+  positions: readonly PositionRow[],
+): TrackedCashLegEvidence {
+  return request.cashPositionId === null
+    ? {
+        kind: 'unattributed',
+        participates: hasParticipatingCashAccount(positions, request.currency, request.on),
+      }
+    : {
+        kind: 'account',
+        position: positions.find((position) => position.id === request.cashPositionId),
+      };
 }
 
 /**

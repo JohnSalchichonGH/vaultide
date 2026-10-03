@@ -123,6 +123,14 @@ export async function previewFromPlanIn(
  * `lock: false`: this is the read side, and a `READ ONLY` transaction cannot
  * take a row lock at all. Every rule it applies is the rule the write applies
  * (§21, §22).
+ *
+ * A Bulk History save is reviewed **unconditionally**, whatever mix of
+ * creates, updates and clears it carries (15.3, 30.22 item 2; ADR 0011 D7): the
+ * aggregate effect of the batch is the thing to see, so the classifier is not
+ * asked. Every other family is judged exactly as before. Nothing about the
+ * batch is dressed up to make the classifier agree — its `revision` stays the
+ * truthful aggregate — and there is no ordinary Bulk write for a
+ * `not_required` answer to lead to.
  */
 export async function prepareCorrectionIn(
   tx: Transaction,
@@ -130,7 +138,9 @@ export async function prepareCorrectionIn(
   draft: CorrectionDraft,
 ): Promise<CorrectionPreparation> {
   const resolved = await resolveCorrectionIn(tx, ctx, draft, { lock: false });
-  const review = classifyHistorical(resolved.plan, ctx.today);
-  if (!review.required) return { status: 'not_required' };
+  if (resolved.family !== 'bulk_history') {
+    const review = classifyHistorical(resolved.plan, ctx.today);
+    if (!review.required) return { status: 'not_required' };
+  }
   return { status: 'review_required', preview: await previewFromPlanIn(tx, ctx, resolved) };
 }

@@ -480,59 +480,73 @@ export async function applyIncomePlanIn(
   plan: IncomeWritePlan,
   reason?: string,
 ): Promise<IncomeEntryRow> {
+  const written = await writeIncomeRowIn(tx, ctx, plan, reason);
+  await applyDormancyClearsIn(tx, ctx, plan.dormancy);
+  return written;
+}
+
+/**
+ * The row half of an income plan: the insert, correction or delete with its
+ * audit entry, and no dormancy consequence.
+ *
+ * `applyIncomePlanIn` is this followed by the plan's own clears. A Bulk History
+ * save calls this once per income cell and then applies the batch's merged
+ * clears once, because the batch owns the dormant episodes it ends (ADR 0011).
+ */
+export async function writeIncomeRowIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  plan: IncomeWritePlan,
+  reason?: string,
+): Promise<IncomeEntryRow> {
   const audit = auditContextOf(ctx, reason);
 
-  const written = await (async (): Promise<IncomeEntryRow> => {
-    if (plan.operation === 'delete') {
-      /* v8 ignore next 2 -- a delete plan always carries the row it removes. */
-      if (plan.existing === null) throw new NotFoundError('That income entry no longer exists.');
-      const removed = await deleteIncomeEntryRowIn(tx, audit, plan.existing.id);
-      /* v8 ignore next -- the row is held under FOR UPDATE in this transaction. */
-      if (removed === undefined) throw new NotFoundError('That income entry no longer exists.');
-      return removed;
-    }
+  if (plan.operation === 'delete') {
+    /* v8 ignore next 2 -- a delete plan always carries the row it removes. */
+    if (plan.existing === null) throw new NotFoundError('That income entry no longer exists.');
+    const removed = await deleteIncomeEntryRowIn(tx, audit, plan.existing.id);
+    /* v8 ignore next -- the row is held under FOR UPDATE in this transaction. */
+    if (removed === undefined) throw new NotFoundError('That income entry no longer exists.');
+    return removed;
+  }
 
-    /* v8 ignore next 2 -- create and update plans always carry their columns. */
-    if (plan.columns === null) throw new NotFoundError('That income entry no longer exists.');
-    const columns = plan.columns;
+  /* v8 ignore next 2 -- create and update plans always carry their columns. */
+  if (plan.columns === null) throw new NotFoundError('That income entry no longer exists.');
+  const columns = plan.columns;
 
-    if (plan.operation === 'create') {
-      return insertIncomeEntryIn(tx, audit, {
-        kind: columns.kind,
-        receivedOn: columns.receivedOn,
-        netAmount: columns.netAmount,
-        grossAmount: columns.grossAmount,
-        currency: columns.currency,
-        settlement: columns.settlement,
-        cashPositionId: columns.cashPositionId,
-        description: columns.description,
-        tags: columns.tags ?? [],
-        isOneOff: columns.isOneOff ?? false,
-        ...(plan.occurrence === undefined ? {} : { occurrence: plan.occurrence }),
-      });
-    }
-
-    /* v8 ignore next 2 -- an update plan always carries a row and a version. */
-    if (plan.existing === null || plan.expectedVersion === null) throw new VersionConflictError();
-    const row = await updateIncomeEntryRowIn(tx, audit, plan.existing.id, plan.expectedVersion, {
+  if (plan.operation === 'create') {
+    return insertIncomeEntryIn(tx, audit, {
       kind: columns.kind,
       receivedOn: columns.receivedOn,
       netAmount: columns.netAmount,
+      grossAmount: columns.grossAmount,
+      currency: columns.currency,
       settlement: columns.settlement,
       cashPositionId: columns.cashPositionId,
-      grossAmount: columns.grossAmount,
       description: columns.description,
-      ...(columns.tags === undefined ? {} : { tags: columns.tags }),
-      ...(columns.isOneOff === undefined ? {} : { isOneOff: columns.isOneOff }),
+      tags: columns.tags ?? [],
+      isOneOff: columns.isOneOff ?? false,
+      ...(plan.occurrence === undefined ? {} : { occurrence: plan.occurrence }),
     });
-    if (row === undefined) {
-      throw new VersionConflictError('This entry changed while you were editing it.');
-    }
-    return row;
-  })();
+  }
 
-  await applyDormancyClearsIn(tx, ctx, plan.dormancy);
-  return written;
+  /* v8 ignore next 2 -- an update plan always carries a row and a version. */
+  if (plan.existing === null || plan.expectedVersion === null) throw new VersionConflictError();
+  const row = await updateIncomeEntryRowIn(tx, audit, plan.existing.id, plan.expectedVersion, {
+    kind: columns.kind,
+    receivedOn: columns.receivedOn,
+    netAmount: columns.netAmount,
+    settlement: columns.settlement,
+    cashPositionId: columns.cashPositionId,
+    grossAmount: columns.grossAmount,
+    description: columns.description,
+    ...(columns.tags === undefined ? {} : { tags: columns.tags }),
+    ...(columns.isOneOff === undefined ? {} : { isOneOff: columns.isOneOff }),
+  });
+  if (row === undefined) {
+    throw new VersionConflictError('This entry changed while you were editing it.');
+  }
+  return row;
 }
 
 export async function createIncomeEntryIn(

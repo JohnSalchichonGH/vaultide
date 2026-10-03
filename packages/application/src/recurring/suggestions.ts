@@ -25,6 +25,7 @@ import {
   plainDate,
   termForOccurrence,
   type PlainDate,
+  type RecurrenceSchedule,
 } from '@vaultide/finance';
 import { isRentalOnlySkipReason, type SkipReason } from '@vaultide/validation';
 import type { RequestContext } from '../context';
@@ -174,7 +175,15 @@ export async function listSuggestions(
   return suggestions;
 }
 
-function scheduleOf(template: RecurringTemplateRow) {
+/**
+ * A template's schedule as the finance recurrence functions read it.
+ *
+ * Exported for Bulk History, which generates the same occurrences the claim
+ * rules below judge and must not state the schedule a second time (ADR 0011).
+ * Monthly's Income and Known-expenses sections still carry private copies of
+ * their own; consolidating them is outside that slice.
+ */
+export function scheduleOf(template: RecurringTemplateRow): RecurrenceSchedule {
   return {
     frequency: template.frequency,
     dayOfMonth: template.dayOfMonth,

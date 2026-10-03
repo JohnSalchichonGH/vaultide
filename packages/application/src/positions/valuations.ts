@@ -472,53 +472,79 @@ export async function applyValuationPlanIn(
   plan: ValuationWritePlan,
   reason?: string,
 ): Promise<ValuationRow> {
-  const audit = auditContextOf(ctx, reason);
-
-  const written = await (async (): Promise<ValuationRow> => {
-    if (plan.operation === 'remove') {
-      /* v8 ignore next 2 -- a removal plan always carries the row it removes. */
-      if (plan.existing === null) throw new NotFoundError('That balance no longer exists.');
-      const removed = await deleteValuationIn(tx, audit, plan.existing.id);
-      /* v8 ignore next -- the row is held under FOR UPDATE in this transaction. */
-      if (removed === undefined) throw new NotFoundError('That balance no longer exists.');
-      return removed;
-    }
-
-    /* v8 ignore next 2 -- record and correct plans always carry their columns. */
-    if (plan.columns === null) throw new NotFoundError('That balance no longer exists.');
-    const columns = plan.columns;
-
-    if (plan.operation === 'record') {
-      return insertValuationIn(tx, audit, {
-        positionId: plan.position.id,
-        valuedOn: columns.valuedOn,
-        amount: columns.amount,
-        source: 'entered',
-        datePrecision: columns.datePrecision,
-        note: columns.note,
-      });
-    }
-
-    /* v8 ignore next 2 -- a correction plan always carries a row and a version. */
-    if (plan.existing === null || plan.expectedVersion === null) throw new VersionConflictError();
-    const corrected = await updateValuationIn(
-      tx,
-      audit,
-      plan.existing.id,
-      plan.expectedVersion,
-      {
-        amount: columns.amount,
-        valuedOn: columns.valuedOn,
-        datePrecision: columns.datePrecision,
-        note: columns.note,
-      },
-    );
-    if (corrected === undefined) throw new VersionConflictError();
-    return corrected;
-  })();
-
+  const written = await writeValuationRowIn(tx, ctx, plan, reason);
   await applyDormancyClearsIn(tx, ctx, plan.dormancy);
   return written;
+}
+
+/**
+ * Where a balance a plan records came from (6.2 `valuation_source`).
+ *
+ * `entered` for every ordinary writer. `bulk_entered` is Bulk History's, and it
+ * is the only other value this writer will put on a new row: a confirmed
+ * month has its own writer (`applyConfirmUnchangedPlanIn`).
+ */
+export type RecordedValuationSource = 'entered' | 'bulk_entered';
+
+/**
+ * The row half of a valuation plan, and nothing else: the insert, correction or
+ * delete with its audit entry, and no dormancy consequence.
+ *
+ * `applyValuationPlanIn` is this followed by the plan's own dormancy clears. A
+ * Bulk History save calls this once per balance and then applies the batch's
+ * merged clears once, because the batch — not any one cell — owns the dormant
+ * episodes it ends (ADR 0011). `source` only ever reaches a **new** row: a
+ * correction keeps whatever source the row already has.
+ */
+export async function writeValuationRowIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  plan: ValuationWritePlan,
+  reason?: string,
+  source: RecordedValuationSource = 'entered',
+): Promise<ValuationRow> {
+  const audit = auditContextOf(ctx, reason);
+
+  if (plan.operation === 'remove') {
+    /* v8 ignore next 2 -- a removal plan always carries the row it removes. */
+    if (plan.existing === null) throw new NotFoundError('That balance no longer exists.');
+    const removed = await deleteValuationIn(tx, audit, plan.existing.id);
+    /* v8 ignore next -- the row is held under FOR UPDATE in this transaction. */
+    if (removed === undefined) throw new NotFoundError('That balance no longer exists.');
+    return removed;
+  }
+
+  /* v8 ignore next 2 -- record and correct plans always carry their columns. */
+  if (plan.columns === null) throw new NotFoundError('That balance no longer exists.');
+  const columns = plan.columns;
+
+  if (plan.operation === 'record') {
+    return insertValuationIn(tx, audit, {
+      positionId: plan.position.id,
+      valuedOn: columns.valuedOn,
+      amount: columns.amount,
+      source,
+      datePrecision: columns.datePrecision,
+      note: columns.note,
+    });
+  }
+
+  /* v8 ignore next 2 -- a correction plan always carries a row and a version. */
+  if (plan.existing === null || plan.expectedVersion === null) throw new VersionConflictError();
+  const corrected = await updateValuationIn(
+    tx,
+    audit,
+    plan.existing.id,
+    plan.expectedVersion,
+    {
+      amount: columns.amount,
+      valuedOn: columns.valuedOn,
+      datePrecision: columns.datePrecision,
+      note: columns.note,
+    },
+  );
+  if (corrected === undefined) throw new VersionConflictError();
+  return corrected;
 }
 
 async function recordValuationIn(

@@ -1,4 +1,9 @@
 import type { Transaction } from '@vaultide/db';
+import {
+  applyBulkHistoryPlanIn,
+  resolveBulkHistoryIn,
+  type BulkHistoryWritePlan,
+} from '../bulk-history/plan';
 import type { RequestContext } from '../context';
 import {
   applyExpensePlanIn,
@@ -84,7 +89,13 @@ export type CorrectionPlan =
    * the previous month's statement.
    */
   | { readonly family: 'confirm_unchanged'; readonly plan: ConfirmUnchangedWritePlan }
-  | { readonly family: 'cash_account'; readonly plan: CashAccountWritePlan };
+  | { readonly family: 'cash_account'; readonly plan: CashAccountWritePlan }
+  /**
+   * One save of the history grid: many cells of two families resolved as one
+   * batch (ADR 0011). Its own family because it is reviewed whatever it
+   * carries, and because it is applied as one act rather than cell by cell.
+   */
+  | { readonly family: 'bulk_history'; readonly plan: BulkHistoryWritePlan };
 
 /** The resolved write every plan carries, whatever family it belongs to. */
 export const writeOf = (resolved: CorrectionPlan): ResolvedWrite => resolved.plan;
@@ -365,6 +376,9 @@ export async function resolveCorrectionIn(
           options,
         ),
       };
+
+    case 'bulk_history':
+      return { family: 'bulk_history', plan: await resolveBulkHistoryIn(tx, ctx, draft, options) };
   }
 }
 
@@ -405,6 +419,9 @@ export async function applyCorrectionIn(
       return;
     case 'cash_account':
       await applyCashAccountPlanIn(tx, ctx, resolved.plan, reason);
+      return;
+    case 'bulk_history':
+      await applyBulkHistoryPlanIn(tx, ctx, resolved.plan, reason);
       return;
   }
 }
