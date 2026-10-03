@@ -215,3 +215,59 @@ describe('the review of a Bulk History save', () => {
     expect(markup).toContain('Other consequences (1)');
   });
 });
+
+describe('the review of an income-only save that wakes an account', () => {
+  const draft: CorrectionDraft = {
+    kind: 'bulk_history',
+    startMonth: '2026-01',
+    operations: [{ kind: 'income_create', templateId: 'tpl-1', occurrenceDate: '2026-02-01', netAmount: '2100' }],
+  };
+  const preview = {
+    fingerprint: `hc-v1:${'0'.repeat(64)}`,
+    sourceScope: [],
+    sourcePeriods: ['2026-02'],
+    periods: [],
+    sourceChanges: [
+      {
+        identity: { scope: 'prospective', kind: 'income', role: 'occurrence', owner: 'tpl-1#2026-02-01' },
+        operation: 'create',
+        before: null,
+        after: {
+          kind: 'income',
+          incomeKind: 'employment',
+          receivedOn: '2026-02-01',
+          netAmount: '2100',
+          grossAmount: null,
+          currency: 'EUR',
+          settlement: 'tracked_cash',
+          cashPositionId: 'pos-savings',
+          description: null,
+          templateId: 'tpl-1',
+          occurrenceDate: '2026-02-01',
+        },
+      },
+    ],
+    structuralChanges: [{ kind: 'dormancy_episode', positionId: 'pos-savings', before: '2025-12-31', after: null }],
+  } as unknown as CorrectionPreview;
+
+  const markup = renderToStaticMarkup(
+    createElement(CorrectionReview, {
+      draft,
+      preview,
+      labels: {
+        accounts: { 'pos-savings': { name: 'Savings', currency: 'EUR' } },
+        categories: {},
+        templates: { 'tpl-1': 'Salary' },
+        locale: 'en-GB',
+      },
+      onBack: () => undefined,
+      onCommitted: () => undefined,
+    }),
+  );
+
+  it('says the account is no longer dormant on its own line, outside any fold', () => {
+    const summaries = [...markup.matchAll(/<summary[^>]*>([\s\S]*?)<\/summary>/gu)].map((match) => match[1] ?? '');
+    expect(summaries.some((text) => text.includes('Savings') && text.includes('no longer dormant'))).toBe(true);
+    expect(markup).not.toContain('Other consequences');
+  });
+});

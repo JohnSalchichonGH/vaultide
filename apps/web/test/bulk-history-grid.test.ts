@@ -573,3 +573,78 @@ describe('a Bulk History review at scale (ADR 0011 D10)', () => {
     ).toEqual({ from: '2025-02-28', to: null });
   });
 });
+
+describe('a dormant account woken by income cells alone', () => {
+  const SAVINGS = 'pos-savings';
+  const preview = {
+    fingerprint: `hc-v1:${'0'.repeat(64)}`,
+    sourceScope: [],
+    sourcePeriods: ['2025-03'],
+    periods: [],
+    sourceChanges: [
+      {
+        identity: { scope: 'prospective', kind: 'income', role: 'occurrence', owner: `${SALARY}#2025-03-25` },
+        operation: 'create',
+        before: null,
+        after: {
+          kind: 'income',
+          incomeKind: 'employment',
+          receivedOn: '2025-03-25',
+          netAmount: '2100',
+          grossAmount: null,
+          currency: 'EUR',
+          settlement: 'tracked_cash',
+          cashPositionId: SAVINGS,
+          description: null,
+          templateId: SALARY,
+          occurrenceDate: '2025-03-25',
+        },
+      },
+    ],
+    structuralChanges: [{ kind: 'dormancy_episode', positionId: SAVINGS, before: '2025-01-31', after: null }],
+  } as unknown as CorrectionPreview;
+  const labels = {
+    accounts: { [SAVINGS]: { name: 'Savings', currency: 'EUR' } },
+    categories: {},
+    templates: { [SALARY]: 'Salary' },
+    locale: 'en-GB',
+  };
+
+  it('shows the wake on the account’s own line, before anything is expanded', () => {
+    const summary = summarizeBulk(preview, labels, new Map([[SAVINGS, 'Savings']]));
+    expect(summary.groups.map((group) => [group.title, group.line])).toEqual([
+      ['Savings', 'no longer dormant'],
+      ['Salary', '1 added'],
+    ]);
+    expect(summary.groups[0]?.entries).toEqual([
+      'Savings is no longer dormant from 31 Jan 2025, so those months stop carrying it at zero.',
+    ]);
+    expect(summary.otherChanges).toEqual([]);
+  });
+
+  it('keeps a wake on an account that also has balances in the save on that account’s line', () => {
+    const mixed = {
+      ...preview,
+      sourceChanges: [
+        ...preview.sourceChanges,
+        {
+          identity: { scope: 'prospective', kind: 'valuation', role: 'valuation', owner: `${SAVINGS}#2025-03-31` },
+          operation: 'create',
+          before: null,
+          after: {
+            kind: 'valuation',
+            positionId: SAVINGS,
+            valuedOn: '2025-03-31',
+            amount: '5',
+            currency: 'EUR',
+            datePrecision: 'month_end',
+            note: null,
+          },
+        },
+      ],
+    } as unknown as CorrectionPreview;
+    const summary = summarizeBulk(mixed, labels, new Map([[SAVINGS, 'Savings']]));
+    expect(summary.groups[0]?.line).toBe('1 added · no longer dormant');
+    expect(summary.groups.filter((group) => group.title === 'Savings')).toHaveLength(1);
+  });
+});

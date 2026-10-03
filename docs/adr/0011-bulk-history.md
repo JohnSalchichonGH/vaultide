@@ -262,7 +262,11 @@ line of counts — balances and income, each added, changed and removed — and 
 range of months its records belong to. Below it, one line per account and one
 per income source, each folding away every record it holds; an account's line
 also states the span of months whose carried balances change, instead of one
-sentence per balance. The months to be recalculated and the remaining
+sentence per balance, and every dormant episode the save rewrites. A wake is
+shown on its account's line whatever cell caused it: an income cell wakes the
+account its source pays into, and when that account has no balance in the save
+it gets a line of its own — "Savings · no longer dormant" — rather than being
+folded away. The months to be recalculated and the remaining
 structural consequences are folded the same way. The dialog is the same review
 dialog every correction uses, with the same Back, resume and changed-impact
 handling.

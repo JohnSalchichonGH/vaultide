@@ -743,6 +743,11 @@ export interface OperationCounts {
 export interface BulkGroupSummary {
   readonly key: string;
   readonly title: string;
+  /**
+   * `valuation` is an account's line — its balances, the months they carry
+   * over, and any dormant episode the save rewrites, even one woken only by an
+   * income cell. `income` is a source's line.
+   */
   readonly family: 'valuation' | 'income';
   readonly counts: OperationCounts;
   /** The one line shown before the group is expanded. */
@@ -852,6 +857,13 @@ function incomeLine(
   return `${scheduled}${received} · changed · net ${net(before)} → ${net(after)}`;
 }
 
+/** What a dormant episode's change does to its account, in a few words. */
+function dormancyLine(change: DormancyChange): string {
+  if (change.after === null) return 'no longer dormant';
+  if (change.before === null) return 'becomes dormant';
+  return 'dormant period moves';
+}
+
 /**
  * A Bulk History review, summarised so a save of hundreds of cells reads in a
  * few lines (blueprint 15.3; ADR 0011 D10).
@@ -902,6 +914,14 @@ export function summarizeBulk(
     (change): change is DormancyChange => change.kind === 'dormancy_episode',
   );
 
+  // Every dormant episode the save rewrites is shown on its account's line,
+  // whatever cell caused it. An income cell wakes the account its source pays
+  // into, and that account may have no balance in the save at all: it gets a
+  // line of its own rather than disappearing into a fold.
+  for (const change of dormancy) {
+    groupOf(`position:${change.positionId}`, names.get(change.positionId) ?? UNKNOWN_ACCOUNT, 'valuation');
+  }
+
   const summaries: BulkGroupSummary[] = [...groups.entries()].map(([key, group]) => {
     const positionId = key.startsWith('position:') ? key.slice('position:'.length) : null;
     const ownCarries = carries.filter((change) => change.positionId === positionId);
@@ -918,8 +938,8 @@ export function summarizeBulk(
       title: group.title,
       family: group.family,
       counts: group.counts,
-      line: [countsLine(group.counts), carryLine, wakes.length > 0 ? 'no longer dormant' : null]
-        .filter((part): part is string => part !== null)
+      line: [countsLine(group.counts), carryLine, ...wakes.map(dormancyLine)]
+        .filter((part): part is string => part !== null && part !== '')
         .join(' · '),
       entries: [
         ...group.entries,
