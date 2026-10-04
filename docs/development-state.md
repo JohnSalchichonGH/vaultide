@@ -19,7 +19,7 @@ logs into this file.
 
 ## Current checkpoint
 
-- **Blueprint:** v2.1.19.
+- **Blueprint:** v2.1.20.
 - **Current phase:** Phase 3.
 - **Phase 3 status:** in progress; the phase as a whole is **not accepted or
   frozen**.
@@ -186,6 +186,8 @@ logs into this file.
   decision record itself is unchanged.
   `docs/adr/0011-bulk-history.md` is the accepted record of the Bulk History
   decisions, and of its known limits.
+  `docs/adr/0012-income-pages.md` is the accepted design record of the
+  standalone Income pages; none of it is built yet.
 
 Freezing completed Phase 3 slices does not imply acceptance or freeze of Phase 3
 as a whole.
@@ -430,8 +432,8 @@ restore, `positions.opened_on` correction, and reopening or correcting a close.
 ## Next planned work
 
 Phase 3 remains **in progress**, and is neither accepted nor frozen as a whole.
-The next planned Phase 3 area is **the standalone Income pages**, which have
-**not started**.
+The next planned Phase 3 area is **the standalone Income pages**. Their design
+is frozen in blueprint §30.23 and ADR 0012; building them has **not started**.
 
 Remaining Phase 3 work, in the agreed order:
 
