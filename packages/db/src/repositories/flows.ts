@@ -313,6 +313,28 @@ export async function listIncomeEntriesByOccurrenceIn(
     .orderBy(asc(incomeEntries.occurrenceDate), asc(incomeEntries.id));
 }
 
+/**
+ * Every income entry that materializes an occurrence of one template, inside an
+ * existing scope, by scheduled date (blueprint 15.2 "Income source"; ADR 0012
+ * D4, D7).
+ *
+ * The source page's one entry read: what arrived for each of the source's
+ * occurrences, over its whole life, in a single statement however long that is.
+ * `occurrence_date IS NOT NULL` adds nothing the occurrence-pair CHECK does not
+ * already guarantee for a row carrying the template; it is written so the
+ * partial `income_entries_occurrence_uidx` can serve the read.
+ */
+export async function listIncomeEntriesOfTemplateIn(
+  tx: Transaction,
+  templateId: string,
+): Promise<IncomeEntryRow[]> {
+  return tx
+    .select()
+    .from(incomeEntries)
+    .where(and(eq(incomeEntries.templateId, templateId), isNotNull(incomeEntries.occurrenceDate)))
+    .orderBy(asc(incomeEntries.occurrenceDate), asc(incomeEntries.id));
+}
+
 /* ------------------------------------------------------------------------- */
 /* Expenses                                                                   */
 /* ------------------------------------------------------------------------- */

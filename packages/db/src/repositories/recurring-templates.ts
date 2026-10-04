@@ -789,6 +789,24 @@ export async function listSkips(
 }
 
 /**
+ * Every skip of one template, inside an existing scope, by scheduled date
+ * (blueprint 15.2 "Income source"; ADR 0012 D4, D7).
+ *
+ * The source page's one skip read, over the source's whole life, in a single
+ * statement backed by `recurring_template_skips_template_occurrence_idx`.
+ */
+export async function listSkipsOfTemplateIn(
+  tx: Transaction,
+  templateId: string,
+): Promise<RecurringTemplateSkipRow[]> {
+  return tx
+    .select()
+    .from(recurringTemplateSkips)
+    .where(eq(recurringTemplateSkips.templateId, templateId))
+    .orderBy(asc(recurringTemplateSkips.occurrenceDate));
+}
+
+/**
  * Every skip whose occurrence falls in a date range, inside an existing scope.
  *
  * Keyed on `occurrence_date`, because a skip has no other date: it is a stated

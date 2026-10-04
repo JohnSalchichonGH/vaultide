@@ -108,8 +108,13 @@ function toTemplateTerm(row: RecurringTemplateTermRow): TemplateTerm {
   };
 }
 
-/** The terms of one template, and whether one starts exactly at a date. */
-function termDtoOf(
+/**
+ * The terms of one template, and whether one starts exactly at a date.
+ *
+ * Exported for the Income source page, whose "Change the amount from…" is
+ * Monthly's own form and must start from the same expectation (ADR 0012 D4).
+ */
+export function termDtoOf(
   terms: readonly RecurringTemplateTermRow[],
   occurrenceDate: PlainDate,
   currency: string,
