@@ -48,7 +48,7 @@ type FigureKey = keyof Pick<
 const FIGURES: readonly { key: FigureKey; label: string; note?: string; emphasis?: boolean }[] = [
   {
     key: 'externalIncome',
-    label: 'Reconciled income',
+    label: 'Tracked income',
     note: 'What this month’s reconciliation saw arrive in tracked accounts.',
     emphasis: true,
   },

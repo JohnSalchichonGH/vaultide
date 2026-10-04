@@ -261,25 +261,25 @@ export async function listIncomeEntriesIn(
 }
 
 /**
- * Every income entry received on or before `to`, with no lower bound.
+ * Every income entry received on or before `to`, with no lower bound, inside
+ * an existing scope.
  *
  * The Income year view's one entry read (ADR 0012 D7): its totals for every
  * year with income span the whole history, so a window would drop the years
- * before it, and one read per year would grow with the user. Backed by
+ * before it, and one read per year would grow with the user. It takes the
+ * transaction because that read answers from one snapshot, beside the
+ * resolved occurrences it is judged with. Backed by
  * `income_entries_user_received_idx`.
  */
-export async function listIncomeEntriesThrough(
-  db: Database,
-  userId: string,
+export async function listIncomeEntriesThroughIn(
+  tx: Transaction,
   to: string,
 ): Promise<IncomeEntryRow[]> {
-  return withUser(db, { userId }, async (tx) =>
-    tx
-      .select()
-      .from(incomeEntries)
-      .where(lte(incomeEntries.receivedOn, to))
-      .orderBy(asc(incomeEntries.receivedOn), asc(incomeEntries.id)),
-  );
+  return tx
+    .select()
+    .from(incomeEntries)
+    .where(lte(incomeEntries.receivedOn, to))
+    .orderBy(asc(incomeEntries.receivedOn), asc(incomeEntries.id));
 }
 
 /**

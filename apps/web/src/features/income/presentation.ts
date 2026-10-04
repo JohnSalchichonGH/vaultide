@@ -25,7 +25,9 @@ import type { FigureDisplay } from '@/features/spending/presentation';
 /**
  * What this page's figure is called. Monthly's figure answers a different
  * question — what one month's reconciliation saw arrive in tracked accounts —
- * and is called "Reconciled income" there, so the two are never both "Income".
+ * and is called "Tracked income" there, so the two are never both "Income".
+ * Not "reconciled": 12.5 keeps that figure available in unresolved and
+ * unavailable months, beside a status that says the month is not reconciled.
  */
 export const INCOME_RECORDED = 'Income recorded';
 export const TRACKED_LABEL = 'Into tracked accounts';
@@ -34,7 +36,7 @@ export const SO_FAR = 'so far';
 
 /** Why this page's figures and Monthly's may differ — the four places 30.23 item 3 names. */
 export const DIFFERS_FROM_MONTHLY =
-  'Every income payment you recorded, in the month it arrived. Monthly’s “Reconciled income” counts only what a month’s reconciliation saw arrive in tracked accounts, so the two can differ: income outside tracked accounts, an account’s first tracked month, a month with no balances, and the current month, which Monthly counts only up to its month-to-date date.';
+  'Every income payment you recorded, in the month it arrived. Monthly’s “Tracked income” counts only what a month’s reconciliation saw arrive in tracked accounts, so the two can differ: income outside tracked accounts, an account’s first tracked month, a month or currency with no tracked account, and the current month, which Monthly counts only up to its month-to-date date.';
 
 export const GROUP_LABEL = { salary: 'Salary', bonus: 'Bonus', other: 'Other' } as const;
 

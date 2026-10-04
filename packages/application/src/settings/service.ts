@@ -86,6 +86,16 @@ export async function readSettings(db: Database, userId: string): Promise<UserSe
   return toDto(row);
 }
 
+/**
+ * The same read inside a caller's transaction, for a read that answers from
+ * one snapshot (the Income year view's).
+ */
+export async function readSettingsIn(tx: Transaction): Promise<UserSettings> {
+  const row = await findUserSettingsIn(tx);
+  if (row === undefined) throw new NotFoundError('Settings have not been created yet.');
+  return toDto(row);
+}
+
 export async function findSettings(
   db: Database,
   userId: string,

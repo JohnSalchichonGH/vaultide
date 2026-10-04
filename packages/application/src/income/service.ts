@@ -1,8 +1,8 @@
 import {
-  listIncomeEntriesThrough,
-  listPositions,
-  listResolvedOccurrencesInRange,
-  listTemplates,
+  listIncomeEntriesThroughIn,
+  listPositionsIn,
+  listResolvedOccurrencesInRangeIn,
+  listTemplatesIn,
   type IncomeEntryRow,
 } from '@vaultide/db';
 import {
@@ -23,6 +23,7 @@ import {
   type RecordedIncomeEntry,
 } from '@vaultide/finance';
 import type { RequestContext } from '../context';
+import { withUserRead } from '../coordination';
 import { currencyCatalogue } from '../currencies/service';
 import { ValidationError } from '../errors';
 import { moneyDto } from '../positions/mapping';
@@ -32,7 +33,7 @@ import {
   reportingAmountDto,
   type ReportingDependencies,
 } from '../reconciliation/reporting-service';
-import { readSettings } from '../settings/service';
+import { readSettingsIn } from '../settings/service';
 import type {
   IncomeOneOffPaymentDto,
   IncomePageDto,
@@ -44,8 +45,13 @@ import type {
  * 0012 D1–D3, D5, D7).
  *
  * One call, a fixed number of set-wise reads whatever the years, sources and
- * entries, then one pure computation (`incomeOverview`). The reads, side by
- * side, none of them per year, source, month or entry:
+ * entries, then one pure computation (`incomeOverview`). None of the reads is
+ * per year, source, month or entry. The user's own rows are read in **one
+ * snapshot** (`withUserRead`: repeatable read, read only, no mutex), as Bulk
+ * History's grid read is, so the entries and the occurrences they resolve come
+ * from the same state of the world — a payment recorded between two separate
+ * reads could otherwise be counted while its occurrence is still flagged
+ * missing:
  *
  *  - every income entry received on or before today, with no lower bound: the
  *    totals for every year with income span the whole history;
@@ -54,12 +60,12 @@ import type {
  *    item 2);
  *  - the occurrences recorded or skipped in the year in view, by their
  *    scheduled date — the resolved set `suggested_income_missing` uses;
- *  - the settings, the currency catalogue and the cash accounts the two forms
- *    offer.
+ *  - the settings, and the cash accounts the two forms offer.
  *
- * Then one rate read for every currency an entry holds, stored rates only, over
- * the entries' own dates. Nothing here is reconciliation-scoped (30.23 item 3),
- * so no balance and no valuation is read, and no reconciliation runs.
+ * The currency catalogue, which is global, is read beside it. Then one rate
+ * read for every currency an entry holds, stored rates only, over the entries'
+ * own dates. Nothing here is reconciliation-scoped (30.23 item 3), so no
+ * balance and no valuation is read, and no reconciliation runs.
  */
 
 export type IncomeDependencies = ReportingDependencies;
@@ -71,16 +77,32 @@ export interface IncomeQuery {
 
 const YEAR_PATTERN = /^\d{4}$/u;
 
+/**
+ * The first year the page answers for: the year of the date inputs' floor
+ * (`EARLIEST_CORRECTABLE_DATE`, 1 January 1900, in the web app). Earlier
+ * four-digit years are refused rather than computed — `Date.UTC`, which the
+ * calendar helpers use, reads years 0–99 as 1900–1999.
+ */
+export const EARLIEST_INCOME_YEAR = 1900;
+
 const yearOf = (date: string): number => Number.parseInt(date.slice(0, 4), 10);
 const label = (month: MonthKey): string => (month as string).slice(0, 7);
 
-/** The year in view, or a validation error for one that is not a year or has not begun. */
+/**
+ * The year in view, or a validation error for one that is not a year, comes
+ * before 1900, or has not begun.
+ */
 export function parseIncomeYear(query: IncomeQuery, currentYear: number): number {
   if (query.year === undefined) return currentYear;
   if (!YEAR_PATTERN.test(query.year)) {
     throw new ValidationError('That is not a year.', { year: ['Expected YYYY.'] });
   }
   const year = Number.parseInt(query.year, 10);
+  if (year < EARLIEST_INCOME_YEAR) {
+    throw new ValidationError('That year is too early.', {
+      year: [`Income covers the years from ${String(EARLIEST_INCOME_YEAR)}.`],
+    });
+  }
   if (year > currentYear) {
     // A year that has not begun has no income of any kind; answering with an
     // empty one would be a synthetic result.
@@ -130,16 +152,20 @@ export async function getIncomePage(
   const yearFrom = startOfMonthKey(monthKeyOf(year, 1));
   const yearTo = endOfMonthKey(monthKeyOf(year, 12));
 
-  const [rows, templates, resolved, settings, catalogue, cash] = await Promise.all([
-    listIncomeEntriesThrough(deps.db, ctx.userId, today),
-    // Archived included: archiving is present-tense visibility, and a past
-    // month's expectation and a source's own name both outlive it (30.10).
-    listTemplates(deps.db, ctx.userId, { includeArchived: true }),
-    listResolvedOccurrencesInRange(deps.db, ctx.userId, yearFrom, yearTo),
-    readSettings(deps.db, ctx.userId),
+  const [snapshot, catalogue] = await Promise.all([
+    withUserRead(deps.db, { userId: ctx.userId }, async (tx) => {
+      const rows = await listIncomeEntriesThroughIn(tx, today);
+      // Archived included: archiving is present-tense visibility, and a past
+      // month's expectation and a source's own name both outlive it (30.10).
+      const templates = await listTemplatesIn(tx, { includeArchived: true });
+      const resolved = await listResolvedOccurrencesInRangeIn(tx, yearFrom, yearTo);
+      const settings = await readSettingsIn(tx);
+      const cash = await listPositionsIn(tx, { kinds: ['cash'] });
+      return { rows, templates, resolved, settings, cash };
+    }),
     currencyCatalogue(deps.db),
-    listPositions(deps.db, ctx.userId, { kinds: ['cash'] }),
   ]);
+  const { rows, templates, resolved, settings, cash } = snapshot;
 
   const reporting = currencyCode(settings.reportingCurrency);
   const entries = rows.map(recordedEntryOf);
@@ -150,6 +176,15 @@ export async function getIncomePage(
   const currencies = new Set<string>(counted.map((entry) => entry.net.currency));
   const earliest = counted[0]?.receivedOn ?? today;
   const fx = await loadReportingRates(deps, currencies, reporting, earliest, today, today);
+
+  // The earliest year worth stepping back to: the first counted payment's, or
+  // the first income source's start, and never before 1900.
+  const starts = [
+    ...(counted[0] === undefined ? [] : [yearOf(counted[0].receivedOn)]),
+    ...templates.filter((row) => row.kind === 'income').map((row) => yearOf(row.startDate)),
+  ];
+  const firstYear =
+    starts.length === 0 ? currentYear : Math.max(EARLIEST_INCOME_YEAR, Math.min(...starts));
 
   const overview = incomeOverview({
     year,
@@ -188,7 +223,7 @@ export async function getIncomePage(
     selectableCurrencyCodes: catalogue.selectableCurrencyCodes,
     empty: overview.years.length === 0 && !templates.some((row) => row.kind === 'income'),
     navigation: {
-      previous: year > 0 ? year - 1 : null,
+      previous: year > firstYear ? year - 1 : null,
       next: year < currentYear ? year + 1 : null,
     },
     view: {

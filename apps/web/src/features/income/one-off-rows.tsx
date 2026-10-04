@@ -57,49 +57,48 @@ export function OneOffRows({
           <td className={`${cell} ${META}`}>{paymentCount(oneOff.total.count)}</td>
         </tr>
       </tbody>
-      {open ? (
-        <tbody id={panel} data-testid="income-one-off-payments">
-          {oneOff.kinds.flatMap((group) => [
-            <tr key={group.kind} className="bg-[var(--color-surface-muted)]" data-testid="income-one-off-kind" data-kind={group.kind}>
-              <th scope="row" className="py-1.5 pr-2 pl-3 text-left font-medium sm:pr-4">
-                {incomeKindLabel(group.kind)}
+      {/* Always rendered, so `aria-controls` names an element that exists. */}
+      <tbody id={panel} hidden={!open} data-testid="income-one-off-payments">
+        {oneOff.kinds.flatMap((group) => [
+          <tr key={group.kind} className="bg-[var(--color-surface-muted)]" data-testid="income-one-off-kind" data-kind={group.kind}>
+            <th scope="row" className="py-1.5 pr-2 pl-3 text-left font-medium sm:pr-4">
+              {incomeKindLabel(group.kind)}
+            </th>
+            <td className={cell}>
+              <Amount display={incomeFigureDisplay(group.total.net)} formatting={formatting} />
+            </td>
+            {showGross ? <GrossCell gross={group.total.gross} formatting={formatting} className={cell} /> : null}
+            <td className={`${cell} ${META}`}>{paymentCount(group.total.count)}</td>
+          </tr>,
+          ...group.payments.map((payment) => (
+            <tr key={payment.entryId} data-testid="income-one-off-payment" data-entry-id={payment.entryId}>
+              <th scope="row" className="py-1.5 pr-2 pl-6 text-left font-normal sm:pr-4">
+                <Link href={paymentHref(payment.entryId, payment.receivedOn)} className="underline">
+                  {dayTitle(payment.receivedOn, formatting.locale)}
+                </Link>
+                <span className={`block ${META}`}>
+                  {SETTLEMENT_LABEL[payment.settlement] ?? payment.settlement}
+                  {payment.description === null ? null : ` · ${payment.description}`}
+                </span>
               </th>
               <td className={cell}>
-                <Amount display={incomeFigureDisplay(group.total.net)} formatting={formatting} />
+                <Amount display={incomeFigureDisplay(payment.reporting)} formatting={formatting} />
+                <NativeNote native={[payment.net]} reportingCurrency={reportingCurrency} formatting={formatting} />
               </td>
-              {showGross ? <GrossCell gross={group.total.gross} formatting={formatting} className={cell} /> : null}
-              <td className={`${cell} ${META}`}>{paymentCount(group.total.count)}</td>
-            </tr>,
-            ...group.payments.map((payment) => (
-              <tr key={payment.entryId} data-testid="income-one-off-payment" data-entry-id={payment.entryId}>
-                <th scope="row" className="py-1.5 pr-2 pl-6 text-left font-normal sm:pr-4">
-                  <Link href={paymentHref(payment.entryId, payment.receivedOn)} className="underline">
-                    {dayTitle(payment.receivedOn, formatting.locale)}
-                  </Link>
-                  <span className={`block ${META}`}>
-                    {SETTLEMENT_LABEL[payment.settlement] ?? payment.settlement}
-                    {payment.description === null ? null : ` · ${payment.description}`}
-                  </span>
-                </th>
+              {showGross ? (
                 <td className={cell}>
-                  <Amount display={incomeFigureDisplay(payment.reporting)} formatting={formatting} />
-                  <NativeNote native={[payment.net]} reportingCurrency={reportingCurrency} formatting={formatting} />
+                  {payment.reportingGross === null ? (
+                    <span className={META}>No gross</span>
+                  ) : (
+                    <Amount display={incomeFigureDisplay(payment.reportingGross)} formatting={formatting} />
+                  )}
                 </td>
-                {showGross ? (
-                  <td className={cell}>
-                    {payment.reportingGross === null ? (
-                      <span className={META}>No gross</span>
-                    ) : (
-                      <Amount display={incomeFigureDisplay(payment.reportingGross)} formatting={formatting} />
-                    )}
-                  </td>
-                ) : null}
-                <td className={cell} />
-              </tr>
-            )),
-          ])}
-        </tbody>
-      ) : null}
+              ) : null}
+              <td className={cell} />
+            </tr>
+          )),
+        ])}
+      </tbody>
     </>
   );
 }

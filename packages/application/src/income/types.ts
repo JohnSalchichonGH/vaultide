@@ -149,7 +149,10 @@ export interface IncomePageDto {
    */
   readonly empty: boolean;
   readonly navigation: {
-    /** `null` only on year 0, which has no year before it. */
+    /**
+     * `null` from the earliest year with a counted payment or an income
+     * source's start (never before 1900) backwards, and when there is neither.
+     */
     readonly previous: number | null;
     /** `null` on the current year: the next one has not begun. */
     readonly next: number | null;

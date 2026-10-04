@@ -68,15 +68,19 @@ export async function listTemplates(
   userId: string,
   options: { includeArchived?: boolean } = {},
 ): Promise<RecurringTemplateRow[]> {
-  return withUser(db, { userId }, async (tx) =>
-    tx
-      .select()
-      .from(recurringTemplates)
-      .where(
-        options.includeArchived === true ? undefined : isNull(recurringTemplates.archivedAt),
-      )
-      .orderBy(asc(recurringTemplates.name)),
-  );
+  return withUser(db, { userId }, async (tx) => listTemplatesIn(tx, options));
+}
+
+/** The same list inside a caller's transaction. */
+export async function listTemplatesIn(
+  tx: Transaction,
+  options: { includeArchived?: boolean } = {},
+): Promise<RecurringTemplateRow[]> {
+  return tx
+    .select()
+    .from(recurringTemplates)
+    .where(options.includeArchived === true ? undefined : isNull(recurringTemplates.archivedAt))
+    .orderBy(asc(recurringTemplates.name));
 }
 
 /**

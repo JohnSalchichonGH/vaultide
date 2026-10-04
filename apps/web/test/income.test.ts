@@ -131,8 +131,13 @@ describe('the labels that keep this page’s figures apart from Monthly’s', ()
 
   it('names Monthly’s figure and the four places the two can differ', () => {
     const text = presentation.DIFFERS_FROM_MONTHLY;
-    expect(text).toContain('“Reconciled income”');
-    for (const place of ['outside tracked accounts', 'first tracked month', 'no balances', 'current month']) {
+    expect(text).toContain('“Tracked income”');
+    for (const place of [
+      'outside tracked accounts',
+      'first tracked month',
+      'a month or currency with no tracked account',
+      'current month',
+    ]) {
       expect(text).toContain(place);
     }
   });
@@ -302,8 +307,14 @@ describe('the sources table', () => {
     );
     expect(html).toContain('One-off payments');
     expect(html).toContain('aria-expanded="false"');
-    // Closed until asked; the link target is the payment's own row in its month.
-    expect(html).not.toContain('income-one-off-payment');
+    // Closed until asked, but there: the toggle names a body that exists, hidden.
+    const controls = /aria-controls="([^"]+)"/u.exec(html)?.[1];
+    expect(controls).toBeDefined();
+    const body = new RegExp(`<tbody id="${String(controls)}"([^>]*)>`, 'u').exec(html)?.[1] ?? '';
+    expect(body).toContain('hidden=""');
+    expect(body).toContain('data-testid="income-one-off-payments"');
+    // Each payment links to its own row in the month that holds it.
+    expect(html).toContain('href="/monthly/2026-09#income-e1"');
     expect(presentation.paymentHref('e1', '2026-09-10')).toBe('/monthly/2026-09#income-e1');
   });
 });

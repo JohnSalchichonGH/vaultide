@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql, withoutUser, type Database } from '@vaultide/db';
 import { createHarness, type Harness } from '../helpers/harness';
+import { READ_OPEN, isLock, isWrite, perConnection, record } from '../helpers/statement-shapes';
 import { providerOutage } from '../helpers/stub-fx-provider';
 import { testContext, type RequestContext } from '../../src/context';
 import { provisionUser } from '../../src/users/provisioning';
@@ -12,7 +13,7 @@ import { createFxService } from '../../src/fx/service';
 import { ValidationError } from '../../src/errors';
 import { getMonthCompleteness } from '../../src/reconciliation/completeness-service';
 import { parseMonth } from '../../src/reconciliation/service';
-import { getIncomePage, type IncomeDependencies } from '../../src/income/service';
+import { EARLIEST_INCOME_YEAR, getIncomePage, type IncomeDependencies } from '../../src/income/service';
 import type { IncomePageDto, IncomeTotalDto } from '../../src/income/types';
 
 /**
@@ -470,11 +471,44 @@ describe('missing occurrences', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('the year in the address', () => {
-  it('refuses one that is not a year, or has not begun', async () => {
-    for (const year of ['26', '20266', 'abcd', '2026-01', ' 2026', '2027']) {
+  it('refuses one that is not a year, comes before 1900, or has not begun', async () => {
+    for (const year of ['26', '20266', 'abcd', '2026-01', ' 2026', '2027', '0000', '0099', '1899']) {
       await expect(page(year)).rejects.toBeInstanceOf(ValidationError);
     }
+    expect(EARLIEST_INCOME_YEAR).toBe(1900);
+    expect((await page('1900')).year).toBe(1900);
     expect((await page('2026')).year).toBe(2026);
+  });
+});
+
+describe('stepping back a year', () => {
+  it('stops at the earliest year with a counted payment', async () => {
+    // The fixture's first payment is 2024's freelance one; Old job starts in 2025.
+    await fixture();
+    expect((await page('2025')).navigation).toEqual({ previous: 2024, next: 2026 });
+    expect((await page('2024')).navigation).toEqual({ previous: null, next: 2025 });
+    // A year before it, reached by its address, steps forward only.
+    expect((await page('2010')).navigation).toEqual({ previous: null, next: 2011 });
+  });
+
+  it('reaches back to an income source that started before any payment, archived or not', async () => {
+    const pension = await source({ name: 'Pension', incomeKind: 'other', day: 1, start: '2019-03-01', amount: '1.00' });
+    await archiveTemplate(flows(), OCT_4, { templateId: pension.id, expectedVersion: pension.version });
+    expect((await page()).navigation.previous).toBe(2025);
+    expect((await page('2020')).navigation.previous).toBe(2019);
+    expect((await page('2019')).navigation.previous).toBeNull();
+  });
+
+  it('has nowhere to go with no income and no source, and an uncounted entry changes nothing', async () => {
+    expect((await page()).navigation).toEqual({ previous: null, next: null });
+    await oneOff({ kind: 'adjustment', on: '2021-09-20', net: '9.00', account: await makeAccount('BBVA') });
+    expect((await page()).navigation).toEqual({ previous: null, next: null });
+  });
+
+  it('never steps back before 1900, whatever is recorded earlier', async () => {
+    await oneOff({ kind: 'freelance', on: '1899-06-01', net: '1.00', external: true });
+    expect((await page('1901')).navigation.previous).toBe(1900);
+    expect((await page('1900')).navigation.previous).toBeNull();
   });
 });
 
@@ -551,14 +585,42 @@ async function countTransactions(year?: string): Promise<number> {
 }
 
 /**
- * The page's reads: the entries, the templates, the year's resolved occurrences
- * (one transaction, four statements side by side), the settings, the currency
- * catalogue and the cash accounts. A euro-only page in a euro reporting
- * currency needs no stored rate, so the rate read opens nothing.
+ * The page's reads: one snapshot of the user's rows — entries, templates, the
+ * year's resolved occurrences, settings and cash accounts — and the global
+ * currency catalogue beside it. A euro-only page in a euro reporting currency
+ * needs no stored rate, so the rate read opens nothing.
  */
-const READS = 6;
+const READS = 2;
 /** The one rate read every foreign currency on the page shares. */
 const RATES = 1;
+
+describe('the user’s rows are one snapshot', () => {
+  it('reads them in one read-only transaction, beside the global catalogue, and takes no lock', async () => {
+    const bbva = await makeAccount('BBVA');
+    await oneOff({ kind: 'other', on: '2026-09-01', net: '1.00', account: bbva });
+    const sent = await record(() => page());
+    // `perConnection`'s fixed order puts the catalogue's connection first.
+    expect(perConnection(sent)).toEqual([
+      ['begin', 'select currencies', 'commit'],
+      [
+        ...READ_OPEN,
+        'select income_entries',
+        'select recurring_templates',
+        // The resolved occurrences: the three flow tables and the skips.
+        'select income_entries',
+        'select expense_entries',
+        'select transfers',
+        'select recurring_template_skips',
+        'select user_settings',
+        'select positions',
+        'commit',
+      ],
+    ]);
+    const every = sent.map(({ shape }) => shape);
+    expect(every.filter(isLock)).toEqual([]);
+    expect(every.filter(isWrite)).toEqual([]);
+  });
+});
 
 describe('the repository transaction count is bounded by a constant', () => {
   it('does not grow with years, sources, entries or skips', async () => {

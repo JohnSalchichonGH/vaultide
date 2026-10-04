@@ -238,7 +238,7 @@ test.describe('the Income page', () => {
     await expect(page.getByTestId('income-outside')).toContainText('€450.00');
     await expect(page.getByTestId('income-gross-total')).toContainText('€2,800.00');
     await expect(page.getByTestId('income-gross-total')).toContainText('1 without gross');
-    await expect(page.getByTestId('income-differs')).toContainText('Reconciled income');
+    await expect(page.getByTestId('income-differs')).toContainText('Tracked income');
 
     const salaryRow = page.getByTestId('income-source').filter({ hasText: 'Salary' });
     await expect(salaryRow).toContainText('€2,000.00');
@@ -254,7 +254,7 @@ test.describe('the Income page', () => {
     // Monthly's September figure answers another question — what reconciliation
     // saw arrive in tracked accounts — and its label says so (30.23 item 3).
     await open(page, '/monthly/2026-09');
-    await expect(page.getByTestId('figure-externalIncome')).toContainText('Reconciled income');
+    await expect(page.getByTestId('figure-externalIncome')).toContainText('Tracked income');
     await expect(page.getByTestId('figure-externalIncome')).toContainText('€2,000.00');
     await open(page, '/income');
 
