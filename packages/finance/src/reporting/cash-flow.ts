@@ -95,13 +95,22 @@ export interface ReportingCashFlow {
 }
 
 /**
+ * What a conversion reads off a contribution: the native amount, how it
+ * converts, and — on a residual — the quality it carries. Which figure it feeds
+ * plays no part in converting it.
+ */
+export type ConvertibleContribution = Pick<ReportingContribution, 'amount' | 'basis' | 'quality'>;
+
+/**
  * One converted contribution, or the reason it could not be converted.
  *
  * Exported for the known-spending breakdown, which must convert each row by
- * exactly this rule so its category totals sum to the figures computed here.
+ * exactly this rule so its category totals sum to the figures computed here,
+ * and for income recorded, whose entries are dated flows converted the same way
+ * (v2.1.20 30.23 item 6) without feeding any of this module's figures.
  */
 export function convertContribution(
-  contribution: ReportingContribution,
+  contribution: ConvertibleContribution,
   reporting: CurrencyCode,
   fx: FxTable,
 ): ReportingAmount {

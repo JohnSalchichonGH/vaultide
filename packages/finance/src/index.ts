@@ -17,3 +17,4 @@ export * from './reconciliation/index';
 export * from './completeness/index';
 export * from './savings/index';
 export * from './reporting/index';
+export * from './income/index';
