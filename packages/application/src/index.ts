@@ -18,6 +18,7 @@ export * from './corrections/index';
 export * from './currencies/index';
 export * from './flows/index';
 export * from './fx/index';
+export * from './income/index';
 export * from './mail/index';
 export * from './monthly/index';
 export * from './positions/index';

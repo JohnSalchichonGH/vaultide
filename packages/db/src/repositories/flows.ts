@@ -1,4 +1,4 @@
-import { and, asc, between, eq, getTableColumns, inArray, isNotNull, sql } from 'drizzle-orm';
+import { and, asc, between, eq, getTableColumns, inArray, isNotNull, lte, sql } from 'drizzle-orm';
 import { expenseEntries } from '../schema/expense-entries';
 import { incomeEntries } from '../schema/income-entries';
 import { transfers } from '../schema/transfers';
@@ -258,6 +258,28 @@ export async function listIncomeEntriesIn(
     .from(incomeEntries)
     .where(between(incomeEntries.receivedOn, from, to))
     .orderBy(asc(incomeEntries.receivedOn), asc(incomeEntries.id));
+}
+
+/**
+ * Every income entry received on or before `to`, with no lower bound.
+ *
+ * The Income year view's one entry read (ADR 0012 D7): its totals for every
+ * year with income span the whole history, so a window would drop the years
+ * before it, and one read per year would grow with the user. Backed by
+ * `income_entries_user_received_idx`.
+ */
+export async function listIncomeEntriesThrough(
+  db: Database,
+  userId: string,
+  to: string,
+): Promise<IncomeEntryRow[]> {
+  return withUser(db, { userId }, async (tx) =>
+    tx
+      .select()
+      .from(incomeEntries)
+      .where(lte(incomeEntries.receivedOn, to))
+      .orderBy(asc(incomeEntries.receivedOn), asc(incomeEntries.id)),
+  );
 }
 
 /**
