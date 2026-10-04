@@ -92,6 +92,14 @@ export const incomeYearHref = (year: number): Route =>
 export const paymentHref = (entryId: string, receivedOn: string): Route =>
   `/monthly/${receivedOn.slice(0, 7)}#${incomeEntryAnchorId(entryId)}` as Route;
 
+/** An occurrence's own row in Monthly: the month of its scheduled date, at its anchor. */
+export const occurrenceHref = (templateId: string, occurrenceDate: string): Route =>
+  `/monthly/${occurrenceDate.slice(0, 7)}#${occurrenceAnchorId(templateId, occurrenceDate)}` as Route;
+
+/** `/income/sources/<id>`, at a year of its occurrences when one is given (ADR 0012 D4). */
+export const incomeSourceHref = (templateId: string, year?: number): Route =>
+  `/income/sources/${templateId}${year === undefined ? '' : `?year=${String(year).padStart(4, '0')}`}` as Route;
+
 /** The dates Add a payment offers: any day up to today (ADR 0012 D5). */
 export function paymentDateBounds(today: string): { readonly min: string; readonly max: string } {
   return { min: EARLIEST_CORRECTABLE_DATE, max: today };
@@ -103,26 +111,35 @@ export function paymentDateBounds(today: string): { readonly min: string; readon
 
 export type MissingFlagLink =
   | { readonly kind: 'monthly'; readonly href: Route; readonly label: string }
-  | { readonly kind: 'history'; readonly href: Route; readonly label: string };
+  | { readonly kind: 'history'; readonly href: Route; readonly label: string }
+  | { readonly kind: 'source'; readonly href: Route; readonly label: string };
 
 /**
- * Where a missing-payment line sends the user, or nowhere.
+ * Where a missing-payment line sends the user.
  *
  * Only to a place that can resolve it. One missing payment opens its own row in
  * Monthly; several open Bulk History on the first missing month. An archived
  * source's occurrences can be recorded or skipped in neither — archiving blocks
- * both, and Bulk History disables its cells — so its line has no link at all.
+ * both, and Bulk History disables its cells — so its line opens the source's
+ * own page, at the year of the missing payments, where it can be unarchived or
+ * given an end date (ADR 0012 D2, D9).
  */
 export function missingFlagLink(flag: IncomeMissingFlagDto, monthName: (month: string) => string): MissingFlagLink | null {
-  if (flag.archived) return null;
   const [first] = flag.occurrences;
   /* v8 ignore next -- a flag exists only for a source with a missing occurrence. */
   if (first === undefined) return null;
+  if (flag.archived) {
+    return {
+      kind: 'source',
+      href: incomeSourceHref(flag.templateId, Number.parseInt(first.slice(0, 4), 10)),
+      label: `Open ${flag.name}’s page`,
+    };
+  }
   const month = first.slice(0, 7);
   if (flag.occurrences.length === 1) {
     return {
       kind: 'monthly',
-      href: `/monthly/${month}#${occurrenceAnchorId(flag.templateId, first)}` as Route,
+      href: occurrenceHref(flag.templateId, first),
       label: `Open ${monthName(month)} in Monthly`,
     };
   }

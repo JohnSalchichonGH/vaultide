@@ -14,6 +14,7 @@ import {
   SO_FAR,
   TRACKED_LABEL,
   incomeFigureDisplay,
+  incomeSourceHref,
   incomeYearHref,
   missingFlagLink,
   missingFlagText,
@@ -184,8 +185,9 @@ export function SourcesTable({ page, formatting }: { readonly page: IncomePageDt
             {view.sources.map((row) => (
               <tr key={row.templateId} className="border-b last:border-0" data-testid="income-source" data-template-id={row.templateId}>
                 <th scope="row" className="py-2 pr-2 text-left font-normal sm:pr-4">
-                  {/* Plain text until the source page exists (ADR 0012 D9). */}
-                  <span>{row.name}</span>
+                  <Link href={incomeSourceHref(row.templateId)} className="underline" data-testid="income-source-link">
+                    {row.name}
+                  </Link>
                   {row.archived ? (
                     <Badge tone="neutral" className="ml-2" data-testid="income-source-archived">
                       Archived
@@ -293,11 +295,12 @@ export function MissingPayments({ page, formatting }: { readonly page: IncomePag
                 </Badge>
               ) : null}
             </p>
-            {link === null ? (
+            {flag.archived ? (
               <p className={META} data-testid="income-missing-archived">
                 {ARCHIVED_MISSING_HELP}
               </p>
-            ) : (
+            ) : null}
+            {link === null ? null : (
               <Link href={link.href} className="text-[length:var(--text-meta)] underline" data-testid="income-missing-link" data-kind={link.kind}>
                 {link.label}
               </Link>

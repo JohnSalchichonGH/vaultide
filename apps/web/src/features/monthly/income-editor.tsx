@@ -415,8 +415,11 @@ function termDefaults(term: OccurrenceTermDto): {
  * `setTemplateTerm` replaces the whole term rather than patching it, so the form
  * submits the complete desired state and the expectation the row was rendered
  * from — `absent` when nothing starts here, or that exact row's version.
+ *
+ * Shared with the Income source page's "Change the amount from…", which picks
+ * the occurrence the same way (ADR 0012 D4).
  */
-function ChangeFutureAmount({
+export function ChangeFutureAmount({
   templateId,
   occurrenceDate,
   currency,

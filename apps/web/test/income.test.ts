@@ -234,7 +234,7 @@ describe('a gross', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('the sources table', () => {
-  it('labels an archived source, and names a source as plain text until its page exists', () => {
+  it('labels an archived source, and links each source’s name to its own page', () => {
     const html = render(
       createElement(SourcesTable, {
         page: pageDto({
@@ -244,7 +244,8 @@ describe('the sources table', () => {
       }),
     );
     expect(html).toContain('data-testid="income-source-archived"');
-    expect(html).not.toContain('/income/sources');
+    expect(html).toContain('href="/income/sources/old"');
+    expect(html).toMatch(/<a href="\/income\/sources\/old"[^>]*>Old job<\/a>/u);
   });
 
   it('says why it is ordered by name when a rate is missing', () => {
@@ -342,15 +343,20 @@ describe('a missing-payment line', () => {
     });
   });
 
-  it('has no link for an archived source, which neither page can resolve', () => {
-    expect(presentation.missingFlagLink(flag({ archived: true }), monthName)).toBeNull();
+  it('sends an archived source, which neither Monthly nor Bulk History can resolve, to its own page', () => {
+    expect(presentation.missingFlagLink(flag({ archived: true, name: 'Old job', occurrences: ['2025-03-01', '2025-04-01'] }), monthName)).toEqual({
+      kind: 'source',
+      href: '/income/sources/tpl-salary?year=2025',
+      label: 'Open Old job’s page',
+    });
     const html = render(
       createElement(MissingPayments, {
         page: pageDto({ missing: [flag({ archived: true, name: 'Old job' })] }),
         formatting: FORMATTING,
       }),
     );
-    expect(html).not.toContain('<a ');
+    expect(html).toContain('href="/income/sources/tpl-salary?year=2026"');
+    expect(html).not.toContain('/monthly/');
     expect(html).toContain('Unarchive the source, or, if it really ended, give it an end date before the missing payment.');
   });
 
@@ -382,6 +388,18 @@ describe('a missing-payment line', () => {
 describe('the addresses', () => {
   it('puts the year in the address', () => {
     expect(presentation.incomeYearHref(2025)).toBe('/income?year=2025');
+  });
+
+  it('gives a source its own page, at a year when one is given', () => {
+    expect(presentation.incomeSourceHref('tpl-salary')).toBe('/income/sources/tpl-salary');
+    expect(presentation.incomeSourceHref('tpl-salary', 2025)).toBe('/income/sources/tpl-salary?year=2025');
+  });
+
+  it('builds an occurrence’s Monthly address in one place, for the missing line and the source page alike', () => {
+    expect(presentation.occurrenceHref('tpl-salary', '2026-07-15')).toBe('/monthly/2026-07#occurrence-tpl-salary-2026-07-15');
+    expect(presentation.missingFlagLink(flag({ occurrences: ['2026-07-15'] }), (month) => month)?.href).toBe(
+      presentation.occurrenceHref('tpl-salary', '2026-07-15'),
+    );
   });
 });
 
