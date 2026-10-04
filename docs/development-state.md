@@ -448,6 +448,11 @@ Remaining Phase 3 work, in the agreed order:
        day to be zero;
      - the Bulk History grid read has no size bound (ADR 0011, "Known
        limits");
+   - Monthly's Add income and Add expense forms save directly and dead-end on
+     `HISTORICAL_REVIEW_REQUIRED`. A new entry whose dormancy consequence
+     reaches completed history is refused by the server, and either form can
+     only show the refusal, although the server can review such a creation and
+     Monthly's transfer and balance forms already route through the review;
 3. a cold whole-Phase-3 review;
 4. Phase 3 acceptance, production verification, and freeze.
 
