@@ -6,8 +6,8 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from '@
  * "Mobile: bottom tabs Dashboard · Monthly · Investments · Analytics · More."
  * Below the desktop breakpoint the sidebar is not there, so these tabs are the
  * only way between sections. A person on a 375 px phone reaches every section
- * that exists — Dashboard and Monthly from the tabs, Accounts, Spending and
- * Settings from More — finds the ones that do not exist yet named with the phase that brings
+ * that exists — Dashboard and Monthly from the tabs, Accounts, Income, Spending
+ * and Settings from More — finds the ones that do not exist yet named with the phase that brings
  * them and leading nowhere, and never loses the page's end behind the bar. At
  * the desktop breakpoint the sidebar takes over and the tabs are gone.
  *
@@ -176,10 +176,10 @@ test.describe('the signed-in navigation', () => {
     await expect(more).toHaveAttribute('aria-expanded', 'true');
 
     await expect(sheet.getByRole('link', { name: 'Accounts', exact: true })).toHaveAttribute('href', '/accounts');
+    await expect(sheet.getByRole('link', { name: 'Income', exact: true })).toHaveAttribute('href', '/income');
     await expect(sheet.getByRole('link', { name: 'Spending', exact: true })).toHaveAttribute('href', '/expenses');
     await expect(sheet.getByRole('link', { name: 'Settings', exact: true })).toHaveAttribute('href', '/settings/profile');
     for (const [key, label, phase] of [
-      ['income', 'Income', 3],
       ['real-estate', 'Real Estate', 6],
       ['debts', 'Debts', 5],
       ['projections', 'Projections', 10],

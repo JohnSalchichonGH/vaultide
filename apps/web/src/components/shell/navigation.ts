@@ -64,7 +64,7 @@ const NAVIGATION: readonly NavigationGroup[] = [
     label: 'Finances',
     items: [
       { key: 'accounts', label: 'Accounts', section: '/accounts', href: '/accounts', phase: 2 },
-      { key: 'income', label: 'Income', section: '/income', phase: 3 },
+      { key: 'income', label: 'Income', section: '/income', href: '/income', phase: 3 },
       { key: 'spending', label: 'Spending', section: '/expenses', href: '/expenses', phase: 3 },
       { key: 'investments', label: 'Investments', section: '/investments', phase: 4 },
       { key: 'real-estate', label: 'Real Estate', section: '/real-estate', phase: 6 },

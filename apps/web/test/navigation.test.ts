@@ -79,10 +79,11 @@ const LIVE = {
   dashboard: '/dashboard',
   monthly: '/monthly/2026-10',
   accounts: '/accounts',
+  income: '/income',
   spending: '/expenses',
   settings: '/settings/profile',
 };
-const NOT_BUILT = ['income', 'investments', 'real-estate', 'debts', 'analytics', 'projections', 'goals'];
+const NOT_BUILT = ['investments', 'real-estate', 'debts', 'analytics', 'projections', 'goals'];
 
 /**
  * The signed-in shell's navigation (blueprint 15.1).
@@ -168,10 +169,17 @@ describe('which section a page belongs to', () => {
     expect(activeMobileTab('/expensesx', groups)).toBeNull();
   });
 
+  it('makes Income a live section of More, owning /income and its source pages', () => {
+    expect(sectionOwning('/income', groups)).toMatchObject({ key: 'income', href: '/income' });
+    // The source page is not built yet, but it is Income's when it is (15.1).
+    expect(sectionOwning('/income/sources/abc', groups)?.key).toBe('income');
+    expect(activeMobileTab('/income', groups)).toBe('more');
+    expect(activeMobileTab('/incomes', groups)).toBeNull();
+  });
+
   it.each([
     ['/investments/abc', 'investments'],
     ['/analytics/cash-flow', 'analytics'],
-    ['/income/sources/abc', 'more'],
     ['/real-estate', 'more'],
     ['/debts/abc', 'more'],
     ['/projections/compare', 'more'],
@@ -200,7 +208,7 @@ describe('the shell', () => {
 
   it('links nowhere a section has not been built', () => {
     const markup = shellAt('/dashboard');
-    for (const route of ['/income', '/investments', '/real-estate', '/debts', '/analytics', '/projections', '/goals']) {
+    for (const route of ['/investments', '/real-estate', '/debts', '/analytics', '/projections', '/goals']) {
       expect(markup).not.toContain(`href="${route}`);
     }
   });
@@ -220,7 +228,6 @@ describe('the shell', () => {
   it('lists the unbuilt sections in More as text with their phase', () => {
     const more = moreOf(shellAt('/dashboard'));
     for (const [key, label, phase] of [
-      ['income', 'Income', 3],
       ['real-estate', 'Real Estate', 6],
       ['debts', 'Debts', 5],
       ['projections', 'Projections', 10],
@@ -233,6 +240,7 @@ describe('the shell', () => {
       expect(item).toContain(`arrives in Phase ${String(phase)}`);
     }
     expect(itemWith(more, 'more-item-accounts')).toMatch(/^<a href="\/accounts"/u);
+    expect(itemWith(more, 'more-item-income')).toMatch(/^<a href="\/income"/u);
     expect(itemWith(more, 'more-item-spending')).toMatch(/^<a href="\/expenses"/u);
     expect(itemWith(more, 'more-item-settings')).toMatch(/^<a href="\/settings\/profile"/u);
   });
@@ -251,6 +259,7 @@ describe('the shell', () => {
       ['/accounts', 'accounts'],
       ['/settings/security', 'settings'],
       ['/expenses', 'spending'],
+      ['/income', 'income'],
     ] as const) {
       const markup = shellAt(pathname);
       expect(tabElement(markup, 'more')).toContain('aria-current="true"');

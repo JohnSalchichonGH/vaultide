@@ -37,11 +37,11 @@ import type { IncomeKind, IncomeSettlement } from '@vaultide/validation';
 import { CorrectionHost } from '@/features/corrections/host';
 import { accountLabelsOf } from '@/features/corrections/presentation';
 import { runCorrectableSave } from '@/features/corrections/save';
-import { useCorrection } from '@/features/corrections/use-correction';
+import { useCorrection, type CorrectionFlow } from '@/features/corrections/use-correction';
 import {
   DestructiveConfirm,
   HISTORICAL_CREATION_NOTE,
-  addsToCompletedMonth,
+  addsToClosedMonth,
   isHistorical,
 } from '@/features/corrections/delete-confirm';
 import {
@@ -51,6 +51,7 @@ import {
   defaultPickerCurrency,
   crossMonthNotice,
   correctableDateBounds,
+  dateBoundsMessage,
   ownedEntryDateBounds,
   pickerCurrencies,
   incomeKindLabel,
@@ -1794,6 +1795,81 @@ const DIRECT_KINDS = [
   'adjustment',
 ] as const;
 
+/** One new income row, as the form gathered it. */
+export interface NewIncomeInput {
+  readonly kind: IncomeKind;
+  readonly receivedOn: string;
+  readonly netAmount: string;
+  readonly grossAmount?: string | undefined;
+  readonly currency: string;
+  readonly settlement: IncomeSettlement;
+  readonly cashPositionId: string | null;
+  readonly description?: string | undefined;
+}
+
+/** What one save came to. `review` means nothing was written and the review is open. */
+export type NewIncomeOutcome =
+  | { readonly kind: 'saved' }
+  | { readonly kind: 'review' }
+  | { readonly kind: 'error'; readonly message: string };
+
+/**
+ * Save a new income row by the path the page that mounts the form chose
+ * (ADR 0012 D5).
+ *
+ * Without a correction flow it is the ordinary create, exactly as Monthly has
+ * always sent it: a creation whose dormancy consequence reaches completed
+ * history comes back as the guard's refusal, and the form shows it (ADR 0012,
+ * "Known gap").
+ *
+ * With one, it asks the server first through the `income_create` draft: a
+ * creation that needs no review saves as before, and one that does opens
+ * Review changes → Confirm correction instead, with nothing written. A refusal
+ * from a race between asking and saving asks once more (`attemptCorrection`).
+ */
+export async function saveNewIncome(
+  input: NewIncomeInput,
+  correction: CorrectionFlow | undefined,
+): Promise<NewIncomeOutcome> {
+  if (correction === undefined) {
+    const result = await createIncomeEntryAction(input);
+    return result.ok ? { kind: 'saved' } : { kind: 'error', message: result.error.message };
+  }
+
+  const draft: CorrectionDraft = {
+    kind: 'income_create',
+    incomeKind: input.kind,
+    receivedOn: input.receivedOn,
+    netAmount: input.netAmount,
+    ...(input.grossAmount === undefined ? {} : { grossAmount: input.grossAmount }),
+    currency: input.currency,
+    settlement: input.settlement,
+    cashPositionId: input.cashPositionId,
+    ...(input.description === undefined ? {} : { description: input.description }),
+  };
+  const final = await runCorrectableSave(
+    correction,
+    draft,
+    () => createIncomeEntryAction(input),
+    () => undefined,
+    // The form refreshes the page itself once it has cleared its fields.
+    () => undefined,
+  );
+  switch (final.kind) {
+    case 'saved':
+      return { kind: 'saved' };
+    case 'idle':
+      return { kind: 'review' };
+    case 'conflict':
+    case 'error':
+    case 'invalid':
+      return { kind: 'error', message: final.message };
+    /* v8 ignore next 2 -- a finished save never reports itself as saving. */
+    case 'saving':
+      return { kind: 'error', message: 'That could not be saved. Try again.' };
+  }
+}
+
 export function AddIncomeForm({
   accounts,
   currencies,
@@ -1802,6 +1878,8 @@ export function AddIncomeForm({
   defaultCurrency,
   initial,
   onSaved,
+  kinds,
+  correction,
 }: {
   readonly accounts: MonthlyIncomeDto['cashAccounts'];
   readonly currencies: readonly string[];
@@ -1819,6 +1897,18 @@ export function AddIncomeForm({
   readonly initial?: AddIncomeInitialValues | undefined;
   /** Told after a save lands, for a caller that owns something around the form. */
   readonly onSaved?: (() => void) | undefined;
+  /**
+   * The kinds the page offers. Absent offers every kind a direct row may have,
+   * as Monthly does; the Income page offers only the kinds it counts (ADR 0012
+   * D5). Listed in this form's own order either way.
+   */
+  readonly kinds?: readonly string[] | undefined;
+  /**
+   * The page's correction flow, when its saves ask the server first and open
+   * the review a creation needs (`saveNewIncome`). Absent, the form saves
+   * directly, as Monthly's always has.
+   */
+  readonly correction?: CorrectionFlow | undefined;
 }) {
   const router = useRouter();
   const ids = {
@@ -1871,27 +1961,33 @@ export function AddIncomeForm({
           return;
         }
         if (receivedOn < bounds.min || receivedOn > bounds.max) {
-          setError(`Choose a day from ${bounds.min} to ${bounds.max}.`);
+          setError(dateBoundsMessage(bounds));
           return;
         }
         const grossAmount = normalizeMoneyInput(gross);
 
         startTransition(async () => {
-          const result = await createIncomeEntryAction({
-            kind: kind as 'other',
-            receivedOn,
-            netAmount: amount,
-            ...(grossAmount === '' ? {} : { grossAmount }),
-            currency,
-            settlement: effectiveSettlement as 'tracked_cash',
-            cashPositionId:
-              effectiveSettlement === 'tracked_cash' && account !== NO_ACCOUNT ? account : null,
-            ...(description.trim() === '' ? {} : { description: description.trim() }),
-          });
-          if (!result.ok) {
-            setError(result.error.message);
+          const outcome = await saveNewIncome(
+            {
+              kind: kind as IncomeKind,
+              receivedOn,
+              netAmount: amount,
+              ...(grossAmount === '' ? {} : { grossAmount }),
+              currency,
+              settlement: effectiveSettlement as IncomeSettlement,
+              cashPositionId:
+                effectiveSettlement === 'tracked_cash' && account !== NO_ACCOUNT ? account : null,
+              ...(description.trim() === '' ? {} : { description: description.trim() }),
+            },
+            correction,
+          );
+          if (outcome.kind === 'error') {
+            setError(outcome.message);
             return;
           }
+          // The review is open over the page, and nothing has been written: what
+          // was typed stays, so stepping back returns to it.
+          if (outcome.kind === 'review') return;
           setSaved('Income added.');
           setNet('');
           setGross('');
@@ -1901,7 +1997,7 @@ export function AddIncomeForm({
         });
       }}
     >
-      {today !== undefined && addsToCompletedMonth({ max: bounds.max, today }) ? (
+      {today !== undefined && addsToClosedMonth(bounds, receivedOn, today) ? (
         <p className={META} data-testid="add-income-historical-note">
           {HISTORICAL_CREATION_NOTE}
         </p>
@@ -1912,7 +2008,9 @@ export function AddIncomeForm({
           testId="income-kind"
           label="What kind"
           value={kind}
-          options={DIRECT_KINDS.map((value) => ({ value, label: incomeKindLabel(value) }))}
+          options={DIRECT_KINDS.filter((value) => kinds === undefined || kinds.includes(value)).map(
+            (value) => ({ value, label: incomeKindLabel(value) }),
+          )}
           onChange={(value) => {
             setKind(value);
             setSettlement('tracked_cash');

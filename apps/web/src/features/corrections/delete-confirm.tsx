@@ -136,6 +136,25 @@ export function addsToCompletedMonth(bounds: {
 }
 
 /**
+ * Whether a form adding a record should say it adds to a closed month.
+ *
+ * A form bounded to one month answers for that month, as `addsToCompletedMonth`
+ * always has. A form whose dates span months — the Income page's Add a payment,
+ * any day up to today — can only answer for the day chosen, and says nothing
+ * until one is.
+ */
+export function addsToClosedMonth(
+  bounds: { readonly min: string; readonly max: string },
+  chosen: string,
+  today: string,
+): boolean {
+  if (bounds.min.slice(0, 7) === bounds.max.slice(0, 7)) {
+    return addsToCompletedMonth({ max: bounds.max, today });
+  }
+  return chosen !== '' && isHistorical(chosen, today);
+}
+
+/**
  * The fee's own date is the one in a closed month.
  *
  * A transfer aggregate carries two independent financial dates, and a fee may

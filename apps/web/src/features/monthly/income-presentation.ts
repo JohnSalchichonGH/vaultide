@@ -178,6 +178,17 @@ export function ownedEntryDateBounds(page: {
  */
 export const EARLIEST_CORRECTABLE_DATE = '1900-01-01';
 
+/**
+ * What a form says when a day falls outside its bounds. A form whose only real
+ * bound is M5's "not after today" says just that, rather than naming the
+ * input's floor as though it were a rule.
+ */
+export function dateBoundsMessage(bounds: { readonly min: string; readonly max: string }): string {
+  return bounds.min === EARLIEST_CORRECTABLE_DATE
+    ? `Choose a day no later than ${bounds.max}.`
+    : `Choose a day from ${bounds.min} to ${bounds.max}.`;
+}
+
 /** The dates an existing row's financial date may be corrected to (§67). */
 export function correctableDateBounds(today: string): {
   readonly min: string;
