@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Dialog, type Locator, type Page } from '@playwright/test';
+import { gotoAfterRefresh } from '../support/navigation';
 
 /**
  * Bulk History, end to end (blueprint 15.3 "Bulk history"; ADR 0011).
@@ -149,7 +150,7 @@ test.describe('reconstructing history in bulk', () => {
     await salarySource(page, 'Everyday');
 
     // --- From a completed month, into the grid that starts there ------------
-    await page.goto('/monthly/2026-06');
+    await gotoAfterRefresh(page, '/monthly/2026-06');
     await page.getByTestId('monthly-bulk-history').click();
     await expect(page).toHaveURL(/\/monthly\/2026-06\/history$/u);
     await expect(page.getByTestId('bulk-title')).toHaveText('Bulk history');

@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
+import { gotoAfterRefresh } from '../support/navigation';
 
 /**
  * The first Monthly journey (blueprint 15.2 "Monthly", 15.3, 21.5).
@@ -1144,7 +1145,7 @@ test.describe('monthly cash transfers', () => {
     await expect(page.getByTestId('accounts-success')).toHaveText('Saved.');
 
     // Savings carries at zero, so Everyday's missing 200 reads as spending.
-    await page.goto('/monthly/2026-09');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
     const bucket = page.getByTestId('bucket-EUR');
     const row = (name: string) => page.getByTestId('monthly-accounts').locator('tbody tr', { hasText: name });
     await expect(bucket.getByTestId('identity-tracked')).toContainText('€200.00');

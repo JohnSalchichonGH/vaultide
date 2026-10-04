@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { gotoAfterRefresh } from '../support/navigation';
 
 /**
  * The Phase 2 end-to-end journey (blueprint 21.5, Phase 2 acceptance).
@@ -295,7 +296,7 @@ test.describe('accounts, balances and the two net-worth metrics', () => {
     await expect(page.getByTestId('quick-update-saved')).toContainText(today);
 
     // --- history survived it ------------------------------------------------
-    await page.goto('/accounts?tab=cash');
+    await gotoAfterRefresh(page, '/accounts?tab=cash');
     await page.getByRole('link', { name: 'BBVA checking' }).click();
     const history = page.getByTestId('valuation-history');
     await expect(history).toContainText('8,200.00');
@@ -325,7 +326,7 @@ test.describe('accounts, balances and the two net-worth metrics', () => {
 
     await addCashAccount(page, { name: 'BBVA', currency: 'EUR', balance: '1000.00' });
 
-    await page.goto('/accounts?tab=other');
+    await gotoAfterRefresh(page, '/accounts?tab=other');
     await ready(page, 'asset-submit');
     await fillTestId(page, 'asset-name', 'Coin collection');
     await page.getByTestId('asset-include').check();
@@ -451,7 +452,7 @@ test.describe('dormant accounts', () => {
     await expect(page.getByText('Dormant').first()).toBeVisible();
 
     // A dormant account is left out of the quick update (15.3).
-    await page.goto('/accounts?tab=cash');
+    await gotoAfterRefresh(page, '/accounts?tab=cash');
     await expect(page.getByTestId('quick-update-open')).toBeDisabled();
   });
 });
