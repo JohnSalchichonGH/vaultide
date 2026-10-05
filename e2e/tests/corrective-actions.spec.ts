@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
+import { gotoAfterRefresh } from '../support/navigation';
 
 /**
  * Correcting what reconciliation found (blueprint 8.5, 15.3 section 8, 30.21;
@@ -76,17 +77,6 @@ async function onboard(page: Page, request: APIRequestContext, email: string): P
   await expect(page).toHaveURL(/\/dashboard/u);
 }
 
-/**
- * Go to a page after a save. The forms refresh their page once a save lands,
- * and WebKit reports a navigation issued while that refresh is in flight as
- * interrupted; retrying once it settles is the navigation the test meant.
- */
-async function open(page: Page, url: string): Promise<void> {
-  await expect(async () => {
-    await page.goto(url);
-  }).toPass({ timeout: 15_000 });
-}
-
 /** An account with an opening balance on a date, left on its own page. */
 async function addAccount(
   page: Page,
@@ -98,7 +88,7 @@ async function addAccount(
     balanceOn?: string;
   },
 ): Promise<void> {
-  await open(page, '/accounts?tab=cash');
+  await gotoAfterRefresh(page, '/accounts?tab=cash');
   await expect(page.getByTestId('account-submit')).toBeEnabled();
   await fillTestId(page, 'account-name', options.name);
   await page.getByTestId('account-currency').selectOption(options.currency ?? 'EUR');
@@ -121,7 +111,7 @@ async function recordValuation(page: Page, amount: string, on: string): Promise<
 }
 
 async function openAccount(page: Page, name: string): Promise<void> {
-  await open(page, '/accounts?tab=cash');
+  await gotoAfterRefresh(page, '/accounts?tab=cash');
   await page.getByRole('link', { name, exact: true }).click();
   await expect(page.getByTestId('position-native')).toBeVisible();
   // Controlled forms are not usable until React owns them (`useHydrated`), and
@@ -199,7 +189,7 @@ test.describe('an unexplained inflow', () => {
     // it: 8.5's variant A, an unexplained inflow of 500.
     await accountWithStatements(page, { name: 'BBVA', august: '1000.00', september: '1500.00' });
 
-    await open(page, '/monthly/2026-09');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
     const group = page.getByTestId('issue-group-unexplained_inflow');
     await expect(group).toContainText('Cash grew more than your records explain');
     await expect(group).toContainText('€500.00');
@@ -264,7 +254,7 @@ test.describe('an unexplained inflow', () => {
       asOf: '1000.00',
     });
 
-    await open(page, '/monthly/2026-09');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
     await expect(page.getByTestId('mtd-as-of')).toContainText('6 Sept 2026');
     await expect(page.getByTestId('issue-group-unexplained_inflow')).toContainText('€500.00');
 
@@ -300,7 +290,7 @@ test.describe('an unexplained inflow', () => {
     await accountWithStatements(first, { name: 'BBVA', august: '1000.00', september: '1500.00' });
 
     // Two views of the same month, both showing the same unexplained inflow.
-    await first.goto('/monthly/2026-09');
+    await gotoAfterRefresh(first, '/monthly/2026-09');
     const second = await context.newPage();
     await second.goto('/monthly/2026-09');
     await expect(second.getByTestId('issue-group-unexplained_inflow')).toBeVisible();
@@ -338,7 +328,7 @@ test.describe('a possible missing conversion', () => {
       september: '1800.00',
     });
 
-    await open(page, '/monthly/2026-09');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
     const group = page.getByTestId('issue-group-possible_missing_conversion');
     await expect(group).toContainText('Possible unrecorded currency conversion');
     await expect(group).toContainText('3,200.00');
@@ -393,7 +383,7 @@ test.describe('a possible missing interest', () => {
       september: '10031.00',
     });
 
-    await open(page, '/monthly/2026-09');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
     const group = page.getByTestId('issue-group-possible_missing_interest');
     await expect(group).toContainText('Possible unrecorded interest');
 
@@ -440,7 +430,7 @@ test.describe('the current month with no common balance date', () => {
     await expect(page.getByTestId('month-end-2026-08')).toHaveCount(0);
     await recordValuation(page, '500.00', '2026-09-03');
 
-    await open(page, '/monthly/2026-09');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
     await expect(page.getByTestId('mtd-no-identity')).toBeVisible();
     const group = page.getByTestId('issue-group-mtd_no_common_date');
     await expect(group).toBeVisible();
@@ -479,7 +469,7 @@ test.describe('missing evidence', () => {
     await page.getByTestId('confirm-statement-2026-09').click();
     await expect(page.getByTestId('month-end-2026-09')).toHaveCount(0);
 
-    await open(page, '/monthly/2026-09');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
     const missing = page.getByTestId('issue-group-missing_month_end');
     await expect(missing).toContainText('Month-end balance missing');
 
@@ -509,7 +499,7 @@ test.describe('a flow with no cash account', () => {
     // the write path allows only while a dollar account exists — and then that
     // account, which has no balances of its own, deleted (6.3).
     await addAccount(page, { name: 'Dollars', currency: 'USD' });
-    await open(page, '/monthly/2026-09');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
     await page.getByTestId('income-add-toggle').click();
     await page.getByTestId('income-currency').selectOption('USD');
     await fillTestId(page, 'income-net', '400.00');
@@ -522,10 +512,10 @@ test.describe('a flow with no cash account', () => {
     // The refresh the delete brings leaves no account page behind; navigating
     // before it lands would cancel the request in flight.
     await expect(page.getByTestId('delete-position')).toHaveCount(0);
-    await open(page, '/accounts?tab=cash');
+    await gotoAfterRefresh(page, '/accounts?tab=cash');
     await expect(page.getByRole('link', { name: 'Dollars', exact: true })).toHaveCount(0);
 
-    await open(page, '/monthly/2026-09');
+    await page.goto('/monthly/2026-09');
     const group = page.getByTestId('issue-group-flow_without_cash_account');
     await expect(group).toContainText('Flow without a cash account');
     await expect(group).toContainText('400.00');
