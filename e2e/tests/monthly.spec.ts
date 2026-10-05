@@ -433,6 +433,146 @@ test.describe('the monthly page', () => {
 });
 
 /**
+ * Month close, end to end (blueprint 21.5 "month close"; 25 Phase 3 "Testing"
+ * and "Acceptance").
+ *
+ * On 30 September, with the test clock: a person with two euro accounts, a
+ * salary and a lodger's rent brings both accounts up to date with Update all
+ * today. It is the month's last day, so what that writes are ordinary
+ * snapshots and nothing offers to close the month. On 1 October the clock has
+ * moved: they confirm the two 30 September snapshots as statement balances,
+ * skip the rent the lodger never paid, record the salary, and September
+ * reconciles as a reliable figure — every requirement met, the skipped rent
+ * among them.
+ *
+ * Everyday 2,000.00 → 3,600.00 with the 2,100.00 salary, Savings unchanged at
+ * 5,000.00: 2,100 − 1,600 = 500.00 spent.
+ */
+test.describe('closing a month', () => {
+  test('a person updates on the last day, then closes September on 1 October', async ({ page, request }) => {
+    test.slow();
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': '2026-09-30T10:00:00Z' });
+    await onboard(page, request, uniqueEmail('e2e-month-close'));
+
+    await accountWithAugustStatement(page, { name: 'Everyday', type: 'checking', august: '2000.00' });
+    await accountWithAugustStatement(page, { name: 'Savings', type: 'savings', august: '5000.00' });
+    // September has not ended, so the account offers no September statement (R15).
+    await expect(page.getByTestId('month-end-2026-09')).toHaveCount(0);
+
+    // --- 30 September: the month is still the current one ----------------------
+    await gotoAfterRefresh(page, '/monthly/2026-09');
+    await expect(page.getByTestId('monthly-kind')).toHaveText('In progress');
+
+    // The form stays open after a save, ready for the next source.
+    await page.getByTestId('source-add-toggle').click();
+    const addSource = async (values: { name: string; kind: string; day: string; amount: string }): Promise<void> => {
+      await expect(page.getByTestId('source-submit')).toBeEnabled();
+      await fillTestId(page, 'source-name', values.name);
+      await page.getByTestId('source-kind').selectOption(values.kind);
+      await page.getByTestId('source-frequency').selectOption('monthly');
+      await fillTestId(page, 'source-day', values.day);
+      await fillTestId(page, 'source-start-date', '2026-09-01');
+      await fillTestId(page, 'source-amount', values.amount);
+      await page.getByTestId('source-account').selectOption({ label: 'Everyday' });
+      await page.getByTestId('source-submit').click();
+      await expect(page.getByTestId('source-saved')).toContainText(`${values.name} added.`);
+    };
+    await addSource({ name: 'Salary', kind: 'employment', day: '25', amount: '2100.00' });
+    await addSource({ name: 'Lodger', kind: 'rental', day: '5', amount: '400.00' });
+
+    // Update all today, on the month's last day. The modal says what it writes.
+    const accountsSection = page.locator('#accounts');
+    await expect(accountsSection.getByTestId('quick-update-open')).toBeEnabled();
+    await accountsSection.getByTestId('quick-update-open').click();
+    const dialog = page.locator('dialog[open]');
+    await expect(dialog).toContainText(
+      'Today is the last day of the month, so these are ordinary snapshots — you can confirm them as statement balances from tomorrow.',
+    );
+    await dialog.getByLabel(/^Everyday/u).fill('3600.00');
+    await dialog.getByLabel(/^Savings/u).fill('5000.00');
+    await accountsSection.getByTestId('quick-update-save').click();
+    await expect(accountsSection.getByTestId('quick-update-saved')).toContainText('Saved 2 balances dated 2026-09-30');
+
+    // Ordinary snapshots, and no month-end confirmation anywhere on the page.
+    const row = (name: string) => page.getByTestId('monthly-accounts').locator('tbody tr', { hasText: name });
+    for (const name of ['Everyday', 'Savings']) {
+      await expect(row(name).getByTestId('account-latest')).toContainText('Snapshot, today');
+    }
+    await expect(page.getByTestId('accounts-current-note')).toContainText(
+      'September 2026 can be closed from 1 Oct 2026, when its statement balances can be entered.',
+    );
+    for (const control of ['closing-amount', 'confirm-statement', 'confirm-unchanged', 'confirm-all-unchanged']) {
+      await expect(page.getByTestId(control)).toHaveCount(0);
+    }
+    // The current month is month to date, through the day both accounts share.
+    await expect(page.getByTestId('mtd-as-of')).toContainText('30 Sept 2026');
+
+    // --- 1 October: September has ended -----------------------------------------
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': '2026-10-01T10:00:00Z' });
+    await gotoAfterRefresh(page, '/monthly/2026-09');
+    await expect(page.getByTestId('monthly-kind')).toHaveText('Completed month');
+    const bucket = page.getByTestId('bucket-EUR');
+    // Last-day snapshots are not statements until confirmed, so nothing reconciles yet.
+    await expect(bucket).toContainText('Unavailable');
+
+    for (const name of ['Everyday', 'Savings']) {
+      await expect(row(name).getByTestId('closing-hint')).toContainText('not yet a statement balance');
+      await row(name).getByTestId('confirm-statement').click();
+      await expect(row(name).getByTestId('account-status')).toHaveText(/Complete/u);
+      await expect(row(name).getByTestId('account-closing')).toContainText('Statement balance');
+    }
+    await expect(row('Everyday').getByTestId('closing-amount')).toHaveValue('3600.00');
+    await expect(row('Savings').getByTestId('closing-amount')).toHaveValue('5000.00');
+
+    // Both statements stand, and Everyday grew 1,600 that nothing explains yet.
+    await expect(bucket).toContainText('Unresolved');
+    await expect(page.getByTestId('issue-group-unexplained_inflow')).toContainText('€1,600.00');
+    const missing = page.getByTestId('issue-group-suggested_income_missing');
+    await expect(missing).toContainText('Salary');
+    await expect(missing).toContainText('Lodger');
+
+    // --- the rent that never came: skipped, with its reason ---------------------
+    const occurrence = (name: string) => page.getByTestId('income-occurrence').filter({ hasText: name });
+    await occurrence('Lodger').getByTestId('occurrence-skip').click();
+    await expect(page.getByTestId('skip-panel')).toBeVisible();
+    await page.getByTestId('skip-reason').selectOption({ label: 'Tenant did not pay' });
+    await page.getByTestId('skip-submit').click();
+    await expect(occurrence('Lodger').getByTestId('occurrence-status')).toHaveText('Skipped');
+    await expect(occurrence('Lodger').getByTestId('occurrence-skip-reason')).toHaveText('Tenant did not pay');
+    // Suppressed: nothing left to record or skip, and no longer expected.
+    await expect(occurrence('Lodger').getByTestId('occurrence-accept')).toHaveCount(0);
+    await expect(occurrence('Lodger').getByTestId('occurrence-skip')).toHaveCount(0);
+    await expect(missing).toContainText('Salary');
+    await expect(missing).not.toContainText('Lodger');
+
+    // --- the salary, recorded -----------------------------------------------------
+    await occurrence('Salary').getByTestId('occurrence-accept').click();
+    await expect(occurrence('Salary').getByTestId('occurrence-status')).toHaveText('Recorded');
+
+    // September reconciles: 2,100 in, 1,600 kept, 500 spent.
+    await expect(bucket).toContainText('Reliable');
+    await expect(page.getByTestId('reconciliation-status')).toContainText('Reliable');
+    await expect(bucket.getByTestId('identity-I')).toContainText('€2,100.00');
+    await expect(bucket.getByTestId('identity-delta')).toContainText('€1,600.00');
+    await expect(bucket.getByTestId('identity-tracked')).toContainText('€500.00');
+    await expect(bucket.getByTestId('identity-unclassified')).toContainText('€500.00');
+    await expect(page.getByTestId('figure-trackedTotalSpending')).toContainText('500.00');
+    await expect(page.getByTestId('figure-trackedTotalSpending')).toHaveAttribute('data-availability', 'available');
+    await expect(page.getByTestId('issue-group-unexplained_inflow')).toHaveCount(0);
+    await expect(page.getByTestId('issue-group-suggested_income_missing')).toHaveCount(0);
+    // Two accounts and two occurrences: the skip satisfies the rent's (12.6).
+    await expect(page.getByTestId('completeness-state')).toHaveText('Sufficient');
+    await expect(page.getByTestId('completeness-count')).toContainText('4 of 4 requirements met');
+
+    // And all of it was written: the skip and the recorded salary survive a reload.
+    await reloadAfterRefresh(page);
+    await expect(occurrence('Lodger').getByTestId('occurrence-status')).toHaveText('Skipped');
+    await expect(occurrence('Salary').getByTestId('occurrence-status')).toHaveText('Recorded');
+    await expect(page.getByTestId('bucket-EUR')).toContainText('Reliable');
+  });
+});
+
+/**
  * The Monthly Income journey (blueprint 15.3 section 2, 21.5).
  *
  * On 6 October, with the test clock: a person with one euro account adds a
