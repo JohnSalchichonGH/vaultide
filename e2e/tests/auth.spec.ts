@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import { generateSync } from 'otplib';
+import { gotoAfterRefresh } from '../support/navigation';
 
 /**
  * The Phase 1 end-to-end flow (blueprint 21.5, Phase 1 acceptance).
@@ -109,6 +110,11 @@ async function signOut(page: Page): Promise<void> {
 
 async function signIn(page: Page, email: string, password = PASSWORD): Promise<void> {
   await page.goto('/sign-in');
+  await submitSignIn(page, email, password);
+}
+
+/** Fill in and submit the sign-in form already on screen. */
+async function submitSignIn(page: Page, email: string, password = PASSWORD): Promise<void> {
   await formReady(page, 'Sign in');
   await fillField(page, 'Email address', email);
   await fillField(page, 'Password', password);
@@ -214,6 +220,52 @@ test.describe('sign-up, verification and settings', () => {
     await expect(page.getByTestId('base-currency')).toHaveValue('EUR');
     await expect(page.getByTestId('reporting-currency-setting')).toHaveValue('GBP');
     await expect(page.getByTestId('count-additional-spending')).not.toBeChecked();
+  });
+});
+
+test.describe('the way back after sign-in', () => {
+  test('a ?next= that names another host lands on this site instead', async ({
+    page,
+    request,
+    baseURL,
+  }) => {
+    const email = uniqueEmail('e2e-next-elsewhere');
+    await signUp(page, email);
+    await verify(page, request, email);
+    await signOut(page);
+
+    // Should this regress, the other host is answered here rather than by a
+    // resolver, so the failure names it on every engine.
+    await page.context().route(/^https?:\/\/evil\.invalid\//u, (route) =>
+      route.fulfill({ contentType: 'text/html', body: 'evil.invalid' }),
+    );
+
+    // `/\evil.invalid`, encoded as a link carries it. It starts with a single
+    // `/`, yet the browser reads the `\` as a `/` and the whole as another host.
+    await gotoAfterRefresh(page, '/sign-in?next=%2F%5Cevil.invalid');
+    await submitSignIn(page, email);
+
+    // `/`, which sends somebody who has not finished onboarding to the wizard.
+    await expect(page).toHaveURL(new URL('/onboarding/1', baseURL).href);
+  });
+
+  test('a ?next= that names a page of this site lands exactly there', async ({
+    page,
+    request,
+    baseURL,
+  }) => {
+    const email = uniqueEmail('e2e-next-here');
+    await signUp(page, email);
+    await verify(page, request, email);
+    await signOut(page);
+
+    // The shape the proxy remembers: the path and the query string.
+    const destination = '/income?year=2025';
+    await gotoAfterRefresh(page, `/sign-in?next=${encodeURIComponent(destination)}`);
+    await submitSignIn(page, email);
+
+    await expect(page).toHaveURL(new URL(destination, baseURL).href);
+    await expect(page.getByTestId('user-menu')).toBeVisible();
   });
 });
 

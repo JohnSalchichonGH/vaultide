@@ -2,7 +2,6 @@
 
 import { useId, useState, type FormEvent, type ReactNode } from 'react';
 import Link from 'next/link';
-import type { Route } from 'next';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { authInput } from '@vaultide/validation';
 import { authClient } from '@/lib/auth-client';
@@ -10,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
 import { useHydrated } from '@/lib/use-hydrated';
+import { returnPath } from './return-path';
 
 /**
  * The authentication forms (blueprint 15.2, 16.6, 17.3, 20.1).
@@ -270,20 +270,21 @@ export function SignInForm() {
   const [error, setError] = useState<string | null>(null);
 
   function land(): void {
-    // Only a same-site path is honoured: `?next=https://elsewhere` would be an
-    // open redirect, and a leading `//` is a protocol-relative URL (17.3).
+    // Only a page of this site is honoured: `returnPath` resolves `?next=`
+    // against this page's origin and keeps it only when the origin is
+    // unchanged. Checking its leading characters was not enough. The value
+    // arrives decoded, and the browser reads `/\elsewhere`, or a `/` then a
+    // tab or a newline then `/elsewhere`, as a link to another host, so a
+    // crafted link could send somebody off the site the moment they had
+    // signed in to it.
     //
-    // Without a `next`, land on `/` rather than guessing a destination. The
-    // root already decides where a signed-in user belongs — settings when
+    // Without a usable `next`, land on `/` rather than guessing a destination.
+    // The root already decides where a signed-in user belongs — settings when
     // onboarding is done, the wizard when it is not — and it decides from the
     // database. Naming `/onboarding/1` here duplicated that decision in a
     // place that cannot see the flag, so a user who had finished onboarding
     // was sent back through it on every sign-in.
-    const safe =
-      next !== null && next.startsWith('/') && !next.startsWith('//')
-        ? (next as Route)
-        : ('/' as Route);
-    router.push(safe);
+    router.push(returnPath(next, window.location.origin));
     router.refresh();
   }
 
