@@ -702,6 +702,94 @@ describe('transfers', () => {
     expect(bucket?.totals.unclassified?.toString()).toBe('0');
   });
 
+  describe('a cross-currency transfer with its fee, in one completed month', () => {
+    // 25 Phase 3 "Acceptance": "a cross-currency transfer with a fee leaves both
+    // buckets reconciled with the fee counted once". BBVA sends €200 and pays a
+    // €1.50 fee the same day; the dollar account receives $216.45. BBVA's
+    // statement falls by exactly both, the dollar account's rises by exactly
+    // what arrived, and nothing else happened.
+    const moved = transfer({ toCurrency: USD, toAmount: new Decimal('216.45') });
+    const accounts = (bbvaClose: string, usdClose: string): CashAccountInput[] => [
+      account(BBVA, 'BBVA', [monthEnd(BBVA, '2026-08-31', '1000'), monthEnd(BBVA, '2026-09-30', bbvaClose)]),
+      account(SAVINGS, 'Dollars', [monthEnd(SAVINGS, '2026-08-31', '0'), monthEnd(SAVINGS, '2026-09-30', usdClose)], {
+        currency: 'USD',
+      }),
+    ];
+    const fee = (payer: string, currency: typeof EUR, amount: string) =>
+      expense({
+        categoryKind: 'transfer_fee',
+        amount: new Decimal(amount),
+        currency,
+        incurredOn: plainDate('2026-09-05'),
+        cashPositionId: payer,
+        transferId: moved.id,
+      });
+    const month = (bbvaClose: string, usdClose: string, feeRow: ExpenseFlow) =>
+      input({ cashAccounts: accounts(bbvaClose, usdClose), transfers: [moved], expenses: [feeRow] });
+    const bucketOf = (result: ReturnType<typeof reconcileCompletedMonth>, currency: string) => {
+      const bucket = result.buckets.find((b) => b.currency === currency);
+      if (bucket === undefined) throw new Error(`no ${currency} bucket`);
+      return bucket;
+    };
+
+    it('reconciles both buckets to nothing unclassified, the fee once in its own currency', () => {
+      const result = reconcileCompletedMonth(month('798.50', '216.45', fee(BBVA, EUR, '1.50')));
+      const eur = bucketOf(result, 'EUR');
+      const usd = bucketOf(result, 'USD');
+
+      // EUR: Δ = −201.50, Nout = 200, so tracked = 0 + 0 − 200 + 201.50 = 1.50,
+      // and ΣK holds the fee, so nothing is left unclassified.
+      expect(eur.status).toBe('reliable');
+      expect(eur.totals.cashDelta?.toString()).toBe('-201.5');
+      expect(eur.totals.nonExpenseOutflows.toString()).toBe('200');
+      expect(eur.totals.knownTrackedExpenses.toString()).toBe('1.5');
+      expect(eur.totals.trackedTotalSpending?.toString()).toBe('1.5');
+      expect(eur.totals.unclassified?.toString()).toBe('0');
+
+      // USD: Δ = 216.45 = Nin, and no cost at all.
+      expect(usd.status).toBe('reliable');
+      expect(usd.totals.nonIncomeInflows.toString()).toBe('216.45');
+      expect(usd.totals.knownTrackedExpenses.toString()).toBe('0');
+      expect(usd.totals.trackedTotalSpending?.toString()).toBe('0');
+      expect(usd.totals.unclassified?.toString()).toBe('0');
+
+      expect(result.monthStatus).toBe('reliable');
+      expect(eur.issues.concat(usd.issues).filter((issue) => issue.class !== 'info')).toEqual([]);
+    });
+
+    it('classifies the fee once, as interest and fees, and nowhere else', () => {
+      const data = month('798.50', '216.45', fee(BBVA, EUR, '1.50'));
+      const result = reconcileCompletedMonth(data);
+      const classified = (currency: typeof EUR) =>
+        classifyBucketInterval(
+          data,
+          data.expenses,
+          currency,
+          bucketOf(result, currency).accounts,
+          plainDate('2026-09-01'),
+          plainDate('2026-09-30'),
+        );
+      expect(classified(EUR).nonConsumptionCosts.interestAndFees.toString()).toBe('1.5');
+      expect(classified(USD).nonConsumptionCosts.interestAndFees.toString()).toBe('0');
+      // The transfer itself is neither income nor a cost on either side.
+      expect(classified(EUR).externalIncome.toString()).toBe('0');
+      expect(classified(USD).externalIncome.toString()).toBe('0');
+    });
+
+    it('counts a fee the receiving account paid once too, in that account’s currency', () => {
+      // The dollar account receives $216.45 and is charged $2.00 on arrival.
+      const result = reconcileCompletedMonth(month('800', '214.45', fee(SAVINGS, USD, '2.00')));
+      const eur = bucketOf(result, 'EUR');
+      const usd = bucketOf(result, 'USD');
+      expect(eur.totals.knownTrackedExpenses.toString()).toBe('0');
+      expect(eur.totals.unclassified?.toString()).toBe('0');
+      expect(usd.totals.knownTrackedExpenses.toString()).toBe('2');
+      expect(usd.totals.trackedTotalSpending?.toString()).toBe('2');
+      expect(usd.totals.unclassified?.toString()).toBe('0');
+      expect([eur.status, usd.status]).toEqual(['reliable', 'reliable']);
+    });
+  });
+
   it('places a contribution with a null source in the stated currency', () => {
     const bucket = reconcileCompletedMonth(
       input({

@@ -1106,6 +1106,19 @@ test.describe('monthly cash transfers', () => {
     await expect(page.getByTestId('bucket-EUR').getByTestId('identity-K')).toContainText('€0.00');
     await expect(page.getByTestId('monthly-known-expenses').getByTestId('expense-direct-empty')).toBeVisible();
 
+    // Both buckets reconcile on their own, with nothing unclassified: 500 euros
+    // left and 540 dollars arrived, and the transfer explains both (8.8; 25
+    // Phase 3 "Acceptance"). An amount of exactly zero is a zero after its
+    // currency sign, not the tail of 500.00.
+    const zero = /\D0\.00$/u;
+    for (const currency of ['EUR', 'USD']) {
+      const reconciled = page.getByTestId(`bucket-${currency}`);
+      await expect(reconciled).toContainText('Reliable');
+      await expect(reconciled.getByTestId('identity-K')).toHaveText(zero);
+      await expect(reconciled.getByTestId('identity-tracked')).toHaveText(zero);
+      await expect(reconciled.getByTestId('identity-unclassified')).toHaveText(zero);
+    }
+
     // October counts the fee, once, read-only, and says where its transfer lives.
     await gotoAfterRefresh(page, '/monthly/2026-10');
     const known = page.getByTestId('monthly-known-expenses');
@@ -1114,6 +1127,15 @@ test.describe('monthly cash transfers', () => {
     await expect(known.getByTestId('expense-read-only')).toContainText('under Accounts in the month the transfer occurred');
     await expect(page.getByTestId('bucket-EUR').getByTestId('identity-K')).toContainText('€2.50');
     await expect(page.locator('section#accounts').getByTestId('transfers-empty')).toBeVisible();
+
+    // October reconciles too: the euro account's 2.50 is the fee, counted once —
+    // known, and therefore not left unclassified — and the dollar bucket has none.
+    await expect(page.getByTestId('bucket-EUR')).toContainText('Reliable');
+    await expect(page.getByTestId('bucket-EUR').getByTestId('identity-tracked')).toContainText('€2.50');
+    await expect(page.getByTestId('bucket-EUR').getByTestId('identity-unclassified')).toHaveText(zero);
+    await expect(page.getByTestId('bucket-USD')).toContainText('Reliable');
+    await expect(page.getByTestId('bucket-USD').getByTestId('identity-K')).toHaveText(zero);
+    await expect(page.getByTestId('bucket-USD').getByTestId('identity-unclassified')).toHaveText(zero);
 
     // Correct the dollars received and the fee, from September.
     await page.goto('/monthly/2026-09');
