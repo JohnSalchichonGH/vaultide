@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
+import { gotoAfterRefresh, reloadAfterRefresh, waitForRouter } from '../support/navigation';
 
 /**
  * The standalone Spending page (blueprint 15.2 "Spending", 16.5, 16.6, 21.5;
@@ -85,17 +86,6 @@ async function onboard(page: Page, request: APIRequestContext, email: string): P
 }
 
 /**
- * Go to a page after a save. The forms refresh their page once a save lands,
- * and WebKit reports a navigation issued while that refresh is in flight as
- * interrupted; retrying once it settles is the navigation the test meant.
- */
-async function open(page: Page, url: string): Promise<void> {
-  await expect(async () => {
-    await page.goto(url);
-  }).toPass({ timeout: 15_000 });
-}
-
-/**
  * A cash account whose first balance is entered as a last-day snapshot and
  * confirmed as that month's statement, leaving the browser on its page. `new`
  * gives it an opening date; otherwise it pre-existed, with no opening date.
@@ -104,7 +94,7 @@ async function account(
   page: Page,
   options: { name: string; balance: string; on: string; openedOn?: string },
 ): Promise<void> {
-  await open(page, '/accounts?tab=cash');
+  await gotoAfterRefresh(page, '/accounts?tab=cash');
   await expect(page.getByTestId('account-submit')).toBeEnabled();
   await fillTestId(page, 'account-name', options.name);
   await page.getByTestId('account-currency').selectOption('EUR');
@@ -118,15 +108,9 @@ async function account(
   await page.getByTestId('account-submit').click();
   await expect(page.getByText(`${options.name} added.`)).toBeVisible();
 
-  // The form refreshes the page after saving, and WebKit can drop a click that
-  // lands while that refresh is in flight. Click until the address has moved,
-  // never twice once it has.
-  const link = page.getByRole('link', { name: options.name, exact: true });
-  const accountPage = /\/accounts\/[0-9a-f-]{36}$/u;
-  await expect(async () => {
-    if (!accountPage.test(page.url())) await link.click({ timeout: 2_000 });
-    await expect(page).toHaveURL(accountPage, { timeout: 2_000 });
-  }).toPass({ timeout: 15_000 });
+  await waitForRouter(page);
+  await page.getByRole('link', { name: options.name, exact: true }).click();
+  await expect(page).toHaveURL(/\/accounts\/[0-9a-f-]{36}$/u);
   const month = options.on.slice(0, 7);
   if (options.on.endsWith(monthEndDay(month))) {
     await page.getByTestId(`confirm-statement-${month}`).click();
@@ -214,7 +198,7 @@ test.describe('the Spending page', () => {
     await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': '2026-10-01T10:00:00Z' });
     await onboard(page, request, uniqueEmail('e2e-spending-months'));
 
-    await open(page, '/expenses');
+    await page.goto('/expenses');
     await expect(page.getByTestId('spending-title')).toHaveText('Spending');
     // The last completed month by default, not the one in progress.
     await expect(page.getByTestId('spending-month')).toHaveText('September 2026');
@@ -255,7 +239,7 @@ test.describe('the Spending page', () => {
     await account(page, { name: 'BBVA', balance: '1000.00', on: '2026-08-31' });
     await balance(page, '700.00', '2026-09-30', true);
 
-    await open(page, '/expenses');
+    await gotoAfterRefresh(page, '/expenses');
     await expect(page.getByTestId('spending-month')).toHaveText('September 2026');
     await expect(page.getByTestId('spending-summary')).toHaveAttribute('data-state', 'reliable');
     await expect(figure(page, 'spending-tracked')).toContainText('€300.00');
@@ -286,7 +270,7 @@ test.describe('the Spending page', () => {
 
     // --- the rest at 375 px, where the form must still be usable -------------
     await page.setViewportSize({ width: 375, height: 812 });
-    await page.reload();
+    await reloadAfterRefresh(page);
     await fitsItsViewport(page);
 
     // A partner's dinner: paid by others only, and in no spending or savings figure.
@@ -359,10 +343,10 @@ test.describe('the Spending page', () => {
     await account(page, { name: 'Savings', balance: '8509.00', on: '2026-08-31' });
     await balance(page, '8509.00', '2026-10-31', true);
 
-    await open(page, '/expenses?month=2026-09');
+    await gotoAfterRefresh(page, '/expenses?month=2026-09');
     await addExpense(page, { amount: '300.00', on: '2026-09-12', category: 'Insurance', account: 'BBVA' });
     await addExpense(page, { amount: '111.00', on: '2026-09-01', category: 'Rent & mortgage costs', account: 'BBVA' });
-    await open(page, '/expenses?month=2026-10');
+    await gotoAfterRefresh(page, '/expenses?month=2026-10');
     await addExpense(page, { amount: '450.00', on: '2026-10-14', category: 'Home maintenance', account: 'BBVA' });
     await addExpense(page, { amount: '111.00', on: '2026-10-01', category: 'Rent & mortgage costs', account: 'BBVA' });
 
@@ -396,11 +380,11 @@ test.describe('the Spending page', () => {
 
     // A new account, opened on 10 June: May has no cash account at all.
     await account(page, { name: 'Fresh', balance: '500.00', on: '2026-06-30', openedOn: '2026-06-10' });
-    await open(page, '/expenses');
+    await gotoAfterRefresh(page, '/expenses');
     await expect(historyRow(page, '2026-05')).toHaveAttribute('data-state', 'not_observed');
     await expect(historyRow(page, '2026-05')).toContainText('Not tracked');
 
-    await open(page, '/expenses?month=2026-05');
+    await page.goto('/expenses?month=2026-05');
     await expect(page.getByTestId('spending-summary')).toHaveAttribute('data-state', 'not_observed');
     await expect(page.getByTestId('spending-status')).toContainText('Not tracked');
     await expect(page.getByTestId('spending-summary')).toContainText('nothing to fix');
@@ -409,7 +393,7 @@ test.describe('the Spending page', () => {
     // An account that already existed takes part in every earlier month, so
     // May now lacks its evidence — an invitation to enter it, not "not tracked".
     await account(page, { name: 'Old', balance: '1000.00', on: '2026-08-31' });
-    await open(page, '/expenses?month=2026-05');
+    await gotoAfterRefresh(page, '/expenses?month=2026-05');
     await expect(page.getByTestId('spending-summary')).toHaveAttribute('data-state', 'unavailable');
     await expect(page.getByTestId('spending-problems')).toContainText('missing month-end balance for Old');
     await expect(page.getByTestId('spending-fix-link')).toHaveAttribute('href', '/monthly/2026-05#accounts');
@@ -427,7 +411,7 @@ test.describe('the Spending page', () => {
     await account(page, { name: 'BBVA', balance: '1000.00', on: '2026-09-30' });
     await balance(page, '900.00', '2026-10-06', false);
 
-    await open(page, '/expenses?month=2026-10');
+    await gotoAfterRefresh(page, '/expenses?month=2026-10');
     await expect(page.getByTestId('spending-summary')).toHaveAttribute('data-state', 'provisional');
     await expect(page.getByTestId('spending-as-of')).toContainText('6 Oct 2026');
     await expect(figure(page, 'spending-tracked')).toContainText('€100.00');
@@ -439,7 +423,7 @@ test.describe('the Spending page', () => {
     // month-to-date figure exists at all.
     await account(page, { name: 'Savings', balance: '500.00', on: '2026-09-30' });
     await balance(page, '450.00', '2026-10-03', false);
-    await open(page, '/expenses?month=2026-10');
+    await gotoAfterRefresh(page, '/expenses?month=2026-10');
     await expect(page.getByTestId('spending-summary')).toHaveAttribute('data-state', 'no_common_date');
     await expect(page.getByTestId('spending-summary')).toContainText('Update all cash accounts to the same date');
     await expect(figure(page, 'spending-tracked')).toHaveCount(0);
