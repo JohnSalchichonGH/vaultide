@@ -134,6 +134,10 @@ function repository() {
     return result.stdout.trim();
   };
   git('init', '-q', '-b', 'main');
+  // No automatic maintenance: each commit would start `git maintenance run --auto --detach`,
+  // and from Git 2.54 its geometric repack can fire even here and keep writing under .git
+  // in the background, recreating directories that the removal below has just emptied.
+  git('config', 'maintenance.auto', 'false');
 
   return {
     git: gitIn(dir, env),
