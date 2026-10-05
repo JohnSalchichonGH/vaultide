@@ -506,8 +506,6 @@ started**.
 Remaining Phase 3 work, in the agreed order:
 
 1. the remaining end-to-end journeys and Phase 3 hardening, including:
-   - the server/domain enforcement of each currency's minor-unit scale for
-     Phase 3 flows that acceptance still requires;
    - two known gaps recorded with Bulk History and not fixed there:
      - the ordinary record path accepts a non-zero balance dated a closed
        account's closing day when no balance sits on that day, because
