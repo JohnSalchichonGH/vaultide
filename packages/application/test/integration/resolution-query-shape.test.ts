@@ -201,7 +201,7 @@ beforeEach(async () => {
 });
 
 describe('recording, correcting and removing a balance', () => {
-  it('records one: the account, the date it would occupy, then the write', async () => {
+  it('records one: the account, its currency, the date it would occupy, then the write', async () => {
     const sent = await shapes(() =>
       recordValuation(positions(), OCT_5, {
         positionId: bbva,
@@ -213,6 +213,7 @@ describe('recording, correcting and removing a balance', () => {
     expect(sent).toEqual([
       ...WRITE_OPEN,
       'select positions',
+      'select currencies',
       'select position_valuations',
       'insert position_valuations',
       'insert audit_entries',
@@ -250,6 +251,7 @@ describe('recording, correcting and removing a balance', () => {
     expect(sent).toEqual([
       ...WRITE_OPEN,
       'select positions',
+      'select currencies',
       'select position_valuations',
       'rollback',
     ]);
@@ -267,6 +269,7 @@ describe('recording, correcting and removing a balance', () => {
     expect(sent).toEqual([
       ...WRITE_OPEN,
       'select positions',
+      'select currencies',
       'select position_valuations',
       'insert position_valuations',
       'insert audit_entries',
@@ -277,7 +280,7 @@ describe('recording, correcting and removing a balance', () => {
     ]);
   });
 
-  it('corrects one in place without looking for a clash', async () => {
+  it('corrects one in place, judging its amount, without looking for a clash', async () => {
     await recordValuation(positions(), OCT_5, {
       positionId: bbva,
       valuedOn: '2026-10-02',
@@ -298,6 +301,7 @@ describe('recording, correcting and removing a balance', () => {
       ...WRITE_OPEN,
       'select position_valuations for update',
       'select positions',
+      'select currencies',
       'select position_valuations for update',
       'update position_valuations',
       'insert audit_entries',
@@ -326,6 +330,7 @@ describe('recording, correcting and removing a balance', () => {
       ...WRITE_OPEN,
       'select position_valuations for update',
       'select positions',
+      'select currencies',
       'select position_valuations',
       'select position_valuations for update',
       'update position_valuations',
@@ -385,6 +390,7 @@ describe('recording, correcting and removing a balance', () => {
       ...READ_OPEN,
       'select position_valuations',
       'select positions',
+      'select currencies',
       'select position_valuations',
       'commit',
     ]);

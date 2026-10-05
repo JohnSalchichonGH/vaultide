@@ -23,7 +23,7 @@ export interface StepProps {
   readonly settings: UserSettings;
   readonly timezones: readonly string[];
   readonly locales: readonly string[];
-  readonly currencies: readonly { code: string; name: string }[];
+  readonly currencies: readonly { code: string; name: string; minorUnits: number }[];
   /** The browser's own guess, offered as the default for step 1. */
   readonly detectedTimezone?: string;
 }

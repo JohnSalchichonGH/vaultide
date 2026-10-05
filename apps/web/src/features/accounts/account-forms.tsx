@@ -13,7 +13,7 @@ import {
 } from '@/server/actions/positions';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { normalizeMoneyInput } from '@/lib/money-input';
+import { moneyInputProblem, normalizeMoneyInput } from '@/lib/money-input';
 import { useHydrated } from '@/lib/use-hydrated';
 import { cn } from '@/lib/utils';
 import { CorrectionHost } from '@/features/corrections/host';
@@ -52,7 +52,12 @@ const ASSET_TYPES = [
 export interface CurrencyOption {
   readonly code: string;
   readonly name: string;
+  /** What an amount typed in this currency is checked against (7.2). */
+  readonly minorUnits: number;
 }
+
+const minorUnitsIn = (currencies: readonly CurrencyOption[], code: string): number =>
+  currencies.find((option) => option.code === code)?.minorUnits ?? 2;
 
 function Status({ tone, children, testId }: { tone: 'error' | 'success'; children: ReactNode; testId?: string }) {
   return (
@@ -163,6 +168,12 @@ export function CreateCashAccountForm({
         setError(null);
         setSaved(null);
         const amount = normalizeMoneyInput(balance);
+        const problem =
+          amount === '' ? null : moneyInputProblem(amount, minorUnitsIn(currencies, currency));
+        if (problem !== null) {
+          setError(problem);
+          return;
+        }
 
         startTransition(async () => {
           const result = await createCashAccountAction({
@@ -358,6 +369,12 @@ export function CreateOtherAssetForm({
         setError(null);
         setSaved(null);
         const amount = normalizeMoneyInput(value);
+        const problem =
+          amount === '' ? null : moneyInputProblem(amount, minorUnitsIn(currencies, currency));
+        if (problem !== null) {
+          setError(problem);
+          return;
+        }
 
         startTransition(async () => {
           const result = await createOtherAssetAction({

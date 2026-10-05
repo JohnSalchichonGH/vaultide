@@ -13,7 +13,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { MoneyText } from '@/components/finance/money-text';
-import { normalizeMoneyInput } from '@/lib/money-input';
+import { moneyInputProblem, normalizeMoneyInput } from '@/lib/money-input';
 import { useHydrated } from '@/lib/use-hydrated';
 import { CorrectionHost } from '@/features/corrections/host';
 import {
@@ -111,6 +111,11 @@ export function ValuationEditor({ detail, today, locale }: ValuationEditorProps)
               valuedOn,
               datePrecision: 'exact' as const,
             };
+            const problem = moneyInputProblem(args.amount, position.minorUnits);
+            if (problem !== null) {
+              setError(problem);
+              return;
+            }
             write(
               { kind: 'valuation_create', ...args },
               () => recordValuationAction(args),
@@ -287,6 +292,11 @@ export function ValuationEditor({ detail, today, locale }: ValuationEditorProps)
                                 valuedOn: valuation.valuedOn,
                                 datePrecision: valuation.datePrecision,
                               };
+                              const problem = moneyInputProblem(args.amount, position.minorUnits);
+                              if (problem !== null) {
+                                setError(problem);
+                                return;
+                              }
                               write(
                                 { kind: 'valuation_update', ...args },
                                 () => correctValuationAction(args),

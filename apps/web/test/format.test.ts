@@ -8,7 +8,8 @@ import {
   runFormatterSelfTest,
   SELF_TEST_AMOUNT,
 } from '@/lib/format';
-import { normalizeMoneyInput } from '@/lib/money-input';
+import { minorUnitsMessage } from '@vaultide/validation';
+import { moneyInputProblem, normalizeMoneyInput } from '@/lib/money-input';
 import { validateRecordDate } from '@/lib/date-input';
 
 const digitsOf = (text: string): string => [...text].filter((c) => c >= '0' && c <= '9').join('');
@@ -127,5 +128,43 @@ describe('exchange rates are read, not dumped (7.1.1, 16.2)', () => {
     expect(formatRate({ rate: '1', from: 'EUR', to: 'EUR', locale: 'en-GB' })).toBe(
       '1 EUR = 1.00 EUR',
     );
+  });
+});
+
+describe('the amounts the account and asset forms send (7.2)', () => {
+  // A cash account's opening balance and an asset's current value on
+  // /accounts (and the first account in onboarding), and a balance recorded or
+  // corrected on an account's own page, are each checked with
+  // `moneyInputProblem` in their currency before anything is sent.
+  const FORMS = [
+    'New cash account (opening balance)',
+    'New other asset (current value)',
+    'Record a balance',
+    'Correct a balance',
+  ];
+  const CURRENCIES: readonly [string, number][] = [
+    ['EUR', 2],
+    ['JPY', 0],
+    ['KWD', 3],
+  ];
+
+  for (const form of FORMS) {
+    for (const [currency, units] of CURRENCIES) {
+      it(`${form}: refuses one decimal past ${currency}'s limit and accepts the limit`, () => {
+        const atLimit = units === 0 ? '4200' : `4200.${'7'.repeat(units)}`;
+        const past = `4200.${'7'.repeat(units + 1)}`;
+        expect(moneyInputProblem(atLimit, units)).toBeNull();
+        expect(moneyInputProblem(`-${atLimit}`, units)).toBeNull();
+        expect(moneyInputProblem(past, units)).toBe(minorUnitsMessage(units));
+      });
+    }
+  }
+
+  it('says it in the exact words of the server, and judges a typed amount after normalizing it', () => {
+    expect(moneyInputProblem(normalizeMoneyInput('1.234,567'), 2)).toBe(
+      'Use at most 2 decimals for this currency.',
+    );
+    expect(moneyInputProblem(normalizeMoneyInput('1.234,56'), 2)).toBeNull();
+    expect(moneyInputProblem('1.5', 0)).toBe('This currency has no decimals.');
   });
 });

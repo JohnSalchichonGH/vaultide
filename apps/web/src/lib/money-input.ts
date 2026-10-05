@@ -1,3 +1,5 @@
+import { moneyString } from '@vaultide/validation';
+
 /**
  * Locale-tolerant money input handling (blueprint 16.6, 20.1).
  *
@@ -11,4 +13,17 @@ export function normalizeMoneyInput(raw: string): string {
   return trimmed.includes(',')
     ? trimmed.replace(/\.(?=\d{3}\b)/gu, '').replace(',', '.')
     : trimmed;
+}
+
+/**
+ * Why a normalized amount cannot be sent in a currency with these minor units,
+ * or `null` when it can (7.2 "Input scale").
+ *
+ * `moneyString`'s own answer, so the browser refuses in the words the server
+ * would use. Whether the amount may be negative is the server's to say: this
+ * judges the spelling and the decimals.
+ */
+export function moneyInputProblem(amount: string, minorUnits: number): string | null {
+  const parsed = moneyString({ minorUnits }).safeParse(amount);
+  return parsed.success ? null : (parsed.error.issues[0]?.message ?? 'Enter an amount.');
 }

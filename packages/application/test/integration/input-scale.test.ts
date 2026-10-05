@@ -6,8 +6,12 @@ import { testContext, type RequestContext } from '../../src/context';
 import { ValidationError } from '../../src/errors';
 import { provisionUser } from '../../src/users/provisioning';
 import { listCategories } from '../../src/users/categories';
-import { createCashAccount } from '../../src/positions/service';
-import { recordValuation } from '../../src/positions/valuations';
+import {
+  createCashAccount,
+  createOtherAsset,
+  updateOtherAsset,
+} from '../../src/positions/service';
+import { correctValuation, quickUpdate, recordValuation } from '../../src/positions/valuations';
 import { createIncomeEntry, updateIncomeEntry } from '../../src/flows/income';
 import { createExpenseEntry, updateExpenseEntry } from '../../src/flows/expenses';
 import { createCashTransfer, updateCashTransfer } from '../../src/flows/transfers';
@@ -570,5 +574,159 @@ describe('the Bulk History batch', () => {
       { position_id: dinar, amount: '1.23400000' },
       { position_id: yen, amount: '2.00000000' },
     ]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Phase 2                                                                     */
+/* -------------------------------------------------------------------------- */
+
+const balance = (positionId: string, amount: string, valuedOn = '2026-10-02') =>
+  recordValuation(positions(), OCT_5, { positionId, valuedOn, amount, datePrecision: 'exact' });
+
+describe('balances', () => {
+  it('refuses a recorded balance past its position’s currency', async () => {
+    await expectScaleRefusal(() => balance(eur, '1200.005'), { amount: [EUR] });
+    await expectScaleRefusal(() => balance(eur, '-1200.005'), { amount: [EUR] });
+  });
+
+  it('holds a no-decimal account to whole amounts, and keeps one', async () => {
+    await expectScaleRefusal(() => balance(yen, '1.5'), { amount: [JPY] });
+    expect((await balance(yen, '2')).amount).toBe('2.00000000');
+  });
+
+  it('keeps a three-decimal account at its limit and refuses one decimal past it', async () => {
+    expect((await balance(dinar, '1.234')).amount).toBe('1.23400000');
+    await expectScaleRefusal(() => balance(dinar, '1.2345', '2026-10-03'), { amount: [KWD] });
+  });
+
+  it('refuses a corrected balance past its position’s currency', async () => {
+    const stored = await balance(eur, '1200');
+    await expectScaleRefusal(
+      () =>
+        correctValuation(positions(), OCT_5, {
+          valuationId: stored.id,
+          expectedVersion: stored.version,
+          valuedOn: '2026-10-02',
+          amount: '1200.005',
+          datePrecision: 'exact',
+        }),
+      { amount: [EUR] },
+    );
+  });
+
+  it('refuses a quick update as a whole, naming the entry past its own account’s currency', async () => {
+    await expectScaleRefusal(
+      () =>
+        quickUpdate(positions(), OCT_5, {
+          entries: [
+            { positionId: yen, amount: '15000' },
+            { positionId: eur, amount: '1200.005' },
+          ],
+        }),
+      { 'entries.1.amount': [EUR] },
+    );
+  });
+});
+
+describe('accounts and assets', () => {
+  it('refuses a cash account’s opening balance past its currency', async () => {
+    await expectScaleRefusal(
+      () =>
+        createCashAccount(positions(), OCT_5, {
+          name: 'New',
+          currency: 'EUR',
+          accountType: 'savings',
+          openedOn: null,
+          openingBalance: '10.123',
+          openingBalanceOn: '2026-10-01',
+        }),
+      { openingBalance: [EUR] },
+    );
+  });
+
+  it('refuses an asset’s acquisition or current value past its currency, on creation', async () => {
+    const create = (values: Record<string, string>) =>
+      createOtherAsset(positions(), OCT_5, {
+        name: 'Car',
+        currency: 'EUR',
+        assetType: 'vehicle',
+        includeInFinancialNetWorth: false,
+        ...values,
+      });
+    await expectScaleRefusal(() => create({ acquisitionValue: '9000.001' }), {
+      acquisitionValue: [EUR],
+    });
+    await expectScaleRefusal(
+      () => create({ currentValue: '8000.001', currentValueOn: '2026-10-01' }),
+      { currentValue: [EUR] },
+    );
+  });
+
+  it('refuses an asset’s acquisition value past its own currency, on an edit', async () => {
+    const car = await createOtherAsset(positions(), OCT_5, {
+      name: 'Car',
+      currency: 'JPY',
+      assetType: 'vehicle',
+      includeInFinancialNetWorth: false,
+    });
+    await expectScaleRefusal(
+      () =>
+        updateOtherAsset(positions(), OCT_5, {
+          positionId: car.id,
+          expectedVersion: car.version,
+          acquisitionValue: '1500000.5',
+        }),
+      { acquisitionValue: [JPY] },
+    );
+  });
+});
+
+describe('Historical Correction drafts of a balance', () => {
+  it('refuse in Preview and in Confirm exactly what the ordinary write refuses', async () => {
+    const august = await recordValuation(positions(), OCT_5, {
+      positionId: eur,
+      valuedOn: '2026-08-31',
+      amount: '1000',
+      datePrecision: 'month_end',
+    });
+
+    await expectCorrectionRefusal(
+      {
+        kind: 'valuation_create',
+        positionId: eur,
+        valuedOn: '2026-09-30',
+        amount: '1200.005',
+        datePrecision: 'month_end',
+      },
+      { amount: [EUR] },
+    );
+    await expectCorrectionRefusal(
+      {
+        kind: 'valuation_update',
+        valuationId: august.id,
+        expectedVersion: august.version,
+        valuedOn: '2026-08-31',
+        amount: '1000.005',
+        datePrecision: 'month_end',
+      },
+      { amount: [EUR] },
+    );
+    await expectCorrectionRefusal(
+      { kind: 'quick_update', entries: [{ positionId: yen, amount: '1.5' }] },
+      { 'entries.0.amount': [JPY] },
+    );
+
+    await expectScaleRefusal(
+      () =>
+        correctValuation(positions(), OCT_5, {
+          valuationId: august.id,
+          expectedVersion: august.version,
+          valuedOn: '2026-08-31',
+          amount: '1000.005',
+          datePrecision: 'month_end',
+        }),
+      { amount: [EUR] },
+    );
   });
 });

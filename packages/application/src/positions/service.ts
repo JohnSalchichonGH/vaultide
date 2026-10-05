@@ -18,6 +18,7 @@ import { Decimal, plainDate } from '@vaultide/finance';
 import type { RequestContext } from '../context';
 import { withUserWrite } from '../coordination';
 import { assertNoHistoricalReview } from '../corrections/guard';
+import { assertInputScaleIn } from '../currencies/scale';
 import {
   ImpossibleOperationError,
   NotFoundError,
@@ -117,6 +118,9 @@ async function createCashAccountIn(
   const currency = await assertUsableCurrencyIn(tx, args.currency);
   assertNotFuture(ctx, args.openedOn);
   assertNotFuture(ctx, args.openingBalanceOn);
+  await assertInputScaleIn(tx, [
+    { field: 'openingBalance', amount: args.openingBalance, currency },
+  ]);
 
   if (
     args.openedOn !== null &&
@@ -180,6 +184,10 @@ async function createOtherAssetIn(
   const currency = await assertUsableCurrencyIn(tx, args.currency);
   assertNotFuture(ctx, args.acquisitionDate);
   assertNotFuture(ctx, args.currentValueOn);
+  await assertInputScaleIn(tx, [
+    { field: 'acquisitionValue', amount: args.acquisitionValue, currency },
+    { field: 'currentValue', amount: args.currentValue, currency },
+  ]);
 
   return insertOtherAssetIn(
     tx,
@@ -442,6 +450,10 @@ async function updateOtherAssetIn(
   const existing = await requirePositionIn(tx, args.positionId);
   if (existing.kind !== 'other_asset') throw new NotFoundError('That asset no longer exists.');
   assertNotFuture(ctx, args.acquisitionDate);
+  // In the asset's own currency, which an edit never moves (7.2).
+  await assertInputScaleIn(tx, [
+    { field: 'acquisitionValue', amount: args.acquisitionValue, currency: existing.currency },
+  ]);
 
   return updatePositionIn(
     tx,

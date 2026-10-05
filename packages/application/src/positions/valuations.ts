@@ -35,6 +35,7 @@ import {
 import type { RequestContext } from '../context';
 import { withUserWrite } from '../coordination';
 import { assertNoHistoricalReview } from '../corrections/guard';
+import { assertInputScaleIn } from '../currencies/scale';
 import {
   DuplicateConflictError,
   ImpossibleOperationError,
@@ -447,6 +448,15 @@ export function decideRecordValuation(
   };
 }
 
+/** A balance the request states, in its position's currency (7.2). */
+async function assertBalanceScaleIn(
+  tx: Transaction,
+  position: PositionRow,
+  amount: string,
+): Promise<void> {
+  await assertInputScaleIn(tx, [{ field: 'amount', amount, currency: position.currency }]);
+}
+
 export async function resolveRecordValuationIn(
   tx: Transaction,
   ctx: RequestContext,
@@ -455,6 +465,7 @@ export async function resolveRecordValuationIn(
   const position = await requirePositionIn(tx, args.positionId);
   // Before the date's row is read, so a refused balance is refused without it.
   assertValuationAllowed(ctx.today, position, args);
+  await assertBalanceScaleIn(tx, position, args.amount);
   const occupant = await findValuationOnIn(tx, args.positionId, args.valuedOn);
   return decideRecordValuation(ctx.today, position, args, occupant);
 }
@@ -684,6 +695,7 @@ export async function resolveCorrectValuationIn(
   // Before the target date's row is read, so a refused balance is refused
   // without it.
   assertValuationAllowed(ctx.today, position, args);
+  await assertBalanceScaleIn(tx, position, args.amount);
 
   // Only a date that moves can clash, so only then is it read.
   const occupant =
@@ -1459,6 +1471,17 @@ export async function resolveQuickUpdateIn(
     assertSign(position, item.amount);
     assertWithinPositionWindow(position, ctx.today);
   }
+
+  // 7.2, each balance in its own position's currency, in one read for the
+  // whole submission and keyed to the entry it came in.
+  await assertInputScaleIn(
+    tx,
+    args.entries.map((item, index) => ({
+      field: `entries.${String(index)}.amount`,
+      amount: item.amount,
+      currency: (byId.get(item.positionId) as PositionRow).currency,
+    })),
+  );
 
   // One read for the whole submission: which of today's rows already exist
   // decides whether each entry is an insert or a correction (23.2).
