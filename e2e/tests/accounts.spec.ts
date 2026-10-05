@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { gotoAfterRefresh } from '../support/navigation';
+import { gotoAfterRefresh, reloadAfterRefresh, waitForRouter } from '../support/navigation';
 
 /**
  * The Phase 2 end-to-end journey (blueprint 21.5, Phase 2 acceptance).
@@ -116,7 +116,7 @@ async function signOut(page: Page): Promise<void> {
 }
 
 async function signIn(page: Page, email: string): Promise<void> {
-  await page.goto('/sign-in');
+  await gotoAfterRefresh(page, '/sign-in');
   await expect(page.getByRole('button', { name: 'Sign in' })).toBeEnabled();
   await fillField(page, 'Email address', email);
   await fillField(page, 'Password', PASSWORD);
@@ -132,7 +132,7 @@ async function addCashAccount(
   page: Page,
   options: { name: string; currency: string; balance: string; on?: string },
 ): Promise<void> {
-  await page.goto('/accounts?tab=cash');
+  await gotoAfterRefresh(page, '/accounts?tab=cash');
   await ready(page, 'account-submit');
   await fillTestId(page, 'account-name', options.name);
   await page.getByTestId('account-currency').selectOption(options.currency);
@@ -169,6 +169,7 @@ test.describe('accounts, balances and the two net-worth metrics', () => {
     await expect(page.getByTestId('cash-accounts-table')).toContainText('8,055.00');
 
     // --- correct that balance, and the history keeps both facts ------------
+    await waitForRouter(page);
     await page.getByRole('link', { name: 'BBVA checking' }).click();
     await expect(page.getByTestId('position-native')).toContainText('8,055.00');
 
@@ -194,6 +195,7 @@ test.describe('accounts, balances and the two net-worth metrics', () => {
     // The native amount is exactly what was entered…
     await expect(usdRow).toContainText('3,000.00');
     // …and a euro figure appears beside it, from a rate, not from a guess.
+    await waitForRouter(page);
     await page.getByRole('link', { name: 'US checking' }).click();
     await expect(page.getByTestId('position-native')).toContainText('$');
     await expect(page.getByTestId('position-reporting')).toContainText('€');
@@ -217,7 +219,7 @@ test.describe('accounts, balances and the two net-worth metrics', () => {
     await expect(page.getByTestId('other-assets-table')).toContainText('Total only');
 
     // --- the two metrics differ by exactly the car -------------------------
-    await page.goto('/dashboard');
+    await gotoAfterRefresh(page, '/dashboard');
     await expect(page.getByTestId('metrics-differ')).toBeVisible();
 
     const financialBefore = await page.getByTestId('financial-net-worth').innerText();
@@ -250,7 +252,7 @@ test.describe('accounts, balances and the two net-worth metrics', () => {
       page.getByText('In financial net worth', { exact: true }),
     ).toBeVisible();
 
-    await page.goto('/dashboard');
+    await gotoAfterRefresh(page, '/dashboard');
     await expect(page.getByTestId('metrics-differ')).toHaveCount(0);
     const totalAfter = await page.getByTestId('total-net-worth').innerText();
     const financialAfter = await page.getByTestId('financial-net-worth').innerText();
@@ -310,7 +312,7 @@ test.describe('accounts, balances and the two net-worth metrics', () => {
     await signIn(page, email);
     await expect(page).toHaveURL(/\/dashboard/u);
 
-    await page.goto('/accounts?tab=cash');
+    await gotoAfterRefresh(page, '/accounts?tab=cash');
     await expect(page.getByTestId('cash-accounts-table')).toContainText('8,200.00');
     await expect(page.getByTestId('cash-accounts-table')).toContainText('US checking');
     await page.goto('/accounts?tab=other');
@@ -337,7 +339,7 @@ test.describe('accounts, balances and the two net-worth metrics', () => {
     await expect(page.getByTestId('other-assets-table')).toContainText('No value recorded');
 
     // …and the totals say they are incomplete, and name what is missing.
-    await page.goto('/dashboard');
+    await gotoAfterRefresh(page, '/dashboard');
     await expect(page.getByText('Partial').first()).toBeVisible();
     await expect(page.getByText(/Not included: .*Coin collection/u).first()).toBeVisible();
   });
@@ -361,6 +363,7 @@ test.describe('closing a month with the clock', () => {
       on: '2026-09-30',
     });
 
+    await waitForRouter(page);
     await page.getByRole('link', { name: 'BBVA' }).click();
     await expect(page.getByTestId('month-end-section')).toBeVisible();
     // September is not on the list, because September has not ended (R15, C8).
@@ -379,7 +382,7 @@ test.describe('closing a month with the clock', () => {
     await expect(page.getByTestId('month-end-2026-09')).toHaveCount(0);
 
     // The accounts page agrees.
-    await page.goto('/accounts?tab=cash');
+    await gotoAfterRefresh(page, '/accounts?tab=cash');
     await expect(page.getByTestId('cash-accounts-table')).toContainText('2026-09 closed');
   });
 
@@ -398,11 +401,12 @@ test.describe('closing a month with the clock', () => {
       on: '2026-09-30',
     });
 
+    await waitForRouter(page);
     await page.getByRole('link', { name: 'BBVA' }).click();
     await page.getByTestId('confirm-statement-2026-09').click();
 
     await expect(page.getByTestId('first-balance-note')).toBeVisible();
-    await page.goto('/accounts?tab=cash');
+    await gotoAfterRefresh(page, '/accounts?tab=cash');
     await expect(page.getByTestId('cash-accounts-table')).toContainText('First balance');
   });
 });
@@ -427,6 +431,7 @@ test.describe('dormant accounts', () => {
     const today = await todayFromForm(page);
 
     await addCashAccount(page, { name: 'Old bank', currency: 'EUR', balance: '120.00' });
+    await waitForRouter(page);
     await page.getByRole('link', { name: 'Old bank' }).click();
     await ready(page, 'edit-submit');
 
@@ -445,7 +450,7 @@ test.describe('dormant accounts', () => {
     // about the save having landed.
     await expect(page.getByTestId('valuation-history')).toContainText('€0.00');
 
-    await page.reload();
+    await reloadAfterRefresh(page);
     await page.getByTestId('edit-dormant').check();
     await page.getByTestId('edit-submit').click();
     await expect(page.getByTestId('accounts-success')).toHaveText('Saved.');
