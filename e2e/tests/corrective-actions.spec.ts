@@ -190,6 +190,10 @@ test.describe('an unexplained inflow', () => {
     await accountWithStatements(page, { name: 'BBVA', august: '1000.00', september: '1500.00' });
 
     await gotoAfterRefresh(page, '/monthly/2026-09');
+    // The records contradict the balances, so the month reads Unresolved until
+    // something explains the 500 (8.4, 8.5).
+    await expect(page.getByTestId('reconciliation-status')).toContainText('Unresolved');
+    await expect(page.getByTestId('bucket-EUR')).toContainText('Unresolved');
     const group = page.getByTestId('issue-group-unexplained_inflow');
     await expect(group).toContainText('Cash grew more than your records explain');
     await expect(group).toContainText('€500.00');
