@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Dialog, type Locator, type Page } from '@playwright/test';
-import { gotoAfterRefresh } from '../support/navigation';
+import { gotoAfterRefresh, waitForRouter } from '../support/navigation';
 
 /**
  * Bulk History, end to end (blueprint 15.3 "Bulk history"; ADR 0011).
@@ -94,6 +94,7 @@ async function accountWithAugustStatement(page: Page, name: string, august: stri
   await page.getByTestId('account-submit').click();
   await expect(page.getByText(`${name} added.`)).toBeVisible();
 
+  await waitForRouter(page);
   await page.getByRole('link', { name, exact: true }).click();
   await page.getByTestId('confirm-statement-2026-08').click();
   await expect(page.getByTestId('month-end-2026-08')).toHaveCount(0);
@@ -101,7 +102,7 @@ async function accountWithAugustStatement(page: Page, name: string, august: stri
 
 /** A monthly salary into the account, from June, created from the month itself. */
 async function salarySource(page: Page, account: string): Promise<void> {
-  await page.goto('/monthly/2026-09');
+  await gotoAfterRefresh(page, '/monthly/2026-09');
   await page.getByTestId('source-add-toggle').click();
   await fillTestId(page, 'source-name', 'Salary');
   await page.getByTestId('source-kind').selectOption('employment');
@@ -227,6 +228,7 @@ test.describe('reconstructing history in bulk', () => {
 
     // --- Nothing unsaved now, so the way back is not questioned --------------
     page.on('dialog', stay);
+    await waitForRouter(page);
     await page.getByTestId('bulk-back').click();
     await expect(page).toHaveURL(/\/monthly\/2026-06$/u);
     page.off('dialog', stay);
@@ -260,7 +262,7 @@ test.describe('two tabs on one grid', () => {
     await other.setExtraHTTPHeaders({ 'x-vaultide-test-clock': OCTOBER_6 });
 
     for (const tab of [page, other]) {
-      await tab.goto('/monthly/2026-07/history');
+      await gotoAfterRefresh(tab, '/monthly/2026-07/history');
       await expect(gridCell(tab, '2026-08', 0).getByTestId('bulk-input')).toHaveValue('2000.00');
     }
 
