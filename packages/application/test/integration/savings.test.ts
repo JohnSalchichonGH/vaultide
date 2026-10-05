@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { Decimal } from '@vaultide/finance';
 import { sql, withoutUser } from '@vaultide/db';
 import { createHarness, type Harness } from '../helpers/harness';
 import { testContext, type RequestContext } from '../../src/context';
@@ -478,6 +479,124 @@ describe('count_additional_spending is read from the current setting', () => {
     expect(trackedOnly.derived.countsAdditionalSpending).toBe(false);
     expect(trackedOnly.derived.totalSpending.amount).toBe('890');
     expect(trackedOnly.source.additionalSpending.amount).toBe('50');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The §12.7 golden, from rows                                                */
+/* -------------------------------------------------------------------------- */
+
+describe('the §12.7 savings golden, rebuilt from the rows Phase 3 can hold', () => {
+  /**
+   * `savings/september-basic` (12.7, over 8.10's September), record by record
+   * rather than as one 2,131 income and one 411 expense, so that "interest
+   * counted once" is exercised by rows.
+   *
+   *  - The salary of 2,100 and the 31 of savings interest are two income rows.
+   *  - The 300 of insurance is known consumption; the other 429 of consumption
+   *    is what the balances leave unexplained.
+   *  - The 111 that 12.7 subtracts as interest and fees is held by both Phase 3
+   *    kinds the decomposition sends there: an 11.00 fee on the 5 September
+   *    transfer, which is the only way a `transfer_fee` exists, and a 100.00
+   *    investment fee paid from BBVA. 8.10's 111 is a mortgage's interest,
+   *    which needs Phase 5's liability payments; the bucket it lands in is the
+   *    same.
+   *  - The €50 coffee is `untracked_self` and the €80 dinner `third_party`.
+   *
+   * The 1,000 contribution and the 235 of principal are Phase 4 and Phase 5
+   * records; neither is income or a cost, so neither moves a 12.5 figure. Left
+   * out, they leave the money in BBVA: it closes at 7,880 + 1,000 + 235 =
+   * 9,115.00, and `ΔCash` is the whole 1,291 of cash savings instead of 56.
+   */
+  async function september(): Promise<void> {
+    const bbva = await makeAccount('BBVA');
+    const savings = await makeAccount('Savings');
+    await statement(bbva, '2026-08-31', '8055.00');
+    await statement(savings, '2026-08-31', '8509.00');
+
+    await income(OCT_1, { kind: 'employment', receivedOn: '2026-09-25', netAmount: '2100.00', cashPositionId: bbva });
+    await income(OCT_1, { kind: 'interest', receivedOn: '2026-09-30', netAmount: '31.00', cashPositionId: savings });
+    await createCashTransfer(deps(), OCT_1, {
+      occurredOn: '2026-09-05',
+      fromPositionId: bbva,
+      toPositionId: savings,
+      fromAmount: '200.00',
+      toAmount: '200.00',
+      fee: { amount: '11.00', cashPositionId: bbva, incurredOn: '2026-09-05' },
+    });
+    await expense(OCT_1, { kind: 'investment_fee', incurredOn: '2026-09-01', amount: '100.00', cashPositionId: bbva });
+    await expense(OCT_1, { kind: 'insurance', incurredOn: '2026-09-12', amount: '300.00', cashPositionId: bbva });
+    await expense(OCT_1, { kind: 'food', incurredOn: '2026-09-20', amount: '80.00', settlement: 'third_party' });
+    await expense(OCT_1, { kind: 'food', incurredOn: '2026-09-22', amount: '50.00', settlement: 'untracked_self' });
+
+    // 8,055 + 2,100 − 200 − 11 − 100 − 300 − 429 = 9,115; 8,509 + 200 + 31 = 8,740.
+    await statement(bbva, '2026-09-30', '9115.00');
+    await statement(savings, '2026-09-30', '8740.00');
+  }
+
+  const percent = (rate: { kind: string; value?: string }): string => {
+    if (rate.kind !== 'ratio' || rate.value === undefined) throw new Error('expected a rate');
+    return new Decimal(rate.value).times(100).toFixed(2);
+  };
+
+  it('reconciles to 8.10’s identity with the interest recorded', async () => {
+    await september();
+    const bucket = (await getMonthReconciliation(readDeps(), OCT_1, SEPTEMBER)).buckets.find(
+      (candidate) => candidate.currency === 'EUR',
+    );
+    expect(bucket?.status).toBe('reliable');
+    expect(bucket?.totals.externalInflows.amount).toBe('2131');
+    expect(bucket?.totals.nonIncomeInflows.amount).toBe('200');
+    expect(bucket?.totals.nonExpenseOutflows.amount).toBe('200');
+    expect(bucket?.totals.cashDelta?.amount).toBe('1291');
+    expect(bucket?.totals.trackedTotalSpending?.amount).toBe('840');
+    // ΣK = 300 + 11 + 100 = 411, exactly 8.10's.
+    expect(bucket?.totals.knownTrackedExpenses.amount).toBe('411');
+    expect(bucket?.totals.unclassified?.amount).toBe('429');
+  });
+
+  it('counts the interest once and reproduces every figure of 12.7 with the setting on', async () => {
+    await september();
+    const bucket = eur((await getMonthSavings(readDeps(), OCT_1, SEPTEMBER)).buckets);
+
+    // Salary and interest, each once: 2,100 + 31.
+    expect(bucket.source.externalIncome.amount).toBe('2131');
+    expect(bucket.source.knownConsumption.amount).toBe('300');
+    // Both fees, in the one bucket, once.
+    expect(bucket.source.interestAndFees.amount).toBe('111');
+    expect(bucket.source.additionalSpending.amount).toBe('50');
+    expect(bucket.source.thirdPartyPaid.amount).toBe('80');
+
+    if (bucket.derived.kind !== 'available') throw new Error('expected available');
+    // 300 known + 429 unclassified. Interest and fees are the rest of the 840,
+    // not a second subtraction from it.
+    expect(bucket.derived.consumption.amount).toBe('729');
+    expect(bucket.derived.trackedSavingsFromIncome.amount).toBe('1291');
+    expect(bucket.derived.personalSavings.amount).toBe('1241');
+    expect(bucket.derived.countsAdditionalSpending).toBe(true);
+    expect(bucket.derived.totalSpending.amount).toBe('890');
+    // Exact and unrounded on the way out; 7.3 rounds where it is shown.
+    expect(bucket.derived.savingsRate).toEqual({
+      kind: 'ratio',
+      value: new Decimal('1241').dividedBy('2131').toString(),
+    });
+    expect(percent(bucket.derived.savingsRate)).toBe('58.24');
+  });
+
+  it('gives the tracked-only figures with the setting off, and the same spending', async () => {
+    await september();
+    await setCountAdditionalSpending(
+      harness.services.settings,
+      USER_A,
+      (await readSettings(harness.db, USER_A)).version,
+      false,
+    );
+    const bucket = eur((await getMonthSavings(readDeps(), OCT_1, SEPTEMBER)).buckets);
+    if (bucket.derived.kind !== 'available') throw new Error('expected available');
+    expect(bucket.derived.personalSavings.amount).toBe('1291');
+    expect(bucket.derived.countsAdditionalSpending).toBe(false);
+    expect(percent(bucket.derived.savingsRate)).toBe('60.58');
+    expect(bucket.derived.totalSpending.amount).toBe('890');
   });
 });
 
