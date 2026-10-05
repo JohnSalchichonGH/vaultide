@@ -78,6 +78,56 @@ export async function record(run: () => Promise<unknown>): Promise<SentStatement
 }
 
 /**
+ * Run one call, and tell `onAnswered` about each statement the driver
+ * answers: its shape and the connection that sent it, as `record` numbers
+ * them.
+ *
+ * The listener is attached to the driver's promise before that promise is
+ * handed back, so it hears each answer before the code that sent the
+ * statement does. A test can therefore act at an exact point in a call: once
+ * a statement is answered, and before anything that follows it has run.
+ * Unlike `record`, the call's own result and errors are passed through.
+ */
+export async function whileAnswering<T>(
+  run: () => Promise<T>,
+  onAnswered: (statement: SentStatement) => void,
+): Promise<T> {
+  const connections = new WeakMap<object, number>();
+  let opened = 0;
+  const driver = pg.Client.prototype as unknown as {
+    query: (this: void, ...args: unknown[]) => unknown;
+  };
+  const original = driver.query;
+  driver.query = function patched(this: unknown, ...args: unknown[]) {
+    const client = this as object;
+    let connection = connections.get(client);
+    if (connection === undefined) {
+      connection = opened;
+      opened += 1;
+      connections.set(client, connection);
+    }
+    const first = args[0] as string | { text?: string } | undefined;
+    const statement = { connection, shape: shapeOf(typeof first === 'string' ? first : (first?.text ?? '')) };
+    const answer = Reflect.apply(original, this, args) as unknown;
+    if (answer instanceof Promise) {
+      void answer.then(
+        () => {
+          onAnswered(statement);
+        },
+        () => undefined,
+      );
+    }
+    return answer;
+  };
+
+  try {
+    return await run();
+  } finally {
+    driver.query = original;
+  }
+}
+
+/**
  * Each connection's statements, in the order that connection sent them.
  *
  * Within one connection the order is the code's: a transaction sends its

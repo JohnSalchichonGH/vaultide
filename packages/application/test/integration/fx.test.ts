@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { countFxRates, eq, fxRates, latestRateDateByQuote, sql, withUser, withoutUser } from '@vaultide/db';
 import { Decimal, isUnavailable, monthKey, plainDate } from '@vaultide/finance';
 import { createHarness, type Harness } from '../helpers/harness';
+import { whileAnswering, type SentStatement } from '../helpers/statement-shapes';
 import {
   createFxService,
   CURRENT_WINDOW_TIMEOUT_MS,
@@ -548,26 +549,46 @@ describe('history is fetched on demand, not on preference (10.4, 10.5)', () => {
 
   it('coalesces concurrent identical backfills into one provider call', async () => {
     const fx = serviceWithClock();
-    // A publisher that takes a moment, so all three are genuinely in flight
-    // together — the case coalescing exists for. Without it the second and
-    // third would simply find the rows already stored, which proves nothing.
-    harness.fxProvider.setLatency(50);
+    // A publisher that answers only when released, so all three are genuinely
+    // in flight together — the case coalescing exists for. Without it the
+    // second and third could find the rows already stored, which proves
+    // nothing.
+    const release = harness.fxProvider.hold();
     const callsBefore = harness.fxProvider.calls.length;
+
+    // Each caller first asks whether the range is already stored, in a
+    // transaction of its own, and goes from that transaction's commit straight
+    // to the coalescing point without waiting on anything else. So the answer
+    // is released as the third such commit is answered: every caller then
+    // reaches the coalescing point before the fetch can finish, because
+    // finishing it needs the database and reaching that point does not.
+    const lastOnConnection = new Map<number, string>();
+    let coverageReads = 0;
+    const onAnswered = ({ connection, shape }: SentStatement): void => {
+      if (shape === 'commit' && lastOnConnection.get(connection) === 'select fx_rates') {
+        coverageReads += 1;
+        if (coverageReads === 3) release();
+      }
+      lastOnConnection.set(connection, shape);
+    };
 
     // Three requests arriving together — three browsers finishing onboarding,
     // or one page issuing several conversions. Upstream answers a stampede of
     // identical long-range requests by stalling all of them, so only one goes.
-    const results = await Promise.all([
-      fx.ensureHistory('HUF', '2026-06-01'),
-      fx.ensureHistory('HUF', '2026-06-01'),
-      fx.ensureHistory('HUF', '2026-06-01'),
-    ]);
+    const results = await whileAnswering(
+      () =>
+        Promise.all([
+          fx.ensureHistory('HUF', '2026-06-01'),
+          fx.ensureHistory('HUF', '2026-06-01'),
+          fx.ensureHistory('HUF', '2026-06-01'),
+        ]),
+      onAnswered,
+    );
 
     expect(harness.fxProvider.calls.length - callsBefore).toBe(1);
     // One fetch, one answer: nobody is told a different story about it.
     expect(results.every((result) => result.rowsInserted === results[0]?.rowsInserted)).toBe(true);
     expect(results[0]?.rowsInserted).toBeGreaterThan(0);
-    harness.fxProvider.setLatency(0);
 
     // Coalescing, not caching: once it has settled the next call reads the
     // database again and finds the range already covered.
@@ -598,7 +619,9 @@ describe('loadTable — reading stored rates back into the engine (10.1)', () =>
       tx
         .select({ rate: fxRates.rate })
         .from(fxRates)
-        .where(sql`${fxRates.quote} = 'USD' AND ${fxRates.rateDate} = DATE '2026-09-04'`),
+        .where(
+          sql`${fxRates.quote} = 'USD' AND ${fxRates.rateDate} = DATE '2026-09-04' AND ${fxRates.source} = 'ecb'`,
+        ),
     );
     expect(friday.rate.toFixed()).toBe(new Decimal(stored?.rate as string).toFixed());
   });

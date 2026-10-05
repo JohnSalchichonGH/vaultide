@@ -41,6 +41,12 @@ export interface StubFxProvider extends FxProvider {
    * stub behaves as the real adapter does when its abort signal fires.
    */
   setLatency(ms: number): void;
+  /**
+   * Hold every time series until the returned function is called, so a test
+   * can keep several callers in flight at once and decide, from what it
+   * observes rather than from a clock, when the publisher answers.
+   */
+  hold(): () => void;
   /** Override the list `supportedCurrencies()` reports for the chain. */
   setSupportedCurrencies(codes: readonly string[]): void;
   reset(): void;
@@ -114,6 +120,7 @@ export function createStubFxProvider(): StubFxProvider {
   let supported = [...DEFAULT_SUPPORTED];
   let chain = [...DEFAULT_CHAIN];
   let latencyMs = 0;
+  let held: Promise<void> | null = null;
 
   function rowsFor(quotes: readonly string[], from: string, to: string): ProviderRateRow[] {
     const rows: ProviderRateRow[] = [];
@@ -187,6 +194,13 @@ export function createStubFxProvider(): StubFxProvider {
     setLatency(ms) {
       latencyMs = ms;
     },
+    hold() {
+      let release: () => void = () => undefined;
+      held = new Promise((resolve) => {
+        release = resolve;
+      });
+      return release;
+    },
     setSupportedCurrencies(codes) {
       supported = [...codes];
     },
@@ -201,6 +215,7 @@ export function createStubFxProvider(): StubFxProvider {
       supported = [...DEFAULT_SUPPORTED];
       chain = [...DEFAULT_CHAIN];
       latencyMs = 0;
+      held = null;
     },
 
     supportedCurrencies(): Promise<string[]> {
@@ -225,7 +240,8 @@ export function createStubFxProvider(): StubFxProvider {
         ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       });
       guard();
-      return answer(rowsFor(quotes, from, to), options?.timeoutMs);
+      const respond = () => answer(rowsFor(quotes, from, to), options?.timeoutMs);
+      return held === null ? respond() : held.then(respond);
     },
   };
 }
