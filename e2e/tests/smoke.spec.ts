@@ -139,10 +139,11 @@ test.describe('the public homepage', () => {
     ]) {
       await expect(roadmap.getByText(entry, { exact: true })).toBeVisible();
     }
-    // Correcting a reconciliation issue, correcting past records and entering
-    // older history are things the product does now, not things it promises:
-    // all three titles sit under Available now, what is next is income across
-    // months, and the titles that promised shipped work are gone.
+    // Correcting a reconciliation issue, correcting past records, entering
+    // older history and income across months are things the product does now,
+    // not things it promises: all four titles sit under Available now, what is
+    // next is investments, which Planned no longer lists, and the titles that
+    // promised shipped work are gone.
     await expect(
       page.getByTestId('roadmap-available').getByText('Fix reconciliation issues', { exact: true }),
     ).toBeVisible();
@@ -153,8 +154,14 @@ test.describe('the public homepage', () => {
       page.getByTestId('roadmap-available').getByText('Enter older history', { exact: true }),
     ).toBeVisible();
     await expect(
-      page.getByTestId('roadmap-next').getByText('Income across months', { exact: true }),
+      page.getByTestId('roadmap-available').getByText('Income across months', { exact: true }),
     ).toBeVisible();
+    await expect(
+      page.getByTestId('roadmap-next').getByText('Investments', { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId('roadmap-planned').getByText('Investments', { exact: true }),
+    ).toHaveCount(0);
     await expect(roadmap.getByText('Corrections and income over time')).toHaveCount(0);
     await expect(roadmap.getByText('Historical corrections and income')).toHaveCount(0);
     await expect(roadmap.getByText('Older history and income')).toHaveCount(0);

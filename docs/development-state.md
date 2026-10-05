@@ -159,13 +159,50 @@ logs into this file.
 
   The known-expense total column (Phase 7), un-skipping from the grid and any
   file import remain outside it.
+
+  The **standalone Income pages** are likewise an independently reviewed,
+  production-verified and frozen completed Phase 3 slice checkpoint (ADR 0012):
+  - `/income` shows one calendar year at a time, the current one unless another
+    is chosen, in the reporting currency, with each payment converted on its own
+    date:
+    - the year's income by month, split into salary, bonus and other;
+    - the year's total, split into money into tracked accounts and money
+      outside them;
+    - the last 12 months, and the total for every year with income;
+    - a by-source table, archived sources labelled, with one row for one-off
+      payments that opens by kind;
+    - gross only where one was recorded, with a count of the payments without
+      one;
+    - each source's missing payments over the year's completed months, one line
+      per source, linking to where they can be resolved: Monthly, Bulk History,
+      or an archived source's own page;
+    - adding an income source, and adding a payment, which opens Review changes
+      → Confirm correction when the server requires it;
+  - Monthly's Overview figure is now labelled "Tracked income", to keep it apart
+    from the Income page's figures;
+  - `/income/sources/[id]` shows one income source, everything in its own
+    currency:
+    - its details;
+    - its amount history against what arrived for each payment;
+    - its payments a year at a time, each received, skipped, missing or not yet
+      due. A recorded or skipped one links to its row in Monthly, and a missing
+      one to where it can be resolved;
+    - editing it through existing actions only: changing the amount from a
+      payment on, its name and payer, an end date after a confirmation, and
+      archive or unarchive.
+
+  The cross-source progression chart (Phase 8), deleting a source or a term,
+  editing payments outside Monthly, a current-month missing flag, `reinvested`
+  and investment-linked income (Phase 4), and Monthly's Add income review gap
+  remain outside it.
 - **User-facing production:** Phases 0–2 remain the accepted/frozen user-facing
   foundation. Phase 3's Monthly page is in production with Overview, Income,
   Known expenses, Accounts (including cash transfers) and Reconciliation —
   whose issues now carry corrective actions — and so is the standalone Spending
   page. Historical correction is in production across those editors and the
-  account pages, and Bulk History beside Monthly. The rest of Phase 3 remains
-  in progress.
+  account pages, and Bulk History beside Monthly. The standalone Income pages,
+  the year view and each income source's page, are in production too. The rest
+  of Phase 3 remains in progress.
 - **Database migrations:** repository migrations run through
   `0008_dormant_anchor.sql`; the production release workflow
   applies migrations before deploying application code.
@@ -186,8 +223,9 @@ logs into this file.
   decision record itself is unchanged.
   `docs/adr/0011-bulk-history.md` is the accepted record of the Bulk History
   decisions, and of its known limits.
-  `docs/adr/0012-income-pages.md` is the accepted design record of the
-  standalone Income pages; none of it is built yet.
+  `docs/adr/0012-income-pages.md` is the accepted record of the standalone
+  Income pages' decisions. A short implementation-status note is appended to
+  it; the decision record itself is unchanged.
 
 Freezing completed Phase 3 slices does not imply acceptance or freeze of Phase 3
 as a whole.
@@ -224,6 +262,10 @@ completeness count (`packages/finance/src/completeness/`, read through
 `getMonthCompleteness`) and the income-only `suggested_income_missing` issue,
 both over the application loaders' bounded template and recurring-resolution
 reads. Extend that shared path rather than building a second occurrence reader.
+The Income source page reuses the shared schedule and `missingIncomeInYear`, but
+reads one source's income entries and skips itself rather than the shared
+resolved read; ADR 0012's implementation-status note says why that is sound in
+Phase 3 and when it must change.
 
 Monthly adds, on top of that backend:
 
@@ -276,6 +318,22 @@ Spending adds, on top of the same backend:
 - Monthly's Add known expense, reused;
 - Spending in the desktop and mobile navigation.
 
+Income adds, on top of the same backend:
+
+- the pure income classification (`packages/finance/src/income/`): which
+  entries count as income recorded and how they group into salary, bonus and
+  other; the year's months, totals, sources, one-off payments and missing
+  occurrences (`incomeOverview`, `missingIncomeInYear`); and one source's
+  occurrences a year at a time (`incomeSourceYear`);
+- one read per page, `getIncomePage` and `getIncomeSourcePage` in
+  `packages/application/src/income/`, each reading the user's rows in one
+  `withUserRead` snapshot, in a fixed number of statements however long the
+  history;
+- the year view's conversion: each payment on its own date, over stored rates
+  only, with no rate-provider call. The source page stays in the source's own
+  currency and converts nothing;
+- Income in the desktop and mobile navigation.
+
 Web surface of Phase 3:
 
 - Monthly (`/monthly/[yyyy-mm]`) is a production route with Overview, Income,
@@ -302,10 +360,19 @@ Web surface of Phase 3:
   draft of its own family, always reviewed, and written only through that
   Confirm: it adds no server action, and the financial-action inventory is
   unchanged.
+- Income (`/income`) and the income source page (`/income/sources/[id]`) are
+  production routes, each served by one read-only read (`getIncomePage`,
+  `getIncomeSourcePage`, in `packages/application/src/income/`). They add no
+  server action, so the financial-action inventory is unchanged:
+  - the source page's edits are existing `recurring.ts` actions;
+  - Add a payment saves through `runCorrectableSave` with an `income_create`
+    draft: the existing `createIncomeEntryAction` when no review is needed, and
+    Historical correction's Confirm when one is.
 - End-to-end coverage now also includes the Monthly, Spending,
-  corrective-action, historical-correction and Bulk History journeys
+  corrective-action, historical-correction, Bulk History and Income journeys
   (`monthly`, `spending`, `corrective-actions`, `historical-correction`,
-  `bulk-history`), alongside the Phase 0–2 journeys (`smoke`, `auth`,
+  `bulk-history`, `income`, `income-source`) and the signed-in navigation
+  (`navigation`), alongside the Phase 0–2 journeys (`smoke`, `auth`,
   `accounts`).
 
 ## Financial write coordination
@@ -432,13 +499,13 @@ restore, `positions.opened_on` correction, and reopening or correcting a close.
 ## Next planned work
 
 Phase 3 remains **in progress**, and is neither accepted nor frozen as a whole.
-The next planned Phase 3 area is **the standalone Income pages**. Their design
-is frozen in blueprint §30.23 and ADR 0012; building them has **not started**.
+The standalone Income pages are done. The next planned Phase 3 area is **the
+remaining end-to-end journeys and Phase 3 hardening**, which has **not
+started**.
 
 Remaining Phase 3 work, in the agreed order:
 
-1. the standalone Income pages;
-2. the remaining end-to-end journeys and Phase 3 hardening, including:
+1. the remaining end-to-end journeys and Phase 3 hardening, including:
    - the server/domain enforcement of each currency's minor-unit scale for
      Phase 3 flows that acceptance still requires;
    - two known gaps recorded with Bulk History and not fixed there:
@@ -453,8 +520,33 @@ Remaining Phase 3 work, in the agreed order:
      reaches completed history is refused by the server, and either form can
      only show the refusal, although the server can review such a creation and
      Monthly's transfer and balance forms already route through the review;
-3. a cold whole-Phase-3 review;
-4. Phase 3 acceptance, production verification, and freeze.
+   - five items recorded with the Income pages and not fixed there:
+     - **navigation after a save:** PR #36 listed 86 places in the end-to-end
+       specs where a document navigation follows a save whose form refreshes.
+       33 of them go through an `open()` retry, in the `corrective-actions`,
+       `income` and `spending` specs, and are to move to `gotoAfterRefresh`
+       (`e2e/support/navigation.ts`). The WebKit click stall PR #36 examined
+       has a different mechanism and is still open;
+     - **the shared amount form's version check:** Monthly's
+       `ChangeFutureAmount` (`apps/web/src/features/monthly/income-editor.tsx`),
+       now shared by the source page, builds its expectation from the row's
+       term when Save is clicked, not from the term the form opened with, so a
+       refresh that lands while the form is open moves the expectation;
+     - **repeated guidance:** on the source page
+       (`apps/web/src/features/income/source-view.tsx`), an archived source's
+       missing line gives its unarchive-or-end-date guidance twice:
+       `ARCHIVED_MISSING_HELP`, then the two links;
+     - **the pg warning:** `listResolvedOccurrencesInRangeIn`
+       (`packages/db/src/repositories/recurring-templates.ts`) runs four
+       selects with `Promise.all` on one transaction's client, which pg warns
+       is deprecated. The reconciliation loader, Historical correction's
+       preview and confirm, and the Income year view all use it;
+     - **unconfirmed, from reading the code:** `/accounts/[id]`
+       (`apps/web/src/app/(app)/accounts/[id]/page.tsx`) passes its id to
+       `getPositionDetail` unchecked, so an id that is not a UUID likely errors
+       instead of answering 404;
+2. a cold whole-Phase-3 review;
+3. Phase 3 acceptance, production verification, and freeze.
 
 The exact scope and subdivision of this work may still be refined by a later
 reviewed task prompt. Do not infer that an item is implemented merely because it

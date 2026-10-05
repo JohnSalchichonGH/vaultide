@@ -115,6 +115,10 @@ export const ROADMAP = {
           title: 'Enter older history',
           text: 'Fill in past months in one grid, month-end balances and recurring income, typed or pasted from a spreadsheet, and review the whole batch before anything is saved.',
         },
+        {
+          title: 'Income across months',
+          text: 'Your income a year at a time: salary, bonus and other income by month, totals by source and for every year, gross where you recorded it, and any payment a recurring source is missing from a finished month. Each recurring source has its own page with its amount history and its payments a year at a time.',
+        },
       ],
     },
     {
@@ -122,8 +126,8 @@ export const ROADMAP = {
       label: 'Next up',
       entries: [
         {
-          title: 'Income across months',
-          text: 'A dedicated view of your income: net and gross by month and by source, annual totals, and how it has progressed.',
+          title: 'Investments',
+          text: 'Portfolio valuations, contributions and withdrawals, distributions, fees, and performance that separates flows, market moves and currency effects.',
         },
       ],
     },
@@ -131,10 +135,6 @@ export const ROADMAP = {
       status: 'planned',
       label: 'Planned',
       entries: [
-        {
-          title: 'Investments',
-          text: 'Portfolio valuations, contributions and withdrawals, distributions, fees, and performance that separates flows, market moves and currency effects.',
-        },
         {
           title: 'Debts & mortgages',
           text: 'Loans and mortgages, schedules, derived balances, and payments split into principal and interest.',

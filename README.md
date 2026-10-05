@@ -17,7 +17,7 @@ work on the repository; it does not restate the blueprint's rules.
 ### User-facing production
 
 Phases 0–2 are accepted, frozen and production-verified. Phase 3 is still in
-progress, but Monthly and Spending are live. What is usable today:
+progress, but Monthly, Spending and Income are live. What is usable today:
 
 - account creation, email verification, sign-in, and an optional second factor;
 - settings: base and reporting currencies, timezone and locale;
@@ -73,7 +73,18 @@ progress, but Monthly and Spending are live. What is usable today:
   and how much unclassified, spending outside tracked accounts, and how reliable
   each month is, with fixed three-, six- and twelve-month averages of tracked
   spending, combined periods where month-end balances are missing, and the
-  month's categories and largest known expenses.
+  month's categories and largest known expenses;
+- Income across months, a year at a time: the year's income by month as
+  salary, bonus and other, what arrived in your tracked accounts and outside
+  them, the last twelve months, every year's total, each source's total with
+  one-off payments apart, gross wherever you recorded it, and the payments a
+  recurring source is missing from a finished month, with a link to where each
+  can be resolved. You can add a payment or an income source there. Each source
+  has its own page in its own currency: its details, its amount over time
+  against what arrived, and its payments a year at a time. From that page you
+  can change its amount from a payment on, change its name and payer, give it
+  an end date, or archive it; payments themselves are still recorded and
+  edited in Monthly.
 
 ### Phase 3 implementation
 
@@ -134,6 +145,16 @@ through historical correction's review as one batch and commits atomically or
 not at all; there is no other way for the grid to write. The decisions are in
 [ADR 0011](docs/adr/0011-bulk-history.md).
 
+The standalone Income pages are live in production too, at `/income` and
+`/income/sources/[id]`. The year view counts every income payment you recorded,
+in the month it arrived, each converted on its own date with stored rates
+only. That is a different figure from Monthly's "Tracked income", which counts
+only what a month's reconciliation saw arrive in tracked accounts, and the page
+says why the two can differ. Its missing payments come from the same schedule
+as Monthly's completeness, over completed months only. The source page stays in
+the source's own currency, and every edit it offers is an action that already
+existed. The decisions are in [ADR 0012](docs/adr/0012-income-pages.md).
+
 In production, Monthly consumes this through one composite read: a month's
 reconciliation, reporting-currency figures and completeness, the cash balances
 it is measured from, the month's transfers between cash accounts, the income it
@@ -141,14 +162,14 @@ expected and received, and the expenses it expected and recorded. Cash transfers
 are maintained inside Monthly's Accounts section, with no page of their own. The
 standalone Spending page reads the same reconciliation, reporting, rolling and
 span machinery through its own composite read and reports spending across
-months; it is not a transaction ledger. The standalone Income pages are not
-built yet.
+months; it is not a transaction ledger. The two Income pages have one read
+each, over the income recorded and its recurring sources; neither runs a
+reconciliation.
 
 ### Remaining Phase 3
 
 Phase 3 is **in progress**, and is neither accepted nor frozen. Still to do:
 
-- the standalone Income pages;
 - the remaining end-to-end journeys and hardening;
 - a cold review of the whole phase;
 - Phase 3 acceptance, production verification and freeze.
@@ -184,14 +205,15 @@ reconciliation identities, rate selection and every edge case.
 apps/web             Next.js App Router: auth pages, onboarding, settings, shell,
                      dashboard, accounts and account detail, Monthly overview,
                      income, known expenses, accounts and reconciliation,
-                     the Bulk History grid, standalone Spending; /api/auth,
+                     the Bulk History grid, standalone Spending, the Income
+                     year view and source page; /api/auth,
                      /api/cron/fx-refresh, /api/health
 packages/finance     pure engines — money, dates, FX, Unavailable/Partial,
                      positions and net worth, flow roles, recurrence,
                      completed-month, month-to-date and span reconciliation,
                      savings, reporting-currency figures, rolling averages,
                      the two reconciliation advisories, completed-month
-                     completeness
+                     completeness, the income classification
 packages/validation  Zod primitives and inputs shared by client, server, database
 packages/db          Drizzle schema, migrations, RLS policies, repositories, seed
 packages/application use cases: auth and sessions, mailer, settings, FX service,
@@ -200,13 +222,14 @@ packages/application use cases: auth and sessions, mailer, settings, FX service,
                      reconciliation, completeness, savings, reporting and
                      rolling read, the Monthly composite read with its review
                      state, the Spending composite read, historical
-                     correction's preview and confirm, and the Bulk History
-                     grid read and batch
+                     correction's preview and confirm, the Bulk History grid
+                     read and batch, and the two Income reads
 packages/config      tsconfig, ESLint (incl. the money-coercion rule), boundaries
 e2e                  Playwright: smoke, the auth and settings flow, the
-                     accounts, balances and net-worth journey, and the Monthly,
-                     Spending, corrective-action, historical-correction and
-                     Bulk History journeys
+                     accounts, balances and net-worth journey, the signed-in
+                     navigation, and the Monthly, Spending, corrective-action,
+                     historical-correction, Bulk History and two Income
+                     journeys
 scripts/db           role bootstrap, local PostgreSQL, currency reconciliation,
                      live environment and financial-invariant checks
 scripts/backup       dump → verify → encrypt
@@ -314,8 +337,7 @@ policy filtered can never pass verification. Restoring is documented in
   [reconciliation corrective actions](docs/adr/0009-reconciliation-corrective-actions.md),
   [historical correction and financial write coordination](docs/adr/0010-historical-correction.md),
   [Bulk History](docs/adr/0011-bulk-history.md),
-  [the standalone Income pages](docs/adr/0012-income-pages.md) (an accepted
-  design, not built yet).
+  [the standalone Income pages](docs/adr/0012-income-pages.md).
 - **Evidence for frozen phases:**
   [`docs/phase-0-acceptance.md`](docs/phase-0-acceptance.md),
   [`docs/phase-1-acceptance.md`](docs/phase-1-acceptance.md),

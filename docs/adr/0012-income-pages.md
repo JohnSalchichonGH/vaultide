@@ -287,3 +287,88 @@ page carries the edits. Splitting them keeps each review narrow.
 - The wording that keeps the Income pages' figures apart from Monthly's "Income"
   (§30.23 item 3). This record fixes the rule, not the words; the first build PR
   proposes them for review, on whichever page they land.
+
+---
+
+## Implementation status
+
+Appended after the fact, and it changes no decision above. The dated paragraph
+near the top, which says that at this record's date none of it is built, stays
+as it was written.
+
+Both build PRs landed as D9 planned: first the year view at `/income`, with
+D8's route wiring, then the source page at `/income/sources/[id]`, with D4's
+edits. From the second, an archived source's missing-payment line links to its
+page. D1–D9 hold as recorded. The build is more specific than the record in a
+few places, and contradicts it in none:
+
+- **D1.** A year before 1900 is not a page either, beside a malformed year and
+  one that has not begun. The by-source table lists each source with a payment
+  received in the year or an occurrence scheduled in it.
+- **D2.** The line names the months as well as the count: "Salary: 2 payments
+  missing in 2026 (August, September)." An archived source's line links to its
+  page at the year of its first missing payment.
+- **D3.** On the source page a term's recorded gross also counts as gross in
+  view, beside a payment's; "N without gross" counts payments only.
+- **D4.** Occurrences are received, skipped, missing, or **not yet due**: an
+  unresolved one in the current month or later. Their links are more specific
+  than "its month in Monthly":
+  - a received one links to its payment's row in the month the payment arrived,
+    which is D5's editor;
+  - a skipped one links to its own row in Monthly;
+  - a missing one goes where D2's line would send it: Monthly for the year's
+    only one, Bulk History when there are several;
+  - one not yet due links nowhere, and neither does an archived source's missing
+    one, because the page's own Unarchive and end-date controls are what resolve
+    it.
+
+  "Change the amount from…" is a button on each of the year's occurrences, and
+  is offered only while the source is active, as Monthly hides "Change future
+  amount" for an archived source. An end date, set, changed or removed, is
+  confirmed before it is written. The page answers only for the years from the
+  source's start year to the current one.
+- **D7.** Each read takes the user's rows in one `withUserRead` snapshot, so a
+  payment recorded between two reads can never be counted while its occurrence
+  is still flagged missing. The source page is in the source's own currency, so
+  it reads no rate and converts nothing; D7's conversion is the year view's.
+
+D5, D6, D8 and D9 are built exactly as recorded.
+
+**The wording "Out of scope" left to the first build PR.** Monthly's Overview
+figure is labelled "Tracked income". The year view's own figure is "Income
+recorded", split into "Into tracked accounts" and "Outside tracked accounts",
+and the page says beside it why its figures and Monthly's can differ.
+
+**Two reads of what resolves an occurrence.** The source page judges a missing
+occurrence against the source's own payments and skips, read by
+`listIncomeEntriesOfTemplateIn` and `listSkipsOfTemplateIn`. The year view and
+completeness judge it against the shared resolved read,
+`listResolvedOccurrencesInRangeIn`, which also reads expense entries and
+transfers. Both then ask the same schedule which occurrences are missing.
+
+The two agree only while nothing but an income entry or a skip can resolve an
+income source's occurrence. In Phase 3 that holds:
+
+- accepting an income occurrence materializes it as an income entry and as
+  nothing else, whether the acceptance comes from Monthly, from a reviewed
+  correction or from a Bulk History cell. The acceptance branches on the
+  template's kind, so only an expense source's occurrence becomes an expense
+  entry;
+- a Phase 3 transfer carries no occurrence. The one place a transfer is
+  inserted writes none, and a transfer's update cannot set one.
+
+An integration test, "reports missing exactly what the year view reports for
+the source, in each year"
+(`packages/application/test/integration/income-source.test.ts`), compares the
+two pages' results year by year on Phase 3 data.
+
+That is an assumption, and it is stated here so it is not lost: the source
+page's resolved set is complete only because nothing else can resolve an income
+occurrence. If a later phase adds another way to resolve one — "Out of scope"
+names `reinvested` income and income linked to an investment for Phase 4 — the
+source page's read must widen with it, in the change that adds it. Otherwise the
+source page would call a payment missing that the year view counts as resolved.
+
+**The known gap is still open.** Monthly's own Add income still shows the
+guard's refusal rather than opening the review. The Income pages' Add a payment
+opens it, as D5 decided.
