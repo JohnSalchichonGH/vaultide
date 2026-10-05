@@ -42,6 +42,7 @@ import {
 } from '../../src/monthly/review-service';
 import type { CompletedMonthlyPageDto, CurrentMonthlyPageDto } from '../../src/monthly/types';
 import { saveOrCorrect, setDormantFlag } from '../helpers/corrections';
+import { record, type SentStatement } from '../helpers/statement-shapes';
 
 /**
  * The Monthly page's read and its review state, against a real database
@@ -2416,5 +2417,128 @@ describe('the Income section’s read stays bounded', () => {
     const page = await current();
     expect(page.income.earlyReceiptCandidates).toHaveLength(5);
     expect(await countTransactions(SEPT_10)).toBe(base);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Suggestions are idempotent                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Rows a suggestion could write, counted as the table owner so no policy hides
+ * one: the flows an acceptance materializes, the skip a skip writes, and the
+ * audit row either would leave.
+ */
+async function writableRows(): Promise<Record<string, number>> {
+  const client = new pg.Client({ connectionString: harness.provisioned.ownerUrl });
+  await client.connect();
+  try {
+    const counts: Record<string, number> = {};
+    for (const table of ['income_entries', 'expense_entries', 'recurring_template_skips', 'audit_entries']) {
+      const result = await client.query<{ n: number }>(`SELECT count(*)::int AS n FROM ${table}`);
+      counts[table] = result.rows[0]?.n ?? -1;
+    }
+    return counts;
+  } finally {
+    await client.end();
+  }
+}
+
+/** A page read twice, with every statement both reads sent. */
+async function readTwice<T>(read: () => Promise<T>): Promise<{ first: T; second: T; sent: SentStatement[] }> {
+  const pages: T[] = [];
+  const sent = await record(async () => {
+    pages.push(await read());
+    pages.push(await read());
+  });
+  const [first, second] = pages;
+  if (first === undefined || second === undefined) throw new Error('a read failed while being recorded');
+  return { first, second, sent };
+}
+
+/** Every statement a read may send: its transaction, its context and its selects. */
+const READ_ONLY = /^(?:begin|commit|rollback|select|set user|set lock_timeout)\b/u;
+
+describe('suggestions are idempotent (21.3; 25 Phase 3 "Testing")', () => {
+  /**
+   * Suggestions are generated, not stored (6.2, 15.3): reading the month that
+   * shows them must neither materialize nor skip anything, and reading it again
+   * must show the same occurrences in the same states. Read through the one read
+   * the product uses, `getMonthlyPage`, for both kinds of month.
+   */
+  async function sources(): Promise<{ salary: string; gym: string; rent: string }> {
+    const bbva = await makeAccount('BBVA');
+    await statement(bbva, '2026-08-31', '1000.00');
+    await statement(bbva, '2026-09-30', '900.00');
+    const salary = await incomeSource({ cashPositionId: bbva });
+    const rent = await incomeSource({ name: 'Flat 2B', incomeKind: 'rental', dayOfMonth: 5, cashPositionId: bbva });
+    const gym = await createTemplate(flowDeps(), OCT_1, {
+      kind: 'expense',
+      name: 'Gym',
+      categoryId: groceries,
+      currency: 'EUR',
+      frequency: 'monthly',
+      dayOfMonth: 15,
+      startDate: '2026-01-01',
+      cashPositionId: bbva,
+      amount: '40.00',
+    });
+    // One occurrence already resolved, so the reads carry every state there is.
+    await skipSuggestion(flowDeps(), OCT_1, {
+      templateId: rent.id,
+      occurrenceDate: '2026-09-05',
+      reason: 'vacant',
+    });
+    return { salary: salary.id, gym: gym.template.id, rent: rent.id };
+  }
+
+  it('reads a completed month twice: the same occurrences, still due, and nothing written', async () => {
+    const ids = await sources();
+    const before = await writableRows();
+
+    const { first, second, sent } = await readTwice(() => completed());
+
+    expect(second.income.occurrences).toEqual(first.income.occurrences);
+    expect(second.expenses.occurrences).toEqual(first.expenses.occurrences);
+    const missing = (page: CompletedMonthlyPageDto) =>
+      page.reconciliation.buckets.flatMap((bucket) =>
+        bucket.issues.filter((issue) => issue.key === 'suggested_income_missing'),
+      );
+    expect(missing(second)).toEqual(missing(first));
+
+    // Still suggestions: due, and the missing salary still reported, not recorded.
+    expect(occurrenceOf(second, ids.salary, '2026-09-25').state).toEqual({ kind: 'due' });
+    expect(occurrenceOf(second, ids.rent, '2026-09-05').state.kind).toBe('skipped');
+    const gym = second.expenses.occurrences.find((row) => row.templateId === ids.gym);
+    expect(gym?.state.kind).toBe('due');
+    expect(missing(second).length).toBeGreaterThan(0);
+
+    // The recording saw both reads, and every statement in them is a read.
+    expect(sent.filter(({ shape }) => shape.startsWith('select ')).length).toBeGreaterThan(10);
+    expect(sent.filter(({ shape }) => !READ_ONLY.test(shape))).toEqual([]);
+    expect(await writableRows()).toEqual(before);
+  });
+
+  it('reads the current month twice: the same occurrences and early candidates, and nothing written', async () => {
+    const ids = await sources();
+    const before = await writableRows();
+
+    const { first, second, sent } = await readTwice(() => current());
+
+    expect(second.income.occurrences).toEqual(first.income.occurrences);
+    expect(second.income.earlyReceiptCandidates).toEqual(first.income.earlyReceiptCandidates);
+    expect(second.expenses.occurrences).toEqual(first.expenses.occurrences);
+    expect(second.expenses.paidTodayCandidates).toEqual(first.expenses.paidTodayCandidates);
+
+    // On 10 September the salary on the 25th and the gym on the 15th are both
+    // still to come, and the rent skipped on the 5th stays skipped.
+    expect(occurrenceOf(second, ids.salary, '2026-09-25').state.kind).toBe('upcoming');
+    expect(second.expenses.occurrences.find((row) => row.templateId === ids.gym)?.state.kind).toBe('upcoming');
+    expect(occurrenceOf(second, ids.rent, '2026-09-05').state.kind).toBe('skipped');
+
+    // The recording saw both reads, and every statement in them is a read.
+    expect(sent.filter(({ shape }) => shape.startsWith('select ')).length).toBeGreaterThan(10);
+    expect(sent.filter(({ shape }) => !READ_ONLY.test(shape))).toEqual([]);
+    expect(await writableRows()).toEqual(before);
   });
 });
