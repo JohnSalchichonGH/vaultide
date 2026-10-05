@@ -519,12 +519,18 @@ Remaining Phase 3 work, in the agreed order:
      only show the refusal, although the server can review such a creation and
      Monthly's transfer and balance forms already route through the review;
    - five items recorded with the Income pages and not fixed there:
-     - **navigation after a save:** PR #36 listed 86 places in the end-to-end
-       specs where a document navigation follows a save whose form refreshes.
-       33 of them go through an `open()` retry, in the `corrective-actions`,
-       `income` and `spending` specs, and are to move to `gotoAfterRefresh`
-       (`e2e/support/navigation.ts`). The WebKit click stall PR #36 examined
-       has a different mechanism and is still open;
+     - **two WebKit end-to-end symptoms:** every navigation and navigating
+       click that follows a save now waits for the page's router requests to
+       end (`waitForRouter`, `e2e/support/navigation.ts`), and the retries
+       that hid the race are gone. Two other WebKit symptoms are still open.
+       Neither reproduced in local repeats, and neither is that race:
+       - the click stall: `locator.click` on a visible, enabled element never
+         returns (`accounts.spec.ts` sign-out, CI run 35658623668;
+         `corrective-actions.spec.ts` confirm statement, locally). The call
+         logs end inside Playwright's own steps, which wait on the page to
+         paint or to answer;
+       - `page.goto: WebKit encountered an internal error` on a 404 address
+         (`income-source.spec.ts`, main CI run 37291119085);
      - **the shared amount form's version check:** Monthly's
        `ChangeFutureAmount` (`apps/web/src/features/monthly/income-editor.tsx`),
        now shared by the source page, builds its expectation from the row's
