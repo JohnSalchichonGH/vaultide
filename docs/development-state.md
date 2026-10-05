@@ -505,7 +505,7 @@ started**.
 
 Remaining Phase 3 work, in the agreed order:
 
-1. the remaining end-to-end journeys and Phase 3 hardening, including:
+1. Phase 3 hardening, including:
    - two known gaps recorded with Bulk History and not fixed there:
      - the ordinary record path accepts a non-zero balance dated a closed
        account's closing day when no balance sits on that day, because
@@ -525,12 +525,12 @@ Remaining Phase 3 work, in the agreed order:
        that hid the race are gone. Two other WebKit symptoms are still open.
        Neither reproduced in local repeats, and neither is that race:
        - the click stall: `locator.click` on a visible, enabled element never
-         returns (`accounts.spec.ts` sign-out, CI run 35658623668;
+         returns (`accounts.spec.ts` sign-out, in CI;
          `corrective-actions.spec.ts` confirm statement, locally). The call
          logs end inside Playwright's own steps, which wait on the page to
          paint or to answer;
        - `page.goto: WebKit encountered an internal error` on a 404 address
-         (`income-source.spec.ts`, main CI run 37291119085);
+         (`income-source.spec.ts`, in main CI);
      - **the shared amount form's version check:** Monthly's
        `ChangeFutureAmount` (`apps/web/src/features/monthly/income-editor.tsx`),
        now shared by the source page, builds its expectation from the row's
