@@ -24,6 +24,7 @@ import { AddIncomeForm } from '@/features/monthly/income-editor';
 export function AddPayment({
   forms,
   currencies,
+  minorUnitsByCurrency,
   defaultCurrency,
   bounds,
   today,
@@ -31,6 +32,7 @@ export function AddPayment({
 }: {
   readonly forms: IncomeFormsDto;
   readonly currencies: readonly string[];
+  readonly minorUnitsByCurrency: Readonly<Record<string, number>>;
   readonly defaultCurrency: string;
   readonly bounds: { readonly min: string; readonly max: string };
   readonly today: string;
@@ -48,6 +50,7 @@ export function AddPayment({
         key={generation}
         accounts={forms.cashAccounts}
         currencies={currencies}
+        minorUnitsByCurrency={minorUnitsByCurrency}
         bounds={bounds}
         today={today}
         defaultCurrency={defaultCurrency}

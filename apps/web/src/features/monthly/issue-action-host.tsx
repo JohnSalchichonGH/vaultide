@@ -339,6 +339,7 @@ export function IssueActionHost({
                       <AddIncomeForm
                         accounts={resources.incomeAccounts}
                         currencies={resources.currencies}
+                        minorUnitsByCurrency={resources.formatting.minorUnitsByCurrency}
                         bounds={open.target.dates}
                         today={resources.today}
                         defaultCurrency={resources.defaultCurrency}

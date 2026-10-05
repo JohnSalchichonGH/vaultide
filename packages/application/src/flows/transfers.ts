@@ -21,6 +21,7 @@ import { Decimal } from '@vaultide/finance';
 import type { RequestContext } from '../context';
 import { withUserWrite } from '../coordination';
 import { assertNoHistoricalReview } from '../corrections/guard';
+import { assertInputScaleIn } from '../currencies/scale';
 import {
   ImpossibleOperationError,
   NotFoundError,
@@ -261,20 +262,33 @@ async function resolveFactsIn(
   assertAccountParticipates(to, facts.occurredOn, 'occurredOn');
   assertAmountsAgree(from.currency, to.currency, facts.fromAmount, facts.toAmount);
 
-  if (facts.fee === null) return { from, to, fee: null };
-
-  const payer =
-    facts.fee.cashPositionId === from.id ? from : facts.fee.cashPositionId === to.id ? to : null;
-  if (payer === null) {
-    throw new ValidationError(
-      'The fee has to come out of one of the two accounts this transfer touches.',
-      { 'fee.cashPositionId': ['Choose the account that paid the fee.'] },
-    );
+  let fee: ResolvedFacts['fee'] = null;
+  if (facts.fee !== null) {
+    const payer =
+      facts.fee.cashPositionId === from.id ? from : facts.fee.cashPositionId === to.id ? to : null;
+    if (payer === null) {
+      throw new ValidationError(
+        'The fee has to come out of one of the two accounts this transfer touches.',
+        { 'fee.cashPositionId': ['Choose the account that paid the fee.'] },
+      );
+    }
+    // 8.1 on the fee's own date: the day it was charged, whichever day the
+    // transfer moved on.
+    assertAccountParticipates(payer, facts.fee.incurredOn, 'fee.incurredOn');
+    fee = { facts: facts.fee, payer };
   }
-  // 8.1 on the fee's own date: the day it was charged, whichever day the
-  // transfer moved on.
-  assertAccountParticipates(payer, facts.fee.incurredOn, 'fee.incurredOn');
-  return { from, to, fee: { facts: facts.fee, payer } };
+
+  // 7.2, each amount in the currency it is stored in: a leg in its own
+  // account's, the fee in its payer's. A correction states the whole
+  // aggregate, so it states all of them.
+  await assertInputScaleIn(tx, [
+    { field: 'fromAmount', amount: facts.fromAmount, currency: from.currency },
+    { field: 'toAmount', amount: facts.toAmount, currency: to.currency },
+    ...(fee === null
+      ? []
+      : [{ field: 'fee.amount', amount: fee.facts.amount, currency: fee.payer.currency }]),
+  ]);
+  return { from, to, fee };
 }
 
 /**

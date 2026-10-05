@@ -14,6 +14,7 @@ import { phase3ExpenseSettlements, type ExpenseSettlement } from '@vaultide/vali
 import type { RequestContext } from '../context';
 import { withUserWrite } from '../coordination';
 import { assertNoHistoricalReview } from '../corrections/guard';
+import { assertInputScaleIn, type AmountSource } from '../currencies/scale';
 import { NotFoundError, ValidationError, VersionConflictError } from '../errors';
 import {
   canonicalAmount,
@@ -262,6 +263,12 @@ export interface ExpenseCreateOptions extends ResolveOptions {
    * live from being recorded. Its `kind` still disqualifies it.
    */
   readonly carryCategory?: boolean;
+  /**
+   * `server` when the caller carried the amount from a stored row — an
+   * occurrence's term — and has judged whatever its own request stated (7.2).
+   * Left out, the amount is the request's and is judged here.
+   */
+  readonly amounts?: AmountSource;
 }
 
 export async function resolveExpenseCreateIn(
@@ -273,6 +280,9 @@ export async function resolveExpenseCreateIn(
   const occurrence = options.occurrence;
   assertNotFuture(ctx, args.incurredOn, 'incurredOn');
   assertExpenseSettlementAllowed(args.settlement);
+  if (options.amounts !== 'server') {
+    await assertInputScaleIn(tx, [{ field: 'amount', amount: args.amount, currency: args.currency }]);
+  }
 
   const category =
     options.carryCategory === true
@@ -358,6 +368,11 @@ export async function resolveExpenseUpdateIn(
   if (existing.version !== args.expectedVersion) {
     throw new VersionConflictError('This expense changed while you were editing it.');
   }
+
+  // In the stored expense's currency, which a correction never moves (7.2).
+  await assertInputScaleIn(tx, [
+    { field: 'amount', amount: args.amount, currency: existing.currency },
+  ]);
 
   const settlement = args.settlement ?? existing.settlement;
   const incurredOn = args.incurredOn ?? existing.incurredOn;

@@ -452,6 +452,7 @@ describe('Add a payment on the Income page and Add income on Monthly', () => {
       createElement(AddIncomeForm, {
         accounts: ACCOUNTS,
         currencies: ['EUR'],
+        minorUnitsByCurrency: { EUR: 2 },
         bounds: ownedEntryDateBounds({ month: '2026-09', monthEndsOn: '2026-09-30', today: '2026-10-04' }),
         today: '2026-10-04',
         defaultCurrency: 'EUR',
@@ -462,6 +463,7 @@ describe('Add a payment on the Income page and Add income on Monthly', () => {
       createElement(AddIncomeForm, {
         accounts: ACCOUNTS,
         currencies: ['EUR'],
+        minorUnitsByCurrency: { EUR: 2 },
         bounds: presentation.paymentDateBounds('2026-10-04'),
         today: '2026-10-04',
         defaultCurrency: 'EUR',
@@ -505,6 +507,7 @@ describe('Add a payment on the Income page and Add income on Monthly', () => {
       createElement(AddIncomeSourceForm, {
         accounts: ACCOUNTS,
         currencies: ['EUR'],
+        minorUnitsByCurrency: { EUR: 2 },
         defaultCurrency: 'EUR',
         today: '2026-10-04',
         locale: 'en-GB',

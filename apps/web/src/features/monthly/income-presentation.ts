@@ -1,5 +1,10 @@
 import type { IncomeOccurrenceDto, MonthlyIncomeEntryDto } from '@vaultide/application';
-import { allowedIncomeSettlements, rentalOnlySkipReasons, skipReasons } from '@vaultide/validation';
+import {
+  allowedIncomeSettlements,
+  moneyString,
+  rentalOnlySkipReasons,
+  skipReasons,
+} from '@vaultide/validation';
 
 /**
  * How Monthly's Income section says what the read returned (blueprint 6.2, 7.4,
@@ -204,6 +209,24 @@ export function correctableDateBounds(today: string): {
  * historical schedule (§30.10) — but it makes every month since expect an
  * occurrence, so the form says so before the save rather than after.
  */
+/**
+ * Why a net or gross typed into an income form cannot be sent, or `null` when
+ * none of them stops it (7.2).
+ *
+ * Each is checked as the decimal string it is against the currency's minor
+ * units, with the server's own wording. Income may be zero, so a negative is
+ * refused and a zero is not. A blank is the form's own business: a required net
+ * says so itself, and a blank gross is simply not sent.
+ */
+export function incomeAmountProblem(amounts: readonly string[], minorUnits: number): string | null {
+  for (const amount of amounts) {
+    if (amount === '') continue;
+    const parsed = moneyString({ minorUnits, nonNegative: true }).safeParse(amount);
+    if (!parsed.success) return parsed.error.issues[0]?.message ?? 'Enter an amount.';
+  }
+  return null;
+}
+
 export const startsInThePast = (startDate: string, today: string): boolean => startDate < today;
 
 export const HISTORICAL_START_WARNING =

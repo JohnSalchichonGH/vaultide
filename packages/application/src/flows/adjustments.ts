@@ -176,18 +176,25 @@ async function acceptAdjustmentIn(
     throw stale(currency, args.month);
   }
 
-  return createIncomeEntryIn(tx, ctx, {
-    kind: 'adjustment',
-    receivedOn: discrepancy.on,
-    // The server's own figure. The request's copy decided only whether this
-    // acceptance was still about the discrepancy the user saw.
-    netAmount: discrepancy.amount.toString(),
-    currency,
-    settlement: 'tracked_cash',
-    // 8.2's residual belongs to the bucket, not to an account (ADR 0009 §6).
-    cashPositionId: null,
-    description: descriptionOf(args.month, args.note),
-  });
+  return createIncomeEntryIn(
+    tx,
+    ctx,
+    {
+      kind: 'adjustment',
+      receivedOn: discrepancy.on,
+      // The server's own figure. The request's copy decided only whether this
+      // acceptance was still about the discrepancy the user saw.
+      netAmount: discrepancy.amount.toString(),
+      currency,
+      settlement: 'tracked_cash',
+      // 8.2's residual belongs to the bucket, not to an account (ADR 0009 §6).
+      cashPositionId: null,
+      description: descriptionOf(args.month, args.note),
+    },
+    // Derived, not typed: the input-scale rule (7.2) is about what a user
+    // enters, and rounding a computed figure is a separate rule.
+    'server',
+  );
 }
 
 export async function acceptUnexplainedInflowAsAdjustment(

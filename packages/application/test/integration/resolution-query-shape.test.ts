@@ -415,10 +415,11 @@ describe('creating, correcting and deleting an income entry', () => {
       ...overrides,
     });
 
-  it('creates one on a named account: the account, then the write', async () => {
+  it('creates one on a named account: the currency, the account, then the write', async () => {
     const sent = await shapes(() => create());
     expect(sent).toEqual([
       ...WRITE_OPEN,
+      'select currencies',
       'select positions',
       'insert income_entries',
       'insert audit_entries',
@@ -430,6 +431,7 @@ describe('creating, correcting and deleting an income entry', () => {
     const sent = await shapes(() => create({ cashPositionId: null }));
     expect(sent).toEqual([
       ...WRITE_OPEN,
+      'select currencies',
       'select positions',
       'insert income_entries',
       'insert audit_entries',
@@ -441,6 +443,7 @@ describe('creating, correcting and deleting an income entry', () => {
     const sent = await shapes(() => create({ settlement: 'external', cashPositionId: null }));
     expect(sent).toEqual([
       ...WRITE_OPEN,
+      'select currencies',
       'insert income_entries',
       'insert audit_entries',
       'commit',
@@ -456,6 +459,7 @@ describe('creating, correcting and deleting an income entry', () => {
     const sent = await shapes(() => create({ cashPositionId: dormant }));
     expect(sent).toEqual([
       ...WRITE_OPEN,
+      'select currencies',
       'select positions',
       'insert income_entries',
       'insert audit_entries',
@@ -466,7 +470,7 @@ describe('creating, correcting and deleting an income entry', () => {
     ]);
   });
 
-  it('corrects one: the entry under its lock, its account, then the write', async () => {
+  it('corrects one: the entry under its lock, its currency, its account, then the write', async () => {
     const entry = await create();
     const sent = await shapes(() =>
       updateIncomeEntry(flows(), OCT_5, {
@@ -478,6 +482,7 @@ describe('creating, correcting and deleting an income entry', () => {
     expect(sent).toEqual([
       ...WRITE_OPEN,
       'select income_entries for update',
+      'select currencies',
       'select positions',
       'select income_entries for update',
       'update income_entries',
@@ -514,7 +519,13 @@ describe('creating, correcting and deleting an income entry', () => {
         ),
       ),
     );
-    expect(update).toEqual([...READ_OPEN, 'select income_entries', 'select positions', 'commit']);
+    expect(update).toEqual([
+      ...READ_OPEN,
+      'select income_entries',
+      'select currencies',
+      'select positions',
+      'commit',
+    ]);
 
     const remove = await shapes(() =>
       withUserRead(harness.db, { userId: USER_A }, (tx) =>
@@ -534,6 +545,26 @@ describe('accepting and skipping a recurring occurrence', () => {
     expect(sent).toEqual([
       ...WRITE_OPEN,
       'select recurring_templates',
+      'select recurring_template_terms',
+      'select recurring_templates for update',
+      'select recurring_template_skips',
+      'select income_entries+expense_entries+transfers',
+      'select positions',
+      'insert income_entries',
+      'insert audit_entries',
+      'commit',
+    ]);
+  });
+
+  it('accepts one at its own amount, judging that amount in the source’s currency first', async () => {
+    const templateId = await interestTemplate(bbva);
+    const sent = await shapes(() =>
+      acceptSuggestion(flows(), OCT_5, { templateId, occurrenceDate: '2026-10-02', amount: '3.50' }),
+    );
+    expect(sent).toEqual([
+      ...WRITE_OPEN,
+      'select recurring_templates',
+      'select currencies',
       'select recurring_template_terms',
       'select recurring_templates for update',
       'select recurring_template_skips',

@@ -54,6 +54,7 @@ import {
   dateBoundsMessage,
   ownedEntryDateBounds,
   pickerCurrencies,
+  incomeAmountProblem,
   incomeKindLabel,
   occurrenceAnchorId,
   type AddIncomeInitialValues,
@@ -504,6 +505,14 @@ export function ChangeFutureAmount({
               return;
             }
             const grossAmount = normalizeMoneyInput(gross);
+            const problem = incomeAmountProblem(
+              [amount, grossAmount],
+              minorUnitsOf(formatting, currency),
+            );
+            if (problem !== null) {
+              setError(problem);
+              return;
+            }
             startTransition(async () => {
               const result = await setTemplateTermAction({
                 templateId,
@@ -696,6 +705,14 @@ function AdjustAndAccept({
               return;
             }
             const grossAmount = normalizeMoneyInput(gross);
+            const problem = incomeAmountProblem(
+              clearGross ? [amount] : [amount, grossAmount],
+              minorUnitsOf(formatting, occurrence.currency),
+            );
+            if (problem !== null) {
+              setError(problem);
+              return;
+            }
             startTransition(async () => {
               const result = await acceptSuggestionAction({
                 templateId: occurrence.templateId,
@@ -1876,6 +1893,7 @@ export async function saveNewIncome(
 export function AddIncomeForm({
   accounts,
   currencies,
+  minorUnitsByCurrency,
   bounds,
   today,
   defaultCurrency,
@@ -1886,6 +1904,8 @@ export function AddIncomeForm({
 }: {
   readonly accounts: MonthlyIncomeDto['cashAccounts'];
   readonly currencies: readonly string[];
+  /** Each offered currency's minor units, which the amounts are checked against (7.2). */
+  readonly minorUnitsByCurrency: Readonly<Record<string, number>>;
   readonly bounds: { readonly min: string; readonly max: string };
   /**
    * The day the page is being read on, where the caller knows it. Only the
@@ -1968,6 +1988,14 @@ export function AddIncomeForm({
           return;
         }
         const grossAmount = normalizeMoneyInput(gross);
+        const problem = incomeAmountProblem(
+          [amount, grossAmount],
+          minorUnitsByCurrency[currency] ?? 2,
+        );
+        if (problem !== null) {
+          setError(problem);
+          return;
+        }
 
         startTransition(async () => {
           const outcome = await saveNewIncome(
@@ -2140,12 +2168,15 @@ const FREQUENCIES = [
 export function AddIncomeSourceForm({
   accounts,
   currencies,
+  minorUnitsByCurrency,
   defaultCurrency,
   today,
   locale,
 }: {
   readonly accounts: MonthlyIncomeDto['cashAccounts'];
   readonly currencies: readonly string[];
+  /** Each offered currency's minor units, which the amounts are checked against (7.2). */
+  readonly minorUnitsByCurrency: Readonly<Record<string, number>>;
   readonly defaultCurrency: string;
   readonly today: string;
   readonly locale: string;
@@ -2194,6 +2225,11 @@ export function AddIncomeSourceForm({
           return;
         }
         const grossAmount = normalizeMoneyInput(gross);
+        const problem = incomeAmountProblem([net, grossAmount], minorUnitsByCurrency[currency] ?? 2);
+        if (problem !== null) {
+          setError(problem);
+          return;
+        }
         const day = Number.parseInt(dayOfMonth, 10);
 
         startTransition(async () => {
@@ -2599,6 +2635,7 @@ export function IncomeSection({
           <AddIncomeForm
             accounts={income.cashAccounts}
             currencies={currencies}
+            minorUnitsByCurrency={formatting.minorUnitsByCurrency}
             bounds={bounds}
             today={today}
             defaultCurrency={defaultCurrency}
@@ -2608,6 +2645,7 @@ export function IncomeSection({
           <AddIncomeSourceForm
             accounts={income.cashAccounts}
             currencies={currencies}
+            minorUnitsByCurrency={formatting.minorUnitsByCurrency}
             defaultCurrency={defaultCurrency}
             today={today}
             locale={formatting.locale}

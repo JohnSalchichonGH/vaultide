@@ -275,9 +275,12 @@ describe('Preview', () => {
     );
     // No stored row is revised and no occurrence claimed, so none of those
     // families is read at all.
-    expect(sent.slice(READ_OPEN.length, READ_OPEN.length + 3)).toEqual([
+    expect(sent.slice(READ_OPEN.length, READ_OPEN.length + 4)).toEqual([
       'select positions',
       'select position_valuations',
+      // The minor units every amount in the batch is judged by, once the
+      // cells are decided: one read for the whole batch (7.2).
+      'select currencies',
       // …and then the correction evidence, which starts again from the
       // positions and the whole balance history.
       'select positions',

@@ -17,6 +17,7 @@ import {
 import type { IncomeKind, RecurrenceFrequency, TemplateKind } from '@vaultide/validation';
 import type { RequestContext } from '../context';
 import { withUserWrite } from '../coordination';
+import { assertInputScaleIn } from '../currencies/scale';
 import {
   DuplicateConflictError,
   ImpossibleOperationError,
@@ -177,12 +178,25 @@ async function validateTemplateShapeIn(
   }
 }
 
+/** A term's amount and gross as the request states them, in the source's currency (7.2). */
+async function assertTermScaleIn(
+  tx: Transaction,
+  args: { readonly amount: string; readonly grossAmount?: string | undefined },
+  currency: string,
+): Promise<void> {
+  await assertInputScaleIn(tx, [
+    { field: 'amount', amount: args.amount, currency },
+    { field: 'grossAmount', amount: args.grossAmount, currency },
+  ]);
+}
+
 async function createTemplateIn(
   tx: Transaction,
   ctx: RequestContext,
   args: CreateTemplateArgs,
 ): Promise<{ template: RecurringTemplateRow; term: RecurringTemplateTermRow }> {
   await validateTemplateShapeIn(tx, args);
+  await assertTermScaleIn(tx, args, args.currency);
 
   const audit = auditContextOf(ctx);
   const template = await insertTemplateIn(tx, audit, {
@@ -376,6 +390,8 @@ async function setTemplateTermIn(
       effectiveFrom: [`This source starts on ${template.startDate}.`],
     });
   }
+  // A term is in its template's currency, which never moves.
+  await assertTermScaleIn(tx, args, template.currency);
 
   const audit = auditContextOf(ctx);
 

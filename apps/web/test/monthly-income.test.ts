@@ -1,6 +1,7 @@
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
+import { minorUnitsMessage } from '@vaultide/validation';
 import type { SaveOutcome } from '@/features/monthly/autosave';
 import type {
   CurrentMonthlyIncomeDto,
@@ -56,6 +57,7 @@ const {
   accountForCurrency,
   defaultPickerCurrency,
   crossMonthNotice,
+  incomeAmountProblem,
   occurrenceAnchorId,
   occurrenceStateLabel,
   EARLIEST_CORRECTABLE_DATE,
@@ -779,6 +781,7 @@ const addIncome = (currencies: readonly string[] = SUPPORTED): string =>
     createElement(AddIncomeForm, {
       accounts: EUR_ONLY,
       currencies,
+      minorUnitsByCurrency: { CHF: 2, EUR: 2, USD: 2 },
       bounds: { min: '2026-09-01', max: '2026-09-30' },
       defaultCurrency: 'EUR',
     }),
@@ -789,6 +792,7 @@ const addSource = (currencies: readonly string[] = SUPPORTED): string =>
     createElement(AddIncomeSourceForm, {
       accounts: EUR_ONLY,
       currencies,
+      minorUnitsByCurrency: { CHF: 2, EUR: 2, USD: 2 },
       defaultCurrency: 'EUR',
       today: '2026-09-10',
       locale: 'en-GB',
@@ -842,5 +846,47 @@ describe('adding a recurring income source', () => {
   it('exposes nothing that manages an existing source', () => {
     const html = addSource().toLowerCase();
     for (const word of ['archive', 'unarchive', 'delete']) expect(html).not.toContain(word);
+  });
+});
+
+describe('the amounts an income form sends, against its currency’s minor units (7.2)', () => {
+  // Add income, Add income source, Change future amount (shared with the source
+  // page) and Adjust and record each send a net and, when one is typed, a gross.
+  // Each checks both with `incomeAmountProblem` before it sends anything, in the
+  // currency the amounts are in, and says what the server would say.
+  const FORMS = [
+    'Add income (net, gross)',
+    'Add income source (usual net, usual gross)',
+    'Change future amount (net, gross)',
+    'Adjust and record (net, gross)',
+  ];
+  const CURRENCIES: readonly [string, number][] = [
+    ['EUR', 2],
+    ['JPY', 0],
+    ['KWD', 3],
+  ];
+
+  for (const form of FORMS) {
+    for (const [currency, units] of CURRENCIES) {
+      it(`${form}: refuses one decimal past ${currency}'s limit and accepts the limit`, () => {
+        const atLimit = units === 0 ? '1250' : `1250.${'5'.repeat(units)}`;
+        const past = `1250.${'5'.repeat(units + 1)}`;
+        expect(incomeAmountProblem([atLimit, ''], units)).toBeNull();
+        expect(incomeAmountProblem([atLimit, atLimit], units)).toBeNull();
+        expect(incomeAmountProblem([past, ''], units)).toBe(minorUnitsMessage(units));
+        expect(incomeAmountProblem([atLimit, past], units)).toBe(minorUnitsMessage(units));
+      });
+    }
+  }
+
+  it('lets income be zero but not negative, and leaves a blank to the form', () => {
+    expect(incomeAmountProblem(['0', ''], 2)).toBeNull();
+    expect(incomeAmountProblem(['-1', ''], 2)).toBe('This amount cannot be negative.');
+    expect(incomeAmountProblem(['', ''], 2)).toBeNull();
+  });
+
+  it('says it in the exact words of the server', () => {
+    expect(incomeAmountProblem(['12.345'], 2)).toBe('Use at most 2 decimals for this currency.');
+    expect(incomeAmountProblem(['1.5'], 0)).toBe('This currency has no decimals.');
   });
 });

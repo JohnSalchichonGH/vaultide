@@ -13,6 +13,7 @@ import { allowedIncomeSettlements, type IncomeKind, type IncomeSettlement } from
 import type { RequestContext } from '../context';
 import { withUserWrite } from '../coordination';
 import { assertNoHistoricalReview } from '../corrections/guard';
+import { assertInputScaleIn, type AmountSource } from '../currencies/scale';
 import { NotFoundError, ValidationError, VersionConflictError } from '../errors';
 import {
   canonicalAmount,
@@ -311,16 +312,37 @@ export function planIncomeCreate(
  * services derive (ADR 0009 §5, ADR 0010 §15). Everything a direct caller gets
  * — the settlement matrix, the null-leg rule, the future-date rule and the
  * dormancy consequence — they get too.
+ *
+ * Except the input-scale rule (7.2), which is about what a request states:
+ * `amounts: 'server'` says the caller derived the amounts or carried them from
+ * a stored row, and has judged whatever part of them its own request stated.
  */
 export async function resolveIncomeCreateIn(
   tx: Transaction,
   ctx: RequestContext,
   args: IncomeEntryArgs,
   occurrence?: OccurrenceRef,
+  amounts: AmountSource = 'request',
 ): Promise<IncomeWritePlan> {
   const decision = decideIncomeCreate(ctx.today, args);
+  if (amounts === 'request') await assertIncomeScaleIn(tx, args, decision.columns.currency);
   const leg = decision.leg === null ? null : await resolveTrackedCashLegIn(tx, decision.leg);
   return planIncomeCreate(decision, leg, occurrence);
+}
+
+/** The net and gross a request states, in the currency the entry is stored in (7.2). */
+async function assertIncomeScaleIn(
+  tx: Transaction,
+  args: {
+    readonly netAmount?: string | undefined;
+    readonly grossAmount?: string | null | undefined;
+  },
+  currency: string,
+): Promise<void> {
+  await assertInputScaleIn(tx, [
+    { field: 'netAmount', amount: args.netAmount, currency },
+    { field: 'grossAmount', amount: args.grossAmount, currency },
+  ]);
 }
 
 /**
@@ -426,6 +448,8 @@ export async function resolveIncomeUpdateIn(
   if (existing === undefined) throw new NotFoundError('That income entry no longer exists.');
 
   const decision = decideIncomeUpdate(ctx.today, existing, args);
+  // In the stored entry's currency, which a correction never moves.
+  await assertIncomeScaleIn(tx, args, decision.columns.currency);
   const leg = decision.leg === null ? null : await resolveTrackedCashLegIn(tx, decision.leg);
   return planIncomeUpdate(decision, leg);
 }
@@ -553,8 +577,9 @@ export async function createIncomeEntryIn(
   tx: Transaction,
   ctx: RequestContext,
   args: IncomeEntryArgs,
+  amounts: AmountSource = 'request',
 ): Promise<IncomeEntryRow> {
-  const plan = await resolveIncomeCreateIn(tx, ctx, args);
+  const plan = await resolveIncomeCreateIn(tx, ctx, args, undefined, amounts);
   assertNoHistoricalReview(plan, ctx.today);
   return applyIncomePlanIn(tx, ctx, plan);
 }

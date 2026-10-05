@@ -33,6 +33,14 @@ export interface StatedAmount {
   readonly currency: string;
 }
 
+/**
+ * Where a write's amounts come from, for a resolver more than one kind of
+ * caller shares. `request`: the user stated them, and the resolver judges them.
+ * `server`: the caller derived them, or carried them from a stored row, and has
+ * judged whatever part of them its own request stated.
+ */
+export type AmountSource = 'request' | 'server';
+
 const UNKNOWN_CURRENCY = 'That is not a currency Vaultide knows.';
 
 /**

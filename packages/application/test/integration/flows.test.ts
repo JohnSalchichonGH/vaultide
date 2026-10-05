@@ -2303,16 +2303,16 @@ describe('a materialized recurring expense is still an expense', () => {
   // the difference has to be stated — otherwise a zero term reaches the CHECK
   // and the user is shown an internal error for an ordinary data problem.
 
-  async function expenseTemplate(amount: string) {
+  async function expenseTemplate(amount: string, currency = 'EUR', cashPositionId = bbva) {
     const { template } = await createTemplate(deps(), SEPT_15, {
       kind: 'expense',
       name: 'Gym',
       categoryId: groceries,
-      currency: 'EUR',
+      currency,
       frequency: 'monthly',
       dayOfMonth: 1,
       startDate: '2026-01-01',
-      cashPositionId: bbva,
+      cashPositionId,
       amount,
     });
     return template;
@@ -2362,12 +2362,19 @@ describe('a materialized recurring expense is still an expense', () => {
   });
 
   it('accepts the smallest amount above zero, so the bound is zero and not a cent', async () => {
-    const template = await expenseTemplate('0.00000001');
+    // 0.001 is KWD's smallest unit and below a cent's worth, so this still tells "above zero" from "at least a cent".
+    const dinar = await createCashAccount(harness.services.positions, SEPT_15, {
+      name: 'Kuwait',
+      currency: 'KWD',
+      accountType: 'checking',
+      openedOn: null,
+    });
+    const template = await expenseTemplate('0.001', 'KWD', dinar.id);
     const accepted = await acceptSuggestion(deps(), SEPT_15, {
       templateId: template.id,
       occurrenceDate: '2026-09-01',
     });
-    expect(accepted.entry).toMatchObject({ amount: '0.00000001' });
+    expect(accepted.entry).toMatchObject({ amount: '0.00100000' });
   });
 
   it('leaves income’s zero semantics untouched', async () => {

@@ -199,6 +199,7 @@ export default async function IncomePage({
             <AddPayment
               forms={page.forms}
               currencies={currencies}
+              minorUnitsByCurrency={page.minorUnitsByCurrency}
               defaultCurrency={defaultCurrency}
               bounds={paymentDateBounds(page.today)}
               today={page.today}
@@ -218,6 +219,7 @@ export default async function IncomePage({
             <AddIncomeSourceForm
               accounts={page.forms.cashAccounts}
               currencies={currencies}
+              minorUnitsByCurrency={page.minorUnitsByCurrency}
               defaultCurrency={defaultCurrency}
               today={page.today}
               locale={locale}

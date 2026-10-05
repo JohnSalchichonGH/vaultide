@@ -28,6 +28,7 @@ import {
 import { bulkHistoryInput } from '@vaultide/validation';
 import type { RequestContext } from '../context';
 import type { BulkHistoryDraft, BulkHistoryOperation } from '../corrections/draft';
+import { assertInputScaleIn, type StatedAmount } from '../currencies/scale';
 import {
   DuplicateConflictError,
   ImpossibleOperationError,
@@ -658,6 +659,27 @@ export function decideBulkHistory(
   return composeBulkHistoryPlan(request.startMonth, steps);
 }
 
+/**
+ * The amounts a batch's cells state, each keyed to its cell and in the currency
+ * its own plan stores it in: a balance in its account's, an income cell in its
+ * entry's (7.2). A gross an income cell inherits from its term is carried from
+ * a stored row rather than typed, so it is not among them.
+ */
+export function bulkStatedAmountsOf(steps: readonly BulkHistoryStep[]): StatedAmount[] {
+  return steps.flatMap((step): StatedAmount[] => {
+    const { operation } = step;
+    const field = bulkCellKeyOf(operation);
+    if (step.family === 'valuation') {
+      return 'amount' in operation
+        ? [{ field, amount: operation.amount, currency: step.plan.position.currency }]
+        : [];
+    }
+    return 'netAmount' in operation && step.plan.columns !== null
+      ? [{ field, amount: operation.netAmount, currency: step.plan.columns.currency }]
+      : [];
+  });
+}
+
 /* -------------------------------------------------------------------------- */
 /* Resolve and apply                                                           */
 /* -------------------------------------------------------------------------- */
@@ -705,7 +727,7 @@ export async function resolveBulkHistoryIn(
   const skips = await listSkipsAtIn(tx, keys.claims);
   const materialized = await listMaterializedAtIn(tx, keys.claims);
 
-  return decideBulkHistory(ctx.today, request, {
+  const plan = decideBulkHistory(ctx.today, request, {
     positions,
     valuations,
     occupants,
@@ -715,6 +737,11 @@ export async function resolveBulkHistoryIn(
     skips,
     materialized,
   });
+  // Once every cell is decided, so each amount is judged in the currency its
+  // own plan stores it in; one statement for the whole batch, and a refusal
+  // names the cell.
+  await assertInputScaleIn(tx, bulkStatedAmountsOf(plan.steps));
+  return plan;
 }
 
 /**

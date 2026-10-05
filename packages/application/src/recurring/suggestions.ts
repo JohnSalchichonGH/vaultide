@@ -37,6 +37,7 @@ import {
   ValidationError,
 } from '../errors';
 import { assertNoHistoricalReview } from '../corrections/guard';
+import { assertInputScaleIn } from '../currencies/scale';
 import {
   applyExpensePlanIn,
   resolveExpenseCreateIn,
@@ -533,6 +534,13 @@ export async function resolveAcceptSuggestionIn(
   if (template === undefined) throw new NotFoundError('That source no longer exists.');
 
   const { financialDate } = decideAcceptance(ctx.today, template, args);
+  // 7.2, for what this request states, in the source's own currency. An amount
+  // it leaves out is the term's, carried from a stored row, and is not the
+  // user's to fix here — so the flow below is resolved with `amounts: 'server'`.
+  await assertInputScaleIn(tx, [
+    { field: 'amount', amount: args.amount, currency: template.currency },
+    { field: 'grossAmount', amount: args.grossAmount, currency: template.currency },
+  ]);
   const { amount, grossAmount, cashPositionId } = decideAcceptedAmounts(
     template,
     await listTermsIn(tx, args.templateId),
@@ -567,6 +575,7 @@ export async function resolveAcceptSuggestionIn(
         ...(args.description === undefined ? {} : { description: args.description }),
       },
       occurrence,
+      'server',
     );
     return {
       kind: 'income',
@@ -600,7 +609,7 @@ export async function resolveAcceptSuggestionIn(
     },
     // The category was chosen when the template was made, and a category
     // archived since does not change what its occurrences are (30.22 item 9).
-    { lock: options.lock, occurrence, carryCategory: true },
+    { lock: options.lock, occurrence, carryCategory: true, amounts: 'server' },
   );
   return {
     kind: 'expense',

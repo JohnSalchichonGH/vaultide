@@ -533,16 +533,29 @@ test.describe('the monthly income editor', () => {
     await page.getByTestId('income-add-toggle').click();
     await page.getByTestId('income-kind').selectOption('other');
     await fillTestId(page, 'income-received-on', '2026-10-02');
-    await fillTestId(page, 'income-net', '150.00');
     await page.getByTestId('income-account').selectOption({ label: 'Everyday' });
     await fillTestId(page, 'income-description', 'Sold the old bike');
+
+    // A euro has two decimals (7.2): a third is refused before anything is
+    // sent, in the server's own words, and nothing is saved.
+    await fillTestId(page, 'income-net', '12.345');
+    await page.getByTestId('income-submit').click();
+    await expect(page.getByTestId('income-error')).toHaveText(
+      'Use at most 2 decimals for this currency.',
+    );
+    await expect(page.getByTestId('income-saved')).toHaveCount(0);
+    await expect(page.getByTestId('income-entry')).toHaveCount(0);
+
+    await fillTestId(page, 'income-net', '12.34');
     await page.getByTestId('income-submit').click();
     await expect(page.getByTestId('income-saved')).toContainText('Income added.');
+    await expect(page.getByTestId('income-error')).toHaveCount(0);
 
-    // It appears once, in the group for income nothing scheduled.
+    // It appears once, as the server's refresh of the month reads it, in the
+    // group for income nothing scheduled.
     await expect(page.getByTestId('income-entry')).toHaveCount(1);
     await expect(page.getByTestId('income-direct')).toContainText('Sold the old bike');
-    await expect(page.getByTestId('income-direct')).toContainText('€150.00');
+    await expect(page.getByTestId('income-direct')).toContainText('€12.34');
 
     // A date outside the month on screen is not offered at all.
     await expect(page.getByTestId('income-received-on')).toHaveAttribute('min', '2026-10-01');
