@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { gotoAfterRefresh, reloadAfterRefresh, waitForRouter } from '../support/navigation';
 
 /**
  * Historical Correction, end to end (blueprint 15.3, 30.22; ADR 0010; §108–§111
@@ -107,6 +108,7 @@ async function accountWithAugustStatement(
   await page.getByTestId('account-submit').click();
   await expect(page.getByText(`${options.name} added.`)).toBeVisible();
 
+  await waitForRouter(page);
   await page.getByRole('link', { name: options.name, exact: true }).click();
   await page.getByTestId('confirm-statement-2026-08').click();
   await expect(page.getByTestId('month-end-2026-08')).toHaveCount(0);
@@ -140,7 +142,7 @@ test.describe('correcting a past month-end balance', () => {
     await page.getByTestId('confirm-statement-2026-09').click();
     await expect(page.getByTestId('month-end-2026-09')).toHaveCount(0);
 
-    await page.goto('/monthly/2026-09');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
     await expect(page.getByTestId('monthly-kind')).toHaveText('Completed month');
     const row = page
       .getByTestId('monthly-accounts')
@@ -168,7 +170,7 @@ test.describe('correcting a past month-end balance', () => {
     await expect(page.getByTestId('entry-delete-confirm-panel')).toHaveCount(0);
 
     // --- the correction ----------------------------------------------------
-    await page.goto('/monthly/2026-09');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
     const closing = page
       .getByTestId('monthly-accounts')
       .getByTestId('monthly-account')
@@ -224,7 +226,7 @@ test.describe('correcting a past month-end balance', () => {
     await expect(page.getByTestId('reconciliation-status')).toContainText('Unresolved');
 
     // The account's own history holds exactly one balance for 30 September.
-    await page.goto('/accounts?tab=cash');
+    await gotoAfterRefresh(page, '/accounts?tab=cash');
     await page.getByRole('link', { name: 'Everyday', exact: true }).click();
     const history = page.getByTestId('valuation-history');
     await expect(history).toContainText('2026-09-30');
@@ -247,7 +249,7 @@ test.describe('moving a recorded row into another month', () => {
     await expect(page.getByTestId('month-end-2026-09')).toHaveCount(0);
 
     // One ordinary income row in September, through the product's own form.
-    await page.goto('/monthly/2026-09');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
     await page.getByTestId('income-add-toggle').click();
     await page.getByTestId('income-kind').selectOption('other');
     await fillTestId(page, 'income-received-on', '2026-09-20');
@@ -283,7 +285,7 @@ test.describe('moving a recorded row into another month', () => {
 
     // September no longer owns it; October does.
     await expect(page.getByTestId('income-entry')).toHaveCount(0);
-    await page.goto('/monthly/2026-10');
+    await gotoAfterRefresh(page, '/monthly/2026-10');
     await expect(page.getByTestId('entry-received-on')).toHaveValue('2026-10-03');
   });
 });
@@ -303,7 +305,7 @@ test.describe('correcting a fact no figure reads', () => {
     await expect(page.getByTestId('month-end-2026-09')).toHaveCount(0);
 
     // A September salary with both figures, through the product's own form.
-    await page.goto('/monthly/2026-09');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
     await page.getByTestId('income-add-toggle').click();
     await page.getByTestId('income-kind').selectOption('employment');
     await fillTestId(page, 'income-received-on', '2026-09-25');
@@ -339,7 +341,7 @@ test.describe('correcting a fact no figure reads', () => {
     await expect(review(page)).toHaveCount(0);
 
     // The row holds the corrected gross, and the net it always had.
-    await page.reload();
+    await reloadAfterRefresh(page);
     await expect(page.getByTestId('entry-gross')).toHaveValue('2700.00');
     await expect(page.getByTestId('entry-net')).toHaveValue('2100.00');
   });
@@ -363,7 +365,7 @@ test.describe('moving a record between two accounts of the same name', () => {
     name: string,
     known: readonly string[],
   ): Promise<string> {
-    await page.goto('/accounts?tab=cash');
+    await gotoAfterRefresh(page, '/accounts?tab=cash');
     await expect(page.getByTestId('account-submit')).toBeEnabled();
     await fillTestId(page, 'account-name', name);
     await page.getByTestId('account-currency').selectOption('EUR');
@@ -376,7 +378,7 @@ test.describe('moving a record between two accounts of the same name', () => {
 
     const id = (await idsNamed(page, name)).find((candidate) => !known.includes(candidate));
     if (id === undefined) throw new Error('the new account has no link');
-    await page.goto(`/accounts/${id}`);
+    await gotoAfterRefresh(page, `/accounts/${id}`);
     await page.getByTestId('confirm-statement-2026-08').click();
     await expect(page.getByTestId('month-end-2026-08')).toHaveCount(0);
     return id;
@@ -397,7 +399,7 @@ test.describe('moving a record between two accounts of the same name', () => {
     expect(second).not.toBe(first);
 
     // A September salary into the first of them.
-    await page.goto('/monthly/2026-09');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
     await page.getByTestId('income-add-toggle').click();
     await page.getByTestId('income-kind').selectOption('employment');
     await fillTestId(page, 'income-received-on', '2026-09-25');
@@ -430,7 +432,7 @@ test.describe('moving a record between two accounts of the same name', () => {
     await expect(review(page)).toHaveCount(0);
 
     // The row now belongs to the second Savings.
-    await page.reload();
+    await reloadAfterRefresh(page);
     await expect(page.getByTestId('entry-account')).toHaveValue(second);
   });
 });
@@ -477,7 +479,7 @@ test.describe('waking an account out of a dormant period', () => {
     await expect(review(page)).toHaveCount(0);
 
     await expect(page.getByTestId('valuation-history')).toContainText('2026-10-04');
-    await page.reload();
+    await reloadAfterRefresh(page);
     await expect(page.getByTestId('edit-submit')).toBeEnabled();
     await expect(page.getByTestId('edit-dormant')).not.toBeChecked();
   });
