@@ -316,7 +316,9 @@ test.describe('the monthly page', () => {
    * October: September is closed account by account — a statement typed in, a
    * last-day snapshot confirmed, the untouched account confirmed unchanged — and
    * its reconciliation follows; then October's accounts, which never share a
-   * balance date, are all updated today and month to date reaches today.
+   * balance date, are all updated today and month to date reaches today. On the
+   * 8th one account is updated again, and month to date stays on the 6th with
+   * the newer-balances note (8.6, 21.5).
    */
   test('a person closes last month’s accounts and brings this month’s up to date', async ({ page, request }) => {
     test.slow();
@@ -429,6 +431,28 @@ test.describe('the monthly page', () => {
     await expect(row('Everyday').getByTestId('account-latest')).toContainText('€1,860.00');
     await expect(page.getByTestId('mtd-as-of')).toContainText('6 Oct 2026');
     await expect(page.getByTestId('figure-trackedTotalSpending')).toContainText('40.00');
+
+    // --- two days later, only one account updated (8.6, 21.5) -------------------
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': '2026-10-08T10:00:00Z' });
+    await gotoAfterRefresh(page, '/monthly/2026-10');
+    await expect(row('Everyday').getByTestId('today-amount')).toBeEnabled();
+    await expect(row('Everyday').getByTestId('today-amount')).toHaveValue('');
+    await row('Everyday').getByTestId('today-amount').fill('1800.00');
+    await row('Everyday').getByTestId('today-amount').press('Tab');
+    await expect(row('Everyday').getByTestId('save-status')).toHaveText('Saved.');
+    await expect(row('Everyday').getByTestId('account-latest')).toContainText('€1,800.00');
+    await expect(row('Savings').getByTestId('account-latest')).toContainText('6 Oct 2026');
+
+    // Month to date stays on the 6th, the last day all three accounts share, and
+    // the figure is the 6th's: the 8th's balance moves nothing yet.
+    await expect(page.getByTestId('mtd-as-of')).toContainText('6 Oct 2026');
+    await expect(page.getByTestId('figure-trackedTotalSpending')).toContainText('40.00');
+    const newer = page.getByTestId('issue-group-mtd_newer_balances');
+    await expect(newer).toContainText(
+      'Some accounts have newer individual balances; update all accounts to move the month-to-date date forward.',
+    );
+    await expect(newer).toContainText('Newer balances: Everyday');
+    await expect(page.getByTestId('mtd-newer-note')).toBeVisible();
   });
 });
 
