@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import { generateSync } from 'otplib';
-import { gotoAfterRefresh } from '../support/navigation';
+import { gotoAfterRefresh, waitForRouter } from '../support/navigation';
 
 /**
  * The Phase 1 end-to-end flow (blueprint 21.5, Phase 1 acceptance).
@@ -103,13 +103,14 @@ async function verify(page: Page, request: APIRequestContext, email: string): Pr
 /** Sign out, and wait for it to have happened before doing anything else. */
 async function signOut(page: Page): Promise<void> {
   await page.getByTestId('user-menu').click();
+  await waitForRouter(page);
   await page.getByTestId('sign-out').click();
   await expect(page).toHaveURL(/\/$/u);
   await expect(page.getByTestId('user-menu')).toHaveCount(0);
 }
 
 async function signIn(page: Page, email: string, password = PASSWORD): Promise<void> {
-  await page.goto('/sign-in');
+  await gotoAfterRefresh(page, '/sign-in');
   await submitSignIn(page, email, password);
 }
 
@@ -203,7 +204,7 @@ test.describe('sign-up, verification and settings', () => {
     // --- sign out and back in ----------------------------------------------
     await signOut(page);
 
-    await page.goto('/settings/profile');
+    await gotoAfterRefresh(page, '/settings/profile');
     await expect(page).toHaveURL(/\/sign-in/u);
 
     await signIn(page, email);
@@ -216,7 +217,7 @@ test.describe('sign-up, verification and settings', () => {
     await expect(page).toHaveURL(/\/dashboard/u);
 
     // Everything chosen before the sign-out is still there.
-    await page.goto('/settings/currencies');
+    await gotoAfterRefresh(page, '/settings/currencies');
     await expect(page.getByTestId('base-currency')).toHaveValue('EUR');
     await expect(page.getByTestId('reporting-currency-setting')).toHaveValue('GBP');
     await expect(page.getByTestId('count-additional-spending')).not.toBeChecked();
@@ -312,7 +313,7 @@ test.describe('two-factor authentication', () => {
     await expect(page).toHaveURL(/\/(settings|onboarding)/u);
 
     // Turning it off needs the password, and then sign-in stops asking.
-    await page.goto('/settings/security');
+    await gotoAfterRefresh(page, '/settings/security');
     await expect(page.getByTestId('disable-2fa')).toBeEnabled();
     await fillTestId(page, 'totp-password', PASSWORD);
     await page.getByTestId('disable-2fa').click();
@@ -341,7 +342,7 @@ test.describe('password reset', () => {
     // which is the state somebody who forgot their password is actually in.
     await signOut(page);
 
-    await page.goto('/reset');
+    await gotoAfterRefresh(page, '/reset');
     await formReady(page, 'Send reset link');
     await fillField(page, 'Email address', email);
     await page.getByRole('button', { name: 'Send reset link' }).click();
@@ -404,7 +405,7 @@ test.describe('account deletion', () => {
 
     // Signed out and back on the public page.
     await expect(page).toHaveURL(/\/$/u);
-    await page.goto('/settings/profile');
+    await gotoAfterRefresh(page, '/settings/profile');
     await expect(page).toHaveURL(/\/sign-in/u);
 
     // 18.3: a confirmation email is sent once the data is gone.
