@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
-import { gotoAfterRefresh } from '../support/navigation';
+import { gotoAfterRefresh, reloadAfterRefresh, waitForRouter } from '../support/navigation';
 
 /**
  * The first Monthly journey (blueprint 15.2 "Monthly", 15.3, 21.5).
@@ -88,7 +88,7 @@ async function accountWithStatements(
   page: Page,
   options: { name: string; type: 'checking' | 'savings'; august: string; september: string; currency?: string },
 ): Promise<void> {
-  await page.goto('/accounts?tab=cash');
+  await gotoAfterRefresh(page, '/accounts?tab=cash');
   await expect(page.getByTestId('account-submit')).toBeEnabled();
   await fillTestId(page, 'account-name', options.name);
   await page.getByTestId('account-currency').selectOption(options.currency ?? 'EUR');
@@ -98,6 +98,7 @@ async function accountWithStatements(
   await page.getByTestId('account-submit').click();
   await expect(page.getByText(`${options.name} added.`)).toBeVisible();
 
+  await waitForRouter(page);
   await page.getByRole('link', { name: options.name, exact: true }).click();
   await page.getByTestId('confirm-statement-2026-08').click();
   await expect(page.getByTestId('month-end-2026-08')).toHaveCount(0);
@@ -119,7 +120,7 @@ async function accountWithAugustStatement(
   page: Page,
   options: { name: string; type: 'checking' | 'savings' | 'cash'; august: string },
 ): Promise<void> {
-  await page.goto('/accounts?tab=cash');
+  await gotoAfterRefresh(page, '/accounts?tab=cash');
   await expect(page.getByTestId('account-submit')).toBeEnabled();
   await fillTestId(page, 'account-name', options.name);
   await page.getByTestId('account-currency').selectOption('EUR');
@@ -129,6 +130,7 @@ async function accountWithAugustStatement(
   await page.getByTestId('account-submit').click();
   await expect(page.getByText(`${options.name} added.`)).toBeVisible();
 
+  await waitForRouter(page);
   await page.getByRole('link', { name: options.name, exact: true }).click();
   await page.getByTestId('confirm-statement-2026-08').click();
   await expect(page.getByTestId('month-end-2026-08')).toHaveCount(0);
@@ -188,7 +190,7 @@ test.describe('the monthly page', () => {
     await accountWithStatements(page, { name: 'Savings', type: 'savings', august: '10000.00', september: '10010.00' });
 
     // --- this month, from the dashboard ------------------------------------
-    await page.goto('/dashboard');
+    await gotoAfterRefresh(page, '/dashboard');
     if (!testInfo.project.name.startsWith('mobile')) {
       // The sidebar's Monthly entry opens the current month, from the server's today.
       await expect(page.getByRole('navigation', { name: 'Sections' }).getByRole('link', { name: 'Monthly' })).toHaveAttribute(
@@ -247,7 +249,7 @@ test.describe('the monthly page', () => {
 
     // Hidden is persisted, and it hid nothing but the advisory: the figures
     // and the reconciliation are what they were.
-    await page.reload();
+    await reloadAfterRefresh(page);
     await expect(page.getByTestId('issue-group-possible_missing_interest')).toHaveCount(0);
     await expect(page.getByTestId('figure-trackedTotalSpending')).toContainText('90.00');
     await expect(page.getByTestId('reconciliation-status')).toContainText('Reliable');
@@ -262,7 +264,7 @@ test.describe('the monthly page', () => {
     await expect(page.getByTestId('mark-reviewed')).toBeEnabled();
     await page.getByTestId('mark-reviewed').click();
     await expect(page.getByTestId('reviewed-at')).toBeVisible();
-    await page.reload();
+    await reloadAfterRefresh(page);
     await expect(page.getByTestId('reviewed-at')).toBeVisible();
     await expect(page.getByTestId('mark-reviewed')).toHaveCount(0);
     // Reviewing it changed nothing it reports.
@@ -330,7 +332,7 @@ test.describe('the monthly page', () => {
     await accountWithAugustStatement(page, { name: 'Cash box', type: 'cash', august: '50.00' });
 
     // --- September: nothing is closed yet --------------------------------------
-    await page.goto('/monthly/2026-09');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
     await expect(page.getByTestId('monthly-kind')).toHaveText('Completed month');
     const accounts = page.getByTestId('monthly-accounts');
     const row = (name: string) => accounts.locator('tbody tr', { hasText: name });
@@ -372,7 +374,7 @@ test.describe('the monthly page', () => {
     await expect(bucket.getByTestId('identity-delta')).toContainText('90.00');
     await expect(bucket.getByTestId('identity-tracked')).toContainText('€90.00');
     await expect(page.getByTestId('reconciliation-status')).toContainText('Reliable');
-    await page.reload();
+    await reloadAfterRefresh(page);
     await expect(page.getByTestId('bucket-EUR')).toContainText('Reliable');
 
     // --- October: in progress, and never a month-end control ------------------
@@ -459,7 +461,7 @@ test.describe('the monthly income editor', () => {
     await expect(page.getByTestId('month-end-2026-09')).toHaveCount(0);
 
     // --- A recurring source, created from the month itself ---------------------
-    await page.goto('/monthly/2026-09');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
     await expect(page.getByTestId('monthly-kind')).toHaveText('Completed month');
     await expect(page.getByTestId('income-occurrences-empty')).toBeVisible();
 
@@ -503,7 +505,7 @@ test.describe('the monthly income editor', () => {
     await expect(page.getByTestId('issue-group-suggested_income_missing')).toHaveCount(0);
 
     // And it stays recorded, and is never suggested a second time.
-    await page.reload();
+    await reloadAfterRefresh(page);
     await expect(page.getByTestId('income-occurrence')).toHaveCount(1);
     await expect(page.getByTestId('occurrence-status')).toHaveText('Recorded');
     await expect(page.getByTestId('occurrence-accept')).toHaveCount(0);
@@ -640,7 +642,7 @@ test.describe('two views of one income row', () => {
     await accountWithAugustStatement(page, { name: 'Everyday', type: 'checking', august: '1000.00' });
 
     // One ordinary income row, recorded through the product's own form.
-    await page.goto('/monthly/2026-10');
+    await gotoAfterRefresh(page, '/monthly/2026-10');
     await page.getByTestId('income-add-toggle').click();
     await page.getByTestId('income-kind').selectOption('other');
     await fillTestId(page, 'income-received-on', '2026-10-02');
@@ -684,7 +686,7 @@ test.describe('two views of one income row', () => {
     await expect(stale.getByTestId('income-save-status').last()).toHaveText('Saved.');
     await stale.close();
 
-    await page.reload();
+    await reloadAfterRefresh(page);
     await expect(page.getByTestId('entry-net')).toHaveValue('175.00');
   });
 });
@@ -718,7 +720,7 @@ test.describe('the monthly known-expenses editor', () => {
     await recordSnapshot(page, '1850.00', '2026-10-04');
 
     // --- A recurring expense source, created from September -------------------
-    await page.goto('/monthly/2026-09');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
     const section = page.getByTestId('monthly-known-expenses');
     const occurrenceOn = (date: string) =>
       section.locator(`tr[data-testid="expense-occurrence"][data-occurrence-date="${date}"]`);
@@ -754,6 +756,7 @@ test.describe('the monthly known-expenses editor', () => {
     await expect(bucket.getByTestId('identity-unclassified')).toContainText('€60.00');
 
     // --- October: the next occurrence, paid today ------------------------------
+    await waitForRouter(page);
     await page.getByTestId('month-next').click();
     await expect(page).toHaveURL(/\/monthly\/2026-10$/u);
     const october = occurrenceOn('2026-10-15');
@@ -893,7 +896,7 @@ test.describe('two views of one known expense', () => {
     await onboard(page, request, uniqueEmail('e2e-monthly-expense-conflict'));
     await accountWithAugustStatement(page, { name: 'Everyday', type: 'checking', august: '1000.00' });
 
-    await page.goto('/monthly/2026-10');
+    await gotoAfterRefresh(page, '/monthly/2026-10');
     await page.getByTestId('expense-add-toggle').click();
     await page.getByTestId('expense-add-category').selectOption({ label: 'Groceries' });
     await fillTestId(page, 'expense-add-date', '2026-10-02');
@@ -929,7 +932,7 @@ test.describe('two views of one known expense', () => {
     await expect(stale.getByTestId('expense-save-status').last()).toHaveText('Saved.');
     await stale.close();
 
-    await page.reload();
+    await reloadAfterRefresh(page);
     await expect(page.getByTestId('expense-amount')).toHaveValue('175.00');
   });
 });
@@ -987,7 +990,7 @@ test.describe('monthly cash transfers', () => {
     await accountWithStatements(page, { name: 'Everyday', type: 'checking', august: '2000.00', september: '1700.00' });
     await accountWithStatements(page, { name: 'Savings', type: 'savings', august: '10000.00', september: '10200.00' });
 
-    await page.goto('/monthly/2026-09');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
     const accounts = page.locator('section#accounts');
     const bucket = page.getByTestId('bucket-EUR');
     const known = page.getByTestId('monthly-known-expenses');
@@ -1075,7 +1078,7 @@ test.describe('monthly cash transfers', () => {
 
     // September's last day: 500 euros out, 540 dollars in, and a 2.50 fee the
     // bank posted on 1 October.
-    await page.goto('/monthly/2026-09');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
     const dialog = await openAddTransfer(page);
     await fillTransfer(dialog, {
       date: '2026-09-30',
@@ -1104,7 +1107,7 @@ test.describe('monthly cash transfers', () => {
     await expect(page.getByTestId('monthly-known-expenses').getByTestId('expense-direct-empty')).toBeVisible();
 
     // October counts the fee, once, read-only, and says where its transfer lives.
-    await page.goto('/monthly/2026-10');
+    await gotoAfterRefresh(page, '/monthly/2026-10');
     const known = page.getByTestId('monthly-known-expenses');
     await expect(known.getByTestId('expense-entry')).toHaveCount(1);
     await expect(known.getByTestId('expense-read-only')).toHaveAttribute('data-reason', 'transfer_fee');
@@ -1124,7 +1127,7 @@ test.describe('monthly cash transfers', () => {
     await expect(page.getByTestId('transfer-status')).toHaveText('Transfer saved.');
     await expect(page.getByTestId('bucket-USD').getByTestId('identity-Nin')).toContainText('541.00');
     await expect(page.getByTestId('bucket-EUR').getByTestId('identity-K')).toContainText('€0.00');
-    await page.goto('/monthly/2026-10');
+    await gotoAfterRefresh(page, '/monthly/2026-10');
     await expect(page.getByTestId('bucket-EUR').getByTestId('identity-K')).toContainText('€3.00');
 
     // Delete it from September: October's fee goes with it.
@@ -1135,7 +1138,7 @@ test.describe('monthly cash transfers', () => {
     await expect(page.getByTestId('transfer-status')).toHaveText('Transfer deleted.');
     await expect(page.locator('section#accounts').getByTestId('transfers-empty')).toBeVisible();
     await expect(page.getByTestId('bucket-USD').getByTestId('identity-Nin')).toContainText('0.00');
-    await page.goto('/monthly/2026-10');
+    await gotoAfterRefresh(page, '/monthly/2026-10');
     await expect(page.getByTestId('monthly-known-expenses').getByTestId('expense-entry')).toHaveCount(0);
     await expect(page.getByTestId('bucket-EUR').getByTestId('identity-K')).toContainText('€0.00');
   });
@@ -1204,7 +1207,7 @@ test.describe('monthly cash transfers', () => {
     await accountWithAugustStatement(page, { name: 'Everyday', type: 'checking', august: '1000.00' });
     await accountWithAugustStatement(page, { name: 'Savings', type: 'savings', august: '0.00' });
 
-    await page.goto('/monthly/2026-10');
+    await gotoAfterRefresh(page, '/monthly/2026-10');
     const dialog = await openAddTransfer(page);
     await fillTransfer(dialog, { date: '2026-10-02', from: 'Everyday (EUR)', to: 'Savings (EUR)', amount: '100.00' });
     await dialog.getByTestId('transfer-save').click();
@@ -1236,7 +1239,7 @@ test.describe('monthly cash transfers', () => {
     await expect(stale.getByTestId('transfer').getByTestId('transfer-amounts')).toContainText('€150.00');
     await stale.close();
 
-    await page.reload();
+    await reloadAfterRefresh(page);
     await expect(page.getByTestId('transfer').getByTestId('transfer-amounts')).toContainText('€150.00');
   });
 });
@@ -1290,7 +1293,7 @@ test.describe('confirming a month unchanged on a dormant account', () => {
     await review.getByTestId('correction-confirm').click();
     await expect(review).toHaveCount(0);
     await expect(page.getByTestId('month-end-2026-09')).toHaveCount(0);
-    await page.reload();
+    await reloadAfterRefresh(page);
     await expect(page.getByTestId('edit-submit')).toBeEnabled();
     await expect(page.getByTestId('edit-dormant')).not.toBeChecked();
 
@@ -1299,7 +1302,7 @@ test.describe('confirming a month unchanged on a dormant account', () => {
     const row = (name: string) => page.getByTestId('monthly-accounts').locator('tbody tr', { hasText: name });
 
     // October is inside both episodes, so both carry it at zero.
-    await page.goto('/monthly/2026-10');
+    await gotoAfterRefresh(page, '/monthly/2026-10');
     for (const name of ['Savings', 'Holiday']) {
       await expect(row(name).locator('th')).toContainText('dormant');
       await expect(row(name).getByTestId('closing-amount')).toHaveCount(0);
@@ -1339,7 +1342,7 @@ test.describe('confirming a month unchanged on a dormant account', () => {
 
     // Both are awake: October no longer carries them at zero, and asks each for
     // a statement of its own.
-    await page.goto('/monthly/2026-10');
+    await gotoAfterRefresh(page, '/monthly/2026-10');
     for (const name of ['Savings', 'Holiday']) {
       await expect(row(name).locator('th')).not.toContainText('dormant');
       await expect(row(name).getByTestId('closing-amount')).toBeVisible();
