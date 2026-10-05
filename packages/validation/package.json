@@ -15,6 +15,7 @@
     "zod": "4.5.4"
   },
   "devDependencies": {
-    "@vaultide/config": "workspace:*"
+    "@vaultide/config": "workspace:*",
+    "fast-check": "4.9.0"
   }
 }
