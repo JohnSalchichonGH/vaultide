@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { gotoAfterRefresh, waitForRouter } from '../support/navigation';
 
 /**
  * The Income year view (blueprint 15.1 `/income`, 15.2 "Income", 16.5, 21.5;
@@ -79,20 +80,9 @@ async function onboard(page: Page, request: APIRequestContext, email: string): P
   await expect(page).toHaveURL(/\/dashboard$/u);
 }
 
-/**
- * Go to a page after a save. The forms refresh their page once a save lands,
- * and WebKit reports a navigation issued while that refresh is in flight as
- * interrupted; retrying once it settles is the navigation the test meant.
- */
-async function open(page: Page, url: string): Promise<void> {
-  await expect(async () => {
-    await page.goto(url);
-  }).toPass({ timeout: 15_000 });
-}
-
 /** An account whose August statement is entered and confirmed, leaving the browser on its page. */
 async function accountWithAugustStatement(page: Page, options: { name: string; august: string }): Promise<void> {
-  await open(page, '/accounts?tab=cash');
+  await page.goto('/accounts?tab=cash');
   await expect(page.getByTestId('account-submit')).toBeEnabled();
   await fillTestId(page, 'account-name', options.name);
   await page.getByTestId('account-currency').selectOption('EUR');
@@ -102,14 +92,9 @@ async function accountWithAugustStatement(page: Page, options: { name: string; a
   await page.getByTestId('account-submit').click();
   await expect(page.getByText(`${options.name} added.`)).toBeVisible();
 
-  // The form refreshes the page after saving, and WebKit can drop a click that
-  // lands while that refresh is in flight. Click until the address has moved.
-  const link = page.getByRole('link', { name: options.name, exact: true });
-  const accountPage = /\/accounts\/[0-9a-f-]{36}$/u;
-  await expect(async () => {
-    if (!accountPage.test(page.url())) await link.click({ timeout: 2_000 });
-    await expect(page).toHaveURL(accountPage, { timeout: 2_000 });
-  }).toPass({ timeout: 15_000 });
+  await waitForRouter(page);
+  await page.getByRole('link', { name: options.name, exact: true }).click();
+  await expect(page).toHaveURL(/\/accounts\/[0-9a-f-]{36}$/u);
   await page.getByTestId('confirm-statement-2026-08').click();
   await expect(page.getByTestId('month-end-2026-08')).toHaveCount(0);
 }
@@ -210,7 +195,7 @@ test.describe('the Income page', () => {
 
     // --- what Monthly records ------------------------------------------------
     await accountWithAugustStatement(page, { name: 'BBVA', august: '1000.00' });
-    await open(page, '/monthly/2026-09');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
     await page.getByTestId('source-add-toggle').click();
     await addSource(page, { name: 'Salary', kind: 'employment', day: '25', start: '2026-07-01', amount: '2000.00', gross: '2800.00', account: 'BBVA' });
     // September's salary is recorded; July's and August's are not.
@@ -223,13 +208,13 @@ test.describe('the Income page', () => {
     await addIncome(page, { kind: 'freelance', on: '2026-09-10', net: '450.00', outside: true });
     await expect(page.getByTestId('income-saved')).toContainText('Income added.');
 
-    await open(page, '/monthly/2025-12');
+    await gotoAfterRefresh(page, '/monthly/2025-12');
     await page.getByTestId('income-add-toggle').click();
     await addIncome(page, { kind: 'bonus', on: '2025-12-20', net: '300.00', outside: true });
     await expect(page.getByTestId('income-saved')).toContainText('Income added.');
 
     // --- the year view -------------------------------------------------------
-    await open(page, '/dashboard');
+    await gotoAfterRefresh(page, '/dashboard');
     await incomeFromNavigation(page);
     await expect(page.getByTestId('income-empty')).toHaveCount(0);
     await expect(page.getByTestId('income-year-badge')).toHaveText('2026 (so far)');
@@ -253,10 +238,10 @@ test.describe('the Income page', () => {
 
     // Monthly's September figure answers another question — what reconciliation
     // saw arrive in tracked accounts — and its label says so (30.23 item 3).
-    await open(page, '/monthly/2026-09');
+    await page.goto('/monthly/2026-09');
     await expect(page.getByTestId('figure-externalIncome')).toContainText('Tracked income');
     await expect(page.getByTestId('figure-externalIncome')).toContainText('€2,000.00');
-    await open(page, '/income');
+    await page.goto('/income');
 
     // --- change year ---------------------------------------------------------
     await page.getByTestId('income-year-previous').click();
@@ -271,7 +256,7 @@ test.describe('the Income page', () => {
       const response = await page.goto(`/income?year=${year}`);
       expect(response?.status()).toBe(404);
     }
-    await open(page, '/income');
+    await page.goto('/income');
 
     // --- a missing-payment line, and where it leads --------------------------
     const flag = page.getByTestId('income-missing-flag');
@@ -284,7 +269,7 @@ test.describe('the Income page', () => {
     await expect(page.getByTestId('bulk-title')).toBeVisible();
 
     // --- add a payment, into a month that has closed -------------------------
-    await open(page, '/income');
+    await page.goto('/income');
     await addIncome(page, { kind: 'bonus', on: '2026-03-31', net: '500.00', gross: '700.00', account: 'BBVA' });
     await expect(page.getByTestId('income-saved')).toContainText('Income added.');
     await expect(page.getByTestId('income-total')).toContainText('€2,950.00');
@@ -318,7 +303,7 @@ test.describe('the Income page', () => {
     await expect(page.getByTestId('edit-dormant')).toBeChecked();
 
     // A salary into it today ends a dormant period that began in a closed month.
-    await open(page, '/income');
+    await gotoAfterRefresh(page, '/income');
     await addIncome(page, { kind: 'employment', on: '2026-10-02', net: '80.00', account: 'Old savings' });
     await expect(review(page)).toBeVisible();
     await expect(review(page).getByTestId('correction-structural')).toContainText('no longer dormant from 31 Aug 2026');
