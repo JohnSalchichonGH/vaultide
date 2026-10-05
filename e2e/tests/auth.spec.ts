@@ -233,7 +233,6 @@ test.describe('the way back after sign-in', () => {
     const email = uniqueEmail('e2e-next-elsewhere');
     await signUp(page, email);
     await verify(page, request, email);
-    await signOut(page);
 
     // Should this regress, the other host is answered here rather than by a
     // resolver, so the failure names it on every engine.
@@ -241,13 +240,18 @@ test.describe('the way back after sign-in', () => {
       route.fulfill({ contentType: 'text/html', body: 'evil.invalid' }),
     );
 
-    // `/\evil.invalid`, encoded as a link carries it. It starts with a single
-    // `/`, yet the browser reads the `\` as a `/` and the whole as another host.
-    await gotoAfterRefresh(page, '/sign-in?next=%2F%5Cevil.invalid');
-    await submitSignIn(page, email);
+    // `/\evil.invalid`, `/<tab>/evil.invalid` and `/<newline>/evil.invalid`,
+    // encoded as a link carries them. Each starts with a single `/`, yet the
+    // browser reads the `\` as a `/`, drops the tab and the newline, and reads
+    // the whole as another host.
+    for (const next of ['%2F%5Cevil.invalid', '%2F%09%2Fevil.invalid', '%2F%0A%2Fevil.invalid']) {
+      await signOut(page);
+      await gotoAfterRefresh(page, `/sign-in?next=${next}`);
+      await submitSignIn(page, email);
 
-    // `/`, which sends somebody who has not finished onboarding to the wizard.
-    await expect(page).toHaveURL(new URL('/onboarding/1', baseURL).href);
+      // `/`, which sends somebody who has not finished onboarding to the wizard.
+      await expect(page).toHaveURL(new URL('/onboarding/1', baseURL).href);
+    }
   });
 
   test('a ?next= that names a page of this site lands exactly there', async ({

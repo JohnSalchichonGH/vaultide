@@ -60,4 +60,12 @@ describe('returnPath', () => {
   it.each(KEPT)('keeps %s exactly', (next) => {
     expect(returnPath(next, ORIGIN)).toBe(next);
   });
+
+  it('lands a value without a leading / on the page it names', () => {
+    expect(returnPath('monthly/2026-09', ORIGIN)).toBe('/monthly/2026-09');
+  });
+
+  it('lands an absolute URL of this site on its path, query and fragment', () => {
+    expect(returnPath(`${ORIGIN}/income?year=2025#missing`, ORIGIN)).toBe('/income?year=2025#missing');
+  });
 });
