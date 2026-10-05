@@ -5,6 +5,7 @@ import {
   isMonthEnd,
   locale,
   minorUnits,
+  minorUnitsMessage,
   moneyDtoSchema,
   moneyString,
   percentFraction,
@@ -37,6 +38,15 @@ describe('money strings', () => {
       'Use at most 4 decimals for this currency.',
     ]);
     expect(moneyString({ minorUnits: 3 }).safeParse('1.234').success).toBe(true);
+  });
+
+  it('says the minor-unit refusal in the one wording the server uses too (7.2)', () => {
+    expect(minorUnitsMessage(0)).toBe('This currency has no decimals.');
+    expect(minorUnitsMessage(2)).toBe('Use at most 2 decimals for this currency.');
+    const messageOf = (units: number, value: string) =>
+      moneyString({ minorUnits: units }).safeParse(value).error?.issues.map((issue) => issue.message);
+    expect(messageOf(0, '1.5')).toEqual([minorUnitsMessage(0)]);
+    expect(messageOf(3, '1.2345')).toEqual([minorUnitsMessage(3)]);
   });
 
   it('rejects malformed input', () => {

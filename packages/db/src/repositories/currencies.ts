@@ -82,3 +82,33 @@ export async function findUsableCurrencyCodesIn(
 
   return rows.map((row) => row.code.trim());
 }
+
+export interface CurrencyMinorUnits {
+  readonly code: string;
+  readonly minorUnits: number;
+}
+
+/**
+ * The minor units of `codes`, inside a caller's transaction, in one statement.
+ *
+ * What a financial write judges a user-entered amount's decimals against (7.2
+ * "Input scale"). Read inside the write's own transaction for the same reason
+ * `findUsableCurrencyCodesIn` is, and with no `is_active` or FX filter: a
+ * currency's minor units are a fact about the code, and a stored row's
+ * currency is judged by them whatever has become of the currency since. A
+ * code the table does not hold is simply absent from the result.
+ */
+export async function findMinorUnitsIn(
+  tx: Transaction,
+  codes: readonly string[],
+): Promise<CurrencyMinorUnits[]> {
+  const wanted = [...new Set(codes.map((code) => code.trim().toUpperCase()))];
+  if (wanted.length === 0) return [];
+
+  const rows = await tx
+    .select({ code: currencies.code, minorUnits: currencies.minorUnits })
+    .from(currencies)
+    .where(inArray(currencies.code, wanted));
+
+  return rows.map((row) => ({ code: row.code.trim(), minorUnits: row.minorUnits }));
+}

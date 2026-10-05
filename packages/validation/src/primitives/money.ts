@@ -33,6 +33,20 @@ export function scaleOf(value: string): number {
   return decimalParts(value)?.fraction.length ?? 0;
 }
 
+/**
+ * What an amount with more decimals than its currency allows is told (7.2
+ * "Input scale").
+ *
+ * The one wording, on both sides of the wire: `moneyString` says it in the
+ * browser, and the application's own check says it again on the server, so a
+ * bypassed form is refused in the same words a checked one is.
+ */
+export function minorUnitsMessage(minorUnits: number): string {
+  return minorUnits === 0
+    ? 'This currency has no decimals.'
+    : `Use at most ${String(minorUnits)} decimals for this currency.`;
+}
+
 export interface MoneyStringOptions {
   /** Maximum decimals allowed — the currency's minor units (0..8). */
   readonly minorUnits?: number;
@@ -68,13 +82,7 @@ export function moneyString(options: MoneyStringOptions = {}) {
         });
       }
       if (parts.fraction.length > minorUnits) {
-        ctx.addIssue({
-          code: 'custom',
-          message:
-            minorUnits === 0
-              ? 'This currency has no decimals.'
-              : `Use at most ${String(minorUnits)} decimals for this currency.`,
-        });
+        ctx.addIssue({ code: 'custom', message: minorUnitsMessage(minorUnits) });
       }
       const isZero = /^0+$/.test(parts.integer) && /^0*$/.test(parts.fraction);
       if ((nonNegative || positive) && parts.negative && !isZero) {
