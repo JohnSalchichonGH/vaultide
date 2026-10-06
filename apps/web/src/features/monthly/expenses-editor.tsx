@@ -98,6 +98,13 @@ import {
   type SaveOutcome,
   type SaveState,
 } from '@/features/monthly/autosave';
+import {
+  TermProblemText,
+  adoptsNewerTerm,
+  termExpectation,
+  termProblemOf,
+  type TermProblem,
+} from '@/features/monthly/term-form';
 
 /**
  * Monthly's Known-expenses section (blueprint 15.3 section 3, 16.4–16.6, 20.1,
@@ -503,10 +510,20 @@ function Table({
 /* From this month on                                                          */
 /* -------------------------------------------------------------------------- */
 
+/** The amounts a "from this month on" form starts from (§30.9 item 4). */
+function expenseTermDefaults(term: ExpenseTermDto): { amount: string; note: string } {
+  return {
+    amount: term.amount?.amount ?? '',
+    // A new term gets no note: an older one's explains why *that* term began.
+    note: term.exact.state === 'version' ? (term.exact.note ?? '') : '',
+  };
+}
+
 /**
  * A term effective at the occurrence's **scheduled** date (§30.9 item 4): an
- * amount alone, which may be zero, submitted with the expectation the row was
- * rendered from.
+ * amount alone, which may be zero, submitted with the expectation of the term
+ * the form opened with — never the term the page holds when Save is clicked
+ * (`term-form.tsx`).
  */
 function ChangeFutureAmount({
   templateId,
@@ -525,12 +542,34 @@ function ChangeFutureAmount({
 }) {
   const router = useRouter();
   const ids = { amount: useId(), note: useId() };
-  const [amount, setAmount] = useState(term.amount?.amount ?? '');
-  // A new term gets no note: an older one's explains why *that* term began.
-  const [note, setNote] = useState(term.exact.state === 'version' ? (term.exact.note ?? '') : '');
-  const [error, setError] = useState<string | null>(null);
+  // The term this form opened with, or last took in. Save claims it (20.3).
+  const [base, setBase] = useState(term);
+  const [{ amount, note, edited }, setForm] = useState(() => ({ ...expenseTermDefaults(term), edited: false }));
+  const [problem, setProblem] = useState<TermProblem | null>(null);
   const [pending, startTransition] = useTransition();
   const hydrated = useHydrated();
+
+  const rebase = (latest: ExpenseTermDto): void => {
+    setBase(latest);
+    setForm({ ...expenseTermDefaults(latest), edited: false });
+    setProblem(null);
+  };
+  if (
+    adoptsNewerTerm({
+      base: base.exact,
+      latest: term.exact,
+      edited,
+      refused: problem !== null,
+      saving: pending,
+    })
+  ) {
+    rebase(term);
+  }
+
+  const change = (next: Partial<{ amount: string; note: string }>): void => {
+    setForm((current) => ({ ...current, ...next, edited: true }));
+  };
+  const conflict = problem?.kind === 'conflict';
 
   return (
     <Panel
@@ -551,7 +590,7 @@ function ChangeFutureAmount({
             inputMode="decimal"
             className="tabular text-right"
             onChange={(event) => {
-              setAmount(event.target.value);
+              change({ amount: event.target.value });
             }}
           />
         </div>
@@ -562,24 +601,33 @@ function ChangeFutureAmount({
             data-testid="expense-term-note"
             value={note}
             onChange={(event) => {
-              setNote(event.target.value);
+              change({ note: event.target.value });
             }}
           />
         </div>
       </div>
-      <Problem message={error} />
+      <TermProblemText
+        problem={problem}
+        testId="expense-term-problem"
+        onReload={() => {
+          // The newest term this page holds, and — until the user changes
+          // something — whatever newer one the refresh brings.
+          rebase(term);
+          router.refresh();
+        }}
+      />
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
           data-testid="expense-term-save"
           className={PRIMARY}
-          disabled={!hydrated || pending}
+          disabled={!hydrated || pending || conflict}
           onClick={() => {
-            setError(null);
+            setProblem(null);
             const normalized = normalizeMoneyInput(amount);
-            const problem = termAmountProblem(normalized, minorUnitsOf(formatting, currency));
-            if (problem !== null) {
-              setError(problem);
+            const invalid = termAmountProblem(normalized, minorUnitsOf(formatting, currency));
+            if (invalid !== null) {
+              setProblem({ kind: 'refused', message: invalid });
               return;
             }
             startTransition(async () => {
@@ -588,13 +636,10 @@ function ChangeFutureAmount({
                 effectiveFrom: occurrenceDate,
                 amount: normalized,
                 ...(note.trim() === '' ? {} : { note: note.trim() }),
-                expected:
-                  term.exact.state === 'absent'
-                    ? { state: 'absent' }
-                    : { state: 'version', version: term.exact.version },
+                expected: termExpectation(base.exact),
               });
               if (!result.ok) {
-                setError(result.error.message);
+                setProblem(termProblemOf(result));
                 return;
               }
               onDone();

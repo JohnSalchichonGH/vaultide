@@ -79,6 +79,13 @@ import {
   type SaveOutcome,
   type SaveState,
 } from '@/features/monthly/autosave';
+import {
+  TermProblemText,
+  adoptsNewerTerm,
+  termExpectation,
+  termProblemOf,
+  type TermProblem,
+} from '@/features/monthly/term-form';
 
 /**
  * Monthly's Income section (blueprint 15.3 section 2, 16.4–16.6, 20.1, 20.3).
@@ -414,8 +421,9 @@ function termDefaults(term: OccurrenceTermDto): {
  * date (§30.9 item 4).
  *
  * `setTemplateTerm` replaces the whole term rather than patching it, so the form
- * submits the complete desired state and the expectation the row was rendered
- * from — `absent` when nothing starts here, or that exact row's version.
+ * submits the complete desired state and the expectation of the term it opened
+ * with — `absent` when nothing starts here, or that exact row's version — never
+ * the term the page holds when Save is clicked (`term-form.tsx`).
  *
  * Shared with the Income source page's "Change the amount from…", which picks
  * the occurrence the same way (ADR 0012 D4).
@@ -437,13 +445,34 @@ export function ChangeFutureAmount({
 }) {
   const router = useRouter();
   const ids = { net: useId(), gross: useId(), note: useId() };
-  const defaults = termDefaults(term);
-  const [net, setNet] = useState(defaults.net);
-  const [gross, setGross] = useState(defaults.gross);
-  const [note, setNote] = useState(defaults.note);
-  const [error, setError] = useState<string | null>(null);
+  // The term this form opened with, or last took in. Save claims it (20.3).
+  const [base, setBase] = useState(term);
+  const [{ net, gross, note, edited }, setForm] = useState(() => ({ ...termDefaults(term), edited: false }));
+  const [problem, setProblem] = useState<TermProblem | null>(null);
   const [pending, startTransition] = useTransition();
   const hydrated = useHydrated();
+
+  const rebase = (latest: OccurrenceTermDto): void => {
+    setBase(latest);
+    setForm({ ...termDefaults(latest), edited: false });
+    setProblem(null);
+  };
+  if (
+    adoptsNewerTerm({
+      base: base.exact,
+      latest: term.exact,
+      edited,
+      refused: problem !== null,
+      saving: pending,
+    })
+  ) {
+    rebase(term);
+  }
+
+  const change = (next: Partial<{ net: string; gross: string; note: string }>): void => {
+    setForm((current) => ({ ...current, ...next, edited: true }));
+  };
+  const conflict = problem?.kind === 'conflict';
 
   return (
     <Panel title={`Amount from ${dayTitle(occurrenceDate, formatting.locale)} on`} testId="term-panel">
@@ -461,7 +490,7 @@ export function ChangeFutureAmount({
             inputMode="decimal"
             className="tabular text-right"
             onChange={(event) => {
-              setNet(event.target.value);
+              change({ net: event.target.value });
             }}
           />
         </div>
@@ -474,7 +503,7 @@ export function ChangeFutureAmount({
             inputMode="decimal"
             className="tabular text-right"
             onChange={(event) => {
-              setGross(event.target.value);
+              change({ gross: event.target.value });
             }}
           />
         </div>
@@ -485,32 +514,41 @@ export function ChangeFutureAmount({
             data-testid="term-note"
             value={note}
             onChange={(event) => {
-              setNote(event.target.value);
+              change({ note: event.target.value });
             }}
           />
         </div>
       </div>
-      <Problem message={error} />
+      <TermProblemText
+        problem={problem}
+        testId="term-problem"
+        onReload={() => {
+          // The newest term this page holds, and — until the user changes
+          // something — whatever newer one the refresh brings.
+          rebase(term);
+          router.refresh();
+        }}
+      />
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
           data-testid="term-save"
           className={PRIMARY}
-          disabled={!hydrated || pending}
+          disabled={!hydrated || pending || conflict}
           onClick={() => {
-            setError(null);
+            setProblem(null);
             const amount = normalizeMoneyInput(net);
             if (amount === '') {
-              setError('Enter the net amount.');
+              setProblem({ kind: 'refused', message: 'Enter the net amount.' });
               return;
             }
             const grossAmount = normalizeMoneyInput(gross);
-            const problem = incomeAmountProblem(
+            const invalid = incomeAmountProblem(
               [amount, grossAmount],
               minorUnitsOf(formatting, currency),
             );
-            if (problem !== null) {
-              setError(problem);
+            if (invalid !== null) {
+              setProblem({ kind: 'refused', message: invalid });
               return;
             }
             startTransition(async () => {
@@ -520,13 +558,10 @@ export function ChangeFutureAmount({
                 amount,
                 ...(grossAmount === '' ? {} : { grossAmount }),
                 ...(note.trim() === '' ? {} : { note: note.trim() }),
-                expected:
-                  term.exact.state === 'absent'
-                    ? { state: 'absent' }
-                    : { state: 'version', version: term.exact.version },
+                expected: termExpectation(base.exact),
               });
               if (!result.ok) {
-                setError(result.error.message);
+                setProblem(termProblemOf(result));
                 return;
               }
               onDone();

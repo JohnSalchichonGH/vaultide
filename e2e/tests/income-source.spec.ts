@@ -18,7 +18,11 @@ import { gotoAfterRefresh } from '../support/navigation';
  *    the year view's missing line leads back to the page, and the page
  *    unarchives it; a payer saved from a second tab meets the first tab's
  *    draft as a conflict, and Reload shows it — all without widening a phone
- *    screen.
+ *    screen;
+ *  - an amount saved from a second tab meets the first tab's open "Change the
+ *    amount from…" form as a conflict, even after a refresh has brought the
+ *    newer amount to the page under it: the form claims the amount it opened
+ *    with, so nothing is written over the other tab's, and Reload shows it.
  *
  * Every navigation after a save goes through `gotoAfterRefresh`, so it never
  * races the save's own refresh.
@@ -268,5 +272,88 @@ test.describe('an income source’s page', () => {
     await expect(page.getByTestId('source-terms')).toBeVisible();
     await page.setViewportSize({ width: 375, height: 800 });
     await fitsItsViewport(page);
+  });
+
+  test('an amount saved from a second tab meets this tab’s open amount form as a conflict, and Reload shows it', async ({
+    page,
+    request,
+  }) => {
+    test.slow();
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': OCTOBER_6 });
+    await onboard(page, request, uniqueEmail('e2e-income-term-conflict'));
+    await account(page, 'BBVA');
+
+    // --- a salary, created in Monthly ----------------------------------------
+    await gotoAfterRefresh(page, '/monthly/2026-09');
+    await page.getByTestId('source-add-toggle').click();
+    await page.getByTestId('add-income-source').scrollIntoViewIfNeeded();
+    await fillTestId(page, 'source-name', 'Salary');
+    await page.getByTestId('source-kind').selectOption('employment');
+    await fillTestId(page, 'source-day', '25');
+    await fillTestId(page, 'source-start-date', '2026-07-01');
+    await fillTestId(page, 'source-amount', '2000.00');
+    await page.getByTestId('source-account').selectOption({ label: 'BBVA' });
+    await page.getByTestId('source-submit').click();
+    await expect(page.getByTestId('source-saved')).toContainText('Salary added.');
+
+    await gotoAfterRefresh(page, '/income');
+    await page.getByTestId('income-source').filter({ hasText: 'Salary' }).getByTestId('income-source-link').click();
+    await expect(page).toHaveURL(SOURCE_PAGE);
+    const [, id] = SOURCE_PAGE.exec(new URL(page.url()).pathname) ?? [];
+    if (id === undefined) throw new Error('No source id in the address.');
+
+    // --- this tab opens November's amount, where no amount starts yet --------
+    await expect(page.getByTestId('source-archive-start')).toBeEnabled();
+    await occurrence(page, '2026-11-25').getByTestId('source-change-amount').click();
+    const panel = occurrence(page, '2026-11-25').getByTestId('term-panel');
+    await expect(panel).toContainText('Amount from 25 Nov 2026 on');
+    await fillTestId(page, 'term-net', '2200.00');
+
+    // --- a second tab sets it first ------------------------------------------
+    const other = await page.context().newPage();
+    await other.setExtraHTTPHeaders({ 'x-vaultide-test-clock': OCTOBER_6 });
+    await other.goto(`/income/sources/${id}`);
+    // Typed before React takes the form over, a value never reaches its state.
+    await expect(other.getByTestId('source-archive-start')).toBeEnabled();
+    await occurrence(other, '2026-11-25').getByTestId('source-change-amount').click();
+    await fillTestId(other, 'term-net', '2100.00');
+    await other.getByTestId('term-save').click();
+    await expect(occurrence(other, '2026-11-25').getByTestId('term-panel')).toHaveCount(0);
+    await expect(occurrence(other, '2026-12-25')).toContainText('€2,100.00');
+    await other.close();
+
+    // --- a refresh brings the other tab's amount under the open form ---------
+    // Any save's response reads the page again: here the payer's. The form
+    // keeps what was typed, and the page around it now holds the newer amount.
+    await fillTestId(page, 'source-edit-payer', 'Acme');
+    await page.getByTestId('source-details-save').click();
+    await expect(page.getByTestId('source-details-saved')).toContainText('Saved.');
+    await expect(page.getByTestId('source-detail-payer')).toContainText('Acme');
+    await expect(occurrence(page, '2026-12-25')).toContainText('€2,100.00');
+    await expect(page.getByTestId('term-net')).toHaveValue('2200.00');
+
+    // --- this tab's save still claims the November it opened with ------------
+    // Built from the page's term instead, it would claim the other tab's and
+    // silently replace it.
+    await page.getByTestId('term-save').click();
+    const problem = panel.getByTestId('term-problem');
+    await expect(problem).toHaveAttribute('data-kind', 'conflict');
+    await expect(problem).toContainText('There is already an amount starting 2026-11-25. Reload to see it before changing it.');
+    // Nothing was written over the other tab's amount, and this tab's draft is
+    // still on screen beside the message.
+    await expect(page.getByTestId('term-net')).toHaveValue('2200.00');
+    await expect(page.getByTestId('term-save')).toBeDisabled();
+
+    await problem.getByTestId('term-problem-reload').click();
+    await expect(problem).toHaveCount(0);
+    // The form opens again on the other tab's amount, as the term holds it.
+    await expect(page.getByTestId('term-net')).toHaveValue('2100');
+    await expect(occurrence(page, '2026-12-25')).toContainText('€2,100.00');
+
+    // Saved again, it claims the amount it now shows, and lands.
+    await fillTestId(page, 'term-net', '2200.00');
+    await page.getByTestId('term-save').click();
+    await expect(panel).toHaveCount(0);
+    await expect(occurrence(page, '2026-12-25')).toContainText('€2,200.00');
   });
 });
