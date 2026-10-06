@@ -12,6 +12,13 @@ import { useEffect, useId, useRef, type ReactNode } from 'react';
  *
  * `busy` refuses the Escape key while a save is in flight: a dialog that
  * vanishes mid-request takes its own error message with it.
+ *
+ * A dialog can open inside another: Review changes over the editor that asked
+ * for it, inside a corrective action's dialog. `cancel` and `close` do not
+ * bubble in the DOM, but React hands them to every ancestor's handler, so each
+ * handler acts only on its own dialog's events. Otherwise stepping back out of
+ * the review with Escape would close the dialog underneath it too, and the
+ * draft the review was about would go with it.
  */
 export function Modal({
   title,
@@ -43,9 +50,12 @@ export function Modal({
       // user agent's `margin: auto`, as in Quick update.
       className="m-auto w-[min(40rem,92vw)] rounded-[var(--radius-surface)] border bg-[var(--color-surface)] p-0 text-[var(--color-foreground)] backdrop:bg-black/40"
       onCancel={(event) => {
+        if (event.target !== event.currentTarget) return;
         if (busy) event.preventDefault();
       }}
-      onClose={onClose}
+      onClose={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
     >
       <div className="border-b px-4 py-3 sm:px-6">
         <h3 id={headingId} className="text-[length:var(--text-section)] font-semibold">
