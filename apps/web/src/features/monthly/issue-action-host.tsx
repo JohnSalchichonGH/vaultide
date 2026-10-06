@@ -341,12 +341,11 @@ export function IssueActionHost({
                       <AddIncomeWithReview
                         accounts={resources.incomeAccounts}
                         currencies={resources.currencies}
-                        minorUnitsByCurrency={resources.formatting.minorUnitsByCurrency}
                         bounds={open.target.dates}
                         today={resources.today}
                         defaultCurrency={resources.defaultCurrency}
                         initial={open.target.initial}
-                        locale={resources.formatting.locale}
+                        formatting={resources.formatting}
                         onSaved={close}
                         onCommitted={close}
                       />

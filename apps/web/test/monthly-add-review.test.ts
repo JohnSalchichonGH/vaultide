@@ -181,11 +181,10 @@ describe('each Monthly mount hosts the review for the flow it gives its form', (
       createElement(AddIncomeWithReview, {
         accounts: [{ positionId: 'pos-savings', name: 'Old savings', currency: 'EUR' }],
         currencies: ['EUR'],
-        minorUnitsByCurrency: { EUR: 2 },
         bounds: { min: '2026-10-01', max: '2026-10-06' },
         today: '2026-10-06',
         defaultCurrency: 'EUR',
-        locale: 'en-GB',
+        formatting: { locale: 'en-GB', minorUnitsByCurrency: { EUR: 2 } },
       }),
     );
     mounted.flow = null;
@@ -216,10 +215,9 @@ describe('each Monthly mount hosts the review for the flow it gives its form', (
       createElement(AddIncomeWithReview, {
         accounts: [],
         currencies: ['EUR'],
-        minorUnitsByCurrency: { EUR: 2 },
         bounds: { min: '2026-10-01', max: '2026-10-06' },
         defaultCurrency: 'EUR',
-        locale: 'en-GB',
+        formatting: { locale: 'en-GB', minorUnitsByCurrency: { EUR: 2 } },
       }),
     );
     expect(html).not.toContain('correction-');

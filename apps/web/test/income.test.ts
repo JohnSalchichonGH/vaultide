@@ -459,11 +459,10 @@ describe('Add a payment on the Income page and Add income on Monthly', () => {
       createElement(AddIncomeWithReview, {
         accounts: ACCOUNTS,
         currencies: ['EUR'],
-        minorUnitsByCurrency: { EUR: 2 },
         bounds: ownedEntryDateBounds({ month: '2026-09', monthEndsOn: '2026-09-30', today: '2026-10-04' }),
         today: '2026-10-04',
         defaultCurrency: 'EUR',
-        locale: 'en-GB',
+        formatting: { locale: 'en-GB', minorUnitsByCurrency: { EUR: 2 } },
       }),
     );
   const income = (receivedOn?: string) =>

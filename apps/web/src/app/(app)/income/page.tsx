@@ -200,12 +200,11 @@ export default async function IncomePage({
             <AddIncomeWithReview
               accounts={page.forms.cashAccounts}
               currencies={currencies}
-              minorUnitsByCurrency={page.minorUnitsByCurrency}
               bounds={paymentDateBounds(page.today)}
               today={page.today}
               defaultCurrency={defaultCurrency}
               kinds={page.forms.paymentKinds}
-              locale={locale}
+              formatting={formatting}
             />
           </CardContent>
         </Card>

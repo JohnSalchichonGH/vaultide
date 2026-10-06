@@ -2191,11 +2191,12 @@ export function AddIncomeForm({
  * passes `onCommitted` instead.
  */
 export function AddIncomeWithReview({
-  locale,
+  formatting,
   onCommitted,
   ...form
-}: Omit<Parameters<typeof AddIncomeForm>[0], 'correction'> & {
-  readonly locale: string;
+}: Omit<Parameters<typeof AddIncomeForm>[0], 'correction' | 'minorUnitsByCurrency'> & {
+  /** The form checks amounts against the minor units, and the review speaks the locale. */
+  readonly formatting: Formatting;
   readonly onCommitted?: (() => void) | undefined;
 }) {
   const router = useRouter();
@@ -2209,6 +2210,7 @@ export function AddIncomeWithReview({
       <AddIncomeForm
         key={generation}
         {...form}
+        minorUnitsByCurrency={formatting.minorUnitsByCurrency}
         correction={correction}
         onSaved={() => {
           setConfirmed(false);
@@ -2222,7 +2224,7 @@ export function AddIncomeWithReview({
       ) : null}
       <CorrectionHost
         flow={correction}
-        labels={{ accounts: accountLabelsOf(form.accounts), categories: {}, locale }}
+        labels={{ accounts: accountLabelsOf(form.accounts), categories: {}, locale: formatting.locale }}
         onCommitted={() => {
           if (onCommitted === undefined) {
             setGeneration((current) => current + 1);
@@ -2727,11 +2729,10 @@ export function IncomeSection({
           <AddIncomeWithReview
             accounts={income.cashAccounts}
             currencies={currencies}
-            minorUnitsByCurrency={formatting.minorUnitsByCurrency}
             bounds={bounds}
             today={today}
             defaultCurrency={defaultCurrency}
-            locale={formatting.locale}
+            formatting={formatting}
           />
         </Disclosure>
         <Disclosure label="Add income source" testId="source-add-toggle">

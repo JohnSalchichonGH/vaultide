@@ -782,10 +782,9 @@ const addIncome = (currencies: readonly string[] = SUPPORTED): string =>
     createElement(AddIncomeWithReview, {
       accounts: EUR_ONLY,
       currencies,
-      minorUnitsByCurrency: { CHF: 2, EUR: 2, USD: 2 },
       bounds: { min: '2026-09-01', max: '2026-09-30' },
       defaultCurrency: 'EUR',
-      locale: 'en-GB',
+      formatting: { locale: 'en-GB', minorUnitsByCurrency: { CHF: 2, EUR: 2, USD: 2 } },
     }),
   );
 
