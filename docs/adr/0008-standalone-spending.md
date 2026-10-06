@@ -110,6 +110,42 @@ not settled here. Spending takes the conservative display, which is correct
 under either reading. The same rule covers a reliable month whose savings are
 partial only because of a missing rate.
 
+> **Addendum, 2026-10-07: the rule now covers Monthly's Overview.** The decision
+> above limits this rule to Spending and says that Monthly still shows a partial
+> savings figure with its Partial badge. That is no longer so. Every figure on
+> Monthly's Overview now reads by the rule Spending uses for the same figure:
+>
+> - tracked spending, unclassified spending, additional spending, total spending
+>   and paid by others read as spending figures: `≥ €X` when partial, or `—`
+>   when nothing above zero could be stated;
+> - saved from income and personal savings read as savings figures: `—` with the
+>   reason whenever they are partial;
+> - the savings rate, which is never partial, stays a ratio or a reason.
+>
+> The current month follows the same rules, including its two figures without a
+> common date.
+>
+> **Why.** The cold Phase 3 review's finding P3-01 showed that Monthly printed
+> figures it could not state as numbers. The commonest case is the last
+> completed month before its statement is entered. It read `Tracked spending
+> €0.00 · Partial`, and, with a salary recorded, its personal savings
+> overstated what was saved, because the missing spending was read as zero. A
+> badge beside a number does not make the number true. 16.2 renders what cannot
+> be stated as `—` with a reason, never `0`.
+>
+> **Tracked income** (`externalIncome`) is the one Overview figure Spending does
+> not show, and it reads as a lower bound. Every contribution to it is an income
+> amount, which is never negative (`income_entries.net_amount >= 0`), and what a
+> partial value leaves out is a contribution whose rate could not be found. The
+> missing part can only add to it, which is the reasoning that makes partial
+> spending a bound.
+>
+> Nothing else changes. The engine, the DTOs and every availability stay as
+> they are, including the engine's `Partial` at an exact zero. The tension
+> between 12.5 and 30.16 item 7 described under **Why** stays open: it is cold
+> review finding P3-04 and needs its own ruling. This display is correct under
+> either reading.
+
 ## 6. Categories and largest known cover the focus month and follow the reporting scope
 
 **Decision.** Categories and the largest-known list cover the focus month only.
