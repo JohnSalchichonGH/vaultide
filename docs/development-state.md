@@ -507,11 +507,7 @@ The standalone Income pages and the remaining end-to-end journeys are done.
 Remaining Phase 3 work, in the agreed order:
 
 1. Phase 3 hardening, including:
-   - two known gaps recorded with Bulk History and not fixed there:
-     - the ordinary record path accepts a non-zero balance dated a closed
-       account's closing day when no balance sits on that day, because
-       closing an account only requires the latest balance on or before that
-       day to be zero;
+   - one known gap recorded with Bulk History and not fixed there:
      - the Bulk History grid read has no size bound (ADR 0011, "Known
        limits");
    - three items recorded with the Income pages and not fixed there:
