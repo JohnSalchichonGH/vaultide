@@ -359,7 +359,11 @@ describe('a missing-payment line', () => {
     );
     expect(html).toContain('href="/income/sources/tpl-salary?year=2026"');
     expect(html).not.toContain('/monthly/');
-    expect(html).toContain('Unarchive the source, or, if it really ended, give it an end date before the missing payment.');
+    // The year view's line keeps its own wording; only the source page links inside it.
+    expect(presentation.ARCHIVED_MISSING_HELP).toBe(
+      'This source is archived, so its payments cannot be recorded or skipped. Unarchive the source, or, if it really ended, give it an end date before the missing payment.',
+    );
+    expect(html).toContain(presentation.ARCHIVED_MISSING_HELP);
   });
 
   it('is one line per source and year', () => {

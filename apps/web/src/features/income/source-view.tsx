@@ -9,12 +9,7 @@ import { dayTitle, monthTitle } from '@/features/monthly/presentation';
 import { incomeKindLabel } from '@/features/monthly/income-presentation';
 import { ChangeAmountFrom } from '@/features/income/source-editor';
 import { sourceChartModel } from '@/features/income/source-chart-model';
-import {
-  ARCHIVED_MISSING_HELP,
-  missingFlagLink,
-  missingFlagText,
-  withoutGrossNote,
-} from '@/features/income/presentation';
+import { missingFlagLink, missingFlagText, withoutGrossNote } from '@/features/income/presentation';
 import {
   ARCHIVED_SOURCE_MISSING,
   NO_ACCOUNT,
@@ -226,15 +221,15 @@ export function SourceOccurrences({ page, formatting }: { readonly page: IncomeS
           <p>{missingFlagText(flag, year, monthOnly)}</p>
           {flag.archived ? (
             <p className={META} data-testid="source-missing-archived">
-              {ARCHIVED_MISSING_HELP}{' '}
+              {ARCHIVED_SOURCE_MISSING.reason}{' '}
               <a href={ARCHIVED_SOURCE_MISSING.unarchive.href} className="underline" data-testid="source-missing-unarchive">
                 {ARCHIVED_SOURCE_MISSING.unarchive.label}
               </a>
-              , or{' '}
+              {ARCHIVED_SOURCE_MISSING.ifEnded}{' '}
               <a href={ARCHIVED_SOURCE_MISSING.endDate.href} className="underline" data-testid="source-missing-end-date">
                 {ARCHIVED_SOURCE_MISSING.endDate.label}
-              </a>
-              .
+              </a>{' '}
+              {ARCHIVED_SOURCE_MISSING.before}
             </p>
           ) : flagLink === null ? null : (
             <Link href={flagLink.href} className="text-[length:var(--text-meta)] underline" data-testid="source-missing-link" data-kind={flagLink.kind}>

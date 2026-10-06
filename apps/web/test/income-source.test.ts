@@ -36,6 +36,7 @@ vi.mock('next/link', () => ({
 }));
 
 const presentation = await import('@/features/income/source-presentation');
+const { ARCHIVED_MISSING_HELP } = await import('@/features/income/presentation');
 const { sourceChartModel } = await import('@/features/income/source-chart-model');
 const { AmountHistory, SourceDetails, SourceOccurrences } = await import('@/features/income/source-view');
 const { SourceArchive, SourceEndDate, SourceNameAndPayer } = await import('@/features/income/source-editor');
@@ -221,9 +222,16 @@ describe('an archived source', () => {
     const flag = presentation.sourceMissingFlag(page);
     expect(presentation.occurrenceLink(missing('2026-07-25'), 'tpl-salary', flag, monthName)).toBeNull();
     const html = render(createElement(SourceOccurrences, { page, formatting: FORMATTING }));
-    expect(html).toContain('Unarchive the source, or, if it really ended, give it an end date before the missing payment.');
-    expect(html).toContain('href="#archive"');
-    expect(html).toContain('href="#end-date"');
+    // The guidance is said once, with the two controls as links inside it.
+    const line = /data-testid="source-missing-archived"[^>]*>([\s\S]*?)<\/p>/u.exec(html)?.[1] ?? '';
+    expect(line.replaceAll(/<[^>]+>/gu, '')).toBe(
+      'This source is archived, so its payments cannot be recorded or skipped. Unarchive it, or, if it really ended, set an end date before the missing payment.',
+    );
+    expect(line).toContain('href="#archive" class="underline" data-testid="source-missing-unarchive">Unarchive it</a>');
+    expect(line).toContain('href="#end-date" class="underline" data-testid="source-missing-end-date">set an end date</a>');
+    // Not the year view's wording as well: that line has no links to give.
+    expect(html).not.toContain(ARCHIVED_MISSING_HELP);
+    expect(html).not.toContain('Unarchive the source');
     expect(html).not.toContain('/history');
     expect(html).not.toContain('source-missing-link');
     // Its recorded and skipped rows still lead to Monthly.

@@ -233,8 +233,19 @@ export function occurrenceLink(
   }
 }
 
-/** Where an archived source's missing line points: this page's own controls. */
+/**
+ * An archived source's missing line on this page: the year view's guidance
+ * (`ARCHIVED_MISSING_HELP`) said once, as one sentence around two links to
+ * this page's own controls —
+ *
+ * "This source is archived, so its payments cannot be recorded or skipped.
+ * [Unarchive it], or, if it really ended, [set an end date] before the missing
+ * payment."
+ */
 export const ARCHIVED_SOURCE_MISSING = {
+  reason: 'This source is archived, so its payments cannot be recorded or skipped.',
   unarchive: { href: '#archive', label: 'Unarchive it' },
+  ifEnded: ', or, if it really ended,',
   endDate: { href: '#end-date', label: 'set an end date' },
+  before: 'before the missing payment.',
 } as const;
