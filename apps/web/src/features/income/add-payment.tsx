@@ -11,12 +11,12 @@ import { AddIncomeForm } from '@/features/monthly/income-editor';
 /**
  * The Income page's Add a payment (ADR 0012 D5).
  *
- * Monthly's own form, shared, with three things the page decides: the kinds
- * it counts, any day up to today, and a save that asks the server first. A
- * payment whose dormancy consequence reaches completed history therefore opens
- * Review changes → Confirm correction through the one `CorrectionHost` here,
- * instead of stopping at the guard's refusal — which is what Monthly's own Add
- * income still does (ADR 0012, "Known gap").
+ * Monthly's own form, shared, with two things the page decides: the kinds it
+ * counts, and any day up to today. Its save asks the server first, as every
+ * mount of the form does, so a payment whose dormancy consequence reaches
+ * completed history opens Review changes → Confirm correction through the one
+ * `CorrectionHost` here, instead of stopping at the guard's refusal. Monthly's
+ * mounts do the same through `AddIncomeWithReview`.
  *
  * After a confirmed correction the form starts again empty, and the page is
  * read again from the server.

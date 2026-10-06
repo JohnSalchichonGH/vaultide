@@ -46,7 +46,7 @@ vi.mock('next/link', () => ({
     createElement('a', { href, ...rest }, children),
 }));
 
-const { AddExpenseForm, AddExpenseSourceForm, KnownExpensesSection } = await import(
+const { AddExpenseSourceForm, AddExpenseWithReview, KnownExpensesSection } = await import(
   '@/features/monthly/expenses-editor'
 );
 const { canWrite, draftsAfterSave, runSave } = await import('@/features/monthly/autosave');
@@ -754,7 +754,7 @@ describe('a recorded direct expense', () => {
 
   it('never offers a category the read did not make eligible', () => {
     const html = renderToStaticMarkup(
-      createElement(AddExpenseForm, {
+      createElement(AddExpenseWithReview, {
         accounts: ACCOUNTS,
         eligibleCategories: ELIGIBLE,
         currencies: ['EUR', 'USD'],
@@ -838,7 +838,7 @@ describe('the section’s shape', () => {
 
 const addExpense = (): string =>
   renderToStaticMarkup(
-    createElement(AddExpenseForm, {
+    createElement(AddExpenseWithReview, {
       accounts: ACCOUNTS,
       eligibleCategories: ELIGIBLE,
       currencies: ['CHF', 'EUR', 'USD'],

@@ -18,8 +18,8 @@ import { MoneyText } from '@/components/finance/money-text';
 import { QuickUpdate, type QuickUpdatePosition } from '@/features/accounts/quick-update';
 import { useHydrated } from '@/lib/use-hydrated';
 import { cn } from '@/lib/utils';
-import { AddIncomeForm } from '@/features/monthly/income-editor';
-import { AddExpenseForm } from '@/features/monthly/expenses-editor';
+import { AddIncomeWithReview } from '@/features/monthly/income-editor';
+import { AddExpenseWithReview } from '@/features/monthly/expenses-editor';
 import { TransferEditor } from '@/features/monthly/transfers-editor';
 import { dayTitle } from '@/features/monthly/presentation';
 import type { IssueAction } from '@/features/monthly/issue-actions';
@@ -335,8 +335,10 @@ export function IssueActionHost({
                   />
                 ) : (
                   <div className="max-h-[70vh] overflow-y-auto px-4 py-4 sm:px-6">
+                    {/* Each form brings the review a new record may need, and
+                        a confirmed one closes this dialog as a save does. */}
                     {open.target.kind === 'add_income' ? (
-                      <AddIncomeForm
+                      <AddIncomeWithReview
                         accounts={resources.incomeAccounts}
                         currencies={resources.currencies}
                         minorUnitsByCurrency={resources.formatting.minorUnitsByCurrency}
@@ -344,10 +346,12 @@ export function IssueActionHost({
                         today={resources.today}
                         defaultCurrency={resources.defaultCurrency}
                         initial={open.target.initial}
+                        locale={resources.formatting.locale}
                         onSaved={close}
+                        onCommitted={close}
                       />
                     ) : (
-                      <AddExpenseForm
+                      <AddExpenseWithReview
                         accounts={resources.expenseAccounts}
                         eligibleCategories={resources.eligibleCategories}
                         currencies={resources.currencies}
@@ -359,6 +363,7 @@ export function IssueActionHost({
                           open.target.kind === 'add_expense' ? open.target.initial : undefined
                         }
                         onSaved={close}
+                        onCommitted={close}
                       />
                     )}
                   </div>

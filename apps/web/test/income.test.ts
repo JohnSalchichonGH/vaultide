@@ -38,7 +38,9 @@ vi.mock('next/link', () => ({
 }));
 
 const { attemptCorrection, prepareReviewWith } = await import('@/features/corrections/use-correction');
-const { AddIncomeForm, AddIncomeSourceForm, saveNewIncome } = await import('@/features/monthly/income-editor');
+const { AddIncomeForm, AddIncomeSourceForm, AddIncomeWithReview, saveNewIncome } = await import(
+  '@/features/monthly/income-editor'
+);
 const { addsToClosedMonth } = await import('@/features/corrections/delete-confirm');
 const { EARLIEST_CORRECTABLE_DATE, dateBoundsMessage, ownedEntryDateBounds } = await import(
   '@/features/monthly/income-presentation'
@@ -447,15 +449,17 @@ const kindOptions = (html: string): string[] => {
 };
 
 describe('Add a payment on the Income page and Add income on Monthly', () => {
+  // Monthly's mount, which brings its own correction flow and review host.
   const monthly = () =>
     render(
-      createElement(AddIncomeForm, {
+      createElement(AddIncomeWithReview, {
         accounts: ACCOUNTS,
         currencies: ['EUR'],
         minorUnitsByCurrency: { EUR: 2 },
         bounds: ownedEntryDateBounds({ month: '2026-09', monthEndsOn: '2026-09-30', today: '2026-10-04' }),
         today: '2026-10-04',
         defaultCurrency: 'EUR',
+        locale: 'en-GB',
       }),
     );
   const income = (receivedOn?: string) =>
@@ -468,6 +472,7 @@ describe('Add a payment on the Income page and Add income on Monthly', () => {
         today: '2026-10-04',
         defaultCurrency: 'EUR',
         kinds: SEVEN,
+        correction: flowAnswering(NOT_REQUIRED).flow,
         ...(receivedOn === undefined ? {} : { initial: { receivedOn } }),
       }),
     );
@@ -561,7 +566,7 @@ const INPUT = {
   cashPositionId: 'pos-savings',
 } as const;
 
-describe('the Income page’s add asks the server first', () => {
+describe('Add income asks the server first, on the Income page and in Monthly alike', () => {
   it('opens the review when the server requires it, and sends no ordinary save', async () => {
     createIncomeEntryAction.mockReset();
     const { flow, asked, opened } = flowAnswering(REVIEW_REQUIRED);
@@ -601,20 +606,5 @@ describe('the Income page’s add asks the server first', () => {
     createIncomeEntryAction.mockReset().mockResolvedValue({ ok: false, error: { code: 'VALIDATION_ERROR', message: 'Nope.' } });
     const { flow } = flowAnswering(NOT_REQUIRED);
     expect(await saveNewIncome(INPUT, flow)).toEqual({ kind: 'error', message: 'Nope.' });
-  });
-});
-
-describe('Monthly’s own Add income keeps its direct save', () => {
-  it('sends the ordinary save without asking, and shows the guard’s refusal (the known gap)', async () => {
-    previewHistoricalCorrectionAction.mockReset();
-    createIncomeEntryAction.mockReset().mockResolvedValue(GUARD);
-    expect(await saveNewIncome(INPUT, undefined)).toEqual({ kind: 'error', message: GUARD.error.message });
-    expect(createIncomeEntryAction).toHaveBeenCalledWith(INPUT);
-    expect(previewHistoricalCorrectionAction).not.toHaveBeenCalled();
-  });
-
-  it('saves as before', async () => {
-    createIncomeEntryAction.mockReset().mockResolvedValue({ ok: true, data: { id: 'e' } });
-    expect(await saveNewIncome(INPUT, undefined)).toEqual({ kind: 'saved' });
   });
 });

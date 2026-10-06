@@ -5,11 +5,13 @@ import { gotoAfterRefresh } from '../support/navigation';
  * Correcting what reconciliation found (blueprint 8.5, 15.3 section 8, 30.21;
  * ADR 0009).
  *
- * Six journeys, each starting from a month that genuinely raises the issue —
+ * Seven journeys, each starting from a month that genuinely raises the issue —
  * every record is written through the product's own pages, there is no seeding
  * endpoint, and no fixture reaches past an invariant. What is asserted is what
  * a person would see: the correction offered beside the issue, what the form it
- * opens already knows, and what the month says once the record exists.
+ * opens already knows, and what the month says once the record exists. The
+ * last opens Review changes from inside the issue's dialog, which stays open
+ * underneath it until the correction is confirmed.
  *
  * Rates come from the deterministic fixture (`FX_PROVIDER=fixture`), so the
  * cross-currency journey's evidence is reproducible.
@@ -532,5 +534,60 @@ test.describe('a flow with no cash account', () => {
     const row = page.locator('[data-testid="income-entry"]').filter({ hasText: '400.00' });
     await expect(row).toBeVisible();
     await expect(row).toContainText('Not attributed yet');
+  });
+});
+
+test.describe('a correction that needs the review, opened from the issue', () => {
+  test('reviews income into an account dormant since a closed month inside the dialog, then closes it', async ({
+    page,
+    request,
+  }) => {
+    test.slow();
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': OCTOBER_1 });
+    await onboard(page, request, uniqueEmail('e2e-issue-review'));
+
+    // September closed 500 higher than August with nothing recorded to explain it.
+    await accountWithStatements(page, { name: 'BBVA', august: '1000.00', september: '1500.00' });
+    // A second account, emptied at the end of August and dormant from there.
+    await addAccount(page, { name: 'Old savings', type: 'savings', balance: '0.00', balanceOn: '2026-08-31' });
+    await openAccount(page, 'Old savings');
+    await page.getByTestId('confirm-statement-2026-08').click();
+    await expect(page.getByTestId('month-end-2026-08')).toHaveCount(0);
+    await expect(page.getByTestId('edit-submit')).toBeEnabled();
+    await page.getByTestId('edit-dormant').check();
+    await page.getByTestId('edit-submit').click();
+    await expect(page.getByTestId('correction-review')).toBeVisible();
+    await page.getByTestId('correction-review').getByTestId('correction-confirm').click();
+    await expect(page.getByTestId('correction-review')).toHaveCount(0);
+
+    await gotoAfterRefresh(page, '/monthly/2026-09');
+    await actionIn(page, 'unexplained_inflow', 'unexplained_inflow:EUR::add-income').click();
+    await expect(dialog(page)).toBeVisible();
+    await expect(dialog(page).getByTestId('income-submit')).toBeEnabled();
+
+    // Income into the dormant account ends a dormant period that began in a
+    // closed month, so the save opens the review instead of being refused.
+    await fillTestId(page, 'income-received-on', '2026-09-15');
+    await fillTestId(page, 'income-net', '80.00');
+    await dialog(page).getByTestId('income-account').selectOption({ label: 'Old savings' });
+    await dialog(page).getByTestId('income-submit').click();
+    const review = page.getByTestId('correction-review');
+    await expect(review).toBeVisible();
+    await expect(review.getByTestId('correction-structural')).toContainText('no longer dormant from 31 Aug 2026');
+
+    // Escape steps back out of the review only: the issue's dialog stays open
+    // underneath, with the draft as it was typed and the way back in.
+    await page.keyboard.press('Escape');
+    await expect(review).toHaveCount(0);
+    await expect(dialog(page)).toBeVisible();
+    await expect(dialog(page).getByTestId('income-net')).toHaveValue('80.00');
+    await dialog(page).getByTestId('correction-reopen').click();
+    await expect(review).toBeVisible();
+
+    // Confirmed, it closes the dialog as a save would, and the month reads it.
+    await review.getByTestId('correction-confirm').click();
+    await expect(review).toHaveCount(0);
+    await expect(dialog(page)).toBeHidden();
+    await expect(page.getByTestId('income-direct')).toContainText('€80.00');
   });
 });

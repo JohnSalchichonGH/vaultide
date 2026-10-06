@@ -1834,28 +1834,22 @@ export type NewIncomeOutcome =
   | { readonly kind: 'error'; readonly message: string };
 
 /**
- * Save a new income row by the path the page that mounts the form chose
- * (ADR 0012 D5).
+ * Save a new income row, asking the server first (ADR 0010 §1; ADR 0012 D5).
  *
- * Without a correction flow it is the ordinary create, exactly as Monthly has
- * always sent it: a creation whose dormancy consequence reaches completed
- * history comes back as the guard's refusal, and the form shows it (ADR 0012,
- * "Known gap").
- *
- * With one, it asks the server first through the `income_create` draft: a
- * creation that needs no review saves as before, and one that does opens
- * Review changes → Confirm correction instead, with nothing written. A refusal
- * from a race between asking and saving asks once more (`attemptCorrection`).
+ * A single new entry is a first assertion, even in a closed month, and saves
+ * through the ordinary create. What the server still reviews is its dormancy
+ * consequence: an entry into an account whose dormant period began in a closed
+ * month ends that period, and the ordinary create refuses it with
+ * `HISTORICAL_REVIEW_REQUIRED`. So the save asks first through the
+ * `income_create` draft: a creation that needs no review saves as before, and
+ * one that does opens Review changes → Confirm correction instead, with nothing
+ * written. A refusal from a race between asking and saving asks once more
+ * (`attemptCorrection`).
  */
 export async function saveNewIncome(
   input: NewIncomeInput,
-  correction: CorrectionFlow | undefined,
+  correction: CorrectionFlow,
 ): Promise<NewIncomeOutcome> {
-  if (correction === undefined) {
-    const result = await createIncomeEntryAction(input);
-    return result.ok ? { kind: 'saved' } : { kind: 'error', message: result.error.message };
-  }
-
   const draft: CorrectionDraft = {
     kind: 'income_create',
     incomeKind: input.kind,
@@ -1927,11 +1921,12 @@ export function AddIncomeForm({
    */
   readonly kinds?: readonly string[] | undefined;
   /**
-   * The page's correction flow, when its saves ask the server first and open
-   * the review a creation needs (`saveNewIncome`). Absent, the form saves
-   * directly, as Monthly's always has.
+   * The mount's correction flow: every save asks the server first and opens
+   * the review a creation needs (`saveNewIncome`). The mount renders the one
+   * `CorrectionHost` that shows it (`AddIncomeWithReview`, or the Income
+   * page's `AddPayment`).
    */
-  readonly correction?: CorrectionFlow | undefined;
+  readonly correction: CorrectionFlow;
 }) {
   const router = useRouter();
   const ids = {
@@ -2142,6 +2137,68 @@ export function AddIncomeForm({
         {pending ? 'Saving…' : 'Add income'}
       </button>
     </form>
+  );
+}
+
+/**
+ * Monthly's Add income with the review a new entry may need (ADR 0010 §1; ADR
+ * 0012 D5): in the Income section, and in a corrective action's dialog.
+ *
+ * The form asks the server first through this mount's own correction flow, so
+ * an entry whose dormancy consequence reaches completed history opens Review
+ * changes → Confirm correction through the one `CorrectionHost` here, instead
+ * of stopping at the guard's refusal. Every other save is the ordinary one it
+ * always was.
+ *
+ * A confirmed correction ends as an ordinary save on the same mount ends. By
+ * default the form starts again empty and the page is read again, as the
+ * Income page's Add a payment does. A caller that owns something around the
+ * form — the issue dialog, which closes — passes `onCommitted` instead.
+ */
+export function AddIncomeWithReview({
+  locale,
+  onCommitted,
+  ...form
+}: Omit<Parameters<typeof AddIncomeForm>[0], 'correction'> & {
+  readonly locale: string;
+  readonly onCommitted?: (() => void) | undefined;
+}) {
+  const router = useRouter();
+  const correction = useCorrection();
+  // A new form after a confirmed correction: the typed values were saved.
+  const [generation, setGeneration] = useState(0);
+  const [confirmed, setConfirmed] = useState(false);
+
+  return (
+    <div className="space-y-3">
+      <AddIncomeForm
+        key={generation}
+        {...form}
+        correction={correction}
+        onSaved={() => {
+          setConfirmed(false);
+          form.onSaved?.();
+        }}
+      />
+      {confirmed ? (
+        <p role="status" aria-live="polite" data-testid="add-income-confirmed" className={META}>
+          Income added, and the months it changed were worked out again.
+        </p>
+      ) : null}
+      <CorrectionHost
+        flow={correction}
+        labels={{ accounts: accountLabelsOf(form.accounts), categories: {}, locale }}
+        onCommitted={() => {
+          if (onCommitted === undefined) {
+            setGeneration((current) => current + 1);
+            setConfirmed(true);
+          } else {
+            onCommitted();
+          }
+          router.refresh();
+        }}
+      />
+    </div>
   );
 }
 
@@ -2632,13 +2689,14 @@ export function IncomeSection({
 
       <div className="grid gap-6 border-t pt-4 lg:grid-cols-2">
         <Disclosure label="Add income" testId="income-add-toggle">
-          <AddIncomeForm
+          <AddIncomeWithReview
             accounts={income.cashAccounts}
             currencies={currencies}
             minorUnitsByCurrency={formatting.minorUnitsByCurrency}
             bounds={bounds}
             today={today}
             defaultCurrency={defaultCurrency}
+            locale={formatting.locale}
           />
         </Disclosure>
         <Disclosure label="Add income source" testId="source-add-toggle">

@@ -5,7 +5,7 @@ import { gotoAfterRefresh, reloadAfterRefresh, waitForRouter } from '../support/
  * Historical Correction, end to end (blueprint 15.3, 30.22; ADR 0010; §108–§111
  * of the slice prompt).
  *
- * Five journeys, and each is a rule the product promises rather than a
+ * Six journeys, and each is a rule the product promises rather than a
  * rendering check:
  *
  *  - **a past month-end balance is corrected.** Edit it, read what it will
@@ -22,7 +22,11 @@ import { gotoAfterRefresh, reloadAfterRefresh, waitForRouter } from '../support/
  *    the two apart on screen;
  *  - **an ordinary-looking save wakes an account out of a dormant period.**
  *    Nothing about recording a balance looks historical, and the product stops
- *    and explains before it rewrites those months.
+ *    and explains before it rewrites those months;
+ *  - **a new income or expense in Monthly wakes one.** A single new record is
+ *    a first assertion, but the dormant period it ends began in a closed month,
+ *    so Monthly's Add income and Add expense open the review rather than
+ *    stopping at the server's refusal.
  *
  * Every record is written through the product's own pages: there is no seeding
  * endpoint, so what these journeys prove is what a person actually gets.
@@ -480,6 +484,97 @@ test.describe('waking an account out of a dormant period', () => {
 
     await expect(page.getByTestId('valuation-history')).toContainText('2026-10-04');
     await reloadAfterRefresh(page);
+    await expect(page.getByTestId('edit-submit')).toBeEnabled();
+    await expect(page.getByTestId('edit-dormant')).not.toBeChecked();
+  });
+});
+
+test.describe('adding to an account dormant since a closed month, from Monthly', () => {
+  /** "Old savings", emptied at the end of August and marked dormant from there. */
+  async function dormantSinceAugust(page: Page): Promise<void> {
+    await accountWithAugustStatement(page, { name: 'Old savings', type: 'savings', august: '0.00' });
+    await expect(page.getByTestId('edit-submit')).toBeEnabled();
+    await page.getByTestId('edit-dormant').check();
+    await page.getByTestId('edit-submit').click();
+    await expect(review(page)).toBeVisible();
+    await review(page).getByTestId('correction-confirm').click();
+    await expect(review(page)).toHaveCount(0);
+    await expect(page.getByTestId('edit-dormant')).toBeChecked();
+  }
+
+  test('Add income opens Review changes, and Confirm correction saves it', async ({ page, request }) => {
+    test.slow();
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': OCTOBER_6 });
+    await onboard(page, request, uniqueEmail('e2e-monthly-add-income-dormant'));
+    await dormantSinceAugust(page);
+
+    // A payment into it today ends a dormant period that began in a closed
+    // month. The form used to stop at the server's refusal; it now asks first.
+    await gotoAfterRefresh(page, '/monthly/2026-10');
+    await page.getByTestId('income-add-toggle').click();
+    await expect(page.getByTestId('income-submit')).toBeEnabled();
+    await page.getByTestId('income-kind').selectOption('other');
+    await fillTestId(page, 'income-received-on', '2026-10-02');
+    await fillTestId(page, 'income-net', '80.00');
+    await page.getByTestId('income-account').selectOption({ label: 'Old savings' });
+    await page.getByTestId('income-submit').click();
+
+    await expect(review(page)).toBeVisible();
+    await expect(review(page).getByTestId('correction-structural')).toContainText(
+      'no longer dormant from 31 Aug 2026',
+    );
+    // Nothing is written until it is confirmed, and no refusal is shown.
+    await expect(page.getByTestId('income-saved')).toHaveCount(0);
+    await expect(page.getByTestId('income-error')).toHaveCount(0);
+    await expect(page.getByTestId('income-entry')).toHaveCount(0);
+
+    await review(page).getByTestId('correction-confirm').click();
+    await expect(review(page)).toHaveCount(0);
+    await expect(page.getByTestId('add-income-confirmed')).toBeVisible();
+    // The page is read again, and the form starts fresh.
+    await expect(page.getByTestId('income-entry')).toHaveCount(1);
+    await expect(page.getByTestId('income-direct')).toContainText('€80.00');
+    await expect(page.getByTestId('income-net')).toHaveValue('');
+
+    await gotoAfterRefresh(page, '/accounts?tab=cash');
+    await page.getByRole('link', { name: 'Old savings', exact: true }).click();
+    await expect(page.getByTestId('edit-submit')).toBeEnabled();
+    await expect(page.getByTestId('edit-dormant')).not.toBeChecked();
+  });
+
+  test('Add expense opens Review changes, and Confirm correction saves it', async ({ page, request }) => {
+    test.slow();
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': OCTOBER_6 });
+    await onboard(page, request, uniqueEmail('e2e-monthly-add-expense-dormant'));
+    await dormantSinceAugust(page);
+
+    // An expense paid from it today ends the same dormant period.
+    await gotoAfterRefresh(page, '/monthly/2026-10');
+    await page.getByTestId('expense-add-toggle').click();
+    await expect(page.getByTestId('expense-add-submit')).toBeEnabled();
+    await page.getByTestId('expense-add-category').selectOption({ label: 'Groceries' });
+    await fillTestId(page, 'expense-add-date', '2026-10-02');
+    await fillTestId(page, 'expense-add-amount', '12.00');
+    await page.getByTestId('expense-add-account').selectOption({ label: 'Old savings' });
+    await page.getByTestId('expense-add-submit').click();
+
+    await expect(review(page)).toBeVisible();
+    await expect(review(page).getByTestId('correction-structural')).toContainText(
+      'no longer dormant from 31 Aug 2026',
+    );
+    await expect(page.getByTestId('expense-add-saved')).toHaveCount(0);
+    await expect(page.getByTestId('expense-error')).toHaveCount(0);
+    await expect(page.getByTestId('expense-entry')).toHaveCount(0);
+
+    await review(page).getByTestId('correction-confirm').click();
+    await expect(review(page)).toHaveCount(0);
+    await expect(page.getByTestId('add-expense-confirmed')).toBeVisible();
+    await expect(page.getByTestId('expense-entry')).toHaveCount(1);
+    await expect(page.getByTestId('expense-direct')).toContainText('€12.00');
+    await expect(page.getByTestId('expense-add-amount')).toHaveValue('');
+
+    await gotoAfterRefresh(page, '/accounts?tab=cash');
+    await page.getByRole('link', { name: 'Old savings', exact: true }).click();
     await expect(page.getByTestId('edit-submit')).toBeEnabled();
     await expect(page.getByTestId('edit-dormant')).not.toBeChecked();
   });

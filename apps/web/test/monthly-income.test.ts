@@ -42,7 +42,7 @@ vi.mock('next/link', () => ({
     createElement('a', { href, ...rest }, children),
 }));
 
-const { AddIncomeForm, AddIncomeSourceForm, IncomeSection } = await import(
+const { AddIncomeSourceForm, AddIncomeWithReview, IncomeSection } = await import(
   '@/features/monthly/income-editor'
 );
 const {
@@ -776,14 +776,16 @@ describe('a row’s drafts across a save', () => {
 const EUR_ONLY = [{ positionId: 'pos-bbva', name: 'BBVA', currency: 'EUR' }];
 const SUPPORTED = ['CHF', 'EUR', 'USD'];
 
+// The section's own mount, which brings the correction flow the form saves through.
 const addIncome = (currencies: readonly string[] = SUPPORTED): string =>
   renderToStaticMarkup(
-    createElement(AddIncomeForm, {
+    createElement(AddIncomeWithReview, {
       accounts: EUR_ONLY,
       currencies,
       minorUnitsByCurrency: { CHF: 2, EUR: 2, USD: 2 },
       bounds: { min: '2026-09-01', max: '2026-09-30' },
       defaultCurrency: 'EUR',
+      locale: 'en-GB',
     }),
   );
 

@@ -45,7 +45,7 @@ import {
   isHistorical,
 } from '@/features/corrections/delete-confirm';
 import { runCorrectableSave } from '@/features/corrections/save';
-import { useCorrection } from '@/features/corrections/use-correction';
+import { useCorrection, type CorrectionFlow } from '@/features/corrections/use-correction';
 import {
   defaultPickerCurrency,
   correctableDateBounds,
@@ -2022,6 +2022,76 @@ function EntryRow({
 /* Add a known expense                                                         */
 /* -------------------------------------------------------------------------- */
 
+/** One new known expense, exactly as the ordinary create takes it. */
+export interface NewExpenseInput {
+  readonly categoryId: string;
+  readonly incurredOn: string;
+  readonly amount: string;
+  readonly currency: string;
+  readonly settlement: ExpenseSettlement;
+  readonly cashPositionId: string | null;
+  readonly description?: string | undefined;
+  readonly isOneOff: boolean;
+}
+
+/** What one save came to. `review` means nothing was written and the review is open. */
+export type NewExpenseOutcome =
+  | { readonly kind: 'saved' }
+  | { readonly kind: 'review' }
+  | { readonly kind: 'error'; readonly message: string };
+
+/**
+ * Save a new known expense, asking the server first (ADR 0010 §1) — Add
+ * income's `saveNewIncome`, for expenses.
+ *
+ * A single new expense is a first assertion, even in a closed month, and saves
+ * through the ordinary create. What the server still reviews is its dormancy
+ * consequence: an expense from an account whose dormant period began in a
+ * closed month ends that period, and the ordinary create refuses it with
+ * `HISTORICAL_REVIEW_REQUIRED`. So the save asks first through the
+ * `expense_create` draft: a creation that needs no review saves as before, and
+ * one that does opens Review changes → Confirm correction instead, with nothing
+ * written. A refusal from a race between asking and saving asks once more
+ * (`attemptCorrection`).
+ */
+export async function saveNewExpense(
+  input: NewExpenseInput,
+  correction: CorrectionFlow,
+): Promise<NewExpenseOutcome> {
+  const draft: CorrectionDraft = {
+    kind: 'expense_create',
+    categoryId: input.categoryId,
+    incurredOn: input.incurredOn,
+    amount: input.amount,
+    currency: input.currency,
+    settlement: input.settlement,
+    cashPositionId: input.cashPositionId,
+    ...(input.description === undefined ? {} : { description: input.description }),
+    isOneOff: input.isOneOff,
+  };
+  const final = await runCorrectableSave(
+    correction,
+    draft,
+    () => createExpenseEntryAction(input),
+    () => undefined,
+    // The form refreshes the page itself once it has cleared its fields.
+    () => undefined,
+  );
+  switch (final.kind) {
+    case 'saved':
+      return { kind: 'saved' };
+    case 'idle':
+      return { kind: 'review' };
+    case 'conflict':
+    case 'error':
+    case 'invalid':
+      return { kind: 'error', message: final.message };
+    /* v8 ignore next 2 -- a finished save never reports itself as saving. */
+    case 'saving':
+      return { kind: 'error', message: 'That could not be saved. Try again.' };
+  }
+}
+
 export function AddExpenseForm({
   accounts,
   eligibleCategories,
@@ -2032,6 +2102,7 @@ export function AddExpenseForm({
   formatting,
   initial,
   onSaved,
+  correction,
 }: {
   readonly accounts: CashAccounts;
   readonly eligibleCategories: readonly ExpenseCategoryDto[];
@@ -2052,6 +2123,12 @@ export function AddExpenseForm({
   readonly initial?: AddExpenseInitialValues | undefined;
   /** Told after a save lands, for a caller that owns something around the form. */
   readonly onSaved?: (() => void) | undefined;
+  /**
+   * The mount's correction flow: every save asks the server first and opens
+   * the review a creation needs (`saveNewExpense`). The mount renders the one
+   * `CorrectionHost` that shows it (`AddExpenseWithReview`).
+   */
+  readonly correction: CorrectionFlow;
 }) {
   const router = useRouter();
   const ids = {
@@ -2110,21 +2187,29 @@ export function AddExpenseForm({
         }
 
         startTransition(async () => {
-          const result = await createExpenseEntryAction({
-            categoryId,
-            incurredOn,
-            amount: normalized,
-            currency,
-            settlement: effectivePayment,
-            cashPositionId:
-              effectivePayment === 'tracked_cash' && account !== NO_ACCOUNT ? account : null,
-            ...(description.trim() === '' ? {} : { description: description.trim() }),
-            isOneOff,
-          });
-          if (!result.ok) {
-            setError(result.error.message);
+          const outcome = await saveNewExpense(
+            {
+              categoryId,
+              incurredOn,
+              amount: normalized,
+              currency,
+              // The picker's options are the validation enum, and the server
+              // parses the save and the draft with that enum again.
+              settlement: effectivePayment as ExpenseSettlement,
+              cashPositionId:
+                effectivePayment === 'tracked_cash' && account !== NO_ACCOUNT ? account : null,
+              ...(description.trim() === '' ? {} : { description: description.trim() }),
+              isOneOff,
+            },
+            correction,
+          );
+          if (outcome.kind === 'error') {
+            setError(outcome.message);
             return;
           }
+          // The review is open over the page, and nothing has been written: what
+          // was typed stays, so stepping back returns to it.
+          if (outcome.kind === 'review') return;
           setSaved('Expense added.');
           setAmount('');
           setDescription('');
@@ -2249,6 +2334,72 @@ export function AddExpenseForm({
         {pending ? 'Saving…' : 'Add expense'}
       </button>
     </form>
+  );
+}
+
+/**
+ * Add known expense with the review a new expense may need (ADR 0010 §1): in
+ * Monthly's Known expenses, in a corrective action's dialog, and on Spending.
+ *
+ * The form asks the server first through this mount's own correction flow, so
+ * an expense whose dormancy consequence reaches completed history opens Review
+ * changes → Confirm correction through the one `CorrectionHost` here, instead
+ * of stopping at the guard's refusal. Every other save is the ordinary one it
+ * always was.
+ *
+ * A confirmed correction ends as an ordinary save on the same mount ends. By
+ * default the form starts again empty and the page is read again. A caller
+ * that owns something around the form — the issue dialog, which closes — passes
+ * `onCommitted` instead.
+ */
+export function AddExpenseWithReview({
+  onCommitted,
+  ...form
+}: Omit<Parameters<typeof AddExpenseForm>[0], 'correction'> & {
+  readonly onCommitted?: (() => void) | undefined;
+}) {
+  const router = useRouter();
+  const correction = useCorrection();
+  // A new form after a confirmed correction: the typed values were saved.
+  const [generation, setGeneration] = useState(0);
+  const [confirmed, setConfirmed] = useState(false);
+
+  return (
+    <div className="space-y-3">
+      <AddExpenseForm
+        key={generation}
+        {...form}
+        correction={correction}
+        onSaved={() => {
+          setConfirmed(false);
+          form.onSaved?.();
+        }}
+      />
+      {confirmed ? (
+        <p role="status" aria-live="polite" data-testid="add-expense-confirmed" className={META}>
+          Expense added, and the months it changed were worked out again.
+        </p>
+      ) : null}
+      <CorrectionHost
+        flow={correction}
+        labels={{
+          accounts: accountLabelsOf(form.accounts),
+          categories: Object.fromEntries(
+            form.eligibleCategories.map((category) => [category.categoryId, category.name]),
+          ),
+          locale: form.formatting.locale,
+        }}
+        onCommitted={() => {
+          if (onCommitted === undefined) {
+            setGeneration((current) => current + 1);
+            setConfirmed(true);
+          } else {
+            onCommitted();
+          }
+          router.refresh();
+        }}
+      />
+    </div>
   );
 }
 
@@ -2708,7 +2859,7 @@ export function KnownExpensesSection({
 
       <div className="grid gap-6 border-t pt-4 lg:grid-cols-2">
         <Disclosure label="Add expense" testId="expense-add-toggle">
-          <AddExpenseForm
+          <AddExpenseWithReview
             accounts={expenses.cashAccounts}
             eligibleCategories={expenses.eligibleCategories}
             currencies={currencies}

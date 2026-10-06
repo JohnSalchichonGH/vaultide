@@ -6,7 +6,7 @@ import { getServices, getSpendingPage, isDomainError, type SpendingPageDto } fro
 import { requireSessionPage } from '@/server/context';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { AddExpenseForm } from '@/features/monthly/expenses-editor';
+import { AddExpenseWithReview } from '@/features/monthly/expenses-editor';
 import { defaultPickerCurrency, pickerCurrencies } from '@/features/monthly/income-presentation';
 import { MonthNavigation } from '@/features/monthly/month-navigation';
 import { dayTitle, monthTitle } from '@/features/monthly/presentation';
@@ -215,7 +215,7 @@ export default async function SpendingPage({
               accounts would count it twice — record it from the tracked account instead, or not at
               all.
             </p>
-            <AddExpenseForm
+            <AddExpenseWithReview
               key={page.month}
               accounts={page.expenseForm.cashAccounts}
               eligibleCategories={page.expenseForm.eligibleCategories}
