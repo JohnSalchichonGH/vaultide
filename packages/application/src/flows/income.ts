@@ -304,6 +304,18 @@ export function planIncomeCreate(
   };
 }
 
+/** How an income creation reaches its occurrence, and who stated its amounts. */
+export interface IncomeCreateOptions {
+  /** The scheduled occurrence this creation materializes, when it does (30.9). */
+  readonly occurrence?: OccurrenceRef;
+  /**
+   * `server` when the caller derived the amounts, or carried them from a stored
+   * row — an occurrence's term — and has judged whatever its own request
+   * stated (7.2). Left out, the amounts are the request's and are judged here.
+   */
+  readonly amounts?: AmountSource;
+}
+
 /**
  * Resolve a new income entry, whoever is creating it.
  *
@@ -321,13 +333,12 @@ export async function resolveIncomeCreateIn(
   tx: Transaction,
   ctx: RequestContext,
   args: IncomeEntryArgs,
-  occurrence?: OccurrenceRef,
-  amounts: AmountSource = 'request',
+  options: IncomeCreateOptions = {},
 ): Promise<IncomeWritePlan> {
   const decision = decideIncomeCreate(ctx.today, args);
-  if (amounts === 'request') await assertIncomeScaleIn(tx, args, decision.columns.currency);
+  if (options.amounts !== 'server') await assertIncomeScaleIn(tx, args, decision.columns.currency);
   const leg = decision.leg === null ? null : await resolveTrackedCashLegIn(tx, decision.leg);
-  return planIncomeCreate(decision, leg, occurrence);
+  return planIncomeCreate(decision, leg, options.occurrence);
 }
 
 /** The net and gross a request states, in the currency the entry is stored in (7.2). */
@@ -579,7 +590,7 @@ export async function createIncomeEntryIn(
   args: IncomeEntryArgs,
   amounts: AmountSource = 'request',
 ): Promise<IncomeEntryRow> {
-  const plan = await resolveIncomeCreateIn(tx, ctx, args, undefined, amounts);
+  const plan = await resolveIncomeCreateIn(tx, ctx, args, { amounts });
   assertNoHistoricalReview(plan, ctx.today);
   return applyIncomePlanIn(tx, ctx, plan);
 }

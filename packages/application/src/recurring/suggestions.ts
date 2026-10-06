@@ -573,8 +573,7 @@ export async function resolveAcceptSuggestionIn(
         cashPositionId,
         ...(args.description === undefined ? {} : { description: args.description }),
       },
-      occurrence,
-      'server',
+      { occurrence, amounts: 'server' },
     );
     return {
       kind: 'income',
