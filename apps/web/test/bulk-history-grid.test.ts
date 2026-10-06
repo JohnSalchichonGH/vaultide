@@ -664,6 +664,46 @@ describe('a derived zero (ADR 0011 D4)', () => {
   });
 });
 
+describe('a closed account’s closing balance (ADR 0011 D4)', () => {
+  // The server never removes the balance dated on the closing day while the
+  // account is closed (M6); the grid says so before asking it.
+  const grid = gridModelOf(
+    page({
+      columns: [
+        {
+          kind: 'position',
+          positionId: BBVA,
+          positionKind: 'cash',
+          name: 'BBVA',
+          currency: 'EUR',
+          status: 'closed',
+          segments: [
+            {
+              from: '2026-01',
+              through: '2026-01',
+              cell: { kind: 'stored', valuationId: 'val-jan', version: 1, amount: '0', source: 'entered', clearable: false },
+            },
+            { from: '2026-02', through: '2026-05', cell: { kind: 'unavailable', reason: 'closed' } },
+          ],
+        },
+      ],
+    }),
+    'en-GB',
+  );
+  const bbva = grid.columns[0];
+  if (bbva === undefined) throw new Error('column');
+
+  it('is refused when emptied by hand, in these words, and nothing is drafted', () => {
+    const typed = typeInto(grid, NO_EDITS, bbva, '2026-01', '');
+    expect(typed.ok).toBe(true);
+    if (!typed.ok) return;
+    expect(outcomesOf(grid, typed.edits).map((item) => item.outcome)).toEqual([
+      { kind: 'invalid', message: 'This is the closing balance of a closed account, so it cannot be removed.' },
+    ]);
+    expect(draftOf(grid, typed.edits)).toEqual({ ok: false, invalid: 1 });
+  });
+});
+
 describe('a dormant account woken by income cells alone', () => {
   const SAVINGS = 'pos-savings';
   const preview = {
