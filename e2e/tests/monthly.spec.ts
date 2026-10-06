@@ -1612,3 +1612,84 @@ test.describe('confirming a month unchanged on a closed account', () => {
     await expect(row('Old savings').getByTestId('account-status')).toHaveText(/Needs statement balance/u);
   });
 });
+
+/**
+ * Two tabs on one known expense's "From this month on" (§30.9 item 4, 20.3).
+ *
+ * The form saves with the expectation of the term it opened with, never the
+ * term the page holds at Save. On 6 October this tab opens October's amount
+ * where no amount starts yet; a second tab sets one first. This tab's save is
+ * refused as a conflict, nothing is written over the other tab's amount, its
+ * draft stays beside the message, and Reload opens the form on what is there
+ * now — from which it saves.
+ */
+test.describe('two tabs on one known expense’s amount', () => {
+  test('an amount set in another tab is never saved over, and Reload shows it', async ({ page, request }) => {
+    test.slow();
+    const clock = { 'x-vaultide-test-clock': '2026-10-06T10:00:00Z' };
+    await page.setExtraHTTPHeaders(clock);
+    await onboard(page, request, uniqueEmail('e2e-monthly-expense-term-tabs'));
+
+    await gotoAfterRefresh(page, '/monthly/2026-10');
+    const section = page.getByTestId('monthly-known-expenses');
+    await section.getByTestId('expense-source-add-toggle').click();
+    await fillTestId(page, 'expense-source-name', 'Gym');
+    await page.getByTestId('expense-source-category').selectOption({ label: 'Subscriptions' });
+    await page.getByTestId('expense-source-frequency').selectOption('monthly');
+    await fillTestId(page, 'expense-source-day', '15');
+    await fillTestId(page, 'expense-source-start-date', '2026-10-01');
+    await fillTestId(page, 'expense-source-amount', '40.00');
+    await page.getByTestId('expense-source-submit').click();
+    await expect(page.getByTestId('expense-source-saved')).toContainText('Gym added.');
+
+    const occurrenceIn = (tab: Page) =>
+      tab
+        .getByTestId('monthly-known-expenses')
+        .locator('tr[data-testid="expense-occurrence"][data-occurrence-date="2026-10-15"]');
+    const october = occurrenceIn(page);
+    await expect(october.getByTestId('expense-occurrence-amount')).toContainText('€40.00');
+
+    // --- this tab opens October's amount, where no amount starts yet ---------
+    await october.getByTestId('expense-term').click();
+    const panel = section.getByTestId('expense-term-panel');
+    await expect(panel).toContainText('Amount from 15 Oct 2026 on');
+    await fillTestId(page, 'expense-term-amount', '50.00');
+
+    // --- a second tab sets it first ------------------------------------------
+    const other = await page.context().newPage();
+    await other.setExtraHTTPHeaders(clock);
+    await other.goto('/monthly/2026-10');
+    // Typed before React takes the form over, a value never reaches its state.
+    await expect(occurrenceIn(other).getByTestId('expense-term')).toBeEnabled();
+    await occurrenceIn(other).getByTestId('expense-term').click();
+    await fillTestId(other, 'expense-term-amount', '45.00');
+    await other.getByTestId('expense-term-save').click();
+    await expect(other.getByTestId('expense-term-panel')).toHaveCount(0);
+    await expect(occurrenceIn(other).getByTestId('expense-occurrence-amount')).toContainText('€45.00');
+    await other.close();
+
+    // --- this tab's save still claims the October it opened with -------------
+    await page.getByTestId('expense-term-save').click();
+    const problem = panel.getByTestId('expense-term-problem');
+    await expect(problem).toHaveAttribute('data-kind', 'conflict');
+    await expect(problem).toContainText(
+      'There is already an amount starting 2026-10-15. Reload to see it before changing it.',
+    );
+    // Nothing was written over the other tab's amount, and this tab's draft is
+    // still on screen beside the message.
+    await expect(page.getByTestId('expense-term-amount')).toHaveValue('50.00');
+    await expect(page.getByTestId('expense-term-save')).toBeDisabled();
+
+    await problem.getByTestId('expense-term-problem-reload').click();
+    await expect(problem).toHaveCount(0);
+    // The form opens again on the other tab's amount, as the term holds it.
+    await expect(page.getByTestId('expense-term-amount')).toHaveValue('45');
+    await expect(october.getByTestId('expense-occurrence-amount')).toContainText('€45.00');
+
+    // Saved again, it claims the amount it now shows, and lands.
+    await fillTestId(page, 'expense-term-amount', '50.00');
+    await page.getByTestId('expense-term-save').click();
+    await expect(panel).toHaveCount(0);
+    await expect(october.getByTestId('expense-occurrence-amount')).toContainText('€50.00');
+  });
+});
