@@ -597,6 +597,97 @@ test.describe('closing a month', () => {
 });
 
 /**
+ * A completed month before its statement is entered (blueprint 16.2; ADR 0008
+ * §5 and its addendum; cold review P3-01).
+ *
+ * On 30 September a person with one euro account records a €1,800.00 salary
+ * into it. On 1 October September has ended, and the account has no September
+ * statement yet, so tracked spending cannot be inferred. The Overview states
+ * the salary, which is known, and nothing it cannot state: not tracked
+ * spending as €0.00, and not personal savings as the whole salary. Once the
+ * statement is in, every figure is a number again: 2,000 + 1,800 − 3,300 = 500
+ * spent and 1,300 saved.
+ */
+test.describe('a month before its statement', () => {
+  test('states no figure it cannot state as a number, and every figure once the statement is in', async ({
+    page,
+    request,
+  }) => {
+    test.slow();
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': '2026-09-30T10:00:00Z' });
+    await onboard(page, request, uniqueEmail('e2e-month-partial'));
+    await accountWithAugustStatement(page, { name: 'Everyday', type: 'checking', august: '2000.00' });
+
+    // --- 30 September: the salary arrives ---------------------------------------
+    await gotoAfterRefresh(page, '/monthly/2026-09');
+    await expect(page.getByTestId('monthly-kind')).toHaveText('In progress');
+    await page.getByTestId('income-add-toggle').click();
+    await page.getByTestId('income-kind').selectOption('employment');
+    await fillTestId(page, 'income-received-on', '2026-09-25');
+    await page.getByTestId('income-account').selectOption({ label: 'Everyday' });
+    await fillTestId(page, 'income-net', '1800.00');
+    await page.getByTestId('income-submit').click();
+    await expect(page.getByTestId('income-saved')).toContainText('Income added.');
+
+    // --- 1 October: September has ended, and has no statement --------------------
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': '2026-10-01T10:00:00Z' });
+    await gotoAfterRefresh(page, '/monthly/2026-09');
+    await expect(page.getByTestId('monthly-kind')).toHaveText('Completed month');
+    await expect(page.getByTestId('bucket-EUR')).toContainText('Unavailable');
+
+    // The salary is known, and stated.
+    const income = page.getByTestId('figure-externalIncome');
+    await expect(income).toContainText('€1,800.00');
+    await expect(income).toHaveAttribute('data-display', 'value');
+
+    // Tracked spending is partial at zero: a dash and why, not €0.00.
+    const tracked = page.getByTestId('figure-trackedTotalSpending');
+    await expect(tracked).toHaveAttribute('data-availability', 'partial');
+    await expect(tracked).toHaveAttribute('data-display', 'none');
+    await expect(tracked).toContainText('—');
+    await expect(tracked).toContainText('Not available');
+    await expect(tracked).toContainText('Not included: EUR (a month-end balance is missing).');
+    await expect(tracked).not.toContainText('€');
+
+    // Personal savings is partial, and not a bound: a dash, not the whole salary.
+    const savings = page.getByTestId('figure-personalSavings');
+    await expect(savings).toHaveAttribute('data-availability', 'partial');
+    await expect(savings).toContainText('—');
+    await expect(savings).toContainText('not a lower bound');
+    await expect(savings).not.toContainText('€');
+    for (const key of ['trackedSavingsFromIncome', 'totalSpending', 'unclassified', 'savingsRate']) {
+      await expect(page.getByTestId(`figure-${key}`)).toContainText('—');
+    }
+
+    // No Overview figure reads as a number beside a Partial badge. Only the
+    // Overview's figures carry a `figure-` id.
+    const figures = page.locator('[data-testid^="figure-"]');
+    await expect(figures).toHaveCount(9);
+    for (const figure of await figures.all()) {
+      await expect(figure).not.toContainText('Partial');
+      if ((await figure.getAttribute('data-availability')) === 'partial') {
+        await expect(figure).not.toContainText('€0.00');
+      }
+    }
+
+    // --- the statement, entered ---------------------------------------------------
+    const row = page.getByTestId('monthly-accounts').locator('tbody tr', { hasText: 'Everyday' });
+    await row.getByTestId('closing-amount').fill('3300.00');
+    await row.getByTestId('closing-amount').press('Enter');
+    await expect(row.getByTestId('account-status')).toHaveText(/Complete/u);
+    await expect(row.getByTestId('save-status')).toHaveText('Saved.');
+    await reloadAfterRefresh(page);
+
+    await expect(page.getByTestId('reconciliation-status')).toContainText('Reliable');
+    await expect(page.getByTestId('figure-trackedTotalSpending')).toContainText('€500.00');
+    await expect(page.getByTestId('figure-trackedTotalSpending')).toHaveAttribute('data-availability', 'available');
+    await expect(page.getByTestId('figure-personalSavings')).toContainText('€1,300.00');
+    await expect(page.getByTestId('figure-personalSavings')).toHaveAttribute('data-display', 'value');
+    await expect(page.getByTestId('figure-savingsRate')).toContainText('72.22');
+  });
+});
+
+/**
  * The Monthly Income journey (blueprint 15.3 section 2, 21.5).
  *
  * On 6 October, with the test clock: a person with one euro account adds a
