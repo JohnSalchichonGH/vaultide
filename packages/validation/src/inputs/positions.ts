@@ -130,8 +130,9 @@ export const updateOtherAssetInput = z.object({
 
 /**
  * Closing a position (M6): a cash account or other asset closes with a final
- * valuation of zero on the closing date. The service refuses a close that would
- * leave a non-zero balance, and says where the money has to go instead.
+ * valuation of zero — its latest on or before the closing date. The service
+ * refuses a close that would leave a non-zero balance, and says where the money
+ * has to go instead.
  */
 export function closePositionInput(today: string) {
   return z.object({

@@ -527,8 +527,8 @@ async function closePositionIn(
   if (latest === undefined || !new Decimal(latest.amount).isZero()) {
     throw new ImpossibleOperationError(
       existing.kind === 'cash'
-        ? 'This account still holds a balance. Record where the money went — a balance of zero on the closing date — and then close it.'
-        : 'This asset still has a value. Record a final value of zero on the closing date, and then close it.',
+        ? 'This account still holds a balance. Record where the money went — a final balance of zero, on or before the closing date — and then close it.'
+        : 'This asset still has a value. Record a final value of zero, on or before the closing date, and then close it.',
     );
   }
 
@@ -544,11 +544,11 @@ async function closePositionIn(
 /**
  * Close a position (M6).
  *
- * Closing requires a final valuation of **zero** on the closing date. That is
- * not bureaucracy: an account closed while it still shows €4,000 would drop
- * that money out of net worth with no record of where it went, which is exactly
- * the kind of silent loss this product exists to prevent. The message says what
- * to do instead.
+ * Closing requires a final valuation of **zero**: the latest one on or before
+ * the closing date, which need not be dated on it. That is not bureaucracy: an
+ * account closed while it still shows €4,000 would drop that money out of net
+ * worth with no record of where it went, which is exactly the kind of silent
+ * loss this product exists to prevent. The message says what to do instead.
  *
  * The zero it requires and the close it writes are one transaction: a balance
  * recorded between the two would otherwise close an account over money that had
