@@ -15,10 +15,10 @@ import {
   termForOccurrence,
   type MonthKey,
   type PlainDate,
-  type RecurrenceSchedule,
   type TemplateTerm,
 } from '@vaultide/finance';
 import { moneyDto } from '../positions/mapping';
+import { scheduleOf } from '../recurring/suggestions';
 import type { CurrentMonthIncomeRows, MonthlyIncomeRows } from './income-loader';
 import type {
   CurrentMonthlyIncomeDto,
@@ -87,15 +87,6 @@ export interface MonthlyIncomeInput {
 const label = (month: MonthKey): string => (month as string).slice(0, 7);
 
 const monthOf = (date: string): string => date.slice(0, 7);
-
-function scheduleOf(template: RecurringTemplateRow): RecurrenceSchedule {
-  return {
-    frequency: template.frequency,
-    dayOfMonth: template.dayOfMonth,
-    startDate: plainDate(template.startDate),
-    endDate: template.endDate === null ? null : plainDate(template.endDate),
-  };
-}
 
 function toTemplateTerm(row: RecurringTemplateTermRow): TemplateTerm {
   return {

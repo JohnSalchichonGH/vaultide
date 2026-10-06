@@ -179,10 +179,9 @@ export async function listSuggestions(
 /**
  * A template's schedule as the finance recurrence functions read it.
  *
- * Exported for Bulk History, which generates the same occurrences the claim
- * rules below judge and must not state the schedule a second time (ADR 0011).
- * Monthly's Income and Known-expenses sections still carry private copies of
- * their own; consolidating them is outside that slice.
+ * Exported for Bulk History and for Monthly's Income and Known-expenses
+ * sections, which generate the same occurrences the claim rules below judge and
+ * must not state the schedule a second time (ADR 0011).
  */
 export function scheduleOf(template: RecurringTemplateRow): RecurrenceSchedule {
   return {

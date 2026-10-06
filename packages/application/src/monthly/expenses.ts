@@ -18,11 +18,11 @@ import {
   termForOccurrence,
   type MonthKey,
   type PlainDate,
-  type RecurrenceSchedule,
   type TemplateTerm,
 } from '@vaultide/finance';
 import { consumptionCategoryKinds } from '@vaultide/validation';
 import { moneyDto } from '../positions/mapping';
+import { scheduleOf } from '../recurring/suggestions';
 import type { CurrentMonthExpenseRows, MonthlyExpenseRows } from './expenses-loader';
 import type {
   CurrentMonthlyExpensesDto,
@@ -179,15 +179,6 @@ export function expenseFormOptionsOf(
 /** Capital allocation, never a known expense (7.4). */
 const isCapitalImprovement = (category: ExpenseCategoryDto): boolean =>
   category.kind === 'capital_improvement';
-
-function scheduleOf(template: RecurringTemplateRow): RecurrenceSchedule {
-  return {
-    frequency: template.frequency,
-    dayOfMonth: template.dayOfMonth,
-    startDate: plainDate(template.startDate),
-    endDate: template.endDate === null ? null : plainDate(template.endDate),
-  };
-}
 
 function toTemplateTerm(row: RecurringTemplateTermRow): TemplateTerm {
   return {
