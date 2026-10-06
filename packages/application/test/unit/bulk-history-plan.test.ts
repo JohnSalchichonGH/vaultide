@@ -12,6 +12,7 @@ import type { BulkHistoryDraft, BulkHistoryOperation } from '../../src/correctio
 import { DomainError } from '../../src/errors';
 import { identityKey } from '../../src/write-plan';
 import {
+  bulkClosedBoundsOf,
   bulkIncomeGross,
   compareBulkOperations,
   decideBulkHistory,
@@ -151,6 +152,7 @@ const evidence = (overrides: Partial<BulkHistoryEvidence> = {}): BulkHistoryEvid
   terms: [term('2026-01-25', '2100', '3000')],
   skips: [],
   materialized: [],
+  finals: [],
   ...overrides,
 });
 
@@ -433,5 +435,77 @@ describe('the plan of a batch', () => {
         ),
       ),
     ).toBe('VALIDATION_ERROR');
+  });
+});
+
+describe('a closed account’s final balance, judged on the batch (M6, 5.2)', () => {
+  // Closed on 15 September with zero statements for July and August.
+  const closed = cash({ name: 'Old savings', status: 'closed', closedOn: '2026-09-15' });
+  const july = balance({ id: 'val-jul', valuedOn: '2026-07-31', amount: '0.00000000' });
+  const august = balance({ id: 'val-aug', valuedOn: '2026-08-31', amount: '0.00000000' });
+
+  const raiseJuly: BulkHistoryOperation = {
+    kind: 'valuation_update',
+    positionId: 'pos-cash',
+    month: '2026-07',
+    valuationId: 'val-jul',
+    expectedVersion: 3,
+    amount: '300',
+  };
+  const clearAugust: BulkHistoryOperation = {
+    kind: 'valuation_clear',
+    positionId: 'pos-cash',
+    month: '2026-08',
+    valuationId: 'val-aug',
+    expectedVersion: 3,
+  };
+  const loaded = (finals: ValuationRow[]) =>
+    evidence({ positions: [closed], valuations: [july, august], finals });
+
+  function refusal(run: () => unknown): { message: string; fieldErrors: unknown } {
+    try {
+      run();
+    } catch (error) {
+      if (error instanceof DomainError && error.code === 'VALIDATION_ERROR') {
+        return { message: error.message, fieldErrors: error.fieldErrors };
+      }
+      throw error;
+    }
+    throw new Error('expected a refusal');
+  }
+
+  it('reads only for the closed accounts a balance cell names', () => {
+    const request = prepareBulkHistory(TODAY, draftOf([raiseJuly]));
+    expect(bulkClosedBoundsOf(request, [closed, cash({ id: 'pos-other', status: 'closed', closedOn: '2026-01-31' })])).toEqual([
+      { positionId: 'pos-cash', onOrBefore: '2026-09-15' },
+    ]);
+    expect(bulkClosedBoundsOf(request, [cash()])).toEqual([]);
+  });
+
+  it('accepts each of two cells that leave a zero standing on its own', () => {
+    expect(decide([raiseJuly], loaded([august])).steps).toHaveLength(1);
+    expect(decide([clearAugust], loaded([july])).steps).toHaveLength(1);
+  });
+
+  it('refuses the two together, naming the cell whose figure would be final', () => {
+    expect(refusal(() => decide([clearAugust, raiseJuly], loaded([])))).toEqual({
+      message:
+        'Old savings, July 2026: the account is closed, so its final balance has to stay zero. Nothing was saved.',
+      fieldErrors: { 'pos-cash#2026-07-31': ['This account is closed, so its final balance has to stay zero.'] },
+    });
+  });
+
+  it('names the cell that uncovered an earlier figure when no cell of the batch is final', () => {
+    const raised = balance({ id: 'val-jul', valuedOn: '2026-07-31', amount: '300.00000000' });
+    expect(refusal(() => decide([clearAugust], loaded([raised])))).toMatchObject({
+      message: expect.stringMatching(/^Old savings, August 2026: /u) as unknown,
+      fieldErrors: { 'pos-cash#2026-08-31': expect.any(Array) as unknown },
+    });
+  });
+
+  it('asks nothing of an active account', () => {
+    expect(
+      decide([clearAugust, raiseJuly], evidence({ positions: [cash()], valuations: [july, august] })).steps,
+    ).toHaveLength(2);
   });
 });

@@ -13,7 +13,9 @@ import {
   decideCorrectValuation,
   decideRecordValuation,
   decideRemoveValuation,
+  finalBalanceBreachOf,
   planConfirmUnchanged,
+  type BalanceWrite,
 } from '../../src/positions/valuations';
 import { classifyHistorical } from '../../src/corrections/classify';
 import { identityKey, prospectiveValuation } from '../../src/write-plan';
@@ -612,5 +614,103 @@ describe('confirming a month unchanged', () => {
         { position: cash(), previous: statementOf('pos-cash', '1.00000000') },
       ]),
     ).toThrow(/same account twice/u);
+  });
+});
+
+describe('a closed account’s final balance stays zero (M6, 5.2)', () => {
+  // Emptied on 20 August, closed on 15 September.
+  const closed = cash({ status: 'closed', closedOn: '2026-09-15' });
+  const july = row({ id: 'val-jul', valuedOn: '2026-07-31', amount: '300.00000000' });
+  const zero = row({ id: 'val-zero', valuedOn: '2026-08-20', amount: '0.00000000', datePrecision: 'exact' });
+
+  const columns = (valuedOn: string, amount: string) => ({
+    valuedOn,
+    amount,
+    datePrecision: 'exact' as const,
+    note: null,
+  });
+  const recorded = (valuedOn: string, amount: string, position = closed): BalanceWrite => ({
+    position,
+    existing: null,
+    columns: columns(valuedOn, amount),
+  });
+  const corrected = (existing: ValuationRow, valuedOn: string, amount: string): BalanceWrite => ({
+    position: closed,
+    existing,
+    columns: columns(valuedOn, amount),
+  });
+  const removed = (existing: ValuationRow): BalanceWrite => ({ position: closed, existing, columns: null });
+
+  it('judges only closed accounts, and asks nothing of an active one', () => {
+    expect(finalBalanceBreachOf([recorded('2026-09-01', '500', cash())], [])).toBeUndefined();
+  });
+
+  it('refuses a non-zero balance that would become final, naming it as the write’s own', () => {
+    const write = recorded('2026-09-15', '500');
+    expect(finalBalanceBreachOf([write], [zero])).toEqual({ position: closed, write, own: true });
+    expect(finalBalanceBreachOf([recorded('2026-08-31', '-1')], [zero])).toMatchObject({ own: true });
+  });
+
+  it('accepts a zero anywhere, and any figure dated before the standing zero', () => {
+    expect(finalBalanceBreachOf([recorded('2026-09-15', '0.00')], [zero])).toBeUndefined();
+    expect(finalBalanceBreachOf([recorded('2026-08-31', '-0')], [zero])).toBeUndefined();
+    expect(finalBalanceBreachOf([recorded('2026-07-15', '100')], [zero])).toBeUndefined();
+    expect(finalBalanceBreachOf([corrected(july, july.valuedOn, '250')], [zero])).toBeUndefined();
+  });
+
+  it('refuses the final zero moved or removed when an earlier figure is left final', () => {
+    const moved = corrected(zero, '2026-07-20', '0');
+    expect(finalBalanceBreachOf([moved], [july])).toEqual({ position: closed, write: moved, own: false });
+    const gone = removed(zero);
+    expect(finalBalanceBreachOf([gone], [july])).toEqual({ position: closed, write: gone, own: false });
+    // …and when nothing at all is left on or before the closing day.
+    expect(finalBalanceBreachOf([gone], [])).toMatchObject({ own: false });
+  });
+
+  it('accepts a write that restores the zero of an account already holding money', () => {
+    const stray = row({ id: 'val-stray', valuedOn: '2026-08-31', amount: '500.00000000' });
+    expect(finalBalanceBreachOf([corrected(july, july.valuedOn, '250')], [stray])).toMatchObject({
+      own: false,
+    });
+    expect(finalBalanceBreachOf([corrected(stray, stray.valuedOn, '0')], [zero])).toBeUndefined();
+    expect(finalBalanceBreachOf([removed(stray)], [zero])).toBeUndefined();
+    expect(finalBalanceBreachOf([recorded('2026-09-15', '0')], [stray])).toBeUndefined();
+  });
+
+  it('judges a batch as a whole: two writes can keep the zero alone and break it together', () => {
+    const julyZero = row({ id: 'val-jul', valuedOn: '2026-07-31', amount: '0.00000000' });
+    const augustZero = row({ id: 'val-aug', valuedOn: '2026-08-31', amount: '0.00000000' });
+    const clearAugust = removed(augustZero);
+    const raiseJuly = corrected(julyZero, julyZero.valuedOn, '300');
+
+    expect(finalBalanceBreachOf([clearAugust], [julyZero])).toBeUndefined();
+    expect(finalBalanceBreachOf([raiseJuly], [augustZero])).toBeUndefined();
+    expect(finalBalanceBreachOf([clearAugust, raiseJuly], [])).toEqual({
+      position: closed,
+      write: raiseJuly,
+      own: true,
+    });
+  });
+
+  it('names an account’s latest-dated write when the figure left final is a stored one', () => {
+    const early = recorded('2026-07-01', '5');
+    const gone = removed(zero);
+    expect(finalBalanceBreachOf([early, gone], [july])).toEqual({ position: closed, write: gone, own: false });
+  });
+
+  it('refuses a standing balance it did not ask for, as the programming error that is', () => {
+    expectInternal(
+      () => finalBalanceBreachOf([recorded('2026-09-01', '0')], [row({ positionId: 'pos-other' })]),
+      /did not ask for/u,
+    );
+    expectInternal(
+      () => finalBalanceBreachOf([recorded('2026-09-01', '0')], [row({ valuedOn: '2026-09-30' })]),
+      /did not ask for/u,
+    );
+    expectInternal(() => finalBalanceBreachOf([removed(zero)], [zero]), /does not leave standing/u);
+    expectInternal(
+      () => finalBalanceBreachOf([recorded('2026-09-30', '0')], []),
+      /after the closing day/u,
+    );
   });
 });

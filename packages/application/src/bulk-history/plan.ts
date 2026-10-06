@@ -3,6 +3,7 @@ import {
   findTemplatesIn,
   findValuationsIn,
   isUniqueViolation,
+  listLatestValuationsIn,
   listMaterializedAtIn,
   listPositionsIn,
   listSkipsAtIn,
@@ -15,6 +16,7 @@ import {
   type RecurringTemplateSkipRow,
   type RecurringTemplateTermRow,
   type Transaction,
+  type ValuationBound,
   type ValuationRow,
 } from '@vaultide/db';
 import {
@@ -52,9 +54,12 @@ import {
   type TrackedCashLegRequest,
 } from '../flows/shared';
 import {
+  FINAL_ZERO_MESSAGE,
   decideCorrectValuation,
   decideRecordValuation,
   decideRemoveValuation,
+  finalBalanceBreachOf,
+  monthName,
   writeValuationRowIn,
   type ValuationWritePlan,
 } from '../positions/valuations';
@@ -108,7 +113,11 @@ import {
  *    so the same batch resolves, previews, fingerprints and writes identically
  *    whatever order the browser sent it in;
  *  - **one dormancy consequence per account**, however many of its cells the
- *    batch touches.
+ *    batch touches;
+ *  - **one final balance per closed account** (M6, 5.2): it must still be zero
+ *    once every cell is written, so it is judged on the batch as a whole. Two
+ *    cells can each leave the zero standing on their own and remove it
+ *    together, and the reverse.
  */
 
 /* -------------------------------------------------------------------------- */
@@ -232,6 +241,12 @@ export interface BulkHistoryEvidence {
   readonly skips: readonly RecurringTemplateSkipRow[];
   /** The claimed occurrences a flow already carries, each by its own identity. */
   readonly materialized: readonly OccurrenceRef[];
+  /**
+   * For each closed account a balance cell names, its latest stored balance on
+   * or before `closed_on` that the batch neither corrects nor clears — absent
+   * when there is none (M6).
+   */
+  readonly finals: readonly ValuationRow[];
 }
 
 const occurrenceKey = (item: OccurrenceRef): string => `${item.templateId}#${item.occurrenceDate}`;
@@ -278,6 +293,23 @@ export function bulkRequestKeysOf(request: BulkHistoryRequest): {
     // An income clear names no account and needs none; everything else does.
     needsPositions: operations.some((operation) => operation.kind !== 'income_clear'),
   };
+}
+
+/**
+ * The closed accounts a batch's balance cells name, each with its closing day:
+ * the accounts whose final balance the batch must leave at zero (M6). Read only
+ * for them, so a batch that names no closed account reads nothing more.
+ */
+export function bulkClosedBoundsOf(
+  request: BulkHistoryRequest,
+  positions: readonly PositionRow[],
+): ValuationBound[] {
+  const named = new Set(request.operations.filter(isValuation).map((operation) => operation.positionId));
+  return positions
+    .filter((position) => named.has(position.id) && position.status === 'closed')
+    .flatMap((position) =>
+      position.closedOn === null ? [] : [{ positionId: position.id, onOrBefore: position.closedOn }],
+    );
 }
 
 /* -------------------------------------------------------------------------- */
@@ -642,10 +674,39 @@ export function composeBulkHistoryPlan(
 }
 
 /**
+ * Every closed account's final balance, once the whole batch is written (M6,
+ * 5.2), through the rule the single-row paths ask of their one balance.
+ *
+ * A refusal names one cell, the way the grid names one: the cell whose figure
+ * would be the final balance, or else the account's latest cell in the batch —
+ * the clear or correction that uncovered an earlier figure.
+ */
+function assertFinalBalancesKept(steps: readonly BulkHistoryStep[], finals: readonly ValuationRow[]): void {
+  const balances = steps.filter(
+    (step): step is Extract<BulkHistoryStep, { family: 'valuation' }> => step.family === 'valuation',
+  );
+  const breach = finalBalanceBreachOf(
+    balances.map((step) => step.plan),
+    finals,
+  );
+  if (breach === undefined) return;
+
+  /* v8 ignore next 2 -- the breach names one of the plans it was handed. */
+  const step = balances.find((candidate) => candidate.plan === breach.write);
+  if (step === undefined) throw new Error('a final-balance breach named no cell of the batch');
+  const date = bulkCellDateOf(step.operation);
+  throw new ValidationError(
+    `${breach.position.name}, ${monthName(monthKey(plainDate(date)))}: the account is closed, so its final balance has to stay zero. Nothing was saved.`,
+    { [bulkCellKeyOf(step.operation)]: [FINAL_ZERO_MESSAGE] },
+  );
+}
+
+/**
  * Decide a whole batch from what was loaded for it. Pure.
  *
  * Every cell is decided before anything is returned, so the first refusal —
- * cell 1 or cell 500 — leaves no plan at all, and nothing can be written.
+ * cell 1 or cell 500 — leaves no plan at all, and nothing can be written. Then
+ * the batch as a whole: each closed account's final balance.
  */
 export function decideBulkHistory(
   today: PlainDate,
@@ -656,6 +717,7 @@ export function decideBulkHistory(
   const steps = request.operations.map((operation) =>
     decideStep(today, operation, lookup, evidence.positions),
   );
+  assertFinalBalancesKept(steps, evidence.finals);
   return composeBulkHistoryPlan(request.startMonth, steps);
 }
 
@@ -696,7 +758,8 @@ export function bulkStatedAmountsOf(steps: readonly BulkHistoryStep[]): StatedAm
  * same order without the locks its `READ ONLY` transaction could not take.
  *
  * The statements are per family, never per cell: a batch of five hundred cells
- * reads what a batch of five reads.
+ * reads what a batch of five reads. A batch that names a closed account reads
+ * one more, for all of them together.
  */
 export async function resolveBulkHistoryIn(
   tx: Transaction,
@@ -714,6 +777,12 @@ export async function resolveBulkHistoryIn(
 
   const positions = keys.needsPositions ? await listPositionsIn(tx, { includeArchived: true }) : [];
   const occupants = await listValuationsAtIn(tx, keys.createCells);
+  // One statement for every closed account the batch names, and none when it
+  // names no closed account. Every stored row the batch revises is left out:
+  // what it leaves of them is in the batch itself.
+  const finals = await listLatestValuationsIn(tx, bulkClosedBoundsOf(request, positions), {
+    except: keys.valuationIds,
+  });
   const dates = keys.claims.map((claim) => claim.occurrenceDate).sort();
   const terms =
     keys.claims.length === 0
@@ -736,6 +805,7 @@ export async function resolveBulkHistoryIn(
     terms,
     skips,
     materialized,
+    finals,
   });
   // Once every cell is decided, so each amount is judged in the currency its
   // own plan stores it in; one statement for the whole batch, and a refusal

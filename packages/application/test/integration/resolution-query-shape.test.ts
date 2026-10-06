@@ -5,8 +5,10 @@ import { createHarness, type Harness } from '../helpers/harness';
 import { testContext, type RequestContext } from '../../src/context';
 import { withUserRead } from '../../src/coordination';
 import { provisionUser } from '../../src/users/provisioning';
-import { createCashAccount, updateCashAccount } from '../../src/positions/service';
+import { closePosition, createCashAccount, updateCashAccount } from '../../src/positions/service';
 import {
+  confirmUnchanged,
+  confirmUnchangedBatch,
   correctValuation,
   recordValuation,
   removeValuation,
@@ -404,6 +406,203 @@ describe('recording, correcting and removing a balance', () => {
       ...READ_OPEN,
       'select position_valuations',
       'select positions',
+      'commit',
+    ]);
+  });
+});
+
+describe('a closed account’s balance, which also reads the final balance it would leave', () => {
+  // M6, 5.2: a closed account's latest balance on or before its closing day
+  // stays zero after every write. Judging that takes one more read — the
+  // latest balance the write leaves standing — and only for a closed account:
+  // every shape above, about an active one, is unchanged.
+  let closed: string;
+
+  beforeEach(async () => {
+    const created = await createCashAccount(positions(), OCT_5, {
+      name: 'Closed',
+      currency: 'EUR',
+      accountType: 'savings',
+      openedOn: null,
+    });
+    closed = created.id;
+    await recordValuation(positions(), OCT_5, {
+      positionId: closed,
+      valuedOn: '2026-08-31',
+      amount: '0',
+      datePrecision: 'month_end',
+    });
+    await recordValuation(positions(), OCT_5, {
+      positionId: closed,
+      valuedOn: '2026-10-01',
+      amount: '300.00',
+      datePrecision: 'exact',
+    });
+    await recordValuation(positions(), OCT_5, {
+      positionId: closed,
+      valuedOn: '2026-10-02',
+      amount: '0',
+      datePrecision: 'exact',
+    });
+    await closePosition(positions(), OCT_5, {
+      positionId: closed,
+      expectedVersion: created.version,
+      closedOn: '2026-10-03',
+    });
+  });
+
+  it('records one: the account, its currency, the date, the final balance, then the write', async () => {
+    const sent = await shapes(() =>
+      recordValuation(positions(), OCT_5, {
+        positionId: closed,
+        valuedOn: '2026-10-03',
+        amount: '0',
+        datePrecision: 'exact',
+      }),
+    );
+    expect(sent).toEqual([
+      ...WRITE_OPEN,
+      'select positions',
+      'select currencies',
+      'select position_valuations',
+      // The final balance: the latest on or before the closing day.
+      'select position_valuations',
+      'insert position_valuations',
+      'insert audit_entries',
+      'commit',
+    ]);
+  });
+
+  it('refuses one that would leave money, having read the final balance and written nothing', async () => {
+    const sent = await shapes(() =>
+      recordValuation(positions(), OCT_5, {
+        positionId: closed,
+        valuedOn: '2026-10-03',
+        amount: '500.00',
+        datePrecision: 'exact',
+      }),
+    );
+    expect(sent).toEqual([
+      ...WRITE_OPEN,
+      'select positions',
+      'select currencies',
+      'select position_valuations',
+      'select position_valuations',
+      'rollback',
+    ]);
+  });
+
+  it('corrects one: the final balance it leaves standing is read before the write', async () => {
+    const row = await balanceOn(closed, '2026-10-01');
+    const sent = await shapes(() =>
+      correctValuation(positions(), OCT_5, {
+        valuationId: row.id,
+        expectedVersion: row.version,
+        valuedOn: '2026-10-01',
+        amount: '250.00',
+        datePrecision: 'exact',
+      }),
+    );
+    expect(sent).toEqual([
+      ...WRITE_OPEN,
+      'select position_valuations for update',
+      'select positions',
+      'select currencies',
+      'select position_valuations',
+      'select position_valuations for update',
+      'update position_valuations',
+      'insert audit_entries',
+      'commit',
+    ]);
+  });
+
+  it('removes one, and reads the same rows for a preview without locking any', async () => {
+    const row = await balanceOn(closed, '2026-10-01');
+    const preview = await shapes(() =>
+      withUserRead(harness.db, { userId: USER_A }, (tx) =>
+        resolveRemoveValuationIn(tx, { valuationId: row.id, expectedVersion: row.version }, { lock: false }),
+      ),
+    );
+    expect(preview).toEqual([
+      ...READ_OPEN,
+      'select position_valuations',
+      'select positions',
+      'select position_valuations',
+      'commit',
+    ]);
+
+    const sent = await shapes(() =>
+      removeValuation(positions(), OCT_5, { valuationId: row.id, expectedVersion: row.version }),
+    );
+    expect(sent).toEqual([
+      ...WRITE_OPEN,
+      'select position_valuations for update',
+      'select positions',
+      'select position_valuations',
+      'select position_valuations for update',
+      'delete position_valuations',
+      'insert audit_entries',
+      'commit',
+    ]);
+  });
+
+  it('confirms a month unchanged with one read more', async () => {
+    const sent = await shapes(() =>
+      confirmUnchanged(positions(), OCT_5, { positionId: closed, month: '2026-09' }),
+    );
+    expect(sent).toEqual([
+      ...WRITE_OPEN,
+      'select positions',
+      'select position_valuations',
+      'select position_valuations for share',
+      'select position_valuations',
+      // The final balance the confirmation would leave.
+      'select position_valuations',
+      'insert position_valuations',
+      'insert audit_entries',
+      'commit',
+    ]);
+  });
+
+  it('confirms a month unchanged for several closed accounts with one read more in all', async () => {
+    const other = await createCashAccount(positions(), OCT_5, {
+      name: 'Closed too',
+      currency: 'EUR',
+      accountType: 'savings',
+      openedOn: null,
+    });
+    await recordValuation(positions(), OCT_5, {
+      positionId: other.id,
+      valuedOn: '2026-08-31',
+      amount: '0',
+      datePrecision: 'month_end',
+    });
+    await closePosition(positions(), OCT_5, {
+      positionId: other.id,
+      expectedVersion: other.version,
+      closedOn: '2026-10-03',
+    });
+
+    const sent = await shapes(() =>
+      confirmUnchangedBatch(positions(), OCT_5, { month: '2026-09', positionIds: [closed, other.id] }),
+    );
+    expect(sent).toEqual([
+      ...WRITE_OPEN,
+      // `lockCashPositionsIn`: `FOR UPDATE OF positions, cash_accounts`, whose
+      // `OF` this file's shape reads as a table name.
+      'select positions+of for update',
+      'select position_valuations',
+      'select position_valuations',
+      'select position_valuations for share',
+      'select position_valuations',
+      'select position_valuations for share',
+      'select position_valuations',
+      // Both accounts' final balances, in one statement.
+      'select position_valuations',
+      'insert position_valuations',
+      'insert audit_entries',
+      'insert position_valuations',
+      'insert audit_entries',
       'commit',
     ]);
   });

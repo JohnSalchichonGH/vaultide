@@ -8,6 +8,7 @@ import {
   findValuationOnIn,
   insertValuationIn,
   isUniqueViolation,
+  listLatestValuationsIn,
   listPositionsIn,
   listValuations,
   listValuationsOnIn,
@@ -82,6 +83,9 @@ import type { PositionDependencies } from './service';
  *  - no actual record may be dated after the user's local today (M5, R17);
  *  - a `month_end` balance may be written only once its month has ended (R15).
  *
+ * And one rule about the account as a whole: a closed account's final balance
+ * stays zero after every write (M6, 5.2), judged below.
+ *
  * ## A balance and its dormancy consequence are one fact
  *
  * Four of these mutations have a second half: a non-zero balance wakes a
@@ -119,7 +123,7 @@ const MONTH_NAMES = [
   'December',
 ] as const;
 
-function monthName(month: MonthKey): string {
+export function monthName(month: MonthKey): string {
   const [year, index] = (month as string).split('-');
   return `${MONTH_NAMES[Number(index) - 1] ?? String(index)} ${String(year)}`;
 }
@@ -335,6 +339,13 @@ function requireValuationIn(
  * ordinary write, the correction preview (which reads without locks) and
  * Historical Confirm (which reads under them).
  *
+ * A closed account adds one read and one decision. Whether its final balance
+ * stays zero is a fact about the account after the write rather than about one
+ * row, so it has its own pure decision (`finalBalanceBreachOf`), asked of every
+ * balance the write touches — one here, a whole batch in Bulk History — against
+ * the latest balance the write leaves standing. That row is read only for a
+ * closed account, so an active account's write reads exactly what it did.
+ *
  * The resolvers also ask the balance's own rules **before** they read the row
  * on the balance's date, so a refused date is refused without that read. The
  * decision asks them again, and that is deliberate: a decision is complete on
@@ -371,6 +382,169 @@ export function assertValuationAllowed(
   assertDateRules({ today }, value.valuedOn, value.datePrecision);
   assertSign(position, value.amount);
   assertWithinPositionWindow(position, value.valuedOn);
+}
+
+/*
+ * ## A closed account's final balance stays zero
+ *
+ * Closing requires a final balance of zero (M6), and 5.2 enforces M6 inside the
+ * position aggregate's services, so it holds after every write to a closed
+ * account's balances and not only at the close: its latest balance on or before
+ * `closed_on` (M4 allows none later) exists and is exactly zero. That is the
+ * balance 8.1's `closed_zero` takes as given, and the money 8.8 says "must have
+ * been transferred out or it becomes spending". A write that left money there
+ * would drop it out of every figure with no record of where it went.
+ *
+ * It is judged on the account as the write would leave it, whatever the write
+ * is: a new balance, a correction, a removal, a month confirmed unchanged, or a
+ * Bulk History batch of many cells. So earlier history stays editable while the
+ * zero still stands, a zero can always be recorded, and an account already
+ * holding money takes a write that restores its zero and nothing else. The one
+ * restoring write still refused is removing a balance dated on the closing day
+ * itself: that row is never removed while the account is closed
+ * (`decideRemoveValuation`), so it is corrected to zero instead.
+ */
+
+export const FINAL_ZERO_MESSAGE = 'This account is closed, so its final balance has to stay zero.';
+
+/** What one write does to one account's balances, as the final-zero rule sees it. */
+export interface BalanceWrite {
+  readonly position: PositionRow;
+  /** The stored balance the write corrects or removes, and `null` for a new one. */
+  readonly existing: ValuationRow | null;
+  /** The balance the write leaves, and `null` for a removal. */
+  readonly columns: ValuationColumns | null;
+}
+
+/** A closed account a write would leave without a final zero. */
+export interface FinalBalanceBreach {
+  readonly position: PositionRow;
+  /**
+   * The write a refusal names: the one whose own balance would be final, when
+   * one would be, and otherwise the account's latest-dated write.
+   */
+  readonly write: BalanceWrite;
+  /** Whether the balance left final is `write`'s own, rather than a stored one. */
+  readonly own: boolean;
+}
+
+/** The balance an account would be left with last, and the write that leaves it. */
+interface FinalBalance {
+  readonly valuedOn: string;
+  readonly amount: string;
+  /** `null` for a stored balance the writes leave standing. */
+  readonly write: BalanceWrite | null;
+}
+
+/** The latest date a write touches: where its row lands, or where it stood. */
+const reachOf = (write: BalanceWrite): string => {
+  const dates = [write.columns?.valuedOn, write.existing?.valuedOn].filter(
+    (date): date is string => date !== undefined,
+  );
+  return dates.reduce((latest, date) => (date > latest ? date : latest));
+};
+
+/**
+ * The first closed account these writes would leave without a final zero, or
+ * nothing. Pure.
+ *
+ * `standing` holds, for each closed account the writes touch, its latest stored
+ * balance on or before `closed_on` that none of the writes corrects or removes —
+ * absent when there is none. The account's final balance after the writes is
+ * then the latest of that row and the balances the writes leave. Accounts that
+ * are not closed are not judged and need no row.
+ *
+ * A row that cannot be the one asked for is refused as the programming error it
+ * is, as every decision here refuses a row loaded for another operation.
+ */
+export function finalBalanceBreachOf(
+  writes: readonly BalanceWrite[],
+  standing: readonly ValuationRow[],
+): FinalBalanceBreach | undefined {
+  const closed = new Map<string, BalanceWrite[]>();
+  for (const write of writes) {
+    if (write.position.status !== 'closed') continue;
+    const own = closed.get(write.position.id);
+    if (own === undefined) closed.set(write.position.id, [write]);
+    else own.push(write);
+  }
+
+  const revised = new Set(writes.flatMap((write) => (write.existing === null ? [] : [write.existing.id])));
+  const kept = new Map<string, ValuationRow>();
+  for (const row of standing) {
+    const closedOn = closed.get(row.positionId)?.[0]?.position.closedOn;
+    if (closedOn === undefined || closedOn === null || row.valuedOn > closedOn) {
+      throw new Error('a final-balance decision was handed a balance it did not ask for');
+    }
+    if (revised.has(row.id) || kept.has(row.positionId)) {
+      throw new Error('a final-balance decision was handed a balance the write does not leave standing');
+    }
+    kept.set(row.positionId, row);
+  }
+
+  for (const [positionId, own] of closed) {
+    const position = (own[0] as BalanceWrite).position;
+    const closedOn = position.closedOn;
+    if (closedOn === null) throw new Error('a closed account has no closing day');
+
+    let final: FinalBalance | undefined;
+    const stored = kept.get(positionId);
+    if (stored !== undefined) final = { valuedOn: stored.valuedOn, amount: stored.amount, write: null };
+    for (const write of own) {
+      if (write.columns === null) continue;
+      if (write.columns.valuedOn > closedOn) {
+        throw new Error('a final-balance decision was handed a balance after the closing day');
+      }
+      if (final === undefined || write.columns.valuedOn > final.valuedOn) {
+        final = { valuedOn: write.columns.valuedOn, amount: write.columns.amount, write };
+      }
+    }
+
+    if (final !== undefined && new Decimal(final.amount).isZero()) continue;
+    const ownFinal = final?.write ?? null;
+    return {
+      position,
+      write: ownFinal ?? own.reduce((latest, write) => (reachOf(write) > reachOf(latest) ? write : latest)),
+      own: ownFinal !== null,
+    };
+  }
+  return undefined;
+}
+
+/**
+ * What the final-zero rule reads for one balance write: a closed account's
+ * latest stored balance on or before its closing day, other than the one the
+ * write corrects or removes. Nothing — and no statement — for any other
+ * account.
+ */
+async function standingFinalIn(
+  tx: Transaction,
+  position: PositionRow,
+  revised: ValuationRow | null,
+): Promise<ValuationRow[]> {
+  if (position.status !== 'closed' || position.closedOn === null) return [];
+  const row = await findLatestValuationIn(
+    tx,
+    position.id,
+    position.closedOn,
+    revised === null ? {} : { except: [revised.id] },
+  );
+  return row === undefined ? [] : [row];
+}
+
+/**
+ * The final-zero rule for one balance written through its own form: keyed to
+ * the amount when the balance it leaves would be final, and to the date when
+ * moving it uncovers an earlier one. A removal has no field, so it is refused
+ * the way the closing balance's own removal is.
+ */
+function assertFinalZeroKept(plan: ValuationWritePlan, standing: readonly ValuationRow[]): void {
+  const breach = finalBalanceBreachOf([plan], standing);
+  if (breach === undefined) return;
+  if (plan.operation === 'remove') throw new ImpossibleOperationError(FINAL_ZERO_MESSAGE);
+  throw new ValidationError(FINAL_ZERO_MESSAGE, {
+    [breach.own ? 'amount' : 'valuedOn']: [FINAL_ZERO_MESSAGE],
+  });
 }
 
 /**
@@ -467,7 +641,9 @@ export async function resolveRecordValuationIn(
   assertValuationAllowed(ctx.today, position, args);
   await assertBalanceScaleIn(tx, position, args.amount);
   const occupant = await findValuationOnIn(tx, args.positionId, args.valuedOn);
-  return decideRecordValuation(ctx.today, position, args, occupant);
+  const plan = decideRecordValuation(ctx.today, position, args, occupant);
+  assertFinalZeroKept(plan, await standingFinalIn(tx, position, null));
+  return plan;
 }
 
 /**
@@ -702,7 +878,9 @@ export async function resolveCorrectValuationIn(
     args.valuedOn === existing.valuedOn
       ? undefined
       : await findValuationOnIn(tx, existing.positionId, args.valuedOn);
-  return decideCorrectValuation(ctx.today, position, existing, args, occupant);
+  const plan = decideCorrectValuation(ctx.today, position, existing, args, occupant);
+  assertFinalZeroKept(plan, await standingFinalIn(tx, position, existing));
+  return plan;
 }
 
 async function correctValuationIn(
@@ -764,9 +942,10 @@ export function decideRemoveValuation(
   if (position.status === 'closed' && existing.valuedOn === position.closedOn) {
     // Answered before the version, because it is true of the row at every
     // version: the closing balance of a closed account is not deletable here
-    // whatever the caller last saw.
+    // whatever the caller last saw. No action reopens an account, so the
+    // message offers none.
     throw new ImpossibleOperationError(
-      'This is the closing balance of a closed account. Reopen the account first if you need to change it.',
+      'This is the closing balance of a closed account, so it cannot be removed.',
     );
   }
 
@@ -810,7 +989,9 @@ export async function resolveRemoveValuationIn(
   if (existing === undefined) throw new NotFoundError('That balance no longer exists.');
 
   const position = await requirePositionIn(tx, existing.positionId);
-  return decideRemoveValuation(position, existing, args);
+  const plan = decideRemoveValuation(position, existing, args);
+  assertFinalZeroKept(plan, await standingFinalIn(tx, position, existing));
+  return plan;
 }
 
 async function removeValuationIn(
@@ -1016,6 +1197,31 @@ export function planConfirmUnchanged(args: {
 
 const monthLabelOf = (month: MonthKey): string => (month as string).slice(0, 7);
 
+/**
+ * The final-zero rule for a month confirmed unchanged (M6, 5.2).
+ *
+ * Each balance a confirmation adds is a new one, and the rule is about the
+ * account after the write, so a figure carried past a closed account's last
+ * zero is refused like any other: being copied from a statement exempts it no
+ * more than it exempts it from waking a dormant account. Refused for the whole
+ * act, naming the account, keyed to the field each action's request names it
+ * by.
+ */
+function assertConfirmationKeepsFinalZero(
+  plan: ConfirmUnchangedWritePlan,
+  standing: readonly ValuationRow[],
+): void {
+  const breach = finalBalanceBreachOf(
+    plan.entries.map((entry) => ({ position: entry.position, existing: null, columns: entry.columns })),
+    standing,
+  );
+  if (breach === undefined) return;
+  throw new ValidationError(
+    `${breach.position.name} is closed, so its final balance has to stay zero. Nothing was confirmed.`,
+    { [plan.scope === 'single' ? 'month' : 'positionIds']: [FINAL_ZERO_MESSAGE] },
+  );
+}
+
 export interface ConfirmUnchangedArgs {
   readonly positionId: string;
   /** The month being closed, as `YYYY-MM`. */
@@ -1027,10 +1233,11 @@ export interface ConfirmUnchangedArgs {
  *
  * The order is the order the refusals have always come in: the account, the
  * month having ended, the dormant carry, the previous statement, the balance
- * already on `end(M)`, the account's window. `lock: true` holds the previous
- * statement `FOR SHARE`, as the write always has, so the figure carried is
- * still that statement when it commits; the correction preview reads it without
- * a lock, which its `READ ONLY` transaction cannot take.
+ * already on `end(M)`, the account's window — and last, for a closed account
+ * only, the final balance the confirmation would leave. `lock: true` holds the
+ * previous statement `FOR SHARE`, as the write always has, so the figure
+ * carried is still that statement when it commits; the correction preview reads
+ * it without a lock, which its `READ ONLY` transaction cannot take.
  */
 export async function resolveConfirmUnchangedIn(
   tx: Transaction,
@@ -1105,12 +1312,14 @@ export async function resolveConfirmUnchangedIn(
 
   assertWithinPositionWindow(position, end);
 
-  return planConfirmUnchanged({
+  const plan = planConfirmUnchanged({
     scope: 'single',
     month: monthLabelOf(month),
     valuedOn: end,
     accounts: [{ position, previous }],
   });
+  assertConfirmationKeepsFinalZero(plan, await standingFinalIn(tx, position, null));
+  return plan;
 }
 
 const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/u;
@@ -1197,7 +1406,10 @@ function prepareConfirmUnchangedBatch(
  *    (v2.1.17 30.20 item 8);
  *  - an existing balance on `end(M)` is never rewritten, whatever it is. A
  *    statement is corrected through its own editor, and an ordinary snapshot on
- *    the last day is confirmed, not replaced.
+ *    the last day is confirmed, not replaced;
+ *  - an account that closed later than `end(M)` is confirmed like any other,
+ *    unless the figure carried would become its final balance and is not zero
+ *    (M6): then the whole request is refused, naming it.
  */
 export async function resolveConfirmUnchangedBatchIn(
   tx: Transaction,
@@ -1255,7 +1467,16 @@ export async function resolveConfirmUnchangedBatchIn(
     accounts.push({ position, previous });
   }
 
-  return planConfirmUnchanged({ scope: 'batch', month: monthLabelOf(month), valuedOn: end, accounts });
+  const plan = planConfirmUnchanged({ scope: 'batch', month: monthLabelOf(month), valuedOn: end, accounts });
+  // One statement for every closed account in the request, and none when no
+  // account is closed.
+  const closed = located.flatMap((position) =>
+    position.status === 'closed' && position.closedOn !== null
+      ? [{ positionId: position.id, onOrBefore: position.closedOn }]
+      : [],
+  );
+  assertConfirmationKeepsFinalZero(plan, await listLatestValuationsIn(tx, closed));
+  return plan;
 }
 
 /**

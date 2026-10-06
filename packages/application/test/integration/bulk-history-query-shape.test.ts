@@ -13,7 +13,7 @@ import {
 } from '../helpers/statement-shapes';
 import { testContext, type RequestContext } from '../../src/context';
 import { provisionUser } from '../../src/users/provisioning';
-import { createCashAccount, createOtherAsset } from '../../src/positions/service';
+import { closePosition, createCashAccount, createOtherAsset } from '../../src/positions/service';
 import { recordValuation } from '../../src/positions/valuations';
 import { createTemplate, setTemplateTerm } from '../../src/recurring/templates';
 import { acceptSuggestion, skipSuggestion } from '../../src/recurring/suggestions';
@@ -285,6 +285,49 @@ describe('Preview', () => {
       // positions and the whole balance history.
       'select positions',
     ]);
+  });
+});
+
+describe('a batch that names a closed account', () => {
+  // M6, 5.2: the batch must leave each closed account's final balance at zero,
+  // which takes one more read — every closed account's latest balance the batch
+  // leaves standing, in one statement. A batch naming no closed account sends
+  // exactly what it did (above).
+  it('reads the final balances in one statement more, for one cell or for many', async () => {
+    const closed = await createCashAccount(positions(), OCT_5, {
+      name: 'Closed',
+      currency: 'EUR',
+      accountType: 'savings',
+      openedOn: null,
+    });
+    for (const end of ODD_MONTH_ENDS.slice(0, 4)) await statement(closed.id, end, '0');
+    await closePosition(positions(), OCT_5, {
+      positionId: closed.id,
+      expectedVersion: closed.version,
+      closedOn: '2026-08-15',
+    });
+
+    const one = await previewShapes(
+      draftOf([{ kind: 'valuation_create', positionId: closed.id, month: '2026-02', amount: '1' }]),
+    );
+    expect(one.slice(READ_OPEN.length, READ_OPEN.length + 5)).toEqual([
+      'select positions',
+      'select position_valuations',
+      // The closed account's final balance.
+      'select position_valuations',
+      'select currencies',
+      'select positions',
+    ]);
+
+    const many = await previewShapes(
+      draftOf([
+        { kind: 'valuation_create', positionId: closed.id, month: '2026-02', amount: '1' },
+        { kind: 'valuation_create', positionId: closed.id, month: '2026-04', amount: '2' },
+        { kind: 'valuation_create', positionId: closed.id, month: '2026-06', amount: '3' },
+        { kind: 'valuation_create', positionId: savings, month: '2026-02', amount: '4' },
+      ]),
+    );
+    expect(many).toEqual(one);
   });
 });
 

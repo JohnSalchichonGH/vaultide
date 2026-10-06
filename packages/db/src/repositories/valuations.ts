@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, lte, notInArray, or, sql } from 'drizzle-orm';
 import { positionValuations } from '../schema/position-valuations';
 import { withUser, type Database, type Transaction } from '../client';
 import { recordAudit, type AuditContext } from './audited';
@@ -174,12 +174,17 @@ export async function listValuationsOnIn(
  * The latest valuation on or before a date — the "current balance" question,
  * inside a caller's transaction, because every caller asks it to decide
  * something it is about to write (30.22 item 5).
+ *
+ * `except` leaves out the rows a write is about to correct or remove, so the
+ * answer is the latest balance that write leaves standing (M6).
  */
 export async function findLatestValuationIn(
   tx: Transaction,
   positionId: string,
   onOrBefore: string,
+  options: { readonly except?: readonly string[] } = {},
 ): Promise<ValuationRow | undefined> {
+  const except = [...new Set(options.except ?? [])];
   const [row] = await tx
     .select()
     .from(positionValuations)
@@ -187,11 +192,54 @@ export async function findLatestValuationIn(
       and(
         eq(positionValuations.positionId, positionId),
         lte(positionValuations.valuedOn, onOrBefore),
+        except.length === 0 ? undefined : notInArray(positionValuations.id, except),
       ),
     )
     .orderBy(desc(positionValuations.valuedOn))
     .limit(1);
   return row;
+}
+
+/** One account and the last date a question about it reaches. */
+export interface ValuationBound {
+  readonly positionId: string;
+  readonly onOrBefore: string;
+}
+
+/**
+ * `findLatestValuationIn` for several accounts, in one statement: each
+ * account's latest valuation on or before its own date, other than the rows in
+ * `except`. An account with none is simply absent.
+ *
+ * What a batch asks of the closed accounts it writes to (M6): the balance each
+ * would keep as its final one if the batch's own rows were not there. One
+ * statement however many accounts, and at most one row back for each; it reads
+ * only the named accounts' rows up to their own dates.
+ */
+export async function listLatestValuationsIn(
+  tx: Transaction,
+  bounds: readonly ValuationBound[],
+  options: { readonly except?: readonly string[] } = {},
+): Promise<ValuationRow[]> {
+  if (bounds.length === 0) return [];
+  const except = [...new Set(options.except ?? [])];
+  return tx
+    .selectDistinctOn([positionValuations.positionId])
+    .from(positionValuations)
+    .where(
+      and(
+        or(
+          ...bounds.map((bound) =>
+            and(
+              eq(positionValuations.positionId, bound.positionId),
+              lte(positionValuations.valuedOn, bound.onOrBefore),
+            ),
+          ),
+        ),
+        except.length === 0 ? undefined : notInArray(positionValuations.id, except),
+      ),
+    )
+    .orderBy(asc(positionValuations.positionId), desc(positionValuations.valuedOn));
 }
 
 export interface ValuationInput {

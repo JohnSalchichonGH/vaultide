@@ -44,8 +44,8 @@ export type BulkPositionCell =
       readonly source: string;
       /**
        * `false` for the closing balance of a closed account, which is not
-       * deletable while the account stays closed (6.3); it can still be
-       * corrected.
+       * deletable while the account stays closed (6.3). It can still be
+       * corrected, but only to zero: it is the account's final balance (M6).
        */
       readonly clearable: boolean;
     }
