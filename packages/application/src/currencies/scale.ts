@@ -22,6 +22,11 @@ import { ValidationError, type FieldErrors } from '../errors';
  * from a stored row, or one the server derives, was not typed by anybody in
  * this request, and refusing it would refuse a save over a value the user was
  * never shown as theirs to fix.
+ *
+ * The two halves judge different things, on purpose. The server judges an
+ * amount by its value (`fitsMinorUnits`), so `10.120` EUR passes here: it is
+ * the amount 10.12, which fits. The forms judge the digits typed, so the same
+ * `10.120` is refused there before it is sent.
  */
 
 /** One amount a request states, and the currency the write stores it in. */
