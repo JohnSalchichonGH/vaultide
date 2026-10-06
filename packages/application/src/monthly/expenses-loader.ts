@@ -134,10 +134,9 @@ export async function loadCompletedMonthExpenses(
   const to = endOfMonthKey(month);
 
   return withUser(deps.db, { userId }, async (tx) => {
-    const [occurrenceEntries, skips] = await Promise.all([
-      listExpenseEntriesByOccurrenceIn(tx, from, to),
-      listSkipsInRangeIn(tx, from, to),
-    ]);
+    // One after another: both share the transaction's one connection.
+    const occurrenceEntries = await listExpenseEntriesByOccurrenceIn(tx, from, to);
+    const skips = await listSkipsInRangeIn(tx, from, to);
 
     const referencedTemplates = await listTemplatesByIdsIn(
       tx,
@@ -168,14 +167,13 @@ export async function loadCurrentMonthExpenses(
   const to = endOfMonthKey(month);
 
   return withUser(deps.db, { userId }, async (tx) => {
-    const [occurrenceEntries, skips, active, futureResolved] = await Promise.all([
-      listExpenseEntriesByOccurrenceIn(tx, from, to),
-      listSkipsInRangeIn(tx, from, to),
-      listActiveTemplatesIn(tx),
-      // No upper bound, because §30.10's rule has none: the next unresolved
-      // occurrence of an annual source may be eleven months out.
-      listResolvedOccurrencesAfterIn(tx, today),
-    ]);
+    // One after another: they share the transaction's one connection.
+    const occurrenceEntries = await listExpenseEntriesByOccurrenceIn(tx, from, to);
+    const skips = await listSkipsInRangeIn(tx, from, to);
+    const active = await listActiveTemplatesIn(tx);
+    // No upper bound, because §30.10's rule has none: the next unresolved
+    // occurrence of an annual source may be eleven months out.
+    const futureResolved = await listResolvedOccurrencesAfterIn(tx, today);
 
     const referenced = await listTemplatesByIdsIn(
       tx,

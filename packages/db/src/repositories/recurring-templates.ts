@@ -537,27 +537,26 @@ export async function listMaterializedOccurrences(
 
   const ids = [...templateIds];
   return withUser(db, { userId }, async (tx) => {
-    const [income, expenses, moves] = await Promise.all([
-      tx
-        .select({ templateId: incomeEntries.templateId, occurrenceDate: incomeEntries.occurrenceDate })
-        .from(incomeEntries)
-        .where(
-          and(inArray(incomeEntries.templateId, ids), isNotNull(incomeEntries.occurrenceDate)),
-        ),
-      tx
-        .select({
-          templateId: expenseEntries.templateId,
-          occurrenceDate: expenseEntries.occurrenceDate,
-        })
-        .from(expenseEntries)
-        .where(
-          and(inArray(expenseEntries.templateId, ids), isNotNull(expenseEntries.occurrenceDate)),
-        ),
-      tx
-        .select({ templateId: transfers.templateId, occurrenceDate: transfers.occurrenceDate })
-        .from(transfers)
-        .where(and(inArray(transfers.templateId, ids), isNotNull(transfers.occurrenceDate))),
-    ]);
+    // One after another: the three share the transaction's one connection.
+    const income = await tx
+      .select({ templateId: incomeEntries.templateId, occurrenceDate: incomeEntries.occurrenceDate })
+      .from(incomeEntries)
+      .where(
+        and(inArray(incomeEntries.templateId, ids), isNotNull(incomeEntries.occurrenceDate)),
+      );
+    const expenses = await tx
+      .select({
+        templateId: expenseEntries.templateId,
+        occurrenceDate: expenseEntries.occurrenceDate,
+      })
+      .from(expenseEntries)
+      .where(
+        and(inArray(expenseEntries.templateId, ids), isNotNull(expenseEntries.occurrenceDate)),
+      );
+    const moves = await tx
+      .select({ templateId: transfers.templateId, occurrenceDate: transfers.occurrenceDate })
+      .from(transfers)
+      .where(and(inArray(transfers.templateId, ids), isNotNull(transfers.occurrenceDate)));
 
     return [...income, ...expenses, ...moves].map((row) => ({
       templateId: row.templateId as string,
@@ -588,62 +587,63 @@ export async function listResolvedOccurrencesInRange(
   return withUser(db, { userId }, async (tx) => listResolvedOccurrencesInRangeIn(tx, from, to));
 }
 
-/** The same four reads inside a caller's transaction. */
+/**
+ * The same four reads inside a caller's transaction, one after another: they
+ * share its one connection.
+ */
 export async function listResolvedOccurrencesInRangeIn(
   tx: Transaction,
   from: string,
   to: string,
 ): Promise<{ templateId: string; occurrenceDate: string }[]> {
-  const [income, expenses, moves, skips] = await Promise.all([
-    tx
-      .select({
-        templateId: incomeEntries.templateId,
-        occurrenceDate: incomeEntries.occurrenceDate,
-      })
-      .from(incomeEntries)
-      .where(
-        and(
-          isNotNull(incomeEntries.occurrenceDate),
-          gte(incomeEntries.occurrenceDate, from),
-          lte(incomeEntries.occurrenceDate, to),
-        ),
+  const income = await tx
+    .select({
+      templateId: incomeEntries.templateId,
+      occurrenceDate: incomeEntries.occurrenceDate,
+    })
+    .from(incomeEntries)
+    .where(
+      and(
+        isNotNull(incomeEntries.occurrenceDate),
+        gte(incomeEntries.occurrenceDate, from),
+        lte(incomeEntries.occurrenceDate, to),
       ),
-    tx
-      .select({
-        templateId: expenseEntries.templateId,
-        occurrenceDate: expenseEntries.occurrenceDate,
-      })
-      .from(expenseEntries)
-      .where(
-        and(
-          isNotNull(expenseEntries.occurrenceDate),
-          gte(expenseEntries.occurrenceDate, from),
-          lte(expenseEntries.occurrenceDate, to),
-        ),
+    );
+  const expenses = await tx
+    .select({
+      templateId: expenseEntries.templateId,
+      occurrenceDate: expenseEntries.occurrenceDate,
+    })
+    .from(expenseEntries)
+    .where(
+      and(
+        isNotNull(expenseEntries.occurrenceDate),
+        gte(expenseEntries.occurrenceDate, from),
+        lte(expenseEntries.occurrenceDate, to),
       ),
-    tx
-      .select({ templateId: transfers.templateId, occurrenceDate: transfers.occurrenceDate })
-      .from(transfers)
-      .where(
-        and(
-          isNotNull(transfers.occurrenceDate),
-          gte(transfers.occurrenceDate, from),
-          lte(transfers.occurrenceDate, to),
-        ),
+    );
+  const moves = await tx
+    .select({ templateId: transfers.templateId, occurrenceDate: transfers.occurrenceDate })
+    .from(transfers)
+    .where(
+      and(
+        isNotNull(transfers.occurrenceDate),
+        gte(transfers.occurrenceDate, from),
+        lte(transfers.occurrenceDate, to),
       ),
-    tx
-      .select({
-        templateId: recurringTemplateSkips.templateId,
-        occurrenceDate: recurringTemplateSkips.occurrenceDate,
-      })
-      .from(recurringTemplateSkips)
-      .where(
-        and(
-          gte(recurringTemplateSkips.occurrenceDate, from),
-          lte(recurringTemplateSkips.occurrenceDate, to),
-        ),
+    );
+  const skips = await tx
+    .select({
+      templateId: recurringTemplateSkips.templateId,
+      occurrenceDate: recurringTemplateSkips.occurrenceDate,
+    })
+    .from(recurringTemplateSkips)
+    .where(
+      and(
+        gte(recurringTemplateSkips.occurrenceDate, from),
+        lte(recurringTemplateSkips.occurrenceDate, to),
       ),
-  ]);
+    );
 
   return [...income, ...expenses, ...moves, ...skips].map((row) => ({
     templateId: row.templateId as string,
@@ -656,34 +656,31 @@ export async function listResolvedOccurrencesInRangeIn(
  * materialized flow or by an explicit skip.
  *
  * Read inside the transaction holding the template's lock, so the eligibility
- * decision of 30.10 sees the same state the write will (20.3).
+ * decision of 30.10 sees the same state the write will (20.3). The four reads
+ * run one after another: they share that transaction's one connection.
  */
 export async function listResolvedOccurrenceDatesIn(
   tx: Transaction,
   templateId: string,
 ): Promise<string[]> {
-  const [income, expenses, moves, skips] = await Promise.all([
-    tx
-      .select({ occurrenceDate: incomeEntries.occurrenceDate })
-      .from(incomeEntries)
-      .where(
-        and(eq(incomeEntries.templateId, templateId), isNotNull(incomeEntries.occurrenceDate)),
-      ),
-    tx
-      .select({ occurrenceDate: expenseEntries.occurrenceDate })
-      .from(expenseEntries)
-      .where(
-        and(eq(expenseEntries.templateId, templateId), isNotNull(expenseEntries.occurrenceDate)),
-      ),
-    tx
-      .select({ occurrenceDate: transfers.occurrenceDate })
-      .from(transfers)
-      .where(and(eq(transfers.templateId, templateId), isNotNull(transfers.occurrenceDate))),
-    tx
-      .select({ occurrenceDate: recurringTemplateSkips.occurrenceDate })
-      .from(recurringTemplateSkips)
-      .where(eq(recurringTemplateSkips.templateId, templateId)),
-  ]);
+  const income = await tx
+    .select({ occurrenceDate: incomeEntries.occurrenceDate })
+    .from(incomeEntries)
+    .where(and(eq(incomeEntries.templateId, templateId), isNotNull(incomeEntries.occurrenceDate)));
+  const expenses = await tx
+    .select({ occurrenceDate: expenseEntries.occurrenceDate })
+    .from(expenseEntries)
+    .where(
+      and(eq(expenseEntries.templateId, templateId), isNotNull(expenseEntries.occurrenceDate)),
+    );
+  const moves = await tx
+    .select({ occurrenceDate: transfers.occurrenceDate })
+    .from(transfers)
+    .where(and(eq(transfers.templateId, templateId), isNotNull(transfers.occurrenceDate)));
+  const skips = await tx
+    .select({ occurrenceDate: recurringTemplateSkips.occurrenceDate })
+    .from(recurringTemplateSkips)
+    .where(eq(recurringTemplateSkips.templateId, templateId));
 
   return [...income, ...expenses, ...moves, ...skips].map(
     (row) => row.occurrenceDate as string,
@@ -841,42 +838,41 @@ export async function listSkipsInRangeIn(
  *
  * No upper bound, because the rule has none: an annual source whose genuine next
  * payment is eight months away must still be reachable (§30.10).
+ *
+ * The four reads run one after another: they share the caller's transaction,
+ * and with it one connection.
  */
 export async function listResolvedOccurrencesAfterIn(
   tx: Transaction,
   after: string,
 ): Promise<{ templateId: string; occurrenceDate: string }[]> {
-  const [income, expenses, moves, skips] = await Promise.all([
-    tx
-      .select({
-        templateId: incomeEntries.templateId,
-        occurrenceDate: incomeEntries.occurrenceDate,
-      })
-      .from(incomeEntries)
-      .where(
-        and(isNotNull(incomeEntries.occurrenceDate), gt(incomeEntries.occurrenceDate, after)),
-      ),
-    tx
-      .select({
-        templateId: expenseEntries.templateId,
-        occurrenceDate: expenseEntries.occurrenceDate,
-      })
-      .from(expenseEntries)
-      .where(
-        and(isNotNull(expenseEntries.occurrenceDate), gt(expenseEntries.occurrenceDate, after)),
-      ),
-    tx
-      .select({ templateId: transfers.templateId, occurrenceDate: transfers.occurrenceDate })
-      .from(transfers)
-      .where(and(isNotNull(transfers.occurrenceDate), gt(transfers.occurrenceDate, after))),
-    tx
-      .select({
-        templateId: recurringTemplateSkips.templateId,
-        occurrenceDate: recurringTemplateSkips.occurrenceDate,
-      })
-      .from(recurringTemplateSkips)
-      .where(gt(recurringTemplateSkips.occurrenceDate, after)),
-  ]);
+  const income = await tx
+    .select({
+      templateId: incomeEntries.templateId,
+      occurrenceDate: incomeEntries.occurrenceDate,
+    })
+    .from(incomeEntries)
+    .where(and(isNotNull(incomeEntries.occurrenceDate), gt(incomeEntries.occurrenceDate, after)));
+  const expenses = await tx
+    .select({
+      templateId: expenseEntries.templateId,
+      occurrenceDate: expenseEntries.occurrenceDate,
+    })
+    .from(expenseEntries)
+    .where(
+      and(isNotNull(expenseEntries.occurrenceDate), gt(expenseEntries.occurrenceDate, after)),
+    );
+  const moves = await tx
+    .select({ templateId: transfers.templateId, occurrenceDate: transfers.occurrenceDate })
+    .from(transfers)
+    .where(and(isNotNull(transfers.occurrenceDate), gt(transfers.occurrenceDate, after)));
+  const skips = await tx
+    .select({
+      templateId: recurringTemplateSkips.templateId,
+      occurrenceDate: recurringTemplateSkips.occurrenceDate,
+    })
+    .from(recurringTemplateSkips)
+    .where(gt(recurringTemplateSkips.occurrenceDate, after));
 
   return [...income, ...expenses, ...moves, ...skips].map((row) => ({
     templateId: row.templateId as string,
