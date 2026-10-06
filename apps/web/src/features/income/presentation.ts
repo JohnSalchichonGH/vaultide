@@ -157,9 +157,15 @@ export function missingFlagText(flag: IncomeMissingFlagDto, year: number, monthO
   return `${flag.name}: ${String(count)} ${count === 1 ? 'payment' : 'payments'} missing in ${String(year)} (${when}).`;
 }
 
+/**
+ * Why an archived source's missing payments stay missing: the first sentence of
+ * the year view's guidance and of the source page's, so rewording it rewords
+ * both.
+ */
+export const ARCHIVED_SOURCE_REASON = 'This source is archived, so its payments cannot be recorded or skipped.';
+
 /** What resolves an archived source's missing payments, since neither Monthly nor Bulk History can. */
-export const ARCHIVED_MISSING_HELP =
-  'This source is archived, so its payments cannot be recorded or skipped. Unarchive the source, or, if it really ended, give it an end date before the missing payment.';
+export const ARCHIVED_MISSING_HELP = `${ARCHIVED_SOURCE_REASON} Unarchive the source, or, if it really ended, give it an end date before the missing payment.`;
 
 /* -------------------------------------------------------------------------- */
 /* Order                                                                       */

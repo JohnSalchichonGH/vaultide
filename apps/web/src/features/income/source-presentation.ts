@@ -7,7 +7,13 @@ import type {
 import type { MoneyDto } from '@vaultide/finance/client';
 import { EXPENSE_FREQUENCIES } from '@/features/monthly/expenses-presentation';
 import { SKIP_REASON_LABEL } from '@/features/monthly/income-presentation';
-import { missingFlagLink, occurrenceHref, paymentHref, type MissingFlagLink } from '@/features/income/presentation';
+import {
+  ARCHIVED_SOURCE_REASON,
+  missingFlagLink,
+  occurrenceHref,
+  paymentHref,
+  type MissingFlagLink,
+} from '@/features/income/presentation';
 
 /**
  * How an income source's page says what its read returned (blueprint 15.2
@@ -243,7 +249,7 @@ export function occurrenceLink(
  * payment."
  */
 export const ARCHIVED_SOURCE_MISSING = {
-  reason: 'This source is archived, so its payments cannot be recorded or skipped.',
+  reason: ARCHIVED_SOURCE_REASON,
   unarchive: { href: '#archive', label: 'Unarchive it' },
   ifEnded: ', or, if it really ended,',
   endDate: { href: '#end-date', label: 'set an end date' },
