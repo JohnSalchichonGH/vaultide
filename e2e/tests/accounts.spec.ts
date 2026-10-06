@@ -461,3 +461,55 @@ test.describe('dormant accounts', () => {
     await expect(page.getByTestId('quick-update-open')).toBeDisabled();
   });
 });
+
+test.describe('a closed account', () => {
+  // M6, 5.2: a closed account's final balance stays zero after every write,
+  // not only at the close. A balance written later that left money in it would
+  // drop that money out of every figure.
+  test('refuses a non-zero balance on its closing day when its zero is earlier, and changes nothing', async ({
+    page,
+    request,
+  }) => {
+    const email = uniqueEmail('e2e-closed');
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': '2026-10-20T10:00:00Z' });
+    await onboard(page, request, email);
+
+    await addCashAccount(page, { name: 'Old savings', currency: 'EUR', balance: '300.00', on: '2026-10-02' });
+    await waitForRouter(page);
+    await page.getByRole('link', { name: 'Old savings' }).click();
+
+    // Emptied on the 5th…
+    await ready(page, 'valuation-submit');
+    await fillTestId(page, 'valuation-amount', '0');
+    await fillTestId(page, 'valuation-date', '2026-10-05');
+    await page.getByTestId('valuation-submit').click();
+    await expect(page.getByTestId('valuation-saved')).toBeVisible();
+    await expect(page.getByTestId('valuation-history')).toContainText('2026-10-05');
+
+    // …and closed today, the 20th, on that zero.
+    await waitForRouter(page);
+    await page.getByTestId('close-position').click();
+    await expect(page.getByTestId('close-position')).toHaveCount(0);
+
+    await reloadAfterRefresh(page);
+    await ready(page, 'valuation-submit');
+    const rows = page.getByTestId('valuation-history').locator('tbody tr');
+    await expect(rows).toHaveCount(2);
+
+    // 500 on the closing day would be its final balance: the server refuses,
+    // and the form shows its message as it comes.
+    await fillTestId(page, 'valuation-amount', '500.00');
+    await fillTestId(page, 'valuation-date', '2026-10-20');
+    await page.getByTestId('valuation-submit').click();
+    await expect(page.getByTestId('valuation-error')).toHaveText(
+      'This account is closed, so its final balance has to stay zero.',
+    );
+    await expect(page.getByTestId('valuation-saved')).toHaveCount(0);
+
+    // Nothing was written.
+    await reloadAfterRefresh(page);
+    await expect(rows).toHaveCount(2);
+    await expect(page.getByTestId('valuation-history')).not.toContainText('2026-10-20');
+    await expect(page.getByTestId('valuation-history')).not.toContainText('500.00');
+  });
+});

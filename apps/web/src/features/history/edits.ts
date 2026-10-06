@@ -95,7 +95,7 @@ export function outcomeOf(model: GridModel, column: GridColumn, edit: CellEdit):
         if (!cell.clearable) {
           return {
             kind: 'invalid',
-            message: 'This is the closing balance of a closed account. It can be corrected, not removed.',
+            message: 'This is the closing balance of a closed account, so it cannot be removed.',
           };
         }
         return {
