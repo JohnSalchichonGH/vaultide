@@ -312,7 +312,7 @@ test.describe('the Income page', () => {
     await review(page).getByTestId('correction-confirm').click();
     await expect(review(page)).toHaveCount(0);
 
-    await expect(page.getByTestId('income-payment-confirmed')).toBeVisible();
+    await expect(page.getByTestId('add-income-confirmed')).toBeVisible();
     await expect(page.getByTestId('income-total')).toContainText('€80.00');
     // The form starts again, empty.
     await expect(page.getByTestId('income-net')).toHaveValue('');

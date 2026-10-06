@@ -255,14 +255,12 @@ function elements(name: string): { file: string; tag: string }[] {
 describe('every mount of the two forms brings the review', () => {
   it('mounts Add income only through a host of its review: Monthly’s Income section, the issue dialog, and the Income page', () => {
     expect(elements('AddIncomeWithReview').map((element) => element.file).sort()).toEqual([
+      'app/(app)/income/page.tsx',
       'features/monthly/income-editor.tsx',
       'features/monthly/issue-action-host.tsx',
     ]);
-    // The bare form, inside the two hosts that own a flow and a review dialog.
-    expect(elements('AddIncomeForm').map((element) => element.file).sort()).toEqual([
-      'features/income/add-payment.tsx',
-      'features/monthly/income-editor.tsx',
-    ]);
+    // The bare form, inside the one host that owns a flow and a review dialog.
+    expect(elements('AddIncomeForm').map((element) => element.file)).toEqual(['features/monthly/income-editor.tsx']);
     for (const element of elements('AddIncomeForm')) expect(element.tag, element.file).toContain('correction={correction}');
   });
 

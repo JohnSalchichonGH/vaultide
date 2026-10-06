@@ -7,10 +7,9 @@ import { requireSessionPage } from '@/server/context';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { IncomeChart } from '@/components/charts/income-chart';
-import { AddIncomeSourceForm } from '@/features/monthly/income-editor';
+import { AddIncomeSourceForm, AddIncomeWithReview } from '@/features/monthly/income-editor';
 import { defaultPickerCurrency, pickerCurrencies } from '@/features/monthly/income-presentation';
 import { META } from '@/features/spending/figure';
-import { AddPayment } from '@/features/income/add-payment';
 import { incomeChartModel } from '@/features/income/chart-model';
 import { incomeYearHref, paymentDateBounds, SO_FAR } from '@/features/income/presentation';
 import { IncomeSummary, MissingPayments, MonthsTable, SourcesTable, YearsTable } from '@/features/income/year-view';
@@ -196,13 +195,16 @@ export default async function IncomePage({
       >
         <Card>
           <CardContent>
-            <AddPayment
-              forms={page.forms}
+            {/* Monthly's form and its review, with the kinds this page counts
+                and any day up to today (ADR 0012 D5). */}
+            <AddIncomeWithReview
+              accounts={page.forms.cashAccounts}
               currencies={currencies}
               minorUnitsByCurrency={page.minorUnitsByCurrency}
-              defaultCurrency={defaultCurrency}
               bounds={paymentDateBounds(page.today)}
               today={page.today}
+              defaultCurrency={defaultCurrency}
+              kinds={page.forms.paymentKinds}
               locale={locale}
             />
           </CardContent>

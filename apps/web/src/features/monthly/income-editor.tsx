@@ -1958,8 +1958,7 @@ export function AddIncomeForm({
   /**
    * The mount's correction flow: every save asks the server first and opens
    * the review a creation needs (`saveNewIncome`). The mount renders the one
-   * `CorrectionHost` that shows it (`AddIncomeWithReview`, or the Income
-   * page's `AddPayment`).
+   * `CorrectionHost` that shows it (`AddIncomeWithReview`).
    */
   readonly correction: CorrectionFlow;
 }) {
@@ -2177,7 +2176,8 @@ export function AddIncomeForm({
 
 /**
  * Monthly's Add income with the review a new entry may need (ADR 0010 §1; ADR
- * 0012 D5): in the Income section, and in a corrective action's dialog.
+ * 0012 D5): in the Income section, in a corrective action's dialog, and as the
+ * Income page's Add a payment, with the kinds that page counts.
  *
  * The form asks the server first through this mount's own correction flow, so
  * an entry whose dormancy consequence reaches completed history opens Review
@@ -2186,9 +2186,9 @@ export function AddIncomeForm({
  * always was.
  *
  * A confirmed correction ends as an ordinary save on the same mount ends. By
- * default the form starts again empty and the page is read again, as the
- * Income page's Add a payment does. A caller that owns something around the
- * form — the issue dialog, which closes — passes `onCommitted` instead.
+ * default the form starts again empty and the page is read again. A caller
+ * that owns something around the form — the issue dialog, which closes —
+ * passes `onCommitted` instead.
  */
 export function AddIncomeWithReview({
   locale,
