@@ -1,10 +1,10 @@
 import { expect, test, type APIRequestContext, type Dialog, type Locator, type Page } from '@playwright/test';
-import { gotoAfterRefresh, waitForRouter } from '../support/navigation';
+import { gotoAfterRefresh, reloadAfterRefresh, waitForRouter } from '../support/navigation';
 
 /**
  * Bulk History, end to end (blueprint 15.3 "Bulk history"; ADR 0011).
  *
- * Two journeys, each a promise the product makes rather than a rendering check:
+ * Three journeys, each a promise the product makes rather than a rendering check:
  *
  *  - **history is reconstructed from a spreadsheet.** From a completed month
  *    a person opens the grid, sees which balances are stored, carried and
@@ -15,7 +15,10 @@ import { gotoAfterRefresh, waitForRouter } from '../support/navigation';
  *  - **a cell changed in another tab is never saved over.** Two tabs edit the
  *    same grid. The second saves first; the first one's confirm is refused,
  *    keeps its other edit, lists the cell it lost with what is there now, and
- *    then saves what is left.
+ *    then saves what is left;
+ *  - **a refusal is shown on the cell it names.** A figure that would leave a
+ *    closed account holding money is refused for the batch, and the cell the
+ *    server names is marked with its words until it is changed.
  *
  * Every record is written through the product's own pages: there is no seeding
  * endpoint. "Today" is 6 October 2026.
@@ -300,5 +303,65 @@ test.describe('two tabs on one grid', () => {
     await expect(review(page)).toHaveCount(0);
     await expect(gridCell(page, '2026-09', 0)).toHaveAttribute('data-state', 'stored');
     await expect(gridCell(page, '2026-08', 0).getByTestId('bulk-input')).toHaveValue('2200.00');
+  });
+});
+
+test.describe('a refusal that names a cell', () => {
+  test('marks that cell with the server’s words, beside the message, until it is changed', async ({
+    page,
+    request,
+  }) => {
+    test.slow();
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': OCTOBER_6 });
+    await onboard(page, request, uniqueEmail('e2e-bulk-refused-cell'));
+
+    // Emptied on 10 September and closed today, on that zero (M6).
+    await accountWithAugustStatement(page, 'Old savings', '300.00');
+    await expect(page.getByTestId('valuation-submit')).toBeEnabled();
+    await fillTestId(page, 'valuation-amount', '0');
+    await fillTestId(page, 'valuation-date', '2026-09-10');
+    await page.getByTestId('valuation-submit').click();
+    await expect(page.getByTestId('valuation-history')).toContainText('2026-09-10');
+    await waitForRouter(page);
+    await page.getByTestId('close-position').click();
+    await expect(page.getByTestId('close-position')).toHaveCount(0);
+
+    // Into the grid from September's Monthly, once that page is interactive: the
+    // grid's own fields take typing before React does, and would lose it.
+    await gotoAfterRefresh(page, '/monthly/2026-09');
+    await expect(
+      page.getByTestId('monthly-accounts').locator('tbody tr', { hasText: 'Old savings' }).getByTestId('closing-amount'),
+    ).toBeEnabled();
+    await page.getByTestId('monthly-bulk-history').click();
+    await expect(page).toHaveURL(/\/monthly\/2026-09\/history$/u);
+    await expect(gridCell(page, '2026-09', 0)).toHaveAttribute('data-state', 'carried');
+    const september = gridCell(page, '2026-09', 0).getByTestId('bulk-input');
+
+    // 500 at the end of September would be its final balance: refused for the
+    // batch, and the cell the server names is marked in its words.
+    await september.fill('500');
+    await page.getByTestId('bulk-review').click();
+    await expect(page.getByTestId('bulk-notice')).toHaveText(
+      /^Old savings, September 2026: the account is closed, so its final balance has to stay zero\. Nothing was saved\.$/u,
+    );
+    await expect(review(page)).toHaveCount(0);
+    await expect(september).toHaveAttribute('aria-invalid', 'true');
+    await expect(september).toHaveAttribute('title', 'This account is closed, so its final balance has to stay zero.');
+    await expect(page.getByTestId('bulk-problem')).toHaveText(
+      'Old savings, September 2026: This account is closed, so its final balance has to stay zero.',
+    );
+
+    // Changed, the cell is no longer the one refused; a zero keeps the final zero.
+    await september.fill('0');
+    await expect(september).not.toHaveAttribute('aria-invalid', 'true');
+    await expect(page.getByTestId('bulk-problem')).toHaveCount(0);
+    await page.getByTestId('bulk-review').click();
+    await expect(review(page)).toBeVisible();
+    await page.getByTestId('correction-confirm').click();
+    await expect(review(page)).toHaveCount(0);
+    await expect(gridCell(page, '2026-09', 0)).toHaveAttribute('data-state', 'stored');
+
+    await reloadAfterRefresh(page);
+    await expect(gridCell(page, '2026-09', 0).getByTestId('bulk-input')).toHaveValue('0.00');
   });
 });

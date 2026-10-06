@@ -169,8 +169,18 @@ export async function attemptCorrection(
 export type ReviewPreparation =
   /** The review dialog is now open. Nothing has been written. */
   | { readonly kind: 'review' }
-  /** Resolving it was refused — a stale version, a cell filled elsewhere, a rule. */
-  | { readonly kind: 'refused'; readonly error: { readonly code: string; readonly message: string } }
+  /**
+   * Resolving it was refused — a stale version, a cell filled elsewhere, a
+   * rule — with the fields the refusal names, when it names any.
+   */
+  | {
+      readonly kind: 'refused';
+      readonly error: {
+        readonly code: string;
+        readonly message: string;
+        readonly fieldErrors?: Readonly<Record<string, readonly string[]>> | undefined;
+      };
+    }
   /**
    * The server said no review is needed for a draft that has no other way to
    * be saved. That breaks the contract (ADR 0011 D7), so nothing is saved and

@@ -11,9 +11,17 @@ vi.mock('@/server/actions/corrections', () => ({
 }));
 
 const { gridModelOf, cellAt, nextEditable } = await import('@/features/history/model');
-const { NO_EDITS, draftOf, operationCount, outcomesOf, pasteInto, rebase, revertCell, typeInto } = await import(
-  '@/features/history/edits'
-);
+const {
+  NO_EDITS,
+  draftOf,
+  operationCount,
+  outcomesOf,
+  pasteInto,
+  rebase,
+  refusedCellsOf,
+  revertCell,
+  typeInto,
+} = await import('@/features/history/edits');
 const {
   defaultHistoryStart,
   firstBalanceHistoryStart,
@@ -479,11 +487,52 @@ describe('a review-only save', () => {
     expect(world.opened).toEqual([]);
   });
 
+  it('passes on the cells a refusal names, with its message', async () => {
+    const error = {
+      code: 'VALIDATION_ERROR',
+      message: 'BBVA, January 2026: the account is closed, so its final balance has to stay zero. Nothing was saved.',
+      fieldErrors: { [`${BBVA}#2026-01-31`]: ['This account is closed, so its final balance has to stay zero.'] },
+    };
+    const world = ports({ ok: false, error });
+    expect(await prepareReviewWith(world.ports, draft)).toEqual({ kind: 'refused', error });
+  });
+
   it('treats "no review needed" as a broken contract, never as leave to save', async () => {
     const world = ports({ ok: true, data: { status: 'not_required' } });
     expect(await prepareReviewWith(world.ports, draft)).toEqual({ kind: 'broken' });
     expect(world.opened).toEqual([]);
     expect(world.forgotten()).toBe(1);
+  });
+});
+
+describe('the cells a refused save names', () => {
+  const grid = model();
+
+  it('are the grid’s own cells: a balance by its month end, income by its occurrence', () => {
+    expect(
+      refusedCellsOf(grid, {
+        [`${BBVA}#2026-03-31`]: ['This account is closed, so its final balance has to stay zero.'],
+        [`${SALARY}#2026-04-25`]: ['Use at most 2 decimals for this currency.', 'and more'],
+      }),
+    ).toEqual(
+      new Map([
+        [`position:${BBVA}|2026-03`, 'This account is closed, so its final balance has to stay zero.'],
+        [`income:${SALARY}|2026-04`, 'Use at most 2 decimals for this currency.'],
+      ]),
+    );
+  });
+
+  it('are none for a refusal that names no cell of this grid', () => {
+    expect(refusedCellsOf(grid, undefined).size).toBe(0);
+    expect(
+      refusedCellsOf(grid, {
+        operations: ['Each cell may appear only once in a save.'],
+        'pos-elsewhere#2026-03-31': ['Not a column here.'],
+        [`${BBVA}#2025-12-31`]: ['Above the first row.'],
+        [`${BBVA}#2026-03-31#extra`]: ['Not a cell key.'],
+        [`${CAR}#2026-04-30`]: [],
+      }).size,
+    ).toBe(0);
   });
 });
 

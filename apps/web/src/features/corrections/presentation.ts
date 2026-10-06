@@ -711,7 +711,13 @@ export function rewritesDormancy(preview: CorrectionPreview): boolean {
 export type ReviewOutcome =
   | { readonly kind: 'committed' }
   | { readonly kind: 'stale'; readonly preview: CorrectionPreview }
-  | { readonly kind: 'error'; readonly message: string; readonly conflict: boolean };
+  | {
+      readonly kind: 'error';
+      readonly message: string;
+      readonly conflict: boolean;
+      /** The fields the refusal names, when it names any: a grid marks those cells. */
+      readonly fieldErrors?: Readonly<Record<string, readonly string[]>>;
+    };
 
 export function interpretConfirm(
   result: ActionResult<ConfirmCorrectionResult>,
@@ -721,6 +727,7 @@ export function interpretConfirm(
       kind: 'error',
       message: result.error.message,
       conflict: result.error.code === 'CONFLICT_VERSION',
+      ...(result.error.fieldErrors === undefined ? {} : { fieldErrors: result.error.fieldErrors }),
     };
   }
   return result.data.status === 'impact_changed'

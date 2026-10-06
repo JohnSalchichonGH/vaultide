@@ -22,14 +22,17 @@ import { accountAnchorId, dayTitle, monthTitle } from '@/features/monthly/presen
 import { cn } from '@/lib/utils';
 import {
   NO_EDITS,
+  NO_REFUSED_CELLS,
   draftOf,
   outcomesOf,
   pasteInto,
   rebase,
+  refusedCellsOf,
   revertCell,
   typeInto,
   type DroppedEdit,
   type Edits,
+  type RefusedCells,
 } from './edits';
 import {
   baseOf,
@@ -112,6 +115,9 @@ export function BulkHistoryGrid({
   const [notice, setNotice] = useState<Notice | null>(null);
   const [focus, setFocus] = useState<GridPosition | null>(null);
   const [preparing, setPreparing] = useState(false);
+  // The cells the server's last refusal named. A cell keeps its mark until its
+  // edit changes or goes; the refusal's own message stays in the notice.
+  const [refused, setRefused] = useState<RefusedCells>(NO_REFUSED_CELLS);
 
   // A newer read of the grid arrived — after a commit, a refused save, a
   // changed impact, or any refresh. Keep each edit whose base still stands;
@@ -121,6 +127,7 @@ export function BulkHistoryGrid({
     const result = rebase(model, edits);
     setSeen(model);
     setEdits(result.kept);
+    setRefused((cells) => sameEditsOnly(cells, edits, result.kept));
     if (result.dropped.length > 0) setDropped(result.dropped);
     if (result.kept.size === 0) setEdited(false);
   }
@@ -152,8 +159,10 @@ export function BulkHistoryGrid({
     focus === null
       ? null
       : cellKey(model.columns[focus.column]?.key ?? '', model.rows[focus.row] ?? '');
+  // What each cell is marked with: its own problem first, else the server's.
+  const marks = new Map([...refused, ...problems]);
   const problemAt = (key: string): string | null => {
-    const message = problems.get(key);
+    const message = marks.get(key);
     if (message === undefined) return null;
     const [columnKey = '', month = ''] = key.split('|');
     const name = model.columns.find((column) => column.key === columnKey)?.name ?? '';
@@ -161,7 +170,7 @@ export function BulkHistoryGrid({
   };
   const firstProblem =
     (focusedKey === null ? null : problemAt(focusedKey)) ??
-    ([...problems.keys()].map(problemAt).find((line) => line !== null) ?? null);
+    ([...marks.keys()].map(problemAt).find((line) => line !== null) ?? null);
 
   // While there are unsaved edits — the edited flag — two ways of leaving ask
   // first:
@@ -204,6 +213,7 @@ export function BulkHistoryGrid({
 
   const changed = (next: Edits): void => {
     setEdits(next);
+    setRefused((cells) => sameEditsOnly(cells, edits, next));
     // Set by every change, and cleared when no edit remains — the last one
     // undone with Escape, or a figure retyped to what is stored.
     setEdited(next.size > 0);
@@ -242,6 +252,7 @@ export function BulkHistoryGrid({
     setEdited(false);
     setDropped([]);
     setNotice(null);
+    setRefused(NO_REFUSED_CELLS);
     correction.clear();
   };
 
@@ -260,10 +271,12 @@ export function BulkHistoryGrid({
     }
     setPreparing(true);
     setNotice(null);
+    setRefused(NO_REFUSED_CELLS);
     try {
       const outcome = await correction.prepareReview(prepared.draft);
       if (outcome.kind === 'refused') {
         setNotice({ tone: 'error', text: outcome.error.message });
+        setRefused(refusedCellsOf(model, outcome.error.fieldErrors));
         // The answer may be that something moved: take in the newer state.
         router.refresh();
       } else if (outcome.kind === 'broken') {
@@ -441,10 +454,13 @@ export function BulkHistoryGrid({
             setEdits(NO_EDITS);
             setEdited(false);
             setDropped([]);
+            setRefused(NO_REFUSED_CELLS);
             setNotice({ tone: 'info', text: 'Saved. The grid now shows what was recorded.' });
             router.refresh();
           }}
-          onSettled={() => {
+          onSettled={(outcome) => {
+            // Confirm refused: the dialog says why, and the cells it names are marked.
+            if (outcome.kind === 'error') setRefused(refusedCellsOf(model, outcome.fieldErrors));
             router.refresh();
           }}
         />
@@ -543,7 +559,7 @@ export function BulkHistoryGrid({
                       row={row}
                       columnIndex={columnIndex}
                       text={edits.get(cellKey(column.key, month))?.text}
-                      problem={problems.get(cellKey(column.key, month))}
+                      problem={marks.get(cellKey(column.key, month))}
                       droppedHere={droppedKeys.has(cellKey(column.key, month))}
                       actions={actions}
                     />
@@ -742,6 +758,13 @@ function GridCellView({
 }
 
 const GridCell = memo(GridCellView);
+
+/** The refused cells whose edit is the same in `next` as it was in `before`. */
+function sameEditsOnly(cells: RefusedCells, before: Edits, next: Edits): RefusedCells {
+  if (cells.size === 0) return cells;
+  const kept = new Map([...cells].filter(([key]) => before.get(key)?.text === next.get(key)?.text));
+  return kept.size === cells.size ? cells : kept;
+}
 
 /* -------------------------------------------------------------------------- */
 /* What a refresh could not keep                                               */

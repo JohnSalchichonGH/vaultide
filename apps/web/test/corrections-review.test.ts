@@ -411,6 +411,16 @@ describe('what Confirm answered (§70, §112)', () => {
     ).toMatchObject({ kind: 'error', conflict: true });
   });
 
+  it('a refusal that names fields passes them on, so a grid can mark its cells', () => {
+    const fieldErrors = { 'pos-1#2026-08-31': ['This account is closed, so its final balance has to stay zero.'] };
+    expect(
+      interpretConfirm({
+        ok: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Old savings, August 2026: …', fieldErrors },
+      }),
+    ).toEqual({ kind: 'error', conflict: false, message: 'Old savings, August 2026: …', fieldErrors });
+  });
+
   it('an ordinary refusal is an ordinary error', () => {
     expect(
       interpretConfirm({

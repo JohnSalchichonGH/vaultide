@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { MoneyText } from '@/components/finance/money-text';
 import { moneyInputProblem, normalizeMoneyInput } from '@/lib/money-input';
+import { refusedEntriesOf } from './quick-update-refusal';
 import { useHydrated } from '@/lib/use-hydrated';
 import { cn } from '@/lib/utils';
 
@@ -121,6 +122,22 @@ export function QuickUpdate({
       });
       if (!result.ok) {
         setError(result.error.message);
+        // An entry the refusal names is marked on its own row, in its words,
+        // until that amount is changed.
+        const named = refusedEntriesOf(
+          result.error.fieldErrors,
+          entries.map((entry) => entry.positionId),
+        );
+        if (named.size > 0) {
+          setDrafts((current) =>
+            Object.fromEntries(
+              Object.entries(current).map(([positionId, draft]) => [
+                positionId,
+                { ...draft, error: named.get(positionId) ?? draft.error },
+              ]),
+            ),
+          );
+        }
         return;
       }
       setSaved(

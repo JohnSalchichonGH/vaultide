@@ -222,6 +222,35 @@ export function draftOf(
   };
 }
 
+/** The cells a refused save named, by the grid's own cell key, in the server's words. */
+export type RefusedCells = ReadonlyMap<string, string>;
+
+export const NO_REFUSED_CELLS: RefusedCells = new Map();
+
+/**
+ * The cells a refusal names. The server keys a cell's refusal by the cell's
+ * owner and date — `positionId#month end` for a balance, `templateId#occurrence
+ * date` for income — and its top-level message stays the answer; this only
+ * says where. A key of any other shape, or one whose cell is not in this grid,
+ * names nothing.
+ */
+export function refusedCellsOf(
+  model: GridModel,
+  fieldErrors: Readonly<Record<string, readonly string[]>> | undefined,
+): RefusedCells {
+  const cells = new Map<string, string>();
+  for (const [field, messages] of Object.entries(fieldErrors ?? {})) {
+    const [owner, date, ...rest] = field.split('#');
+    const message = messages[0];
+    if (owner === undefined || date === undefined || rest.length > 0 || message === undefined) continue;
+    const column = model.columns.find((candidate) => candidate.id === owner);
+    const month = date.slice(0, 7);
+    if (column === undefined || !model.rows.includes(month)) continue;
+    cells.set(cellKey(column.key, month), message);
+  }
+  return cells;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Typing and pasting                                                          */
 /* -------------------------------------------------------------------------- */
