@@ -23,6 +23,7 @@ import type { RequestContext } from '../context';
 import { withUserRead } from '../coordination';
 import { currencyCatalogue } from '../currencies/service';
 import { NotFoundError, ValidationError } from '../errors';
+import { isCanonicalUuid } from '../ids';
 import { termDtoOf } from '../monthly/income';
 import { moneyDto } from '../positions/mapping';
 import { toCompletenessTemplate } from '../reconciliation/loader';
@@ -62,9 +63,6 @@ export interface IncomeSourceQuery extends IncomeQuery {
   /** From the address: not trusted to be an id at all. */
   readonly templateId: string;
 }
-
-/** A canonical UUID; anything else names no row, and the database would refuse it rather than find nothing. */
-const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
 const yearOf = (date: string): number => Number.parseInt(date.slice(0, 4), 10);
 
@@ -108,7 +106,7 @@ export async function getIncomeSourcePage(
   ctx: RequestContext,
   query: IncomeSourceQuery,
 ): Promise<IncomeSourcePageDto> {
-  if (!ID_PATTERN.test(query.templateId)) throw notFound();
+  if (!isCanonicalUuid(query.templateId)) throw notFound();
   const today = plainDate(ctx.today);
   const currentYear = yearOf(today);
   const year = parseIncomeYear(query, currentYear);

@@ -957,6 +957,19 @@ describe('one user can never reach another’s records (17.2, 17.3)', () => {
     expect(netWorthB.positions).toEqual([]);
     expect(netWorthB.totalNetWorth.value?.amount).toBe('0');
   });
+
+  it('answers NOT_FOUND for an address whose id is not an id, rather than a database error', async () => {
+    // The account page passes its address straight to this read (15.2).
+    const account = await makeCashAccount(SEPT_6, {
+      openingBalance: '10.00',
+      openingBalanceOn: '2026-09-01',
+    });
+    for (const id of ['not-an-account', `${account.id}x`, '00000000-0000-4000-8000-000000000000']) {
+      await expect(getPositionDetail(deps(), SEPT_6, id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    }
+    // And the owner still reaches it.
+    expect((await getPositionDetail(deps(), SEPT_6, account.id)).position.name).toBe('BBVA checking');
+  });
 });
 
 describe('the month state a completed month is judged by (8.1)', () => {

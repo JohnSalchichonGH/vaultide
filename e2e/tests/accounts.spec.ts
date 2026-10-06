@@ -343,6 +343,18 @@ test.describe('accounts, balances and the two net-worth metrics', () => {
     await expect(page.getByText('Partial').first()).toBeVisible();
     await expect(page.getByText(/Not included: .*Coin collection/u).first()).toBeVisible();
   });
+
+  test('an address that names no account is not a page, whether malformed or missing', async ({
+    page,
+    request,
+  }) => {
+    await onboard(page, request, uniqueEmail('e2e-no-account'));
+
+    for (const address of ['/accounts/not-an-account', '/accounts/00000000-0000-4000-8000-000000000000']) {
+      const response = await gotoAfterRefresh(page, address);
+      expect(response?.status()).toBe(404);
+    }
+  });
 });
 
 test.describe('closing a month with the clock', () => {

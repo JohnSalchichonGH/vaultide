@@ -29,6 +29,7 @@ import {
 import { minorUnitsByCurrency } from '../currencies/service';
 import type { FxService } from '../fx/service';
 import { NotFoundError } from '../errors';
+import { isCanonicalUuid } from '../ids';
 import type { RequestContext } from '../context';
 import { cashMonthStateDto } from './cash-month';
 import {
@@ -253,6 +254,8 @@ export async function getPositionDetail(
   ctx: RequestContext,
   positionId: string,
 ): Promise<PositionDetailDto> {
+  // The page's address: an id that is not one names no account.
+  if (!isCanonicalUuid(positionId)) throw new NotFoundError('That account no longer exists.');
   const row = await findPosition(deps.db, ctx.userId, positionId);
   // A position belonging to somebody else is simply not found: existence is
   // never leaked (17.2, 20.2).
