@@ -1,8 +1,8 @@
 import type {
   CompletedMonthlyPageDto,
   CurrentMonthlyPageDto,
+  ReportingAmountDto,
   ReportingCashFlowFiguresDto,
-  ReportingSavingsRateDto,
 } from '@vaultide/application';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -16,12 +16,18 @@ import {
   completedStatusMeaning,
   completenessMeaning,
   dayTitle,
-  savingsRateReason,
   stateLabel,
   type IssuePresentation,
 } from '@/features/monthly/presentation';
 import { ReportingFigure } from '@/features/monthly/reporting-figure';
 import { MarkReviewedButton } from '@/features/monthly/review-controls';
+import { RateFigure, type Formatting } from '@/features/spending/figure';
+import {
+  savingsFigureDisplay,
+  savingsRateDisplay,
+  spendingFigureDisplay,
+  type FigureDisplay,
+} from '@/features/spending/presentation';
 
 /**
  * The Monthly Overview (blueprint 15.3 section 1).
@@ -32,6 +38,10 @@ import { MarkReviewedButton } from '@/features/monthly/review-controls';
  * each with its own availability. The rows later phases bring (invested,
  * investment performance, mortgage principal) are not drawn at all rather than
  * drawn as zero.
+ *
+ * An incomplete figure reads exactly as Spending reads it (16.2; ADR 0008 §5
+ * and its addendum): a sum of non-negative contributions as a lower bound, a
+ * savings figure not as a number at all, and nothing as a zero it cannot state.
  */
 
 type FigureKey = keyof Pick<
@@ -45,79 +55,56 @@ type FigureKey = keyof Pick<
   | 'personalSavings'
 >;
 
-const FIGURES: readonly { key: FigureKey; label: string; note?: string; emphasis?: boolean }[] = [
+const FIGURES: readonly {
+  key: FigureKey;
+  label: string;
+  rule: (amount: ReportingAmountDto) => FigureDisplay;
+  note?: string;
+  emphasis?: boolean;
+}[] = [
   {
     key: 'externalIncome',
     label: 'Tracked income',
+    // Every contribution is an income amount, never negative, so a partial
+    // value is a lower bound by the reasoning that makes spending one.
+    rule: spendingFigureDisplay,
     note: 'What this month’s reconciliation saw arrive in tracked accounts.',
     emphasis: true,
   },
-  { key: 'trackedTotalSpending', label: 'Tracked spending', emphasis: true },
+  { key: 'trackedTotalSpending', label: 'Tracked spending', rule: spendingFigureDisplay, emphasis: true },
   {
     key: 'unclassified',
     label: 'Unclassified spending',
+    rule: spendingFigureDisplay,
     note: 'Inferred from the balances: spending nobody recorded.',
   },
   {
     key: 'additionalSpending',
     label: 'Additional spending',
+    rule: spendingFigureDisplay,
     note: 'Paid by you from outside your tracked accounts.',
   },
-  { key: 'totalSpending', label: 'Total spending', note: 'Tracked plus additional spending.' },
+  {
+    key: 'totalSpending',
+    label: 'Total spending',
+    rule: spendingFigureDisplay,
+    note: 'Tracked plus additional spending.',
+  },
   {
     key: 'trackedSavingsFromIncome',
     label: 'Saved from income',
+    rule: savingsFigureDisplay,
     note: 'What your income left in tracked accounts.',
   },
-  { key: 'personalSavings', label: 'Personal savings' },
+  { key: 'personalSavings', label: 'Personal savings', rule: savingsFigureDisplay },
 ];
-
-function SavingsRate({
-  rate,
-  countsAdditionalSpending,
-  locale,
-}: {
-  readonly rate: ReportingSavingsRateDto;
-  readonly countsAdditionalSpending: boolean;
-  readonly locale: string;
-}) {
-  return (
-    <div className="space-y-1" data-testid="figure-savingsRate">
-      <dt className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">Savings rate</dt>
-      <dd className="space-y-1">
-        {rate.kind === 'ratio' ? (
-          <span className="tabular">{formatPercent(rate.value, { locale })}</span>
-        ) : (
-          <>
-            <span className="tabular text-[var(--color-unavailable)]" aria-label="Not available">
-              —
-            </span>
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge tone="unavailable">Unavailable</Badge>
-              <span className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">
-                {savingsRateReason(rate.reason, rate.detail)}
-              </span>
-            </div>
-          </>
-        )}
-        <p className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">
-          {countsAdditionalSpending
-            ? 'Counts spending you paid from outside tracked accounts.'
-            : 'Tracked accounts only.'}
-        </p>
-      </dd>
-    </div>
-  );
-}
 
 function Figures({
   figures,
-  locale,
-  minorUnits,
+  formatting,
 }: {
   readonly figures: ReportingCashFlowFiguresDto;
-  readonly locale: string;
-  readonly minorUnits: number;
+  readonly formatting: Formatting;
 }) {
   return (
     <>
@@ -127,25 +114,31 @@ function Figures({
             key={figure.key}
             label={figure.label}
             amount={figures[figure.key]}
-            locale={locale}
-            minorUnits={minorUnits}
+            rule={figure.rule}
+            formatting={formatting}
             testId={`figure-${figure.key}`}
             {...(figure.note === undefined ? {} : { note: figure.note })}
             {...(figure.emphasis === true ? { emphasis: true } : {})}
           />
         ))}
-        <SavingsRate
-          rate={figures.savingsRate}
-          countsAdditionalSpending={figures.countsAdditionalSpending}
-          locale={locale}
+        <RateFigure
+          label="Savings rate"
+          display={savingsRateDisplay(figures.savingsRate)}
+          locale={formatting.locale}
+          testId="figure-savingsRate"
+          note={
+            figures.countsAdditionalSpending
+              ? 'Counts spending you paid from outside tracked accounts.'
+              : 'Tracked accounts only.'
+          }
         />
       </dl>
       <dl className="border-t pt-4">
         <ReportingFigure
           label="Paid by others"
           amount={figures.thirdPartyPaid}
-          locale={locale}
-          minorUnits={minorUnits}
+          rule={spendingFigureDisplay}
+          formatting={formatting}
           testId="figure-thirdPartyPaid"
           note="Informational: paid by someone else, and in no total."
         />
@@ -196,7 +189,7 @@ export function CompletedOverview({
   readonly issues: IssuePresentation;
 }) {
   const { reporting, reconciliation, completeness, review } = page;
-  const minorUnits = page.minorUnitsByCurrency[reporting.reportingCurrency] ?? 2;
+  const formatting = { locale, minorUnitsByCurrency: page.minorUnitsByCurrency };
   const status = reconciliation.status;
 
   return (
@@ -216,7 +209,7 @@ export function CompletedOverview({
             </span>
           </div>
           <IssueCounts issues={issues} />
-          <Figures figures={reporting} locale={locale} minorUnits={minorUnits} />
+          <Figures figures={reporting} formatting={formatting} />
         </CardContent>
       </Card>
 
@@ -315,7 +308,7 @@ export function CurrentOverview({
   readonly issues: IssuePresentation;
 }) {
   const { reporting, monthToDate } = page;
-  const minorUnits = page.minorUnitsByCurrency[reporting.reportingCurrency] ?? 2;
+  const formatting = { locale, minorUnitsByCurrency: page.minorUnitsByCurrency };
   const newerBalances = issues.active.some((group) => group.key === 'mtd_newer_balances');
 
   return (
@@ -347,7 +340,7 @@ export function CurrentOverview({
               </p>
             ) : null}
             <IssueCounts issues={issues} />
-            <Figures figures={reporting} locale={locale} minorUnits={minorUnits} />
+            <Figures figures={reporting} formatting={formatting} />
           </>
         ) : (
           <>
@@ -371,16 +364,16 @@ export function CurrentOverview({
                 <ReportingFigure
                   label="Additional spending"
                   amount={reporting.additionalSpending}
-                  locale={locale}
-                  minorUnits={minorUnits}
+                  rule={spendingFigureDisplay}
+                  formatting={formatting}
                   testId="figure-additionalSpending"
                   note="Paid by you from outside your tracked accounts."
                 />
                 <ReportingFigure
                   label="Paid by others"
                   amount={reporting.thirdPartyPaid}
-                  locale={locale}
-                  minorUnits={minorUnits}
+                  rule={spendingFigureDisplay}
+                  formatting={formatting}
                   testId="figure-thirdPartyPaid"
                   note="Informational: paid by someone else, and in no total."
                 />

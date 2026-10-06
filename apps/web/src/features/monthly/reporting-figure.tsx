@@ -1,25 +1,28 @@
 import type { ReportingAmountDto } from '@vaultide/application';
 import { Badge } from '@/components/ui/badge';
-import { MoneyText } from '@/components/finance/money-text';
-import { missingSummary } from '@/features/monthly/presentation';
-import { cn } from '@/lib/utils';
+import { FigureStatement, META, type Formatting } from '@/features/spending/figure';
+import type { FigureDisplay } from '@/features/spending/presentation';
 
 /**
  * One reporting-currency figure with the truth about it (blueprint 7.6, 8.11,
- * 12.5, v2.1.13 30.16).
+ * 12.5, 16.2, v2.1.13 30.16; ADR 0008 §5 and its addendum).
  *
- * The figure's availability is its own and is shown as written: `available`
- * renders the amount; `partial` renders the amount **and** a Partial badge with
- * what is not inside it; `unavailable` renders `—` and says why — never the
- * zero the value field holds when nothing could be stated. How the rates were
- * found is a third fact, shown beside it and never mistaken for either.
+ * The figure's availability is its own, and `rule` decides how it reads,
+ * exactly as Spending reads the same figure: `spendingFigureDisplay` for a sum
+ * of non-negative contributions, whose partial value is a lower bound, and
+ * `savingsFigureDisplay` for a savings figure, whose partial value is no bound
+ * at all. So an exact figure prints its amount; a partial spending or
+ * income figure prints `≥` and the amount, with what is not inside it; and
+ * anything that cannot be stated prints `—` and why — never the zero the value
+ * field holds. How the rates were found is a separate fact, shown beside it and
+ * never mistaken for either.
  */
 
 export interface ReportingFigureProps {
   readonly label: string;
   readonly amount: ReportingAmountDto;
-  readonly locale: string;
-  readonly minorUnits: number;
+  readonly rule: (amount: ReportingAmountDto) => FigureDisplay;
+  readonly formatting: Formatting;
   readonly testId: string;
   /** A short line under the label, e.g. "Informational — in no total". */
   readonly note?: string;
@@ -29,58 +32,32 @@ export interface ReportingFigureProps {
 export function ReportingFigure({
   label,
   amount,
-  locale,
-  minorUnits,
+  rule,
+  formatting,
   testId,
   note,
   emphasis = false,
 }: ReportingFigureProps) {
-  const unavailable = amount.availability === 'unavailable';
-  const missing = missingSummary(amount.missing);
+  const display = rule(amount);
 
   return (
-    <div className="space-y-1" data-testid={testId} data-availability={amount.availability}>
-      <dt className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">{label}</dt>
+    <div
+      className="space-y-1"
+      data-testid={testId}
+      data-availability={amount.availability}
+      data-display={display.kind}
+    >
+      <dt className={META}>{label}</dt>
       <dd className="space-y-1">
-        <div className={cn('tabular', emphasis && 'text-[length:var(--text-page)] font-semibold')}>
-          <MoneyText
-            amount={unavailable ? null : amount.value.amount}
-            currency={amount.value.currency}
-            locale={locale}
-            minorUnits={minorUnits}
-            unavailableReason={
-              unavailable ? `Not available: ${missing === '' ? 'nothing to state' : missing}.` : undefined
-            }
-            className="whitespace-nowrap"
-          />
-        </div>
-        {amount.availability === 'available' ? null : (
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge tone={unavailable ? 'unavailable' : 'warning'}>
-              {unavailable ? 'Unavailable' : 'Partial'}
-            </Badge>
-            {missing === '' ? null : (
-              <span className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">
-                {unavailable ? 'Why: ' : 'Not included: '}
-                {missing}
-              </span>
-            )}
-          </div>
-        )}
+        <FigureStatement display={display} formatting={formatting} emphasis={emphasis} />
         {amount.quality === 'estimated' ? <Badge tone="info">Estimated</Badge> : null}
         {amount.provenance.estimatedConversion ? (
-          <p className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">
-            Includes unclassified spending converted at the month’s average rate.
-          </p>
+          <p className={META}>Includes unclassified spending converted at the month’s average rate.</p>
         ) : null}
         {amount.provenance.approximate ? (
-          <p className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">
-            Some rates come from an earlier day than the flow’s own.
-          </p>
+          <p className={META}>Some rates come from an earlier day than the flow’s own.</p>
         ) : null}
-        {note === undefined ? null : (
-          <p className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">{note}</p>
-        )}
+        {note === undefined ? null : <p className={META}>{note}</p>}
       </dd>
     </div>
   );

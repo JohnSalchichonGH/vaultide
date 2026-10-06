@@ -79,6 +79,7 @@ const { IssuesPanel } = await import('@/features/monthly/issues');
 const { IssueActionHost } = await import('@/features/monthly/issue-action-host');
 const { issueActions } = await import('@/features/monthly/issue-actions');
 const { ReportingFigure } = await import('@/features/monthly/reporting-figure');
+const { spendingFigureDisplay } = await import('@/features/spending/presentation');
 const { CompletedBucket, MonthToDateBucket } = await import('@/features/monthly/reconciliation');
 
 /**
@@ -282,12 +283,18 @@ describe('what an incomplete figure says', () => {
   });
   const render = (value: ReportingAmountDto) =>
     renderToStaticMarkup(
-      createElement(ReportingFigure, { label: 'Tracked spending', amount: value, locale: 'en-GB', minorUnits: 2, testId: 'figure' }),
+      createElement(ReportingFigure, {
+        label: 'Tracked spending',
+        amount: value,
+        rule: spendingFigureDisplay,
+        formatting: { locale: 'en-GB', minorUnitsByCurrency: { EUR: 2 } },
+        testId: 'figure',
+      }),
     );
 
   it('shows an unavailable figure as a dash with its reason, never as the zero it holds', () => {
     const html = render(amount({ availability: 'unavailable', missing: [{ currency: 'EUR', reason: 'missing_month_end' }] }));
-    expect(html).toContain('Unavailable');
+    expect(html).toContain('Not available');
     expect(html).toContain('a month-end balance is missing');
     expect(html).not.toContain('0.00');
   });
@@ -296,8 +303,9 @@ describe('what an incomplete figure says', () => {
     // 8.4, 12.5, v2.1.17 30.20: no cash account took part, so nothing is missing —
     // there was no observation. The month's own status line says why.
     const html = render(amount({ availability: 'unavailable', missing: [] }));
-    expect(html).toContain('Unavailable');
-    expect(html).not.toContain('Why:');
+    expect(html).toContain('Not available');
+    expect(html).toContain('No cash account took part in this month.');
+    expect(html).not.toContain('Not included');
     expect(html).not.toContain('0.00');
     expect(savingsRateReason('not_applicable', 'no cash account took part in this month')).toBe(
       'No cash account took part in this month.',
@@ -313,12 +321,15 @@ describe('what an incomplete figure says', () => {
     expect(completedStatusMeaning('reliable', 2, 'March 2026')).toBe(STATUS_MEANING.reliable);
   });
 
-  it('shows a partial figure with its amount and what is not inside it', () => {
+  it('shows a partial spending figure as a lower bound, with what is not inside it', () => {
+    // ADR 0008 §5 and its addendum (P3-01): a partial value is never printed as
+    // the figure itself.
     const html = render(
       amount({ value: { amount: '410.5', currency: 'EUR' }, availability: 'partial', missing: [{ currency: 'USD', reason: 'fx_missing' }] }),
     );
-    expect(html).toContain('410.50');
-    expect(html).toContain('Partial');
+    expect(html).toMatch(/≥ .*€410\.50/su);
+    expect(html).toContain('At least');
+    expect(html).not.toContain('Partial');
     expect(html).toContain('Not included: USD (no exchange rate)');
   });
 

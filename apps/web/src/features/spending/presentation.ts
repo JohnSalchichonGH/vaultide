@@ -60,7 +60,8 @@ export function spendingFigureDisplay(amount: ReportingAmountDto): FigureDisplay
 
 /**
  * A savings figure: exact or nothing. A partial one is withheld, not printed —
- * the DTO keeps it partial, and Monthly shows it with its badge (ADR 0008 §5).
+ * the DTO keeps it partial, and Monthly's Overview withholds it too (ADR 0008
+ * §5 and its addendum).
  */
 export function savingsFigureDisplay(amount: ReportingAmountDto): FigureDisplay {
   if (amount.availability === 'available') {
