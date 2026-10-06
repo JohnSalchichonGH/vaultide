@@ -510,7 +510,7 @@ Remaining Phase 3 work, in the agreed order:
    - one known gap recorded with Bulk History and not fixed there:
      - the Bulk History grid read has no size bound (ADR 0011, "Known
        limits");
-   - three items recorded with the Income pages and not fixed there:
+   - one item recorded with the Income pages and not fixed there:
      - **two WebKit end-to-end symptoms:** every navigation and navigating
        click that follows a save now waits for the page's router requests to
        end (`waitForRouter`, `e2e/support/navigation.ts`), and the retries
@@ -521,18 +521,32 @@ Remaining Phase 3 work, in the agreed order:
          `corrective-actions.spec.ts` confirm statement, locally). The call
          logs end inside Playwright's own steps, which wait on the page to
          paint or to answer;
-       - `page.goto: WebKit encountered an internal error` on a 404 address
-         (`income-source.spec.ts`, in main CI);
-     - **the pg warning:** `listResolvedOccurrencesInRangeIn`
-       (`packages/db/src/repositories/recurring-templates.ts`) runs four
-       selects with `Promise.all` on one transaction's client, which pg warns
-       is deprecated. The reconciliation loader, Historical correction's
-       preview and confirm, and the Income year view all use it;
-     - **unconfirmed, from reading the code:** `/accounts/[id]`
-       (`apps/web/src/app/(app)/accounts/[id]/page.tsx`) passes its id to
-       `getPositionDetail` unchecked, so an id that is not a UUID likely errors
-       instead of answering 404;
-2. a cold whole-Phase-3 review;
+       - `page.goto: WebKit encountered an internal error`, in CI, on a 404
+         address (`income-source.spec.ts`) and on a plain `page.goto` to an
+         ordinary page, `/settings/security` (`auth.spec.ts`), so it is not
+         specific to a 404;
+2. a cold whole-Phase-3 review, which also settles four observations recorded
+   for it and not fixed:
+   - **the FX table's pivot-currency shortcut:** `createFxTable`'s EUR
+     shortcut (`packages/finance/src/fx/table.ts`) can return a current-month
+     average dated the month's last day, after today. That breaks §21.2
+     property 17, though nothing reaches it today, since `convert` never asks
+     it;
+   - **`listSuggestions`** (`packages/application/src/recurring/suggestions.ts`)
+     has an N+1 behind a doc comment that denies one, and no production
+     caller;
+   - **three inline schedule literals:** a template's recurrence schedule is
+     still written out by hand, instead of through `scheduleOf`
+     (`recurring/suggestions.ts`), in both Monthly loaders
+     (`monthly/expenses-loader.ts`, `monthly/income-loader.ts`) and in
+     `toCompletenessTemplate` (`reconciliation/loader.ts`), which the
+     income source page also reads;
+   - **"Unchanged this month" in a closed account's closing month:** the
+     account page (`/accounts/[id]`) offers it, enabled, for the month an
+     account closed in when the closing day is before that month's last day
+     and the previous month has a statement, but the server refuses it under
+     the account-window rule (M4), because the balance it writes is dated after
+     the closing day;
 3. Phase 3 acceptance, production verification, and freeze.
 
 The exact scope and subdivision of this work may still be refined by a later
