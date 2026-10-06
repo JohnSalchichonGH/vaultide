@@ -114,7 +114,7 @@ export function CorrectionReview({
       <div data-testid="correction-review-body">
         {state.kind === 'stale' ? (
           <p
-            className={cn(SECTION, 'text-[var(--color-warning-foreground)]')}
+            className={cn(SECTION, 'text-[var(--color-warning)]')}
             role="status"
             data-testid="correction-stale"
           >
