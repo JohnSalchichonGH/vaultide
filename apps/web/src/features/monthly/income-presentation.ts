@@ -203,13 +203,6 @@ export function correctableDateBounds(today: string): {
 }
 
 /**
- * Whether a source's start date reaches into the past.
- *
- * Creating one that does is legitimate and unchanged — `start_date` is the
- * historical schedule (§30.10) — but it makes every month since expect an
- * occurrence, so the form says so before the save rather than after.
- */
-/**
  * Why a net or gross typed into an income form cannot be sent, or `null` when
  * none of them stops it (7.2).
  *
@@ -227,6 +220,13 @@ export function incomeAmountProblem(amounts: readonly string[], minorUnits: numb
   return null;
 }
 
+/**
+ * Whether a source's start date reaches into the past.
+ *
+ * Creating one that does is legitimate and unchanged — `start_date` is the
+ * historical schedule (§30.10) — but it makes every month since expect an
+ * occurrence, so the form says so before the save rather than after.
+ */
 export const startsInThePast = (startDate: string, today: string): boolean => startDate < today;
 
 export const HISTORICAL_START_WARNING =
