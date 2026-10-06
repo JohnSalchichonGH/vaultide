@@ -52,6 +52,37 @@ export function Amount({
   );
 }
 
+/**
+ * The amount as a display states it and, when it is not exact, the badge and
+ * the reason beside it. Spending's figures and Monthly's Overview both state a
+ * figure through this, so the two pages read one figure the same way.
+ */
+export function FigureStatement({
+  display,
+  formatting,
+  emphasis = false,
+}: {
+  readonly display: FigureDisplay;
+  readonly formatting: Formatting;
+  readonly emphasis?: boolean;
+}) {
+  return (
+    <>
+      <div className={cn('tabular', emphasis && 'text-[length:var(--text-page)] font-semibold')}>
+        <Amount display={display} formatting={formatting} />
+      </div>
+      {display.kind === 'value' ? null : (
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={display.kind === 'none' ? 'unavailable' : 'warning'}>
+            {display.kind === 'none' ? 'Not available' : 'At least'}
+          </Badge>
+          <span className={META}>{display.reason}</span>
+        </div>
+      )}
+    </>
+  );
+}
+
 export function SpendingFigure({
   label,
   display,
@@ -71,17 +102,7 @@ export function SpendingFigure({
     <div className="space-y-1" data-testid={testId} data-display={display.kind}>
       <dt className={META}>{label}</dt>
       <dd className="space-y-1">
-        <div className={cn('tabular', emphasis && 'text-[length:var(--text-page)] font-semibold')}>
-          <Amount display={display} formatting={formatting} />
-        </div>
-        {display.kind === 'value' ? null : (
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge tone={display.kind === 'none' ? 'unavailable' : 'warning'}>
-              {display.kind === 'none' ? 'Not available' : 'At least'}
-            </Badge>
-            <span className={META}>{display.reason}</span>
-          </div>
-        )}
+        <FigureStatement display={display} formatting={formatting} emphasis={emphasis} />
         {note === undefined ? null : <p className={META}>{note}</p>}
       </dd>
     </div>
