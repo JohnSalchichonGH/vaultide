@@ -80,20 +80,24 @@ export function paymentMethodLabel(settlement: string): string {
  */
 export function paymentMethodOptions(
   category: Pick<ExpenseCategoryDto, 'use'> | undefined,
-): readonly { readonly value: string; readonly label: string }[] {
-  const methods: readonly string[] =
+): readonly { readonly value: OfferedPaymentMethod; readonly label: string }[] {
+  const methods: readonly OfferedPaymentMethod[] =
     category?.use === 'money_out' ? ['tracked_cash'] : phase3ExpenseSettlements;
   return methods.map((value) => ({ value, label: PAYMENT_METHOD_LABEL[value] ?? value }));
 }
 
-/** The method a form holds once its category changes: kept while it is still offered. */
+/** A payment method this section offers: one of the three Phase 3 settlements (6.2). */
+export type OfferedPaymentMethod = (typeof phase3ExpenseSettlements)[number];
+
+/**
+ * The method a form holds once its category changes: kept while it is still
+ * offered. Typed as the offered methods, so whatever a picker sends is one.
+ */
 export function paymentMethodFor(
   category: Pick<ExpenseCategoryDto, 'use'> | undefined,
   current: string,
-): string {
-  return paymentMethodOptions(category).some((option) => option.value === current)
-    ? current
-    : 'tracked_cash';
+): OfferedPaymentMethod {
+  return paymentMethodOptions(category).find((option) => option.value === current)?.value ?? 'tracked_cash';
 }
 
 /** A payment method as a stored row's control lists it. */

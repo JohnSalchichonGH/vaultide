@@ -85,6 +85,7 @@ import {
   paymentMethodOptions,
   protectedSourceNote,
   termAmountProblem,
+  type OfferedPaymentMethod,
 } from '@/features/monthly/expenses-presentation';
 import {
   IDLE,
@@ -2192,7 +2193,7 @@ export function AddExpenseForm({
   );
   const [amount, setAmount] = useState('');
   const [currency, setCurrency] = useState(initial?.currency ?? defaultCurrency);
-  const [payment, setPayment] = useState('tracked_cash');
+  const [payment, setPayment] = useState<OfferedPaymentMethod>('tracked_cash');
   const [account, setAccount] = useState(NO_ACCOUNT);
   const [description, setDescription] = useState('');
   const [isOneOff, setIsOneOff] = useState(false);
@@ -2240,7 +2241,7 @@ export function AddExpenseForm({
               currency,
               // The picker's options are the validation enum, and the server
               // parses the save and the draft with that enum again.
-              settlement: effectivePayment as ExpenseSettlement,
+              settlement: effectivePayment,
               cashPositionId:
                 effectivePayment === 'tracked_cash' && account !== NO_ACCOUNT ? account : null,
               ...(description.trim() === '' ? {} : { description: description.trim() }),
@@ -2326,7 +2327,9 @@ export function AddExpenseForm({
           label="How it was paid"
           value={effectivePayment}
           options={paymentMethodOptions(category)}
-          onChange={setPayment}
+          onChange={(value) => {
+            setPayment(paymentMethodFor(category, value));
+          }}
         />
         {effectivePayment === 'tracked_cash' ? (
           <Select
