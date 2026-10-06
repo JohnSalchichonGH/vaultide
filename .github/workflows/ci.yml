@@ -42,7 +42,10 @@ env:
 jobs:
   classify:
     name: Classify the change
-    runs-on: ubuntu-latest
+    # Every job's image is pinned to Ubuntu 24.04 on purpose, not left on
+    # ubuntu-latest, which moves to 26.04 between 2026-10-19 and 2026-11-19.
+    # Moving to 26.04 is a planned change of its own, not a drift.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -75,7 +78,7 @@ jobs:
   secrets:
     name: Secret scan
     # Every run, light or full: a docs-only change can leak a secret too.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -99,7 +102,7 @@ jobs:
     # The heavy jobs are skipped only on a positive docs-only answer; an empty
     # or unexpected output runs them.
     if: needs.classify.outputs.full_ci != 'false'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -129,7 +132,7 @@ jobs:
     name: Unit and property tests
     needs: classify
     if: needs.classify.outputs.full_ci != 'false'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -151,7 +154,7 @@ jobs:
     name: Fresh database, roles and backup
     needs: classify
     if: needs.classify.outputs.full_ci != 'false'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:18
@@ -215,7 +218,7 @@ jobs:
 
   build-and-e2e:
     name: Build and end-to-end
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [classify, quality, unit]
     if: needs.classify.outputs.full_ci != 'false'
     services:
@@ -279,7 +282,7 @@ jobs:
     # full suite ran and passed: on a light run the heavy jobs are skipped, and
     # skipped is not success, so this is skipped too.
     name: Full CI complete
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [classify, secrets, quality, unit, database, build-and-e2e]
     if: >-
       needs.classify.result == 'success' &&

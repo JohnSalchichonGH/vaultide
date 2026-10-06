@@ -20,7 +20,10 @@ concurrency:
 jobs:
   backup:
     name: Dump, verify, encrypt, upload
-    runs-on: ubuntu-latest
+    # The image is pinned to Ubuntu 24.04 on purpose, not left on
+    # ubuntu-latest, which moves to 26.04 between 2026-10-19 and 2026-11-19.
+    # Moving to 26.04 is a planned change of its own, not a drift.
+    runs-on: ubuntu-24.04
     # Holds the app_backup credential and the age public key, nothing else.
     environment: backup
     timeout-minutes: 30

@@ -31,7 +31,10 @@ concurrency:
 jobs:
   bootstrap:
     name: Bootstrap ${{ inputs.environment }}
-    runs-on: ubuntu-latest
+    # The image is pinned to Ubuntu 24.04 on purpose, not left on
+    # ubuntu-latest, which moves to 26.04 between 2026-10-19 and 2026-11-19.
+    # Moving to 26.04 is a planned change of its own, not a drift.
+    runs-on: ubuntu-24.04
     # The admin credential lives in this protected environment and nowhere else.
     environment: bootstrap
     steps:

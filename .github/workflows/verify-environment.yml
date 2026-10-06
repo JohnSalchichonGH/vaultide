@@ -24,7 +24,10 @@ on:
 jobs:
   verify:
     name: Roles, schema and privileges
-    runs-on: ubuntu-latest
+    # Every job's image is pinned to Ubuntu 24.04 on purpose, not left on
+    # ubuntu-latest, which moves to 26.04 between 2026-10-19 and 2026-11-19.
+    # Moving to 26.04 is a planned change of its own, not a drift.
+    runs-on: ubuntu-24.04
     environment: production
     steps:
       - uses: actions/checkout@v7
@@ -42,7 +45,7 @@ jobs:
 
   verify-backup-role:
     name: Backup role, live
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The backup credential lives in its own environment, so it is checked in
     # its own job rather than by widening the production one.
     environment: backup
@@ -64,7 +67,7 @@ jobs:
 
   verify-financial-invariants:
     name: Financial invariants, live
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Read-only, as app_backup. The database enforces one balance per day and
     # a month-end that falls on a month end; it cannot enforce that a closed
     # account closed at zero or that every write left an audit row, because
@@ -88,7 +91,7 @@ jobs:
 
   verify-currency-set:
     name: Supported currencies still match the provider
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # No secret and no database: this compares the committed seed with what the
     # central banks actually publish today (blueprint 10.4, Phase 1). A
     # divergence means a currency became unconvertible, or a new one became
@@ -107,7 +110,7 @@ jobs:
 
   verify-fx-adapter:
     name: The FX adapter still speaks to Frankfurter v2
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The only suite that talks to the public rate service (blueprint 10.1).
     # It lives here rather than in CI on purpose: the ordinary browser matrix
     # runs against a deterministic fixture and the integration suite against a
@@ -143,7 +146,7 @@ jobs:
 
   verify-sentry:
     name: Sentry receives scrubbed events
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Skipped until a DSN is configured, so the workflow is useful from day one.
     if: ${{ vars.SENTRY_DSN != '' }}
     steps:
