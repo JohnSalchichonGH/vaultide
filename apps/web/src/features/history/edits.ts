@@ -1,4 +1,5 @@
 import type { BulkHistoryDraft, BulkHistoryOperation } from '@vaultide/application';
+import { minorUnitsMessage } from '@vaultide/validation';
 import { sameDecimal } from '@/features/monthly/autosave';
 import { monthTitle } from '@/features/monthly/presentation';
 import {
@@ -57,7 +58,11 @@ export type CellOutcome =
 
 const NONE: CellOutcome = { kind: 'none' };
 
-/** An amount as this cell accepts it: the locale's form, the currency's decimals, the right sign. */
+/**
+ * An amount as this cell accepts it: the locale's form, the currency's decimals,
+ * the right sign. Too many decimals is said in the words every amount field
+ * uses (`minorUnitsMessage`); the column header already names the currency.
+ */
 function amountFor(
   column: GridColumn,
   text: string,
@@ -66,13 +71,7 @@ function amountFor(
   const parsed = parseLocaleNumber(text, locale);
   if (!parsed.ok) return parsed;
   if (scaleOf(parsed.value) > column.minorUnits) {
-    return {
-      ok: false,
-      message:
-        column.minorUnits === 0
-          ? `${column.currency} has no decimals.`
-          : `${column.currency} has at most ${String(column.minorUnits)} decimals.`,
-    };
+    return { ok: false, message: minorUnitsMessage(column.minorUnits) };
   }
   const negativeAllowed = column.kind === 'position' && column.positionKind === 'cash';
   if (!negativeAllowed && parsed.value.startsWith('-')) {

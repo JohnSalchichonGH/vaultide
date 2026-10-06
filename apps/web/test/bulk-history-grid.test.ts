@@ -297,7 +297,7 @@ describe('pasting a block (ADR 0011 D4)', () => {
       [{ row: 0, column: 1 }, '1', /Car, January 2026 cannot be edited/u],
       [{ row: 0, column: 2 }, '1\t2', /edge of the grid/u],
       [{ row: 2, column: 1 }, '1\n2\n3\n4', /current month/u],
-      [{ row: 2, column: 1 }, '1.5', /JPY has no decimals/u],
+      [{ row: 2, column: 1 }, '1.5', /This currency has no decimals/u],
       [{ row: 0, column: 0 }, '"5', /never closes/u],
     ] as const) {
       const result = pasteInto(grid, before, anchor, text);

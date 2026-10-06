@@ -7,7 +7,7 @@ import { quickUpdateAction } from '@/server/actions/positions';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { MoneyText } from '@/components/finance/money-text';
-import { normalizeMoneyInput } from '@/lib/money-input';
+import { moneyInputProblem, normalizeMoneyInput } from '@/lib/money-input';
 import { useHydrated } from '@/lib/use-hydrated';
 import { cn } from '@/lib/utils';
 
@@ -86,20 +86,12 @@ export function QuickUpdate({
 
   const setDraft = (position: QuickUpdatePosition, raw: string) => {
     const canonical = normalizeMoneyInput(raw);
-    const decimals = canonical.split('.')[1]?.length ?? 0;
-    const invalid =
-      canonical !== '' &&
-      (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(canonical) || decimals > position.minorUnits);
-
     setDrafts((current) => ({
       ...current,
       [position.id]: {
         value: raw,
-        error: invalid
-          ? position.minorUnits === 0
-            ? 'This currency has no decimals.'
-            : `Use digits and at most ${String(position.minorUnits)} decimals.`
-          : null,
+        // The spelling and the decimals, in the words every amount field uses.
+        error: canonical === '' ? null : moneyInputProblem(canonical, position.minorUnits),
       },
     }));
   };
