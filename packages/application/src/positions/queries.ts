@@ -31,7 +31,7 @@ import type { FxService } from '../fx/service';
 import { NotFoundError } from '../errors';
 import { isCanonicalUuid } from '../ids';
 import type { RequestContext } from '../context';
-import { cashMonthStateDto } from './cash-month';
+import { cashMonthStateDto, closedAccountFinalOf } from './cash-month';
 import {
   aggregateDto,
   positionDto,
@@ -158,9 +158,16 @@ function buildPositionDtos(
       contribution,
       minorUnits: window.minorUnits[row.currency] ?? 2,
       valuationCount: counts.get(row.id) ?? 0,
+      // The window reaches today, and so every closing day.
       lastCompletedMonth:
         row.kind === 'cash' && entry !== undefined
-          ? cashMonthStateDto(entry, month, row.currency, window.valuations)
+          ? cashMonthStateDto(
+              entry,
+              month,
+              row.currency,
+              window.valuations,
+              closedAccountFinalOf(row, window.valuations),
+            )
           : null,
     });
   });
@@ -289,6 +296,8 @@ export async function getPositionDetail(
   if (contribution === undefined) throw new NotFoundError();
 
   const month = lastCompletedMonth(ctx.today);
+  // Every balance the account has, and so the one its closing day ends on.
+  const closed = closedAccountFinalOf(row, valuationRows);
 
   // Which recent completed months are still without a statement balance. Only
   // months that have actually ended appear: September cannot be closed on
@@ -299,7 +308,7 @@ export async function getPositionDetail(
           monthKey(addMonths(startOfMonth(ctx.today), -(index + 1))),
         )
           .filter((candidate) => isMonthClosable(candidate, ctx.today))
-          .map((candidate) => cashMonthStateDto(entry, candidate, row.currency, valuationRows))
+          .map((candidate) => cashMonthStateDto(entry, candidate, row.currency, valuationRows, closed))
           .filter((state) => state.monthEnd === null)
       : [];
 
@@ -311,7 +320,7 @@ export async function getPositionDetail(
       valuationCount,
       lastCompletedMonth:
         row.kind === 'cash'
-          ? cashMonthStateDto(entry, month, row.currency, valuationRows)
+          ? cashMonthStateDto(entry, month, row.currency, valuationRows, closed)
           : null,
     }),
     valuations: valuationRows.map((valuation) =>

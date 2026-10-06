@@ -559,7 +559,10 @@ export type CompletedClosingDto =
       readonly state: 'carried' | 'missing';
       /** The latest ordinary snapshot inside the month: a hint, never a statement. */
       readonly latestSnapshot: { readonly amount: MoneyDto; readonly valuedOn: string } | null;
-      /** The previous month's statement exists to carry forward (8.1, R22). */
+      /**
+       * The previous month's statement exists to carry forward (8.1, R22), and
+       * carrying it keeps a closed account's final balance zero (M6).
+       */
       readonly canConfirmUnchanged: boolean;
     }
   /** Zero by definition: closed inside the month, or dormant (R22). */

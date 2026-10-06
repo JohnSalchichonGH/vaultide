@@ -70,8 +70,11 @@ export interface CashMonthStateDto {
   /**
    * Whether "confirm unchanged" can be used for this month: it carries the
    * **previous month's statement balance**, so it needs one to exist (8.1,
-   * R22). The server enforces this regardless; the flag exists so the interface
-   * can say why rather than offering a button that will be refused.
+   * R22), and on a closed account the figure carried must not leave its final
+   * balance non-zero (M6). The server enforces both regardless; the flag exists
+   * so the interface can say why rather than offering a button that will be
+   * refused. The previous statement is what a `month_end` opening is, so when
+   * `open` is `month_end` and the flag is false, the final balance is why.
    */
   readonly canConfirmUnchanged: boolean;
 }

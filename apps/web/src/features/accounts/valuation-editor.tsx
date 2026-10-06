@@ -486,9 +486,11 @@ function MonthEndSection({
               {/*
                * Offered only once the previous month is closed: this carries
                * that month's statement balance forward, so without one there is
-               * nothing to carry (8.1, R22). The server refuses it either way —
-               * this exists so the reason is visible before the click, not
-               * after it.
+               * nothing to carry (8.1, R22). On a closed account it is offered
+               * only while the figure carried keeps the final balance zero (M6).
+               * The server refuses it either way — this exists so the reason is
+               * visible before the click, not after it. A `month_end` opening is
+               * that previous statement, so with one the reason is the other.
                */}
               <button
                 type="button"
@@ -497,7 +499,9 @@ function MonthEndSection({
                 title={
                   month.canConfirmUnchanged
                     ? undefined
-                    : 'Close the previous month first — this carries its statement balance forward.'
+                    : month.open === 'month_end'
+                      ? 'This account is closed, so its final balance has to stay zero — and carrying the previous statement forward would leave it non-zero.'
+                      : 'Close the previous month first — this carries its statement balance forward.'
                 }
                 className="rounded-[var(--radius-control)] border px-3 py-2 disabled:opacity-60"
                 onClick={() => {

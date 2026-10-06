@@ -682,6 +682,14 @@ const KNOWN_EXPENSES_SCOPE = 1;
 const TRANSFERS_SCOPE = 1;
 
 /**
+ * The one user-scoped transaction the Accounts section adds to a completed
+ * month a closed account takes part in: each closed account's latest balance on
+ * or before its closing day, which the final-zero rule (M6) reads to decide
+ * whether "Unchanged this month" is offered. None in a month without one.
+ */
+const CLOSED_FINALS_SCOPE = 1;
+
+/**
  * The transactions one run of the page's read opens. The FX service is built
  * over the same counting handle, so its reads are counted like any other.
  */
@@ -770,6 +778,31 @@ describe('the repository transaction count is bounded by a constant', () => {
       await statement(id, '2026-09-30', '90.00');
     }
     expect(await countTransactions(OCT_1)).toBe(two);
+  });
+
+  it('reads the closed accounts’ final balances in one statement, however many there are', async () => {
+    const bbva = await makeAccount('BBVA');
+    await statement(bbva, '2026-08-31', '1000.00');
+    await statement(bbva, '2026-09-30', '900.00');
+    const valuationReads = (sent: readonly SentStatement[]): number =>
+      sent.filter((entry) => entry.shape === 'select position_valuations').length;
+    const read = () => getMonthlyPage(readDeps(), OCT_1, SEPTEMBER);
+
+    // No closed account: nothing is read for one.
+    const activeOnly = await countTransactions(OCT_1);
+    const activeReads = valuationReads(await record(read));
+
+    // Three closed accounts taking part in September, each emptied in it and
+    // closed on 1 October, after the window September's rows stop at.
+    for (const name of ['Old bank', 'Old savings', 'Old card']) {
+      const id = await makeAccount(name);
+      await statement(id, '2026-08-31', '100.00');
+      await snapshot(id, '2026-09-15', '0');
+      await closePosition(positionDeps(), OCT_1, { positionId: id, expectedVersion: 1, closedOn: '2026-10-01' });
+    }
+
+    expect(await countTransactions(OCT_1)).toBe(activeOnly + CLOSED_FINALS_SCOPE);
+    expect(valuationReads(await record(read))).toBe(activeReads + 1);
   });
 
   it('does not grow with the current month’s accounts or flows', async () => {

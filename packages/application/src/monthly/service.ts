@@ -1,4 +1,9 @@
-import { findMonthReview, listTransferFeesByTransferDate } from '@vaultide/db';
+import {
+  findMonthReview,
+  listLatestValuationsIn,
+  listTransferFeesByTransferDate,
+  type PositionRecord as PositionRow,
+} from '@vaultide/db';
 import {
   addMonths,
   endOfMonthKey,
@@ -8,8 +13,10 @@ import {
   type MonthKey,
 } from '@vaultide/finance';
 import type { RequestContext } from '../context';
+import { withUserRead } from '../coordination';
 import { ValidationError } from '../errors';
 import { currencyCatalogue } from '../currencies/service';
+import { closedAccountFinalOf, type ClosedAccountFinal } from '../positions/cash-month';
 import { readSettings } from '../settings/service';
 import { monthCompletenessFrom } from '../reconciliation/completeness-service';
 import type { LoadedCompletedMonth } from '../reconciliation/loader';
@@ -47,7 +54,10 @@ import type {
  * the `possible_missing_conversion` signature included. The current variant
  * reads the month-to-date window once and does the same with its two reads.
  * The Accounts section is built from the same loaded rows — the positions and
- * valuations the reconciliation read — so it adds no read of its own.
+ * valuations the reconciliation read. Its one read of its own is for closed
+ * accounts only: whether "Unchanged this month" would keep each one's final
+ * balance zero (M6) turns on its latest balance on or before its closing day,
+ * which may lie after the month the loaded window stops at.
  *
  * Nothing is computed here. The review state comes back beside the results and
  * is applied by the page's presentation, never by any result: a dismissed key
@@ -73,8 +83,10 @@ import type {
  * The bound is a constant number of user-scoped repository transactions — the
  * loader's, one for the Income rows, one for the Known-expenses rows, one for
  * the transfers' linked fees, one for settings, one for the currency catalogue,
- * one for the review, and the exchange-rate reads the reporting and diagnostic
- * rules already make — whatever the size of the month.
+ * one for the review, one for the closed accounts' final balances when any
+ * closed account takes part in a completed month, and the exchange-rate reads
+ * the reporting and diagnostic rules already make — whatever the size of the
+ * month.
  */
 
 export type MonthlyDependencies = ReconciliationDependencies;
@@ -116,6 +128,39 @@ export async function getMonthlyPage(
 }
 
 type PageBase = Pick<CompletedMonthlyPageDto, 'month' | 'monthEndsOn' | 'today' | 'navigation'>;
+
+/**
+ * What the final-zero rule reads for a completed month's closed cash accounts
+ * (M6): each one's latest balance on or before its closing day. The range's
+ * window stops at the month's end, short of a later closing day, so this is a
+ * read of its own — one statement for all of them, and none when no closed
+ * account takes part in the month.
+ */
+async function closedAccountFinalsOf(
+  deps: MonthlyDependencies,
+  userId: string,
+  month: MonthKey,
+  positions: readonly PositionRow[],
+): Promise<ClosedAccountFinal[]> {
+  const start = startOfMonthKey(month) as string;
+  const closed = positions.flatMap((row) =>
+    row.kind === 'cash' && row.status === 'closed' && row.closedOn !== null && row.closedOn >= start
+      ? [{ row, closedOn: row.closedOn }]
+      : [],
+  );
+  if (closed.length === 0) return [];
+
+  const latest = await withUserRead(deps.db, { userId }, (tx) =>
+    listLatestValuationsIn(
+      tx,
+      closed.map(({ row, closedOn }) => ({ positionId: row.id, onOrBefore: closedOn })),
+    ),
+  );
+  return closed.flatMap(({ row }) => {
+    const final = closedAccountFinalOf(row, latest);
+    return final === null ? [] : [final];
+  });
+}
 
 async function completedMonthlyPage(
   deps: MonthlyDependencies,
@@ -161,7 +206,7 @@ async function completedMonthlyPage(
     (row) => row.incurredOn >= (startOfMonthKey(month) as string) && row.incurredOn <= base.monthEndsOn,
   );
 
-  const [reconciliation, reporting, incomeRows, expenseRows, transferFees] = await Promise.all([
+  const [reconciliation, reporting, incomeRows, expenseRows, transferFees, closedFinals] = await Promise.all([
     monthReconciliationFrom(deps, range, month, ctx.today),
     completedReportingFrom(deps, data, settings, ctx.today),
     loadCompletedMonthIncome(
@@ -177,6 +222,7 @@ async function completedMonthlyPage(
       incurredInMonth.flatMap((row) => (row.templateId === null ? [] : [row.templateId])),
     ),
     listTransferFeesByTransferDate(deps.db, ctx.userId, startOfMonthKey(month), base.monthEndsOn),
+    closedAccountFinalsOf(deps, ctx.userId, month, range.positions),
   ]);
 
   return {
@@ -188,7 +234,7 @@ async function completedMonthlyPage(
     reconciliation,
     reporting,
     completeness: monthCompletenessFrom(data),
-    accounts: completedAccountsOf(month, range.positionsWithValuations, range.valuations),
+    accounts: completedAccountsOf(month, range.positionsWithValuations, range.valuations, closedFinals),
     transfers: monthlyTransfersOf({
       from: startOfMonthKey(month),
       to: base.monthEndsOn,

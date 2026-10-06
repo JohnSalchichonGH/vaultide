@@ -22,7 +22,7 @@ import {
   type PositionWithValuations,
   type ValuationRecord,
 } from '@vaultide/finance';
-import { cashMonthStateDto } from '../positions/cash-month';
+import { cashMonthStateDto, type ClosedAccountFinal } from '../positions/cash-month';
 import { moneyDto } from '../positions/mapping';
 import type { CashMonthStateDto } from '../positions/types';
 import type {
@@ -146,20 +146,31 @@ function closingDto(
 /**
  * A completed month's cash accounts: every one taking part in M (8.1), in the
  * order the window returned them — the user's own.
+ *
+ * `closed` holds what the final-zero rule reads for each closed account taking
+ * part (M6): `rows` stop at the month's end, short of a later closing day.
  */
 export function completedAccountsOf(
   month: MonthKey,
   entries: readonly PositionWithValuations[],
   rows: readonly ValuationRow[],
+  closed: readonly ClosedAccountFinal[],
 ): CompletedAccountsDto {
   const previousMonth = previousMonthOf(month);
   const rowById = new Map(rows.map((row) => [row.id, row]));
+  const closedById = new Map(closed.map((final) => [final.position.id, final]));
 
   const accounts = entries
     .filter((entry) => entry.position.kind === 'cash' && participatesIn(entry.position, month))
     .map((entry) => {
       const { position } = entry;
-      const state = cashMonthStateDto(entry, month, position.currency, rows);
+      const state = cashMonthStateDto(
+        entry,
+        month,
+        position.currency,
+        rows,
+        closedById.get(position.id) ?? null,
+      );
       // `open` is `close(a, M−1)` apart from its two exceptions, so a
       // `month_end` opening is exactly M−1's statement row (8.1).
       const previous =

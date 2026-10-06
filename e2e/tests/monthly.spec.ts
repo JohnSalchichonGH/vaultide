@@ -1535,3 +1535,80 @@ test.describe('confirming a month unchanged on a dormant account', () => {
     }
   });
 });
+
+/**
+ * "Unchanged this month" on a closed account (M6, 5.2).
+ *
+ * On 5 October, with the test clock. Old savings had an August statement of
+ * 300, was emptied on 10 September and closed today: carrying August's 300 to
+ * 30 September would leave its final balance non-zero, which the server
+ * refuses, so no page offers it. Emptied had an August statement too, but its
+ * zero is on 1 October, after September, so carrying August forward keeps that
+ * zero final: it is offered, as is the active Everyday — on the account page,
+ * on its Monthly row and in "Confirm all untouched as unchanged".
+ */
+test.describe('confirming a month unchanged on a closed account', () => {
+  test('is offered only where the closed account’s final balance stays zero', async ({ page, request }) => {
+    test.setTimeout(180_000);
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': '2026-10-05T10:00:00Z' });
+    await onboard(page, request, uniqueEmail('e2e-monthly-unchanged-closed'));
+
+    const unchanged = (month: string) => page.getByTestId(`confirm-unchanged-${month}`);
+
+    for (const [name, august, zeroOn] of [
+      ['Old savings', '300.00', '2026-09-10'],
+      ['Emptied', '100.00', '2026-10-01'],
+    ] as const) {
+      await accountWithAugustStatement(page, { name, type: 'savings', august });
+      await recordSnapshot(page, '0.00', zeroOn);
+      // Closed today, on that zero.
+      await waitForRouter(page);
+      await page.getByTestId('close-position').click();
+      await expect(page.getByTestId('close-position')).toHaveCount(0);
+      await reloadAfterRefresh(page);
+      await expect(page.getByTestId('month-end-2026-09')).toBeVisible();
+      if (name === 'Old savings') {
+        await expect(unchanged('2026-09')).toBeDisabled();
+        await expect(unchanged('2026-09')).toHaveAttribute(
+          'title',
+          'This account is closed, so its final balance has to stay zero — and carrying the previous statement forward would leave it non-zero.',
+        );
+      } else {
+        await expect(unchanged('2026-09')).toBeEnabled();
+      }
+    }
+
+    await accountWithAugustStatement(page, { name: 'Everyday', type: 'checking', august: '2000.00' });
+    await expect(unchanged('2026-09')).toBeEnabled();
+
+    // --- September on Monthly ----------------------------------------------------
+    await gotoAfterRefresh(page, '/monthly/2026-09');
+    const row = (name: string) => page.getByTestId('monthly-accounts').locator('tbody tr', { hasText: name });
+    await expect(row('Old savings').getByTestId('account-status')).toHaveText(/Needs statement balance/u);
+    await expect(row('Old savings').getByTestId('confirm-unchanged')).toHaveCount(0);
+    for (const name of ['Emptied', 'Everyday']) {
+      await expect(row(name).getByTestId('confirm-unchanged')).toBeVisible();
+    }
+
+    const panel = page.getByTestId('confirm-all-unchanged-panel');
+    await expect(panel).toContainText('for the 2 accounts you have not edited here');
+    await expect(panel).not.toContainText('Old savings');
+    await page.getByTestId('confirm-all-unchanged').click();
+
+    for (const [name, amount] of [
+      ['Emptied', '100.00'],
+      ['Everyday', '2000.00'],
+    ] as const) {
+      await expect(row(name).getByTestId('account-closing')).toContainText('Confirmed unchanged');
+      await expect(row(name).getByTestId('closing-amount')).toHaveValue(amount);
+    }
+    await expect(row('Old savings').getByTestId('closing-amount')).toHaveValue('');
+    await expect(row('Old savings').getByTestId('confirm-unchanged')).toHaveCount(0);
+
+    // Written, and nothing else.
+    await reloadAfterRefresh(page);
+    await expect(row('Emptied').getByTestId('account-closing')).toContainText('Confirmed unchanged');
+    await expect(row('Everyday').getByTestId('account-closing')).toContainText('Confirmed unchanged');
+    await expect(row('Old savings').getByTestId('account-status')).toHaveText(/Needs statement balance/u);
+  });
+});

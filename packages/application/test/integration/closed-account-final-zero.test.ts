@@ -4,7 +4,10 @@ import { saveOrCorrect } from '../helpers/corrections';
 import { createHarness, type Harness } from '../helpers/harness';
 import { testContext, type RequestContext } from '../../src/context';
 import { provisionUser } from '../../src/users/provisioning';
+import { getMonthlyPage, type MonthlyDependencies } from '../../src/monthly/service';
+import { getNetWorth, getPositionDetail } from '../../src/positions/queries';
 import { closePosition, createCashAccount } from '../../src/positions/service';
+import { parseMonth } from '../../src/reconciliation/service';
 import {
   confirmUnchanged,
   confirmUnchangedBatch,
@@ -54,6 +57,7 @@ const OCT_5 = on('2026-10-05');
 
 const positions = () => harness.services.positions;
 const corrections = () => harness.services.corrections;
+const monthly = (): MonthlyDependencies => ({ db: harness.db, fx: harness.services.fx });
 
 const FINAL_ZERO = 'This account is closed, so its final balance has to stay zero.';
 
@@ -630,5 +634,77 @@ describe('an account already holding money after its close', () => {
     const closing = { positionId: savings, valuedOn: '2026-09-15', amount: '0', datePrecision: 'exact' as const };
     await expectSaved({ kind: 'valuation_create', ...closing }, () => recordValuation(positions(), OCT_5, closing));
     expect(await finalBalance(savings, '2026-09-15')).toBe('0.00000000');
+  });
+});
+
+describe('the pages offer "Unchanged this month" only where the server accepts it', () => {
+  // Monthly and the Accounts pages read the offer from one shared function, so
+  // no page offers a confirmation the rule above refuses, and every account the
+  // rule accepts is still offered.
+
+  /** Whether each account's month is offered as unchanged on Monthly, by name. */
+  async function offeredOnMonthly(month: string): Promise<Record<string, boolean | null>> {
+    const page = await getMonthlyPage(monthly(), OCT_5, parseMonth(month));
+    if (page.kind !== 'completed') throw new Error(`${month} is not a completed month`);
+    return Object.fromEntries(
+      page.accounts.accounts.map((row) => [
+        row.name,
+        row.closing.kind === 'no_statement' ? row.closing.canConfirmUnchanged : null,
+      ]),
+    );
+  }
+
+  /** Whether the account page offers the month as unchanged. */
+  async function offeredOnAccountPage(positionId: string, month: string): Promise<boolean | undefined> {
+    const detail = await getPositionDetail(positions(), OCT_5, positionId);
+    return detail.monthsAwaitingStatement.find((state) => state.month === month)?.canConfirmUnchanged;
+  }
+
+  it('leaves out a closed account whose zero the month’s figure would bury, and only that one', async () => {
+    // Old savings would carry July's 300 past its 20 August zero. Drained had
+    // the same July statement but was emptied on 10 September: carried to
+    // 31 August, the 300 leaves that zero final. Only a read past August's own
+    // window can tell the two apart. Everyday is active.
+    const drained = await account('Drained');
+    await statement(drained, '2026-07-31', '300');
+    await snapshot(drained, '2026-09-10', '0');
+    await close(drained, '2026-09-15');
+    const everyday = await account('Everyday');
+    await statement(everyday, '2026-07-31', '500');
+
+    expect(await offeredOnMonthly('2026-08')).toEqual({ 'Old savings': false, Drained: true, Everyday: true });
+    expect(await offeredOnAccountPage(savings, '2026-08')).toBe(false);
+    expect(await offeredOnAccountPage(drained, '2026-08')).toBe(true);
+    expect(await offeredOnAccountPage(everyday, '2026-08')).toBe(true);
+
+    // What is offered is what the server takes.
+    await confirmUnchangedBatch(positions(), OCT_5, { month: '2026-08', positionIds: [drained, everyday] });
+    expect(await finalBalance(drained, '2026-09-15')).toBe('0.00000000');
+  });
+
+  it('says the same on the Accounts list as on Monthly, for a month its closing day comes after', async () => {
+    // September is the last completed month. Late was emptied on 10 September
+    // and closed on 2 October, so August's 100 carried to 30 September would be
+    // its final balance. Emptied was emptied on 1 October instead, after
+    // September, so the same 100 leaves its zero final.
+    const late = await account('Late');
+    await statement(late, '2026-08-31', '100');
+    await snapshot(late, '2026-09-10', '0');
+    await close(late, '2026-10-02');
+    const emptied = await account('Emptied');
+    await statement(emptied, '2026-08-31', '100');
+    await snapshot(emptied, '2026-10-01', '0');
+    await close(emptied, '2026-10-02');
+
+    expect(await offeredOnMonthly('2026-09')).toMatchObject({ Late: false, Emptied: true });
+    const listed = Object.fromEntries(
+      (await getNetWorth(positions(), OCT_5)).positions.map((row) => [
+        row.name,
+        row.lastCompletedMonth?.canConfirmUnchanged,
+      ]),
+    );
+    expect(listed).toMatchObject({ Late: false, Emptied: true });
+    expect(await offeredOnAccountPage(late, '2026-09')).toBe(false);
+    expect(await offeredOnAccountPage(emptied, '2026-09')).toBe(true);
   });
 });
