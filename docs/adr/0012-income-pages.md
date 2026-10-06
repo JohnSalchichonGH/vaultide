@@ -369,6 +369,9 @@ names `reinvested` income and income linked to an investment for Phase 4 — the
 source page's read must widen with it, in the change that adds it. Otherwise the
 source page would call a payment missing that the year view counts as resolved.
 
-**The known gap is still open.** Monthly's own Add income still shows the
-guard's refusal rather than opening the review. The Income pages' Add a payment
-opens it, as D5 decided.
+**The known gap is closed.** Monthly's own Add income, in the Income section
+and in a corrective action's dialog, now asks the server first and opens the
+review, as the Income pages' Add a payment does under D5. So does Add known
+expense, in Known expenses, in a corrective action's dialog and on Spending,
+through the `expense_create` draft. Every other save is still the ordinary
+one.

@@ -186,7 +186,9 @@ logs into this file.
     - its amount history against what arrived for each payment;
     - its payments a year at a time, each received, skipped, missing or not yet
       due. A recorded or skipped one links to its row in Monthly, and a missing
-      one to where it can be resolved;
+      one to where it can be resolved, except an archived source's, which has
+      no link because the page's own Unarchive and end-date controls resolve
+      it;
     - editing it through existing actions only: changing the amount from a
       payment on, its name and payer, an end date after a confirmation, and
       archive or unarchive.
@@ -499,9 +501,8 @@ restore, `positions.opened_on` correction, and reopening or correcting a close.
 ## Next planned work
 
 Phase 3 remains **in progress**, and is neither accepted nor frozen as a whole.
-The standalone Income pages are done. The next planned Phase 3 area is **the
-remaining end-to-end journeys and Phase 3 hardening**, which has **not
-started**.
+The standalone Income pages and the remaining end-to-end journeys are done.
+**Phase 3 hardening** is under way.
 
 Remaining Phase 3 work, in the agreed order:
 
@@ -513,12 +514,7 @@ Remaining Phase 3 work, in the agreed order:
        day to be zero;
      - the Bulk History grid read has no size bound (ADR 0011, "Known
        limits");
-   - Monthly's Add income and Add expense forms save directly and dead-end on
-     `HISTORICAL_REVIEW_REQUIRED`. A new entry whose dormancy consequence
-     reaches completed history is refused by the server, and either form can
-     only show the refusal, although the server can review such a creation and
-     Monthly's transfer and balance forms already route through the review;
-   - five items recorded with the Income pages and not fixed there:
+   - three items recorded with the Income pages and not fixed there:
      - **two WebKit end-to-end symptoms:** every navigation and navigating
        click that follows a save now waits for the page's router requests to
        end (`waitForRouter`, `e2e/support/navigation.ts`), and the retries
@@ -531,15 +527,6 @@ Remaining Phase 3 work, in the agreed order:
          paint or to answer;
        - `page.goto: WebKit encountered an internal error` on a 404 address
          (`income-source.spec.ts`, in main CI);
-     - **the shared amount form's version check:** Monthly's
-       `ChangeFutureAmount` (`apps/web/src/features/monthly/income-editor.tsx`),
-       now shared by the source page, builds its expectation from the row's
-       term when Save is clicked, not from the term the form opened with, so a
-       refresh that lands while the form is open moves the expectation;
-     - **repeated guidance:** on the source page
-       (`apps/web/src/features/income/source-view.tsx`), an archived source's
-       missing line gives its unarchive-or-end-date guidance twice:
-       `ARCHIVED_MISSING_HELP`, then the two links;
      - **the pg warning:** `listResolvedOccurrencesInRangeIn`
        (`packages/db/src/repositories/recurring-templates.ts`) runs four
        selects with `Promise.all` on one transaction's client, which pg warns

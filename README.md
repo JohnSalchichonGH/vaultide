@@ -83,8 +83,8 @@ progress, but Monthly, Spending and Income are live. What is usable today:
   has its own page in its own currency: its details, its amount over time
   against what arrived, and its payments a year at a time. From that page you
   can change its amount from a payment on, change its name and payer, give it
-  an end date, or archive it; payments themselves are still recorded and
-  edited in Monthly.
+  an end date, or archive it; a source's scheduled payments are still recorded
+  in Monthly or Bulk History, and every payment is edited in Monthly.
 
 ### Phase 3 implementation
 
