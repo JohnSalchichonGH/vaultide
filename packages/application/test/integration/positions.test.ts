@@ -23,6 +23,10 @@ import {
   removeValuation,
 } from '../../src/positions/valuations';
 import { getNetWorth, getPositionDetail } from '../../src/positions/queries';
+import { createIncomeEntry } from '../../src/flows/income';
+import { createExpenseEntry } from '../../src/flows/expenses';
+import { createCashTransfer } from '../../src/flows/transfers';
+import { listCategories } from '../../src/users/categories';
 import { reviewAndConfirm } from '../helpers/corrections';
 
 /**
@@ -92,6 +96,9 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  await harness.asOwner('DELETE FROM expense_entries');
+  await harness.asOwner('DELETE FROM transfers');
+  await harness.asOwner('DELETE FROM income_entries');
   await harness.asOwner('DELETE FROM audit_entries');
   await harness.asOwner('DELETE FROM position_valuations');
   await harness.asOwner('DELETE FROM cash_accounts');
@@ -521,6 +528,319 @@ describe('closing and deleting a position (M6, R12, 6.3)', () => {
     });
   });
 
+});
+
+describe('a close dated before something recorded on the account (M4)', () => {
+  // M4: nothing is dated after a position's `closed_on`. Every write made once
+  // the window is set refuses that; the close sets the window, so it has to
+  // refuse a closing day that something recorded already post-dates. Otherwise
+  // the account takes part in no month after it (8.1), counts as zero in net
+  // worth (12.1), and whatever arrived later leaves the books unexplained.
+  //
+  // "Today" is 20 September, so September has not ended and none of these
+  // writes is historical. The final zero sits on the requested closing day, so
+  // M6 alone would accept every close below.
+  const SEPT_20 = on('2026-09-20');
+  const CLOSING_DAY = '2026-09-10';
+
+  const flows = () => harness.services.flows;
+
+  async function oldSavings() {
+    const account = await makeCashAccount(SEPT_20, {
+      name: 'Old savings',
+      openingBalance: '400.00',
+      openingBalanceOn: '2026-09-01',
+    });
+    await recordValuation(deps(), SEPT_20, {
+      positionId: account.id,
+      valuedOn: CLOSING_DAY,
+      amount: '0',
+      datePrecision: 'exact',
+    });
+    return account.id;
+  }
+
+  const otherAccount = async () =>
+    (await makeCashAccount(SEPT_20, { name: 'BBVA', openingBalance: '0', openingBalanceOn: '2026-09-01' }))
+      .id;
+
+  async function groceries(): Promise<string> {
+    const categories = await listCategories(harness.db, USER_A);
+    return categories.find((row) => row.name === 'Groceries')?.id as string;
+  }
+
+  /** What a refused close must leave exactly as it found it. */
+  async function closeState(positionId: string) {
+    return withUser(harness.db, { userId: USER_A }, async (tx) => {
+      const position = await tx.execute(
+        sql`SELECT status::text AS status, version, closed_on::text AS closed_on
+              FROM positions WHERE id = ${positionId}`,
+      );
+      const audit = await tx.execute(sql`SELECT count(*)::int AS n FROM audit_entries`);
+      return { position: position.rows[0], audit: (audit.rows[0] as { n: number }).n };
+    });
+  }
+
+  async function currentVersion(positionId: string): Promise<number> {
+    return ((await closeState(positionId)).position as { version: number }).version;
+  }
+
+  async function expectCloseRefused(positionId: string, latest: string): Promise<void> {
+    const before = await closeState(positionId);
+    expect(before.position).toMatchObject({ status: 'active', closed_on: null });
+
+    await expect(
+      closePosition(deps(), SEPT_20, {
+        positionId,
+        expectedVersion: await currentVersion(positionId),
+        closedOn: CLOSING_DAY,
+      }),
+    ).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+      message: expect.stringContaining(latest),
+      fieldErrors: { closedOn: [expect.stringContaining(latest)] },
+    });
+
+    expect(await closeState(positionId)).toEqual(before);
+  }
+
+  const LATER = '2026-09-15';
+
+  const cases: readonly {
+    readonly name: string;
+    readonly arrange: () => Promise<string>;
+  }[] = [
+    {
+      name: 'a non-zero balance',
+      arrange: async () => {
+        const savings = await oldSavings();
+        await recordValuation(deps(), SEPT_20, {
+          positionId: savings,
+          valuedOn: LATER,
+          amount: '400.00',
+          datePrecision: 'exact',
+        });
+        return savings;
+      },
+    },
+    {
+      name: 'a zero balance',
+      arrange: async () => {
+        const savings = await oldSavings();
+        await recordValuation(deps(), SEPT_20, {
+          positionId: savings,
+          valuedOn: LATER,
+          amount: '0',
+          datePrecision: 'exact',
+        });
+        return savings;
+      },
+    },
+    {
+      name: 'an income',
+      arrange: async () => {
+        const savings = await oldSavings();
+        await createIncomeEntry(flows(), SEPT_20, {
+          kind: 'employment',
+          receivedOn: LATER,
+          netAmount: '2100.00',
+          currency: 'EUR',
+          settlement: 'tracked_cash',
+          cashPositionId: savings,
+        });
+        return savings;
+      },
+    },
+    {
+      name: 'an expense',
+      arrange: async () => {
+        const savings = await oldSavings();
+        await createExpenseEntry(flows(), SEPT_20, {
+          categoryId: await groceries(),
+          incurredOn: LATER,
+          amount: '30.00',
+          currency: 'EUR',
+          settlement: 'tracked_cash',
+          cashPositionId: savings,
+        });
+        return savings;
+      },
+    },
+    {
+      name: 'a transfer out',
+      arrange: async () => {
+        const savings = await oldSavings();
+        await createCashTransfer(flows(), SEPT_20, {
+          occurredOn: LATER,
+          fromPositionId: savings,
+          toPositionId: await otherAccount(),
+          fromAmount: '50.00',
+          toAmount: '50.00',
+        });
+        return savings;
+      },
+    },
+    {
+      name: 'a transfer in',
+      arrange: async () => {
+        const savings = await oldSavings();
+        await createCashTransfer(flows(), SEPT_20, {
+          occurredOn: LATER,
+          fromPositionId: await otherAccount(),
+          toPositionId: savings,
+          fromAmount: '50.00',
+          toAmount: '50.00',
+        });
+        return savings;
+      },
+    },
+    {
+      name: 'a transfer fee (its transfer on the closing day)',
+      arrange: async () => {
+        // The fee is its own fact with its own date (ADR 0006 §4), so it is
+        // the fee that falls outside the window, not the transfer.
+        const savings = await oldSavings();
+        await createCashTransfer(flows(), SEPT_20, {
+          occurredOn: CLOSING_DAY,
+          fromPositionId: savings,
+          toPositionId: await otherAccount(),
+          fromAmount: '50.00',
+          toAmount: '50.00',
+          fee: { amount: '1.50', cashPositionId: savings, incurredOn: LATER },
+        });
+        return savings;
+      },
+    },
+    {
+      name: 'an other asset’s value',
+      arrange: async () => {
+        const car = await createOtherAsset(deps(), SEPT_20, {
+          name: 'Car',
+          currency: 'EUR',
+          assetType: 'vehicle',
+          includeInFinancialNetWorth: false,
+          currentValue: '20000.00',
+          currentValueOn: '2026-09-01',
+        });
+        await recordValuation(deps(), SEPT_20, {
+          positionId: car.id,
+          valuedOn: CLOSING_DAY,
+          amount: '0',
+          datePrecision: 'exact',
+        });
+        await recordValuation(deps(), SEPT_20, {
+          positionId: car.id,
+          valuedOn: LATER,
+          amount: '18000.00',
+          datePrecision: 'exact',
+        });
+        return car.id;
+      },
+    },
+  ];
+
+  for (const { name, arrange } of cases) {
+    it(`refuses it over ${name} dated after the closing day, and changes nothing`, async () => {
+      await expectCloseRefused(await arrange(), LATER);
+    });
+  }
+
+  it('names the latest record, whichever kind it is', async () => {
+    const balanceLast = await oldSavings();
+    await createIncomeEntry(flows(), SEPT_20, {
+      kind: 'employment',
+      receivedOn: '2026-09-12',
+      netAmount: '2100.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId: balanceLast,
+    });
+    await recordValuation(deps(), SEPT_20, {
+      positionId: balanceLast,
+      valuedOn: '2026-09-17',
+      amount: '2100.00',
+      datePrecision: 'exact',
+    });
+    await expectCloseRefused(balanceLast, '2026-09-17');
+
+    const flowLast = await makeCashAccount(SEPT_20, {
+      name: 'Flow last',
+      openingBalance: '400.00',
+      openingBalanceOn: '2026-09-01',
+    });
+    await recordValuation(deps(), SEPT_20, {
+      positionId: flowLast.id,
+      valuedOn: CLOSING_DAY,
+      amount: '0',
+      datePrecision: 'exact',
+    });
+    await recordValuation(deps(), SEPT_20, {
+      positionId: flowLast.id,
+      valuedOn: '2026-09-12',
+      amount: '0',
+      datePrecision: 'exact',
+    });
+    await createExpenseEntry(flows(), SEPT_20, {
+      categoryId: await groceries(),
+      incurredOn: '2026-09-17',
+      amount: '30.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId: flowLast.id,
+    });
+    await expectCloseRefused(flowLast.id, '2026-09-17');
+  });
+
+  it('accepts a zero balance and a flow dated on the closing day itself', async () => {
+    // M4 says "after": the closing day is inside the window.
+    const savings = await makeCashAccount(SEPT_20, {
+      name: 'Old savings',
+      openingBalance: '400.00',
+      openingBalanceOn: '2026-09-01',
+    });
+    await createCashTransfer(flows(), SEPT_20, {
+      occurredOn: CLOSING_DAY,
+      fromPositionId: savings.id,
+      toPositionId: await otherAccount(),
+      fromAmount: '400.00',
+      toAmount: '400.00',
+    });
+    await recordValuation(deps(), SEPT_20, {
+      positionId: savings.id,
+      valuedOn: CLOSING_DAY,
+      amount: '0',
+      datePrecision: 'exact',
+    });
+
+    const closed = await closePosition(deps(), SEPT_20, {
+      positionId: savings.id,
+      expectedVersion: await currentVersion(savings.id),
+      closedOn: CLOSING_DAY,
+    });
+    expect(closed).toMatchObject({ status: 'closed', closedOn: CLOSING_DAY });
+  });
+
+  it('compares with the closing day, not with the final zero’s date', async () => {
+    // A flow between the final zero and the closing day is inside the window.
+    // Whether the zero still explains it is reconciliation's question (8.1
+    // takes the closing day as zero by definition), not this rule's.
+    const savings = await oldSavings();
+    await createExpenseEntry(flows(), SEPT_20, {
+      categoryId: await groceries(),
+      incurredOn: '2026-09-12',
+      amount: '30.00',
+      currency: 'EUR',
+      settlement: 'tracked_cash',
+      cashPositionId: savings,
+    });
+
+    const closed = await closePosition(deps(), SEPT_20, {
+      positionId: savings,
+      expectedVersion: await currentVersion(savings),
+      closedOn: '2026-09-12',
+    });
+    expect(closed).toMatchObject({ status: 'closed', closedOn: '2026-09-12' });
+  });
 });
 
 describe('the dormant flag (R22, 6.2)', () => {

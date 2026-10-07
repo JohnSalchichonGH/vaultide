@@ -200,6 +200,28 @@ export async function findLatestValuationIn(
   return row;
 }
 
+/**
+ * The date of a position's latest valuation, of any amount, or `undefined` when
+ * it has none.
+ *
+ * What a close asks before it sets the end of the position's window (M4): is
+ * anything already dated after the closing day? That is a date comparison, so
+ * this returns a date: one statement, no rows loaded. It has no upper bound,
+ * because the question is about every row, not about "today". It takes the
+ * caller's transaction, as `latestAttributedFlowDateIn` does for the same
+ * question about the account's flows.
+ */
+export async function latestValuationDateIn(
+  tx: Transaction,
+  positionId: string,
+): Promise<string | undefined> {
+  const [row] = await tx
+    .select({ latest: sql<string | null>`max(${positionValuations.valuedOn})::text` })
+    .from(positionValuations)
+    .where(eq(positionValuations.positionId, positionId));
+  return row?.latest ?? undefined;
+}
+
 /** One account and the last date a question about it reaches. */
 export interface ValuationBound {
   readonly positionId: string;

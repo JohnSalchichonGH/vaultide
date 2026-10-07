@@ -7,6 +7,7 @@ import {
   insertCashAccountIn,
   insertOtherAssetIn,
   latestAttributedFlowDateIn,
+  latestValuationDateIn,
   lockCashPositionsIn,
   updatePositionIn,
   type CashAccountPatch,
@@ -523,6 +524,29 @@ async function closePositionIn(
     });
   }
 
+  // M4: nothing is dated after a position's `closed_on`. The close is what sets
+  // that end, so it may not set it before a balance or an attributed flow (8.8)
+  // already recorded. Compared with the closing day, not with the final zero's
+  // date: a record dated on the closing day is inside the window. ISO dates
+  // order as strings, so the last after sorting is the latest.
+  const recordedAfter = [
+    await latestValuationDateIn(tx, args.positionId),
+    await latestAttributedFlowDateIn(tx, args.positionId),
+  ]
+    .filter((date): date is string => date !== undefined && date > args.closedOn)
+    .sort()
+    .at(-1);
+  if (recordedAfter !== undefined) {
+    throw new ValidationError(
+      `Something is recorded on this account after ${args.closedOn}; the latest is on ${recordedAfter}. Choose a closing date on or after it. The account still has to close at zero.`,
+      {
+        closedOn: [
+          `Something is recorded on this account after this date, the latest on ${recordedAfter}.`,
+        ],
+      },
+    );
+  }
+
   const latest = await findLatestValuationIn(tx, args.positionId, args.closedOn);
   if (latest === undefined || !new Decimal(latest.amount).isZero()) {
     throw new ImpossibleOperationError(
@@ -542,7 +566,7 @@ async function closePositionIn(
 }
 
 /**
- * Close a position (M6).
+ * Close a position (M6, M4).
  *
  * Closing requires a final valuation of **zero**: the latest one on or before
  * the closing date, which need not be dated on it. That is not bureaucracy: an
@@ -550,9 +574,20 @@ async function closePositionIn(
  * worth with no record of where it went, which is exactly the kind of silent
  * loss this product exists to prevent. The message says what to do instead.
  *
- * The zero it requires and the close it writes are one transaction: a balance
- * recorded between the two would otherwise close an account over money that had
- * just arrived (30.22 item 5).
+ * And nothing recorded on the position may be dated after the closing date
+ * (M4): no balance, of any amount, and no attributed flow (8.8) — an income or
+ * an expense on the account, a transfer fee included, since it carries its own
+ * date, or a transfer with the account on either side. The close sets the end
+ * of the window every later write is held to; set before such a record, it
+ * would leave that record in no month the account takes part in (8.1), and
+ * whatever it moved would leave net worth unexplained. A record dated on the
+ * closing date is inside the window. The comparison is with the closing date,
+ * not with the final zero's date, which is where it differs from the dormancy
+ * rule. The refusal names the latest such date.
+ *
+ * What it reads and the close it writes are one transaction: a balance or a
+ * flow recorded in between would otherwise close an account over money that
+ * had just arrived (30.22 item 5).
  */
 export async function closePosition(
   deps: PositionDependencies,

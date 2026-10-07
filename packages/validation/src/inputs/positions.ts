@@ -129,10 +129,13 @@ export const updateOtherAssetInput = z.object({
 });
 
 /**
- * Closing a position (M6): a cash account or other asset closes with a final
- * valuation of zero — its latest on or before the closing date. The service
- * refuses a close that would leave a non-zero balance, and says where the money
- * has to go instead.
+ * Closing a position (M6, M4): a cash account or other asset closes with a final
+ * valuation of zero — its latest on or before the closing date — and on or after
+ * the date of everything recorded on it. The service refuses a close that would
+ * leave a non-zero balance, and says where the money has to go instead; and it
+ * refuses a closing date before a balance or an attributed flow already
+ * recorded, naming the latest. Both are rules about other rows, so this schema
+ * only bounds the date by today.
  */
 export function closePositionInput(today: string) {
   return z.object({
