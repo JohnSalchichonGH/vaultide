@@ -183,6 +183,176 @@ describe('property: the as-of date is the latest one the evidence supports', () 
   });
 });
 
+/*
+ * The other direction: `asOf` is null only when no date qualifies.
+ *
+ * Every property above returns early when `asOf` is null, and their generator
+ * holds only pre-existing accounts with a month-end opening, so "unavailable
+ * only when none exists" (§26 row 3) was never checked over random inputs. This
+ * generator holds every kind of account 8.6 names, each valid exactly as the
+ * services would store it: nothing dated after a closing day, no balance after
+ * a dormant episode starts, and every account with a usable opening — a missing
+ * one is a bucket's `missing_opening`, never a reason for `asOf` to be null.
+ */
+
+const AUGUST_END = '2026-08-31';
+const MONTH_DAYS = Array.from({ length: 10 }, (_, i) => `2026-09-${String(i + 1).padStart(2, '0')}`);
+
+const nonZeroArb = fc.integer({ min: 1, max: 99_999 }).map((n) => `${String(n)}.25`);
+
+/** Ordinary snapshots on some of these days, of any non-zero amount. */
+const snapshotsArb = (id: string, days: readonly string[]) =>
+  fc
+    .subarray([...days])
+    .chain((chosen) =>
+      fc
+        .array(nonZeroArb, { minLength: chosen.length, maxLength: chosen.length })
+        .map((amounts) => chosen.map((day, index) => valuation(id, day, amounts[index] ?? '1'))),
+    );
+
+type AccountKind = 'pre_existing' | 'opened_in_month' | 'closed_in_month' | 'dormant' | 'first_balance';
+
+function kindArb(kind: AccountKind, id: string, currency: string): fc.Arbitrary<CashAccountInput> {
+  const account = (
+    options: Parameters<typeof position>[1],
+    valuations: CashAccountInput['valuations'],
+  ): CashAccountInput => ({
+    position: position(`${kind} ${id}`, { id, currency, ...options }),
+    valuations,
+    accountType: 'checking',
+  });
+
+  switch (kind) {
+    case 'pre_existing':
+      // A statement at the end of August, and ordinary snapshots this month.
+      return fc
+        .tuple(nonZeroArb, snapshotsArb(id, MONTH_DAYS))
+        .map(([opening, snapshots]) => account({}, [monthEnd(id, AUGUST_END, opening), ...snapshots]));
+
+    case 'opened_in_month':
+      // Opens at zero on a day of the month; balances only from that day on.
+      return fc
+        .constantFrom(...MONTH_DAYS)
+        .chain((openedOn) =>
+          snapshotsArb(id, MONTH_DAYS.filter((day) => day >= openedOn)).map((snapshots) =>
+            account({ openedOn }, snapshots),
+          ),
+        );
+
+    case 'closed_in_month':
+      // Closes on a day of the month over a final zero on or before it —
+      // August's statement, or a balance this month — with nothing after the
+      // zero, and nothing at all after the closing day.
+      return fc.tuple(fc.constantFrom(...MONTH_DAYS), nonZeroArb).chain(([closedOn, opening]) =>
+        fc.constantFrom(AUGUST_END, ...MONTH_DAYS.filter((day) => day <= closedOn)).chain((finalZero) =>
+          snapshotsArb(id, MONTH_DAYS.filter((day) => day < finalZero)).map((before) =>
+            account(
+              { status: 'closed', closedOn },
+              finalZero === AUGUST_END
+                ? [monthEnd(id, AUGUST_END, '0')]
+                : [monthEnd(id, AUGUST_END, opening), ...before, valuation(id, finalZero, '0')],
+            ),
+          ),
+        ),
+      );
+
+    case 'dormant':
+      // Dormant from a zero balance — August's statement or one this month —
+      // with no balance after it.
+      return fc.tuple(fc.constantFrom(AUGUST_END, ...MONTH_DAYS), nonZeroArb).chain(([from, opening]) =>
+        snapshotsArb(id, MONTH_DAYS.filter((day) => day < from)).map((before) =>
+          account(
+            { dormantFrom: from },
+            from === AUGUST_END
+              ? [monthEnd(id, AUGUST_END, '0')]
+              : [monthEnd(id, AUGUST_END, opening), ...before, valuation(id, from, '0')],
+          ),
+        ),
+      );
+
+    case 'first_balance':
+      // Existed before tracking began; its first balance of all is this month.
+      return fc.constantFrom(...MONTH_DAYS).chain((first) =>
+        fc
+          .tuple(nonZeroArb, snapshotsArb(id, MONTH_DAYS.filter((day) => day > first)))
+          .map(([amount, later]) => account({}, [valuation(id, first, amount), ...later])),
+      );
+  }
+}
+
+const KINDS: readonly AccountKind[] = [
+  'pre_existing',
+  'opened_in_month',
+  'closed_in_month',
+  'dormant',
+  'first_balance',
+];
+
+const everyKindArb: fc.Arbitrary<CashAccountInput[]> = fc
+  .array(fc.tuple(fc.constantFrom(...KINDS), fc.constantFrom('EUR', 'USD')), { minLength: 1, maxLength: 4 })
+  .chain((shapes) =>
+    fc.tuple(...shapes.map(([kind, currency], index) => kindArb(kind, `acct-${String(index)}`, currency))),
+  )
+  .map((accounts) => [...accounts]);
+
+/**
+ * 8.6's common as-of date, read from its wording ("Common as-of date `D`", "An
+ * empty inclusion set is not evidence") rather than from the engine.
+ *
+ * A date in the month, up to today, qualifies when the accounts taking part
+ * through it, less the month's first-balance exclusions, are not empty, and
+ * each of them either has an exact snapshot dated that day or is known
+ * structurally there: closed on or before it, or dormant from on or before it.
+ */
+function qualifies(accounts: readonly CashAccountInput[], d: string): boolean {
+  // "An account with `opened_on > d` does not participate in the interval
+  // `[start(M), d]` at all."
+  const takesPart = (a: CashAccountInput): boolean =>
+    (a.position.openedOn === null || a.position.openedOn <= d) &&
+    (a.position.closedOn === null || a.position.closedOn >= START);
+  // "`first_balance` for a pre-existing account whose first valuation falls in
+  // M", decided once for M from the evidence through today.
+  const firstBalance = (a: CashAccountInput): boolean =>
+    (a.position.openedOn === null || a.position.openedOn < START) &&
+    !a.valuations.some((v) => v.valuedOn < START) &&
+    a.valuations.some((v) => v.valuedOn >= START && v.valuedOn <= TODAY);
+
+  const included = accounts.filter((a) => takesPart(a) && !firstBalance(a));
+  if (included.length === 0) return false;
+
+  return included.every(
+    (a) =>
+      a.valuations.some((v) => v.valuedOn === d && v.datePrecision === 'exact') ||
+      (a.position.closedOn !== null && a.position.closedOn <= d) ||
+      (a.position.dormantFrom !== undefined && a.position.dormantFrom <= d),
+  );
+}
+
+function latestQualifyingDate(accounts: readonly CashAccountInput[]): string | null {
+  for (let d = TODAY; d >= START; d = addDays(d, -1)) {
+    if (qualifies(accounts, d)) return d;
+  }
+  return null;
+}
+
+describe('property: the as-of date is null only when no date qualifies', () => {
+  it('is null exactly when no date qualifies, and otherwise the latest that does', () => {
+    fc.assert(
+      fc.property(everyKindArb, (accounts) => {
+        const result = reconcileMonthToDate({
+          today: TODAY,
+          cashAccounts: accounts,
+          income: [],
+          expenses: [],
+          transfers: [],
+        });
+        expect(result.asOf).toBe(latestQualifyingDate(accounts));
+      }),
+      { numRuns: 1000 },
+    );
+  });
+});
+
 describe('property: nothing after the as-of date reaches a figure', () => {
   it('ignores a flow dated after it, and counts one dated on it', () => {
     fc.assert(
