@@ -141,37 +141,42 @@ export function CorrectionReview({
               {source.operation === 'delete' ? ' · removed' : ''}
               {source.operation === 'create' ? ' · added' : ''}
             </h4>
-            <dl className="mt-2 grid grid-cols-[auto_1fr_1fr] gap-x-3 gap-y-1 text-[length:var(--text-table)]">
+            {/* The column headings stay outside the list, which may hold only
+                terms and their descriptions (16.6); `contents` keeps both in
+                the one grid. */}
+            <div className="mt-2 grid grid-cols-[auto_1fr_1fr] gap-x-3 gap-y-1 text-[length:var(--text-table)]">
               <span className={META} aria-hidden="true" />
               <span className={META}>Before</span>
               <span className={META}>After</span>
-              {source.fields.map((field) => (
-                <div
-                  key={field.label}
-                  className="contents"
-                  data-testid="correction-field"
-                  data-field={field.label}
-                  data-changed={field.changed ? 'true' : 'false'}
-                >
-                  <dt className={META}>{field.label}</dt>
-                  <dd
-                    className={cn(
-                      'tabular',
-                      field.changed && 'text-[var(--color-muted-foreground)] line-through',
-                    )}
-                    data-testid="correction-before"
+              <dl className="contents">
+                {source.fields.map((field) => (
+                  <div
+                    key={field.label}
+                    className="contents"
+                    data-testid="correction-field"
+                    data-field={field.label}
+                    data-changed={field.changed ? 'true' : 'false'}
                   >
-                    {field.before ?? '—'}
-                  </dd>
-                  <dd
-                    className={cn('tabular', field.changed && 'font-medium')}
-                    data-testid="correction-after"
-                  >
-                    {field.after ?? '—'}
-                  </dd>
-                </div>
-              ))}
-            </dl>
+                    <dt className={META}>{field.label}</dt>
+                    <dd
+                      className={cn(
+                        'tabular',
+                        field.changed && 'text-[var(--color-muted-foreground)] line-through',
+                      )}
+                      data-testid="correction-before"
+                    >
+                      {field.before ?? '—'}
+                    </dd>
+                    <dd
+                      className={cn('tabular', field.changed && 'font-medium')}
+                      data-testid="correction-after"
+                    >
+                      {field.after ?? '—'}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
           </section>
         ))}
 
