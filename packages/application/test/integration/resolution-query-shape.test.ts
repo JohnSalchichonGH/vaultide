@@ -22,7 +22,11 @@ import {
   resolveIncomeUpdateIn,
   updateIncomeEntry,
 } from '../../src/flows/income';
-import { createTemplate } from '../../src/recurring/templates';
+import {
+  createTemplate,
+  resolveUpdateTemplateDetailsIn,
+  updateTemplateDetails,
+} from '../../src/recurring/templates';
 import {
   acceptSuggestion,
   resolveAcceptSuggestionIn,
@@ -38,7 +42,8 @@ import {
  * The rules behind recording, correcting and removing a balance, creating,
  * correcting and deleting an income entry, accepting a recurring occurrence and
  * restoring a skipped one are stated once, as pure decisions, and the resolvers load what those
- * decisions need and nothing more. This pins the load side: the exact sequence
+ * decisions need and nothing more. Moving a template's end date is resolved the
+ * same way: the template, its history when an end is set, and nothing else. This pins the load side: the exact sequence
  * of statements each path sends — which table, and under which row lock — on
  * the success paths and on the refusals that stop early.
  *
@@ -893,5 +898,71 @@ describe('accepting and skipping a recurring occurrence', () => {
       ),
     );
     expect(restore).toEqual([...READ_OPEN, 'select recurring_template_skips', 'commit']);
+  });
+});
+
+describe('moving a template’s end date', () => {
+  const LATEST_REFERENCED =
+    'select income_entries+expense_entries+transfers+recurring_template_skips+recurring_templates';
+
+  it('saves one that reaches only this month or later: the template under its lock, its history, then the write', async () => {
+    const templateId = await interestTemplate(bbva);
+    const sent = await shapes(() =>
+      updateTemplateDetails(flows(), OCT_5, { templateId, expectedVersion: 1, endDate: '2026-10-01' }),
+    );
+    expect(sent).toEqual([
+      ...WRITE_OPEN,
+      'select recurring_templates for update',
+      LATEST_REFERENCED,
+      'select recurring_templates for update',
+      'update recurring_templates',
+      'insert audit_entries',
+      'commit',
+    ]);
+  });
+
+  it('refuses one that reaches a finished month having read the template and its history and nothing after', async () => {
+    const templateId = await interestTemplate(bbva);
+    const sent = await shapes(() =>
+      updateTemplateDetails(flows(), OCT_5, { templateId, expectedVersion: 1, endDate: '2026-08-31' }),
+    );
+    expect(sent).toEqual([...WRITE_OPEN, 'select recurring_templates for update', LATEST_REFERENCED, 'rollback']);
+  });
+
+  it('refuses a stale version having read the template alone', async () => {
+    const templateId = await interestTemplate(bbva);
+    const sent = await shapes(() =>
+      updateTemplateDetails(flows(), OCT_5, { templateId, expectedVersion: 2, endDate: '2026-08-31' }),
+    );
+    expect(sent).toEqual([...WRITE_OPEN, 'select recurring_templates for update', 'rollback']);
+  });
+
+  it('reads no history for a change to the name alone', async () => {
+    const templateId = await interestTemplate(bbva);
+    const sent = await shapes(() =>
+      updateTemplateDetails(flows(), OCT_5, { templateId, expectedVersion: 1, name: 'Bank interest' }),
+    );
+    expect(sent).toEqual([
+      ...WRITE_OPEN,
+      'select recurring_templates for update',
+      'select recurring_templates for update',
+      'update recurring_templates',
+      'insert audit_entries',
+      'commit',
+    ]);
+  });
+
+  it('reads the same rows for a preview, and locks none of them', async () => {
+    const templateId = await interestTemplate(bbva);
+    const sent = await shapes(() =>
+      withUserRead(harness.db, { userId: USER_A }, (tx) =>
+        resolveUpdateTemplateDetailsIn(
+          tx,
+          { templateId, expectedVersion: 1, endDate: '2026-08-31' },
+          { lock: false },
+        ),
+      ),
+    );
+    expect(sent).toEqual([...READ_OPEN, 'select recurring_templates', LATEST_REFERENCED, 'commit']);
   });
 });

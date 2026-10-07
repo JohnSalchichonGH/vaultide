@@ -646,6 +646,15 @@ const CORRECTION_DRAFTS: readonly (readonly [string, (ids: WorldIds) => Correcti
     (ids) => ({ kind: 'skip_delete', skipId: ids.skip, expectedVersion: version(B.skip) }),
   ],
   [
+    'template_end_date: the template',
+    (ids) => ({
+      kind: 'template_end_date',
+      templateId: ids.salary,
+      expectedVersion: version(B.salary),
+      endDate: '2026-08-31',
+    }),
+  ],
+  [
     'accept_suggestion: a template',
     (ids) => ({ kind: 'accept_suggestion', templateId: ids.gym, occurrenceDate: '2026-10-05' }),
   ],

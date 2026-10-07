@@ -37,7 +37,7 @@ import { toCompletenessTemplate, toExpenseFlow, toIncomeFlow, toTransferFlow } f
 import { toPositionRecord, toValuationRecord } from '../positions/mapping';
 import type { IdentifiedSourceChange, ResolvedWrite, SourceFacts } from '../write-plan';
 import { identityKey } from '../write-plan';
-import { periodOf, monthKeyOfPeriod } from './classify';
+import { periodOf, periodsOfChange, monthKeyOfPeriod } from './classify';
 
 /**
  * The evidence a correction preview reasons over, and the overlay that turns
@@ -298,8 +298,10 @@ export function correctionWindow(
  * Every month a correction could conceivably change, ascending.
  *
  * The first is the earliest month any of its source facts touches — a financial
- * date on either side, a fee's own date, a dormant episode's anchor, or the
- * scheduled date of an occurrence whose satisfaction moves.
+ * date on either side, a fee's own date, a dormant episode's anchor, the
+ * scheduled date of an occurrence whose satisfaction moves, or a finished month
+ * a schedule change reaches. Which months a fact touches is the classifier's
+ * answer (`periodsOfChange`), asked rather than restated here.
  *
  * The last depends on what kind of fact moved, because the engines propagate
  * them differently:
@@ -311,7 +313,9 @@ export function correctionWindow(
  *    `valuationReachOf`, which proves that month from the history or falls
  *    back to the current one;
  *  - a **dormant episode** is open-ended until something wakes the account, so
- *    it reaches the current month.
+ *    it reaches the current month;
+ *  - a **schedule** changes the months it adds an occurrence to or takes one
+ *    from, and nothing else: an occurrence is expected in its own month alone.
  *
  * Nothing reaches past the current month: nothing after today exists to
  * change. The months that turn out to be unaffected are dropped from the
@@ -328,10 +332,9 @@ export function candidatePeriods(
   let reachesCurrent = false;
 
   for (const change of write.changes) {
+    for (const period of periodsOfChange(change, today)) touched.add(period);
     for (const facts of [change.before, change.after]) {
       if (facts === null) continue;
-      const date = financialDateOfFacts(facts);
-      if (date !== null) touched.add(periodOf(date));
       // The scheduled date of an occurrence is not a financial period, but
       // whether that occurrence is satisfied decides its own month's
       // completeness and its `suggested_income_missing` (12.6, 30.10).
@@ -369,23 +372,6 @@ export function candidatePeriods(
     months.push(monthLabel(month));
   }
   return months;
-}
-
-function financialDateOfFacts(facts: SourceFacts): string | null {
-  switch (facts.kind) {
-    case 'income':
-      return facts.receivedOn;
-    case 'expense':
-      return facts.incurredOn;
-    case 'transfer':
-      return facts.occurredOn;
-    case 'valuation':
-      return facts.valuedOn;
-    case 'cash_dormancy':
-      return facts.dormantFrom;
-    case 'skip':
-      return facts.occurrenceDate;
-  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -591,6 +577,13 @@ function replace<T>(list: readonly T[], id: string, next: T | null, idOf: (item:
  * materialized one is satisfied. A skip resolves its occurrence exactly as a
  * flow does, so restoring one takes its occurrence out of the set and nothing
  * else: a skip is in no figure.
+ *
+ * A schedule change replaces the template's schedule, and the engines then
+ * generate each month's expected occurrences from the new one. The template
+ * may not be in the evidence at all: the window's read keeps only templates
+ * whose **stored** schedule overlaps it, so a source that ended in July and now
+ * ends later is absent from the August it reaches. It is added there, with its
+ * new schedule, rather than looked for.
  */
 export function overlayCorrection(
   evidence: CorrectionEvidence,
@@ -602,6 +595,7 @@ export function overlayCorrection(
   let transfers = [...evidence.transfers];
   const valuations = new Map<string, readonly ValuationRecord[]>(evidence.valuations);
   let positions = [...evidence.positions];
+  let templates = [...evidence.templates];
   let resolvedOccurrences = [...evidence.resolvedOccurrences];
 
   const occurrenceOf = (facts: SourceFacts): { templateId: string; occurrenceDate: string } | null => {
@@ -681,6 +675,11 @@ export function overlayCorrection(
         // Its whole effect is the occurrence it resolves, handled either side
         // of this switch.
         break;
+      case 'template_schedule': {
+        const facts = change.after as Extract<SourceFacts, { kind: 'template_schedule' }>;
+        templates = overlaySchedule(templates, facts);
+        break;
+      }
     }
 
     if (change.after !== null) {
@@ -707,8 +706,47 @@ export function overlayCorrection(
     transfers,
     valuations,
     positions,
+    templates,
     resolvedOccurrences,
   };
+}
+
+/**
+ * The templates with one template's schedule replaced, or with the template
+ * added when the evidence did not hold it.
+ *
+ * Only the schedule, the kind and the currency decide what a month expected and
+ * which bucket counts it. The name and the income kind are labels: no engine
+ * judges by them, and the preview keeps neither in any issue it reports
+ * (`issueIdentity`). So a template the window's read did not hold is added with
+ * an empty name and no income kind, and neither can reach the preview.
+ */
+function overlaySchedule(
+  templates: readonly CompletenessTemplate[],
+  facts: Extract<SourceFacts, { kind: 'template_schedule' }>,
+): CompletenessTemplate[] {
+  const schedule = {
+    frequency: facts.frequency,
+    dayOfMonth: facts.dayOfMonth,
+    startDate: plainDate(facts.startDate),
+    endDate: facts.endDate === null ? null : plainDate(facts.endDate),
+  };
+  if (templates.some((template) => template.templateId === facts.templateId)) {
+    return templates.map((template) =>
+      template.templateId === facts.templateId ? { ...template, schedule } : template,
+    );
+  }
+  return [
+    ...templates,
+    {
+      templateId: facts.templateId,
+      name: '',
+      kind: facts.templateKind,
+      currency: currencyCode(facts.currency),
+      incomeKind: null,
+      schedule,
+    },
+  ];
 }
 
 /* -------------------------------------------------------------------------- */

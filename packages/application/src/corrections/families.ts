@@ -357,6 +357,9 @@ function noteIn(facts: SourceFacts | null, period: string): string | null {
     // excuses.
     case 'skip':
       return periodOf(facts.occurrenceDate) === period ? facts.note : null;
+    // A schedule carries no words of its own.
+    case 'template_schedule':
+      return null;
   }
 }
 

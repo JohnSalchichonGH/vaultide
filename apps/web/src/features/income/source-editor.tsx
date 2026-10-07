@@ -2,7 +2,7 @@
 
 import { useId, useState, useTransition, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import type { IncomeSourceDto, OccurrenceTermDto } from '@vaultide/application';
+import type { CorrectionDraft, IncomeSourceDto, OccurrenceTermDto } from '@vaultide/application';
 import {
   archiveTemplateAction,
   unarchiveTemplateAction,
@@ -12,8 +12,15 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useHydrated } from '@/lib/use-hydrated';
 import { cn } from '@/lib/utils';
+import { CorrectionHost } from '@/features/corrections/host';
+import { runCorrectableSave } from '@/features/corrections/save';
+import { useCorrection } from '@/features/corrections/use-correction';
 import { dayTitle, monthTitle } from '@/features/monthly/presentation';
-import { endDateChangeOf, endDateChangeSummary } from '@/features/monthly/expenses-presentation';
+import {
+  endDateChangeOf,
+  endDateChangeSummary,
+  reachesCompletedMonth,
+} from '@/features/monthly/expenses-presentation';
 import { ChangeFutureAmount } from '@/features/monthly/income-editor';
 import {
   ARCHIVE_CONSEQUENCES,
@@ -38,8 +45,10 @@ import {
  * schedule, kind, currency and account are not offered: they decide what the
  * source's past occurrences were (6.2's frozen identity).
  *
- * Template edits are not historical corrections, so nothing here opens the
- * review: no correction family covers a template or a term.
+ * One edit here can be a Historical Correction: an end date that adds or
+ * removes an expected occurrence in a finished month (ADR 0013 §2). The end
+ * date therefore saves through the review, and the server judges it again. The
+ * name, the payer, a term and archiving never are corrections.
  *
  * ## Drafts
  *
@@ -217,6 +226,12 @@ export function SourceNameAndPayer({ source }: { readonly source: IncomeSourceDt
  * come from the same helpers, measured against dates the read generated, and
  * the service's refusal — an end before an occurrence already recorded or
  * skipped — is shown as it was given.
+ *
+ * One confirmation per save, never two. A change that reaches a finished month
+ * is a Historical Correction (ADR 0013 §2), so the review replaces this page's
+ * own confirmation. Any other change keeps that confirmation, and its Confirm
+ * still asks the server first: a month that has ended since the page loaded
+ * opens the review then.
  */
 export function SourceEndDate({ source, locale }: { readonly source: IncomeSourceDto; readonly locale: string }) {
   const router = useRouter();
@@ -227,7 +242,8 @@ export function SourceEndDate({ source, locale }: { readonly source: IncomeSourc
   const [proposal, setProposal] = useState<{ readonly endDate: string | null } | null>(null);
   const [saved, setSaved] = useState(false);
   const [pending, startTransition] = useTransition();
-  const stored = useStoredSource(source, edited || proposal !== null || pending);
+  const correction = useCorrection();
+  const stored = useStoredSource(source, edited || proposal !== null || pending || correction.pending !== null);
   const { base } = stored;
   // A newer copy taken in resets the field to it; it is only taken in while
   // nothing was typed.
@@ -238,6 +254,54 @@ export function SourceEndDate({ source, locale }: { readonly source: IncomeSourc
   }
   const day = (value: string): string => dayTitle(value, locale);
   const change = proposal === null ? null : endDateChangeOf(base, proposal.endDate);
+
+  const settled = (endDate: string | null): void => {
+    setProposal(null);
+    setEdited(false);
+    setDate(endDate ?? '');
+    setSaved(true);
+    router.refresh();
+  };
+
+  // Ask the server first, then save it or open the review (§25). The draft and
+  // the save claim the same version, the one this form opened with.
+  const save = (endDate: string | null): void => {
+    stored.setProblem(null);
+    const draft: CorrectionDraft = {
+      kind: 'template_end_date',
+      templateId: base.templateId,
+      expectedVersion: base.version,
+      endDate,
+    };
+    startTransition(async () => {
+      const final = await runCorrectableSave(
+        correction,
+        draft,
+        () => updateTemplateAction({ templateId: base.templateId, expectedVersion: base.version, endDate }),
+        () => undefined,
+        () => undefined,
+      );
+      if (final.kind === 'saved') {
+        settled(endDate);
+      } else if (final.kind === 'conflict' || final.kind === 'error') {
+        stored.setProblem({ kind: final.kind === 'conflict' ? 'conflict' : 'refused', message: final.message });
+      } else {
+        // The review is open, and it is the one confirmation this save gets.
+        setProposal(null);
+      }
+    });
+  };
+
+  // Straight to the review when the change reaches a finished month, so the
+  // page's own confirmation is never shown in front of it.
+  const propose = (endDate: string | null): void => {
+    stored.clearRefusal();
+    if (reachesCompletedMonth(endDateChangeOf(base, endDate))) {
+      save(endDate);
+      return;
+    }
+    setProposal({ endDate });
+  };
 
   return (
     <div className="space-y-3" data-testid="source-end-date">
@@ -282,23 +346,21 @@ export function SourceEndDate({ source, locale }: { readonly source: IncomeSourc
               type="button"
               data-testid="source-end-review"
               className={PRIMARY}
-              disabled={!hydrated || date === '' || date === base.endDate}
+              disabled={!hydrated || pending || date === '' || date === base.endDate}
               onClick={() => {
-                stored.clearRefusal();
-                setProposal({ endDate: date });
+                propose(date);
               }}
             >
-              Review change
+              {pending ? 'Saving…' : 'Review change'}
             </button>
             {base.endDate === null ? null : (
               <button
                 type="button"
                 data-testid="source-end-clear"
                 className={ACTION}
-                disabled={!hydrated}
+                disabled={!hydrated || pending}
                 onClick={() => {
-                  stored.clearRefusal();
-                  setProposal({ endDate: null });
+                  propose(null);
                 }}
               >
                 Remove end date
@@ -336,20 +398,7 @@ export function SourceEndDate({ source, locale }: { readonly source: IncomeSourc
               className={PRIMARY}
               disabled={!hydrated || pending || stored.problem !== null}
               onClick={() => {
-                stored.setProblem(null);
-                const payload = { templateId: base.templateId, expectedVersion: base.version, endDate: proposal.endDate };
-                startTransition(async () => {
-                  const result = await updateTemplateAction(payload);
-                  if (!result.ok) {
-                    stored.setProblem(editProblemOf(result.error));
-                    return;
-                  }
-                  setProposal(null);
-                  setEdited(false);
-                  setDate(payload.endDate ?? '');
-                  setSaved(true);
-                  router.refresh();
-                });
+                save(proposal.endDate);
               }}
             >
               {pending ? 'Saving…' : 'Confirm'}
@@ -369,6 +418,16 @@ export function SourceEndDate({ source, locale }: { readonly source: IncomeSourc
           </div>
         </div>
       )}
+
+      <CorrectionHost
+        flow={correction}
+        labels={{ accounts: {}, categories: {}, locale, templates: { [base.templateId]: base.name } }}
+        onCommitted={() => {
+          // The draft just confirmed holds the end date it wrote.
+          const draft = correction.pending?.draft;
+          settled(draft?.kind === 'template_end_date' ? draft.endDate : base.endDate);
+        }}
+      />
     </div>
   );
 }

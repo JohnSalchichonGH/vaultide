@@ -1075,8 +1075,10 @@ describe('a legacy source under a kind the expense services cannot record', () =
     expect(occurrenceOf(page.expenses, works.id, '2026-09-20').state).toEqual({ kind: 'due' });
     expect(requirementOf(page, works.id, '2026-09-20').satisfied).toBe(false);
 
-    // Ending it before September takes September's requirement away with the row.
-    await updateTemplateDetails(flowDeps(), OCT_1, {
+    // Ending it before September takes September's requirement away with the
+    // row. September has closed, so that is reviewed too (ADR 0013 §2).
+    await reviewAndConfirm(harness.services.corrections, OCT_1, {
+      kind: 'template_end_date',
       templateId: works.id,
       expectedVersion: works.version,
       endDate: '2026-08-31',
@@ -1333,7 +1335,9 @@ describe('ending an expense source', () => {
     const before = await completed();
     expect(occurrenceOf(before.expenses, source.id, '2026-09-05').state).toEqual({ kind: 'due' });
 
-    await updateTemplateDetails(flowDeps(), OCT_1, {
+    // September has closed, so taking its occurrence away is reviewed (ADR 0013 §2).
+    await reviewAndConfirm(harness.services.corrections, OCT_1, {
+      kind: 'template_end_date',
       templateId: source.id,
       expectedVersion: source.version,
       endDate: '2026-09-04',

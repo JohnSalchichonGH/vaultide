@@ -17,6 +17,7 @@ import {
 import type { IncomeKind, RecurrenceFrequency, TemplateKind } from '@vaultide/validation';
 import type { RequestContext } from '../context';
 import { withUserWrite } from '../coordination';
+import { assertNoHistoricalReview } from '../corrections/guard';
 import { assertInputScaleIn } from '../currencies/scale';
 import {
   DuplicateConflictError,
@@ -27,6 +28,12 @@ import {
 } from '../errors';
 import { assertCategoryUsableInPhase3, requireLiveCategoryIn } from '../flows/expenses';
 import { auditContextOf, requireCashAccountIn, type FlowDependencies } from '../flows/shared';
+import {
+  updated,
+  type ResolvedWrite,
+  type ResolveOptions,
+  type TemplateScheduleSourceFacts,
+} from '../write-plan';
 
 /**
  * Recurring templates and their terms (blueprint 6.2, 15.3, 20.3, 30.22,
@@ -248,13 +255,64 @@ export interface UpdateTemplateArgs {
   readonly endDate?: string | null | undefined;
 }
 
-async function updateTemplateDetailsIn(
+/**
+ * A resolved template edit: the template it changes, held under lock by the
+ * write and read without one by the preview, and the columns it writes.
+ *
+ * Its one source fact is the template's **schedule**, before and after, and
+ * only when the end date actually moves. The name and the payer are labels no
+ * engine reads, so a change to either alone resolves to no source change at all
+ * and is never a correction, whatever else it is sent with. An end-date change
+ * is a revision of the schedule, judged by the same two rules as every other
+ * source fact: a correction when a finished month gains or loses an expected
+ * occurrence (ADR 0013 §2).
+ */
+export interface TemplateDetailsWritePlan extends ResolvedWrite {
+  readonly existing: RecurringTemplateRow;
+  readonly expectedVersion: number;
+  readonly patch: {
+    readonly name?: string;
+    readonly counterparty?: string | null;
+    readonly endDate?: string | null;
+  };
+}
+
+function scheduleFacts(row: RecurringTemplateRow, endDate: string | null): TemplateScheduleSourceFacts {
+  return {
+    kind: 'template_schedule',
+    templateId: row.id,
+    templateKind: row.kind,
+    currency: row.currency,
+    frequency: row.frequency,
+    dayOfMonth: row.dayOfMonth,
+    startDate: row.startDate,
+    endDate,
+  };
+}
+
+/**
+ * Resolve a template edit, refusing before any review what is refused anyway.
+ *
+ * The order is the contract (ADR 0013 §2). The version is judged as the
+ * template is read, so a stale view is `CONFLICT_VERSION` in any month; then an
+ * end before the start, and an end before an occurrence already recorded or
+ * skipped. A write reads that history under the template's own lock, so an
+ * acceptance landing at the same moment cannot be erased by it; a preview reads
+ * it from its one snapshot. Only what survives all three reaches the question
+ * of whether a finished month changes.
+ */
+export async function resolveUpdateTemplateDetailsIn(
   tx: Transaction,
-  ctx: RequestContext,
   args: UpdateTemplateArgs,
-): Promise<RecurringTemplateRow> {
-  const existing = await lockTemplateIn(tx, args.templateId);
+  options: ResolveOptions = { lock: true },
+): Promise<TemplateDetailsWritePlan> {
+  const existing = options.lock
+    ? await lockTemplateIn(tx, args.templateId)
+    : await findTemplateIn(tx, args.templateId);
   if (existing === undefined) throw new NotFoundError('That source no longer exists.');
+  if (existing.version !== args.expectedVersion) {
+    throw new VersionConflictError('This source changed while you were editing it.');
+  }
 
   if (args.endDate !== undefined && args.endDate !== null) {
     if (args.endDate < existing.startDate) {
@@ -271,32 +329,77 @@ async function updateTemplateDetailsIn(
     }
   }
 
-  const updated = await updateTemplateIn(
-    tx,
-    auditContextOf(ctx),
-    args.templateId,
-    args.expectedVersion,
-    {
+  const endDate = args.endDate === undefined ? existing.endDate : args.endDate;
+  return {
+    existing,
+    expectedVersion: args.expectedVersion,
+    patch: {
       ...(args.name === undefined ? {} : { name: args.name }),
       ...(args.counterparty === undefined ? {} : { counterparty: args.counterparty }),
       ...(args.endDate === undefined ? {} : { endDate: args.endDate }),
     },
+    revision: true,
+    changes:
+      endDate === existing.endDate
+        ? []
+        : [
+            updated(
+              { scope: 'existing', kind: 'template_schedule', id: existing.id },
+              scheduleFacts(existing, existing.endDate),
+              scheduleFacts(existing, endDate),
+            ),
+          ],
+    // A template is attached to no balance, so editing one wakes no account.
+    dormancy: [],
+    support: [],
+  };
+}
+
+/** The one writer for a template edit, for the ordinary write and for Historical Confirm. */
+export async function applyTemplateDetailsPlanIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  plan: TemplateDetailsWritePlan,
+  reason?: string,
+): Promise<RecurringTemplateRow> {
+  const updatedRow = await updateTemplateIn(
+    tx,
+    auditContextOf(ctx, reason),
+    plan.existing.id,
+    plan.expectedVersion,
+    plan.patch,
   );
-  if (updated === undefined) {
+  /* v8 ignore next 3 -- the row is held under FOR UPDATE at the version just checked. */
+  if (updatedRow === undefined) {
     throw new VersionConflictError('This source changed while you were editing it.');
   }
-  return updated;
+  return updatedRow;
+}
+
+async function updateTemplateDetailsIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  args: UpdateTemplateArgs,
+): Promise<RecurringTemplateRow> {
+  const plan = await resolveUpdateTemplateDetailsIn(tx, args);
+  assertNoHistoricalReview(plan, ctx.today);
+  return applyTemplateDetailsPlanIn(tx, ctx, plan);
 }
 
 /**
- * Edit the parts of a template that carry no accounting meaning.
+ * Edit the parts of a template that carry no accounting meaning, and its end
+ * date.
  *
  * `name` and `counterparty` are the only two fields this table has that no
  * engine reads. `end_date` is editable as well, but never backwards past an
  * occurrence that has already been materialized or skipped — that would erase
- * an occurrence the history claims happened. The occurrence it checks against
- * is read under the template's own lock, inside the write's transaction, so an
- * acceptance landing at the same moment cannot be erased by it.
+ * an occurrence the history claims happened.
+ *
+ * An end date is historical schedule truth (30.10), so a change that adds or
+ * removes an expected occurrence in a finished month is a Historical
+ * Correction and is refused here, having written nothing: it goes through
+ * Preview → Confirm instead. One that reaches only the current month or later
+ * ones stays an ordinary save (ADR 0013 §2).
  */
 export async function updateTemplateDetails(
   deps: FlowDependencies,

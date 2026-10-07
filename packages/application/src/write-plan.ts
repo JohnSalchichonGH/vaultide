@@ -1,4 +1,4 @@
-import { Decimal } from '@vaultide/finance';
+import { Decimal, type RecurrenceFrequency } from '@vaultide/finance';
 
 /**
  * The vocabulary a resolved financial write speaks (blueprint 30.22; ADR 0010
@@ -25,7 +25,14 @@ import { Decimal } from '@vaultide/finance';
 /* -------------------------------------------------------------------------- */
 
 /** The source tables a Phase 3 financial write can change. */
-export type SourceKind = 'income' | 'expense' | 'transfer' | 'valuation' | 'cash_dormancy' | 'skip';
+export type SourceKind =
+  | 'income'
+  | 'expense'
+  | 'transfer'
+  | 'valuation'
+  | 'cash_dormancy'
+  | 'skip'
+  | 'template_schedule';
 
 /**
  * What a row that does not exist yet is called.
@@ -190,13 +197,40 @@ export interface SkipSourceFacts {
   readonly note: string | null;
 }
 
+/**
+ * A recurring template's schedule: which occurrences it expects, and where
+ * each one is counted (6.2, 30.10: "`start_date` and `end_date` are historical
+ * schedule truth").
+ *
+ * It has **no single financial date**. Changing it moves every month in which
+ * the schedule before and the schedule after disagree about an occurrence, so
+ * its periods are found by comparing the two (`periodsOfChange`; ADR 0013 §2).
+ * It moves no figure: it moves what a month expected, which is what 12.6's
+ * completeness and, for income, 8.5's `suggested_income_missing` read.
+ *
+ * `templateKind` and `currency` travel with the schedule because they decide
+ * which completeness count and which currency's bucket an occurrence belongs
+ * to. The name does not: it is a label, and no engine judges by it.
+ */
+export interface TemplateScheduleSourceFacts {
+  readonly kind: 'template_schedule';
+  readonly templateId: string;
+  readonly templateKind: 'income' | 'expense' | 'contribution';
+  readonly currency: string;
+  readonly frequency: RecurrenceFrequency;
+  readonly dayOfMonth: number | null;
+  readonly startDate: string;
+  readonly endDate: string | null;
+}
+
 export type SourceFacts =
   | IncomeSourceFacts
   | ExpenseSourceFacts
   | TransferSourceFacts
   | ValuationSourceFacts
   | DormancySourceFacts
-  | SkipSourceFacts;
+  | SkipSourceFacts
+  | TemplateScheduleSourceFacts;
 
 /* -------------------------------------------------------------------------- */
 /* Changes                                                                     */

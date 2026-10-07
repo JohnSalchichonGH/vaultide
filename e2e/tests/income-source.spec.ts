@@ -206,12 +206,11 @@ test.describe('an income source’s page', () => {
     await expect(occurrence(page, '2026-12-25')).toContainText('€2,100.00');
 
     // --- an end date: refused before a recorded payment, then confirmed -------
+    // 31 August reaches September, which has finished, so the page's own
+    // confirmation is not shown; the refusal answers before any review would.
     await fillTestId(page, 'source-end-date-input', '2026-08-31');
     await page.getByTestId('source-end-review').click();
-    await expect(page.getByTestId('source-end-confirmation')).toContainText('Salary will end on 31 Aug 2026.');
-    await page.getByTestId('source-end-confirm').click();
     await expect(page.getByTestId('source-end-problem')).toContainText('which you have already recorded or skipped');
-    await page.getByTestId('source-end-back').click();
 
     await fillTestId(page, 'source-end-date-input', '2026-12-31');
     await page.getByTestId('source-end-review').click();

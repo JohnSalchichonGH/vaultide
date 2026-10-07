@@ -911,6 +911,119 @@ describe('the review of a restored skip', () => {
   });
 });
 
+/**
+ * Moving a recurring source's end date (ADR 0013 §2).
+ *
+ * The record has no figure and no single date, so the review shows which
+ * source it is and where it ends before and after, and then each finished
+ * month that gains or loses an expected occurrence.
+ */
+describe('the review of a moved end date', () => {
+  const schedule = (endDate: string | null) => ({
+    kind: 'template_schedule' as const,
+    templateId: 'tpl-salary',
+    templateKind: 'income' as const,
+    currency: 'EUR',
+    frequency: 'monthly' as const,
+    dayOfMonth: 25,
+    startDate: '2026-06-01',
+    endDate,
+  });
+  const completed = (month: string, required: number) => ({
+    kind: 'completed' as const,
+    month,
+    before: {
+      status: 'reliable' as const,
+      buckets: [],
+      completeness: { state: 'sufficient' as const, satisfied: 2, required: 2 },
+    },
+    after: {
+      status: 'reliable' as const,
+      buckets: [],
+      completeness: { state: 'partial' as const, satisfied: 2, required },
+    },
+    tags: ['reconciliation' as const],
+  });
+  const appeared = (month: string, occurrenceDate: string) => ({
+    kind: 'issue' as const,
+    change: 'appeared' as const,
+    month,
+    issue: {
+      key: 'suggested_income_missing' as const,
+      currency: 'EUR',
+      positionId: null,
+      templateId: 'tpl-salary',
+      occurrenceDate,
+      source: null,
+    },
+  });
+  const extended = preview({
+    sourceScope: [
+      { identity: { scope: 'existing', kind: 'template_schedule', id: 'tpl-salary' }, operation: 'update' },
+    ],
+    sourcePeriods: ['2026-08', '2026-09'],
+    periods: [completed('2026-08', 3), completed('2026-09', 3)],
+    structuralChanges: [
+      {
+        kind: 'completeness',
+        month: '2026-08',
+        before: { state: 'sufficient', satisfied: 2, required: 2 },
+        after: { state: 'partial', satisfied: 2, required: 3 },
+      },
+      appeared('2026-08', '2026-08-25'),
+      appeared('2026-09', '2026-09-25'),
+    ],
+    sourceChanges: [
+      {
+        identity: { scope: 'existing', kind: 'template_schedule', id: 'tpl-salary' },
+        operation: 'update',
+        before: schedule('2026-07-30'),
+        after: schedule(null),
+      },
+    ],
+  });
+  const labels = { ...LABELS, templates: { 'tpl-salary': 'Salary' } };
+
+  it('shows the source and its end date before and after, saying when there is none', () => {
+    expect(summarizeSources(extended, labels)).toEqual([
+      {
+        title: 'Recurring source',
+        operation: 'update',
+        fields: [
+          { label: 'Source', before: 'Salary', after: 'Salary', changed: false },
+          { label: 'Ends on', before: '30 Jul 2026', after: 'No end date', changed: true },
+        ],
+      },
+    ]);
+  });
+
+  it('names each finished month it reaches, and what each then reports', () => {
+    const html = renderToStaticMarkup(
+      createElement(CorrectionReview, {
+        draft: { kind: 'template_end_date', templateId: 'tpl-salary', expectedVersion: 1, endDate: null },
+        preview: extended,
+        labels,
+        onBack: vi.fn(),
+        onCommitted: vi.fn(),
+      }),
+    );
+    expect(html).toContain('Recurring source');
+    expect(html).toContain('This changes a month that is already closed.');
+    expect(html).toContain('data-month="2026-08"');
+    expect(html).toContain('data-month="2026-09"');
+    expect(html).toContain('August 2026 becomes partly complete (2 of 3).');
+    expect(html).toContain('August 2026 raises a new reconciliation issue.');
+    expect(html).toContain('September 2026 raises a new reconciliation issue.');
+    // Ids are the server's; the reader sees the source's name.
+    expect(html).not.toContain('tpl-salary');
+  });
+
+  it('names an unlabelled source generically rather than by its id', () => {
+    const [summary] = summarizeSources(extended, LABELS);
+    expect(summary?.fields.find((item) => item.label === 'Source')?.before).toBe('A recurring source');
+  });
+});
+
 /* -------------------------------------------------------------------------- */
 /* Identity is not a label                                                     */
 /* -------------------------------------------------------------------------- */

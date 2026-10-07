@@ -2038,7 +2038,7 @@ describe('the preview reads its own window and no more (§6)', () => {
       const previewOver = async (window: typeof bounded) => {
         const before = await loadCorrectionEvidenceIn(tx, OCT_5.today, history, window);
         const after = overlayCorrection(before, write);
-        const sourcePeriods = sourcePeriodsOf(write);
+        const sourcePeriods = sourcePeriodsOf(write, OCT_5.today);
         const impact = deriveImpact(write, before, after, sourcePeriods, window);
         return withFingerprint({
           sourceScope: write.changes.map((change) => ({

@@ -67,8 +67,8 @@ export interface CorrectionLabels {
   /**
    * Income source names by template id, for a Bulk History review, which
    * groups its income cells by the source they belong to — and recurring
-   * source names, for the review of a restored skip. Display only, like every
-   * other label here.
+   * source names, for the review of a restored skip or a moved end date.
+   * Display only, like every other label here.
    */
   readonly templates?: Readonly<Record<string, string>>;
   /**
@@ -158,6 +158,7 @@ const KIND_TITLE: Readonly<Record<SourceFacts['kind'], string>> = {
   valuation: 'Balance',
   cash_dormancy: 'Dormant period',
   skip: 'Skipped occurrence',
+  template_schedule: 'Recurring source',
 };
 
 /* -------------------------------------------------------------------------- */
@@ -365,7 +366,8 @@ function accountsMentioned(preview: CorrectionPreview): string[] {
           ids.push(facts.positionId);
           break;
         case 'skip':
-          // A skip names a schedule, not an account.
+        case 'template_schedule':
+          // Both name a schedule, not an account.
           break;
       }
     }
@@ -442,6 +444,11 @@ function yesNo(value: boolean): FieldValue {
  * only date a skip has: the occurrence it excused, and the month that changes
  * when it goes (ADR 0013 §1). Its source is named the way a category is — by
  * id for the comparison, by name for the reader.
+ *
+ * A recurring source's schedule shows its end date, the one part of it a person
+ * can move once it has history; the months that move are the review's own list
+ * (ADR 0013 §2). No end date is a fact, and it says so rather than showing a
+ * blank.
  */
 function fieldsOf(facts: SourceFacts, context: FieldContext): Record<string, FieldValue> {
   switch (facts.kind) {
@@ -500,6 +507,17 @@ function fieldsOf(facts: SourceFacts, context: FieldContext): Record<string, Fie
         Scheduled: day(context, facts.occurrenceDate),
         Reason: coded(facts.reason, context.labels.skipReasons ?? {}),
         Note: plain(facts.note),
+      };
+    case 'template_schedule':
+      return {
+        Source: {
+          value: facts.templateId,
+          display: context.labels.templates?.[facts.templateId] ?? 'A recurring source',
+        },
+        'Ends on': {
+          value: facts.endDate,
+          display: facts.endDate === null ? 'No end date' : dayTitle(facts.endDate, context.labels.locale),
+        },
       };
   }
 }
@@ -605,6 +623,9 @@ function financialDateOf(facts: SourceFacts): string | null {
       return facts.dormantFrom;
     case 'skip':
       return facts.occurrenceDate;
+    // A schedule has no single date: the months it reaches are the periods.
+    case 'template_schedule':
+      return null;
   }
 }
 

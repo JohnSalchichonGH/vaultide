@@ -105,7 +105,7 @@ export async function previewFromPlanIn(
   const window = correctionWindow(write, ctx.today, history);
   const before = await loadCorrectionEvidenceIn(tx, ctx.today, history, window);
   const after = overlayCorrection(before, write);
-  const sourcePeriods = sourcePeriodsOf(write);
+  const sourcePeriods = sourcePeriodsOf(write, ctx.today);
   const impact = deriveImpact(write, before, after, sourcePeriods, window);
 
   return withFingerprint({

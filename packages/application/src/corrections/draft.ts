@@ -21,7 +21,8 @@ import type { TransferFeeArgs, TransferFeeExpectation, LinkedFeeExpectation } fr
  * entry, an expense entry and a transfer aggregate — each have an update and a
  * delete arm, because those are the operations 30.22 item 1 defines as
  * corrections. A skip is a fifth source fact, and the product revises one in
- * only one way: restoring its occurrence deletes it (ADR 0013 §1).
+ * only one way: restoring its occurrence deletes it (ADR 0013 §1). A template's
+ * schedule is a sixth, revised by moving its end date (ADR 0013 §2).
  *
  * Beside them are the otherwise-ordinary operations whose **dormancy
  * consequence** can reach completed history and which therefore need a preview
@@ -185,6 +186,20 @@ export interface SkipDeleteDraft {
   readonly expectedVersion: number;
 }
 
+/**
+ * Moving a recurring source's end date, or clearing it: the template, the
+ * version the page showed, and the end date wanted. `null` clears it.
+ *
+ * Which months that reaches is the server's to work out from the schedule it
+ * reads. The name and the payer are not here: neither is ever a correction.
+ */
+export interface TemplateEndDateDraft {
+  readonly kind: 'template_end_date';
+  readonly templateId: string;
+  readonly expectedVersion: number;
+  readonly endDate: string | null;
+}
+
 export interface AcceptSuggestionDraft {
   readonly kind: 'accept_suggestion';
   readonly templateId: string;
@@ -315,6 +330,7 @@ export type CorrectionDraft =
   | TransferUpdateDraft
   | TransferDeleteDraft
   | SkipDeleteDraft
+  | TemplateEndDateDraft
   | AcceptSuggestionDraft
   | ConfirmUnchangedDraft
   | ConfirmUnchangedBatchDraft

@@ -17,6 +17,7 @@ import {
   type IncomeSourceFacts,
   type ResolvedWrite,
   type SkipSourceFacts,
+  type TemplateScheduleSourceFacts,
   type TransferSourceFacts,
   type ValuationSourceFacts,
 } from '../../src/write-plan';
@@ -266,6 +267,75 @@ describe('restoring a skip (ADR 0013 §1)', () => {
   });
 });
 
+describe('moving a template’s end date (ADR 0013 §2)', () => {
+  // A salary on the 25th since January. August is finished; September is not.
+  const schedule = (endDate: string | null): TemplateScheduleSourceFacts => ({
+    kind: 'template_schedule',
+    templateId: 'tpl-1',
+    templateKind: 'income',
+    currency: 'EUR',
+    frequency: 'monthly',
+    dayOfMonth: 25,
+    startDate: '2026-01-01',
+    endDate,
+  });
+  const templateIdentity = { scope: 'existing', kind: 'template_schedule', id: 'tpl-1' } as const;
+  const moved = (from: string | null, to: string | null) =>
+    write(true, [updated(templateIdentity, schedule(from), schedule(to))]);
+  const correction = (completedPeriods: readonly string[]) => ({
+    required: true,
+    reasons: ['completed_source_revision'],
+    completedPeriods,
+  });
+  const ordinary = { required: false, reasons: [], completedPeriods: [] };
+
+  it('is a correction when shortening it removes a finished month’s occurrence', () => {
+    expect(classifyHistorical(moved(null, '2026-07-31'), TODAY)).toEqual(correction(['2026-08']));
+    expect(classifyHistorical(moved('2026-12-31', '2026-06-30'), TODAY)).toEqual(
+      correction(['2026-07', '2026-08']),
+    );
+  });
+
+  it('is a correction when extending it adds one', () => {
+    expect(classifyHistorical(moved('2026-07-31', '2026-08-31'), TODAY)).toEqual(correction(['2026-08']));
+  });
+
+  it('is a correction when clearing it adds finished months back, naming only those', () => {
+    // June to August come back; September onwards come back too, but none of
+    // them has finished.
+    expect(classifyHistorical(moved('2026-05-31', null), TODAY)).toEqual(
+      correction(['2026-06', '2026-07', '2026-08']),
+    );
+  });
+
+  it('is judged on the occurrences, never on the two dates', () => {
+    // Both ends fall in August, and August's occurrence is on the 25th: on
+    // neither side before the move, on neither side after it.
+    expect(classifyHistorical(moved('2026-08-20', '2026-08-22'), TODAY)).toEqual(ordinary);
+    // One day further, and August's occurrence is expected again.
+    expect(classifyHistorical(moved('2026-08-20', '2026-08-26'), TODAY)).toEqual(correction(['2026-08']));
+  });
+
+  it('is not a correction when it reaches only the current month or later ones', () => {
+    expect(classifyHistorical(moved(null, '2026-09-20'), TODAY)).toEqual(ordinary);
+    expect(classifyHistorical(moved('2026-09-30', '2026-12-31'), TODAY)).toEqual(ordinary);
+    expect(classifyHistorical(moved('2026-12-31', null), TODAY)).toEqual(ordinary);
+  });
+
+  it('counts a month as finished from its first day after, not from its last', () => {
+    // On 1 September, August has just finished; on 31 August it had not.
+    expect(classifyHistorical(moved(null, '2026-08-24'), plainDate('2026-09-01'))).toEqual(
+      correction(['2026-08']),
+    );
+    expect(classifyHistorical(moved(null, '2026-08-24'), plainDate('2026-08-31'))).toEqual(ordinary);
+  });
+
+  it('has no single financial date, so its periods are the finished months it reaches', () => {
+    expect(financialDateOf(schedule('2026-08-31'))).toBeNull();
+    expect(sourcePeriodsOf(moved('2026-05-31', null), TODAY)).toEqual(['2026-06', '2026-07', '2026-08']);
+  });
+});
+
 describe('a transfer aggregate is judged on every date it carries (§14)', () => {
   it('is a correction when the transfer is current and its fee is not', () => {
     const result = classifyHistorical(
@@ -340,6 +410,7 @@ describe('source periods (§31)', () => {
           expense('2026-10-01', { categoryKind: 'transfer_fee', transferId: 'row-3' }),
         ),
       ]),
+      TODAY,
     );
     expect(periods).toEqual(['2026-08', '2026-09', '2026-10']);
   });

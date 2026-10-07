@@ -57,7 +57,9 @@ export const createTemplateAction = financialAction({
  * template's historical occurrences were, so once one has been materialized or
  * skipped it is frozen (v2.1.6 §30.9); the input schema does not carry them,
  * and `endDate` is refused if it would erase an occurrence that already has
- * history.
+ * history. An `endDate` that adds or removes an expected occurrence in a
+ * finished month is refused with `HISTORICAL_REVIEW_REQUIRED`: it is saved
+ * through the Historical Correction review instead (ADR 0013 §2).
  */
 export const updateTemplateAction = financialAction({
   name: 'recurring.updateTemplate',

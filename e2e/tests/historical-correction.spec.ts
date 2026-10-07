@@ -5,7 +5,7 @@ import { gotoAfterRefresh, reloadAfterRefresh, waitForRouter } from '../support/
  * Historical Correction, end to end (blueprint 15.3, 30.22; ADR 0010; §108–§111
  * of the slice prompt).
  *
- * Seven journeys, and each is a rule the product promises rather than a
+ * Eight journeys, and each is a rule the product promises rather than a
  * rendering check:
  *
  *  - **a past month-end balance is corrected.** Edit it, read what it will
@@ -29,7 +29,11 @@ import { gotoAfterRefresh, reloadAfterRefresh, waitForRouter } from '../support/
  *    stopping at the server's refusal;
  *  - **a skip from a finished month is restored.** Skipping stays ordinary,
  *    but taking a skip back reopens that month's expectation, so Restore opens
- *    the review there — and stays one click in the month still running.
+ *    the review there — and stays one click in the month still running;
+ *  - **a recurring source's end date reaches a finished month.** An end date
+ *    decides what a month expected, so a change that takes an occurrence from
+ *    a finished month opens the review in place of the page's own
+ *    confirmation — and a change that reaches no finished month keeps it.
  *
  * Every record is written through the product's own pages: there is no seeding
  * endpoint, so what these journeys prove is what a person actually gets.
@@ -741,5 +745,157 @@ test.describe('restoring a skipped occurrence on Monthly', () => {
     await expect(october.getByTestId('expense-occurrence-status')).toHaveText('Upcoming');
     await gotoAfterRefresh(page, '/monthly/2026-09');
     await expect(september.getByTestId('expense-occurrence-status')).toHaveText('Not recorded');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Moving a recurring source's end date (ADR 0013 §2).
+ *
+ * An end date is historical schedule truth: ending a source on 31 August takes
+ * September's occurrence out of what September expected. So that change is
+ * reviewed, and the review is the only confirmation it gets. A change that
+ * reaches no finished month keeps the page's own confirmation, as it always had.
+ */
+test.describe('moving a recurring source’s end date', () => {
+  test('on the income source page, an end before a finished month’s payment is reviewed', async ({
+    page,
+    request,
+  }) => {
+    test.slow();
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': OCTOBER_6 });
+    await onboard(page, request, uniqueEmail('e2e-end-date-income'));
+    await accountWithAugustStatement(page, { name: 'Everyday', type: 'checking', august: '2000.00' });
+
+    await gotoAfterRefresh(page, '/monthly/2026-09');
+    await page.getByTestId('source-add-toggle').click();
+    await expect(page.getByTestId('source-submit')).toBeEnabled();
+    await fillTestId(page, 'source-name', 'Lodger');
+    await page.getByTestId('source-kind').selectOption('rental');
+    await page.getByTestId('source-frequency').selectOption('monthly');
+    await fillTestId(page, 'source-day', '5');
+    await fillTestId(page, 'source-start-date', '2026-08-01');
+    await fillTestId(page, 'source-amount', '400.00');
+    await page.getByTestId('source-account').selectOption({ label: 'Everyday' });
+    await page.getByTestId('source-submit').click();
+    await expect(page.getByTestId('source-saved')).toContainText('Lodger added.');
+
+    await gotoAfterRefresh(page, '/income');
+    await page.getByTestId('income-source').filter({ hasText: 'Lodger' }).getByTestId('income-source-link').click();
+    await expect(page.getByTestId('source-title')).toHaveText('Lodger');
+    await expect(page.getByTestId('source-detail-end')).toContainText('No end date');
+
+    // --- an end that reaches no finished month keeps the page's confirmation --
+    await fillTestId(page, 'source-end-date-input', '2026-12-31');
+    await page.getByTestId('source-end-review').click();
+    await expect(page.getByTestId('source-end-confirmation')).toContainText(
+      'No completed month’s expected occurrences change.',
+    );
+    await expect(review(page)).toHaveCount(0);
+    await page.getByTestId('source-end-confirm').click();
+    await expect(page.getByTestId('source-end-saved')).toContainText('End date saved.');
+    await expect(page.getByTestId('source-detail-end')).toContainText('31 Dec 2026');
+    await expect(review(page)).toHaveCount(0);
+
+    // --- one before September's payment opens the review instead --------------
+    await fillTestId(page, 'source-end-date-input', '2026-08-31');
+    await page.getByTestId('source-end-review').click();
+    await expect(review(page)).toBeVisible();
+    await expect(page.getByTestId('source-end-confirmation')).toHaveCount(0);
+    await expect(review(page)).toContainText('Recurring source');
+    await expect(review(page)).toContainText('Lodger');
+    await expect(review(page)).toContainText('31 Dec 2026');
+    await expect(review(page)).toContainText('31 Aug 2026');
+    await expect(review(page).locator('[data-testid="correction-period"][data-month="2026-09"]')).toBeVisible();
+    await expect(review(page).getByTestId('correction-period')).toHaveCount(1);
+    await expect(review(page).getByTestId('correction-structural')).toContainText(
+      'A reconciliation issue in September 2026 clears.',
+    );
+    // Nothing is written while it is being reviewed.
+    await expect(page.getByTestId('source-detail-end')).toContainText('31 Dec 2026');
+
+    // Back keeps the old end date, with the way back in beside the field.
+    await review(page).getByTestId('correction-back').click();
+    await expect(review(page)).toHaveCount(0);
+    await expect(page.getByTestId('source-detail-end')).toContainText('31 Dec 2026');
+    await page.getByTestId('source-end-date').getByTestId('correction-reopen').click();
+    await expect(review(page)).toBeVisible();
+
+    await fillTestId(page, 'correction-reason', 'The lodger moved out in August');
+    await review(page).getByTestId('correction-confirm').click();
+    await expect(review(page)).toHaveCount(0);
+    await expect(page.getByTestId('source-end-saved')).toContainText('End date saved.');
+    await expect(page.getByTestId('source-detail-end')).toContainText('31 Aug 2026');
+
+    // It was written, and September no longer expects the rent.
+    await reloadAfterRefresh(page);
+    await expect(page.getByTestId('source-detail-end')).toContainText('31 Aug 2026');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
+    await expect(page.getByTestId('income-occurrence').filter({ hasText: 'Lodger' })).toHaveCount(0);
+  });
+
+  test('on Known expenses, an end before a finished month’s charge is reviewed', async ({ page, request }) => {
+    test.slow();
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': OCTOBER_6 });
+    await onboard(page, request, uniqueEmail('e2e-end-date-expense'));
+    await accountWithAugustStatement(page, { name: 'Everyday', type: 'checking', august: '2000.00' });
+
+    await gotoAfterRefresh(page, '/monthly/2026-09');
+    const section = page.getByTestId('monthly-known-expenses');
+    await section.getByTestId('expense-source-add-toggle').click();
+    await expect(page.getByTestId('expense-source-submit')).toBeEnabled();
+    await fillTestId(page, 'expense-source-name', 'Gym');
+    await page.getByTestId('expense-source-category').selectOption({ label: 'Subscriptions' });
+    await page.getByTestId('expense-source-frequency').selectOption('monthly');
+    await fillTestId(page, 'expense-source-day', '15');
+    await fillTestId(page, 'expense-source-start-date', '2026-08-01');
+    await fillTestId(page, 'expense-source-amount', '40.00');
+    await page.getByTestId('expense-source-account').selectOption({ label: 'Everyday' });
+    await page.getByTestId('expense-source-submit').click();
+    await expect(page.getByTestId('expense-source-saved')).toContainText('Gym added.');
+
+    const september = section.locator('tr[data-testid="expense-occurrence"][data-occurrence-date="2026-09-15"]');
+    const panel = page.getByTestId('expense-end-panel');
+
+    // --- an end that reaches no finished month keeps the panel's confirmation -
+    await september.getByTestId('expense-end').click();
+    await fillTestId(page, 'expense-end-date', '2026-12-31');
+    await page.getByTestId('expense-end-review').click();
+    await expect(page.getByTestId('expense-end-confirmation')).toContainText(
+      'No completed month’s expected occurrences change.',
+    );
+    await expect(review(page)).toHaveCount(0);
+    await page.getByTestId('expense-end-confirm').click();
+    await expect(panel).toHaveCount(0);
+    await expect(review(page)).toHaveCount(0);
+
+    // --- one before September's charge opens the review instead ---------------
+    await waitForRouter(page);
+    await september.getByTestId('expense-end').click();
+    await expect(panel).toContainText('It ends on 31 Dec 2026.');
+    await fillTestId(page, 'expense-end-date', '2026-08-31');
+    await page.getByTestId('expense-end-review').click();
+    await expect(review(page)).toBeVisible();
+    await expect(page.getByTestId('expense-end-confirmation')).toHaveCount(0);
+    await expect(review(page)).toContainText('Recurring source');
+    await expect(review(page)).toContainText('Gym');
+    await expect(review(page)).toContainText('31 Dec 2026');
+    await expect(review(page)).toContainText('31 Aug 2026');
+    await expect(review(page).locator('[data-testid="correction-period"][data-month="2026-09"]')).toBeVisible();
+    // Its completeness moves; missing income is about income, so no issue does.
+    const structural = review(page).getByTestId('correction-structural');
+    await expect(structural).toContainText('September 2026 becomes');
+    await expect(structural).not.toContainText('issue');
+    // Nothing is written while it is being reviewed.
+    await expect(september).toHaveCount(1);
+
+    await review(page).getByTestId('correction-confirm').click();
+    await expect(review(page)).toHaveCount(0);
+    // September no longer expects the charge.
+    await expect(september).toHaveCount(0);
+
+    await reloadAfterRefresh(page);
+    await expect(section.getByTestId('expense-occurrence')).toHaveCount(0);
   });
 });

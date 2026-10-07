@@ -209,6 +209,16 @@ export function correctionDraft(today: string) {
       expectedVersion,
     }),
 
+    // Moving a recurring source's end date, or clearing it (`null`). Schedule
+    // truth rather than an actual record's date, so it is not bound by today;
+    // which months it reaches is the server's to work out (ADR 0013 §2).
+    z.object({
+      kind: z.literal('template_end_date'),
+      templateId: z.uuid(),
+      expectedVersion,
+      endDate: plainDate.nullable(),
+    }),
+
     z.object({
       kind: z.literal('accept_suggestion'),
       templateId: z.uuid(),

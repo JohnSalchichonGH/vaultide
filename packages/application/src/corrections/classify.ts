@@ -1,8 +1,11 @@
 import {
+  addDays,
   isMonthCompleted,
   monthKey,
   monthLabel,
+  occurrencesInRange,
   plainDate,
+  startOfMonth,
   type MonthKey,
   type PlainDate,
 } from '@vaultide/finance';
@@ -11,6 +14,7 @@ import {
   type IdentifiedSourceChange,
   type ResolvedWrite,
   type SourceFacts,
+  type TemplateScheduleSourceFacts,
 } from '../write-plan';
 
 /**
@@ -65,6 +69,10 @@ export interface HistoricalReview {
  * A skip is the exception that proves the rule: it has no other date. Its
  * `occurrence_date` is the month whose expectation it excuses, so that month is
  * its financial period (ADR 0013 §1).
+ *
+ * A template's schedule has no single date at all, so it has none here: its
+ * periods are what two schedules disagree about, and only `periodsOfChange`,
+ * which sees both, can say which months those are (ADR 0013 §2).
  */
 export function financialDateOf(facts: SourceFacts): string | null {
   switch (facts.kind) {
@@ -82,6 +90,8 @@ export function financialDateOf(facts: SourceFacts): string | null {
       return facts.dormantFrom;
     case 'skip':
       return facts.occurrenceDate;
+    case 'template_schedule':
+      return null;
   }
 }
 
@@ -99,8 +109,66 @@ export function isCompletedPeriod(period: string, today: PlainDate): boolean {
   return isMonthCompleted(monthKeyOfPeriod(period), today);
 }
 
-/** Both sides of one change, as periods; deduplicated, ascending. */
-export function periodsOfChange(change: IdentifiedSourceChange): readonly string[] {
+/** Every occurrence one side's schedule places on or before `through`. */
+function scheduledThrough(
+  facts: TemplateScheduleSourceFacts | null,
+  through: PlainDate,
+): readonly string[] {
+  if (facts === null) return [];
+  const startDate = plainDate(facts.startDate);
+  return occurrencesInRange(
+    {
+      frequency: facts.frequency,
+      dayOfMonth: facts.dayOfMonth,
+      startDate,
+      endDate: facts.endDate === null ? null : plainDate(facts.endDate),
+    },
+    startDate,
+    through,
+  );
+}
+
+/**
+ * The finished months a schedule change reaches (ADR 0013 §2).
+ *
+ * A month is reached when it holds an occurrence one schedule has and the
+ * other does not. It is found from the occurrences themselves, never from the
+ * two end dates: with a schedule on the 25th, moving the end from 20 August to
+ * 22 August reaches no month, and moving it to 26 August reaches August.
+ *
+ * Only finished months are its periods. A month still running, or one ahead,
+ * is reached as well, but a change that reaches nothing else stays ordinary,
+ * so the comparison stops at the last day of the month before `today`'s — which
+ * is also what bounds a schedule that has no end on one side.
+ */
+function schedulePeriodsOf(change: IdentifiedSourceChange, today: PlainDate): readonly string[] {
+  const side = (facts: SourceFacts | null): TemplateScheduleSourceFacts | null =>
+    facts?.kind === 'template_schedule' ? facts : null;
+  const through = addDays(startOfMonth(today), -1);
+  const before = new Set(scheduledThrough(side(change.before), through));
+  const after = new Set(scheduledThrough(side(change.after), through));
+  const differ = [
+    ...[...before].filter((date) => !after.has(date)),
+    ...[...after].filter((date) => !before.has(date)),
+  ];
+  return [...new Set(differ.map(periodOf))].sort();
+}
+
+/**
+ * Both sides of one change, as periods; deduplicated, ascending.
+ *
+ * For a fact with a financial date, the months of that date before and after.
+ * For a template's schedule, which has none, the finished months the two
+ * schedules disagree about (`schedulePeriodsOf`) — the one kind whose periods
+ * depend on `today`, because a month only becomes one of them once it ends.
+ */
+export function periodsOfChange(
+  change: IdentifiedSourceChange,
+  today: PlainDate,
+): readonly string[] {
+  if (change.before?.kind === 'template_schedule' || change.after?.kind === 'template_schedule') {
+    return schedulePeriodsOf(change, today);
+  }
   const dates = [
     change.before === null ? null : financialDateOf(change.before),
     change.after === null ? null : financialDateOf(change.after),
@@ -117,10 +185,10 @@ export function periodsOfChange(change: IdentifiedSourceChange): readonly string
  * period from `occurred_on` alone would classify a September transfer carrying
  * an August fee as an ordinary current edit.
  */
-export function sourcePeriodsOf(write: ResolvedWrite): readonly string[] {
+export function sourcePeriodsOf(write: ResolvedWrite, today: PlainDate): readonly string[] {
   const periods = new Set<string>();
   for (const change of write.changes) {
-    for (const period of periodsOfChange(change)) periods.add(period);
+    for (const period of periodsOfChange(change, today)) periods.add(period);
   }
   return [...periods].sort();
 }
@@ -142,7 +210,7 @@ export function classifyHistorical(write: ResolvedWrite, today: PlainDate): Hist
     for (const change of write.changes) {
       if (change.before !== null && change.before.kind === 'cash_dormancy') continue;
       if (change.after !== null && change.after.kind === 'cash_dormancy') continue;
-      for (const period of periodsOfChange(change)) {
+      for (const period of periodsOfChange(change, today)) {
         if (!isCompletedPeriod(period, today)) continue;
         completed.add(period);
         if (!reasons.includes('completed_source_revision')) {

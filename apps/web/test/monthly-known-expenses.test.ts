@@ -74,6 +74,7 @@ const {
   paymentMethodLabel,
   paymentMethodOptions,
   protectedSourceNote,
+  reachesCompletedMonth,
   termAmountProblem,
 } = await import('@/features/monthly/expenses-presentation');
 
@@ -1144,6 +1145,18 @@ describe('an end-date change', () => {
       kind: 'unchanged',
     });
     expect(endDateChangeOf({ endDate: null, completedOccurrenceDates: dates }, null)).toEqual({ kind: 'unchanged' });
+  });
+
+  it('goes straight to the review when it reaches a completed month, and only then (ADR 0013 §2)', () => {
+    const source = (endDate: string | null) => ({ endDate, completedOccurrenceDates: dates });
+    // Shortening, extending and clearing, each into a completed month.
+    expect(reachesCompletedMonth(endDateChangeOf(source(null), '2026-07-31'))).toBe(true);
+    expect(reachesCompletedMonth(endDateChangeOf(source('2026-06-30'), '2026-07-31'))).toBe(true);
+    expect(reachesCompletedMonth(endDateChangeOf(source('2026-06-30'), null))).toBe(true);
+    // Moving the end between two occurrences, past the last completed one, or not at all.
+    expect(reachesCompletedMonth(endDateChangeOf(source('2026-07-20'), '2026-07-22'))).toBe(false);
+    expect(reachesCompletedMonth(endDateChangeOf(source(null), '2026-12-31'))).toBe(false);
+    expect(reachesCompletedMonth(endDateChangeOf(source(null), null))).toBe(false);
   });
 });
 

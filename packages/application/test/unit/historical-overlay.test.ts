@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { Decimal, currencyCode, plainDate } from '@vaultide/finance';
+import { Decimal, completedMonthCompleteness, currencyCode, plainDate } from '@vaultide/finance';
 import {
   candidatePeriods,
   completedInputOf,
+  completenessInputOf,
   monthToDateInputOf,
   overlayCorrection,
   valuationReachOf,
@@ -18,6 +19,7 @@ import {
   type DormancyEffect,
   type IdentifiedSourceChange,
   type ResolvedWrite,
+  type TemplateScheduleSourceFacts,
 } from '../../src/write-plan';
 
 /**
@@ -146,6 +148,34 @@ function write(
 const augustInput = (state: CorrectionEvidence) =>
   completedInputOf(state, monthKeyOfPeriod('2026-08'));
 
+/** A rent on the 25th since June, ending where it is told to. */
+const rentSchedule = (endDate: string | null): TemplateScheduleSourceFacts => ({
+  kind: 'template_schedule',
+  templateId: 'tpl-rent',
+  templateKind: 'income',
+  currency: 'EUR',
+  frequency: 'monthly',
+  dayOfMonth: 25,
+  startDate: '2026-06-01',
+  endDate,
+});
+const rentIdentity = { scope: 'existing', kind: 'template_schedule', id: 'tpl-rent' } as const;
+const rentTemplate = (endDate: string | null) => ({
+  templateId: 'tpl-rent',
+  name: 'Rent',
+  kind: 'income' as const,
+  currency: currencyCode('EUR'),
+  incomeKind: 'rental',
+  schedule: {
+    frequency: 'monthly' as const,
+    dayOfMonth: 25,
+    startDate: plainDate('2026-06-01'),
+    endDate: endDate === null ? null : plainDate(endDate),
+  },
+});
+const augustRequired = (state: CorrectionEvidence): number =>
+  completedMonthCompleteness(completenessInputOf(state, monthKeyOfPeriod('2026-08'))).required;
+
 describe('the overlay', () => {
   it('replaces an existing row by its real database id', () => {
     const before = evidence();
@@ -264,6 +294,43 @@ describe('the overlay', () => {
     expect(monthToDateInputOf(after).income).toHaveLength(1);
     expect(augustInput(evidence()).income).toHaveLength(1);
   });
+
+  it('replaces a template’s schedule, so a finished month stops expecting what it took away', () => {
+    const before = evidence({ templates: [rentTemplate(null)], resolvedOccurrences: [] });
+    const after = overlayCorrection(
+      before,
+      write([updated(rentIdentity, rentSchedule(null), rentSchedule('2026-07-31'))]),
+    );
+    expect(after.templates).toEqual([rentTemplate('2026-07-31')]);
+    expect(augustRequired(after)).toBe(augustRequired(before) - 1);
+    // The loaded evidence is untouched.
+    expect(before.templates).toEqual([rentTemplate(null)]);
+  });
+
+  it('adds a template the evidence does not hold, with its new schedule', () => {
+    // It ended on 30 July, so the window over August never read it.
+    const before = evidence({ templates: [], resolvedOccurrences: [] });
+    const after = overlayCorrection(
+      before,
+      write([updated(rentIdentity, rentSchedule('2026-07-30'), rentSchedule('2026-09-30'))]),
+    );
+    expect(after.templates).toEqual([
+      {
+        templateId: 'tpl-rent',
+        name: '',
+        kind: 'income',
+        currency: 'EUR',
+        incomeKind: null,
+        schedule: {
+          frequency: 'monthly',
+          dayOfMonth: 25,
+          startDate: '2026-06-01',
+          endDate: '2026-09-30',
+        },
+      },
+    ]);
+    expect(augustRequired(after)).toBe(augustRequired(before) + 1);
+  });
 });
 
 describe('the candidate window (§32)', () => {
@@ -313,6 +380,14 @@ describe('the candidate window (§32)', () => {
       '2026-08',
       '2026-09',
     ]);
+  });
+
+  it('is the finished months a schedule change reaches, and nothing either side of them', () => {
+    // Extended from 30 July with no end: August is reached and finished;
+    // September onwards are reached too, but none has finished.
+    expect(
+      candidatePeriods(write([updated(rentIdentity, rentSchedule('2026-07-30'), rentSchedule(null))]), TODAY, history()),
+    ).toEqual(['2026-08']);
   });
 
   it('never reaches past the current month, because nothing later exists to change', () => {

@@ -84,6 +84,7 @@ import {
   paymentMethodLabel,
   paymentMethodOptions,
   protectedSourceNote,
+  reachesCompletedMonth,
   termAmountProblem,
   type OfferedPaymentMethod,
 } from '@/features/monthly/expenses-presentation';
@@ -921,6 +922,12 @@ function SkipOccurrence({
  * completeness is already reported — so the change is reviewed before it is
  * written, in words drawn from dates the read generated. The service decides
  * whether it is allowed, and its refusal is shown as it was given.
+ *
+ * One confirmation per save, never two. A change that reaches a finished month
+ * is a Historical Correction (ADR 0013 §2), so the review replaces this panel's
+ * own confirmation. Any other change keeps that confirmation, and its Confirm
+ * still asks the server first: a month that has ended since the page loaded
+ * opens the review then.
  */
 function EndsOn({
   source,
@@ -937,9 +944,51 @@ function EndsOn({
   const [proposal, setProposal] = useState<{ readonly endDate: string | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
+  const correction = useCorrection();
   const hydrated = useHydrated();
   const day = (value: string): string => dayTitle(value, formatting.locale);
   const change = proposal === null ? null : endDateChangeOf(source, proposal.endDate);
+
+  // Ask the server first, then save it or open the review (§25), at the
+  // version this row was rendered from.
+  const save = (endDate: string | null): void => {
+    setError(null);
+    const draft: CorrectionDraft = {
+      kind: 'template_end_date',
+      templateId: source.templateId,
+      expectedVersion: source.version,
+      endDate,
+    };
+    startTransition(async () => {
+      const final = await runCorrectableSave(
+        correction,
+        draft,
+        () => updateTemplateAction({ templateId: source.templateId, expectedVersion: source.version, endDate }),
+        () => undefined,
+        () => undefined,
+      );
+      if (final.kind === 'saved') {
+        onDone();
+        router.refresh();
+      } else if (final.kind === 'conflict' || final.kind === 'error') {
+        setError(final.message);
+      } else {
+        // The review is open, and it is the one confirmation this save gets.
+        setProposal(null);
+      }
+    });
+  };
+
+  // Straight to the review when the change reaches a finished month, so the
+  // panel's own confirmation is never shown in front of it.
+  const propose = (endDate: string | null): void => {
+    setError(null);
+    if (reachesCompletedMonth(endDateChangeOf(source, endDate))) {
+      save(endDate);
+      return;
+    }
+    setProposal({ endDate });
+  };
 
   return (
     <Panel title={`When ${source.name} ends`} testId="expense-end-panel">
@@ -971,23 +1020,21 @@ function EndsOn({
               type="button"
               data-testid="expense-end-review"
               className={PRIMARY}
-              disabled={!hydrated || date === '' || date === source.endDate}
+              disabled={!hydrated || pending || date === '' || date === source.endDate}
               onClick={() => {
-                setError(null);
-                setProposal({ endDate: date });
+                propose(date);
               }}
             >
-              Review change
+              {pending ? 'Saving…' : 'Review change'}
             </button>
             {source.endDate === null ? null : (
               <button
                 type="button"
                 data-testid="expense-end-clear"
                 className={ACTION}
-                disabled={!hydrated}
+                disabled={!hydrated || pending}
                 onClick={() => {
-                  setError(null);
-                  setProposal({ endDate: null });
+                  propose(null);
                 }}
               >
                 Remove end date
@@ -1017,20 +1064,7 @@ function EndsOn({
               className={PRIMARY}
               disabled={!hydrated || pending}
               onClick={() => {
-                setError(null);
-                startTransition(async () => {
-                  const result = await updateTemplateAction({
-                    templateId: source.templateId,
-                    expectedVersion: source.version,
-                    endDate: proposal.endDate,
-                  });
-                  if (!result.ok) {
-                    setError(result.error.message);
-                    return;
-                  }
-                  onDone();
-                  router.refresh();
-                });
+                save(proposal.endDate);
               }}
             >
               {pending ? 'Saving…' : 'Confirm'}
@@ -1049,6 +1083,20 @@ function EndsOn({
           </div>
         </div>
       )}
+
+      <CorrectionHost
+        flow={correction}
+        labels={{
+          accounts: {},
+          categories: {},
+          locale: formatting.locale,
+          templates: { [source.templateId]: source.name },
+        }}
+        onCommitted={() => {
+          onDone();
+          router.refresh();
+        }}
+      />
     </Panel>
   );
 }

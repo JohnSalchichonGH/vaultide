@@ -487,6 +487,17 @@ export function endDateChangeOf(
   };
 }
 
+/**
+ * Whether a change reaches a completed month, so the review replaces the
+ * editor's own confirmation (ADR 0013 §2).
+ *
+ * Only the first step: the server decides, and a change this says `false` for
+ * still opens the review if a month has ended since the page was read.
+ */
+export function reachesCompletedMonth(change: EndDateChange): boolean {
+  return change.kind !== 'unchanged' && change.affected !== null;
+}
+
 /** The confirmation's sentences, before a change to the schedule is applied. */
 export function endDateChangeSummary(
   change: Exclude<EndDateChange, { readonly kind: 'unchanged' }>,
