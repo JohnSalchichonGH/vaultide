@@ -477,6 +477,18 @@ success". 17.1's configuration does not say how. Five decisions settle it.
    the library, with a timing floor besides; a wrapper of ours could only
    restate it.
 
+   A failed send is the exception, and it is handled on our side. Without a
+   session, the library rethrows a mailer error after its floor, and only for
+   a waiting account, so a provider outage, or a rejected recipient, would
+   have answered that address with an error and every other with success.
+   `sendVerificationEmail` catches the error and logs it with 18.2's fields
+   only: the action, the user id and the error code. Neither the address nor
+   the link, which carries the token, reaches the log. Since `59240d9` the
+   reset request's send goes through the same path. There, Better Auth
+   already swallowed a failure into its own log, so the reset request's
+   answer was already the same for every address; what that commit changes is
+   that the failure reaches the application's log.
+
 2. **It has a limit of its own, the reset request's: three per fifteen
    minutes.** Like the reset request, it sends mail to whatever address an
    anonymous caller names, so it takes the same limit. Without a rule of its
@@ -486,6 +498,11 @@ success". 17.1's configuration does not say how. Five decisions settle it.
    minute is still 45 messages every fifteen minutes from one client, and
    ADR 0003 counts every anonymous route that sends mail against Resend's free
    tier of 100 messages a day.
+
+   The limit counts requests per client, as the reset request's does. It does
+   not cap the mail one address receives: several clients can each ask for
+   three links to the same address every fifteen minutes. No per-address cap
+   is added.
 
 3. **`sendOnSignIn` stays off.** It would send a new link on every sign-in with
    the right password, bounded only by sign-in's five a minute. Whoever set
@@ -512,7 +529,9 @@ success". 17.1's configuration does not say how. Five decisions settle it.
    An address already confirmed whose link is followed again also lands here,
    with no `?error=` and no session, because Better Auth's verification tokens
    are signed, not stored, and an unexpired one is still valid. The form's
-   footer points that visitor to sign-in.
+   footer points that visitor to sign-in. For the same reason, the
+   explanation names only the causes that can reach it: a link that has
+   expired or is not valid.
 
 **Two ways in.** The sign-up card keeps its sign-in hint, which is there for an
 address that already has an account, and adds a link to the form. The sign-in
@@ -531,9 +550,15 @@ account; an unknown address and a confirmed one get the same answer as a
 waiting one, after at least 500 ms each, and nothing is sent to them; the
 right password on an unconfirmed account is refused with
 `EMAIL_NOT_VERIFIED` and sends nothing, while a wrong one is refused as any
-wrong password is. `security.test.ts` asserts the 429 on the fourth request
-and a retry wait longer than a minute: Better Auth's built-in rule would also
-refuse the fourth request, but would ask for a wait of at most a minute.
-`auth.spec.ts` follows a broken link to the form, sends a new link, and
-follows it to onboarding, signed in; signing in before confirming shows the
-new message and leads to the form.
+wrong password is. `auth.test.ts` → *a send that fails says nothing about the
+address*, with a mailer that fails on demand: a resend for a waiting account,
+a sign-up for a new address and a reset request for a registered one each
+answer as the same request for another address does, and each failure is
+logged once with 18.2's fields, without the address or the token.
+`security.test.ts` asserts the 429 on the fourth request and a retry wait
+longer than a minute: Better Auth's built-in rule would also refuse the fourth
+request, but would ask for a wait of at most a minute. `auth.spec.ts` follows
+a broken link to the form, sends a new link, and follows it to onboarding,
+signed in; signing in before confirming shows the new message and leads to
+the form; an entry that is not an email address is refused on the page, and
+nothing is sent.
