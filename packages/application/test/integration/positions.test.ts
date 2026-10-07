@@ -204,6 +204,34 @@ describe('the two date rules (M5, R15)', () => {
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
   });
 
+  it('refuses to confirm a 30 September snapshot as the statement on 30 September', async () => {
+    // §25 Phase 3, Acceptance: "no month-end balance can be entered until
+    // 1 Oct". Confirming is the other way to enter one, and the same rule holds.
+    const account = await makeCashAccount(SEPT_30);
+    const snapshot = await recordValuation(deps(), SEPT_30, {
+      positionId: account.id,
+      valuedOn: '2026-09-30',
+      amount: '8055.00',
+      datePrecision: 'exact',
+    });
+
+    await expect(
+      confirmMonthEnd(deps(), SEPT_30, {
+        valuationId: snapshot.id,
+        expectedVersion: snapshot.version,
+      }),
+    ).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+      fieldErrors: { datePrecision: ['This month has not ended yet.'] },
+    });
+
+    // The snapshot is as it was: still an ordinary snapshot, at the same version.
+    const [stored] = await positionHistory(deps(), SEPT_30, account.id);
+    expect(stored?.id).toBe(snapshot.id);
+    expect(stored?.datePrecision).toBe('exact');
+    expect(stored?.version).toBe(snapshot.version);
+  });
+
   it('accepts it on 1 October, and lets the 30 September snapshot be confirmed', async () => {
     // §26 Phase 2, item 3.
     const account = await makeCashAccount(SEPT_30);
