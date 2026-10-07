@@ -420,6 +420,35 @@ describe('a send that fails says nothing about the address (17.3, 18.2, ADR 0002
     expect(logs).not.toContain(registered);
     expect(logs).not.toContain(tokenFromUrl(attempted.at(-2)?.text ?? ''));
   });
+
+  it('answers a reset request for a registered address as for an unknown one, and logs the failure', async () => {
+    const { client, attempted, logLines, fail } = authWithFailingMail();
+    const registered = unique('reset-fails');
+    await client.post('/sign-up/email', { name: 'Test', email: registered, password: PASSWORD });
+    fail();
+
+    const answers = [];
+    for (const email of [registered, unique('reset-fails-unknown')]) {
+      const response = await client.post('/request-password-reset', {
+        email,
+        redirectTo: `${TEST_BASE_URL}/reset`,
+      });
+      answers.push({ status: response.status, body: response.body });
+    }
+    // Better Auth already swallows a failed send on this route, into its own
+    // log; the answer is pinned so that a change there cannot go unnoticed.
+    expect(answers[0]?.status).toBe(200);
+    expect(answers[1]).toEqual(answers[0]);
+
+    const failed = attempted.at(-1);
+    expect([failed?.to, failed?.tag]).toEqual([registered, 'reset-password']);
+    expect(failuresLogged(logLines).map((record) => record.action)).toEqual([
+      'auth.sendResetPassword',
+    ]);
+    const logs = logLines.join('\n');
+    expect(logs).not.toContain(registered);
+    expect(logs).not.toContain(tokenFromUrl(failed?.text ?? ''));
+  });
 });
 
 describe('password reset (17.1)', () => {

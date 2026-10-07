@@ -100,8 +100,10 @@ export function createAuth(deps: AuthDependencies) {
    * Asked anonymously, Better Auth's resend sends only to an account waiting
    * for confirmation, and rethrows a failed send after its 500 ms floor. A
    * failure that reached the caller would tell them the address has such an
-   * account, so every failure ends here. The record has 18.2's fields only:
-   * neither the address nor the link, which carries a token, reaches the log.
+   * account, so every failure ends here. The reset request sends only to an
+   * address with an account, and goes through the same path. The record has
+   * 18.2's fields only: neither the address nor the link, which carries a
+   * token, reaches the log.
    */
   async function sendOrLog(action: string, userId: string, message: MailMessage): Promise<void> {
     try {
@@ -147,7 +149,14 @@ export function createAuth(deps: AuthDependencies) {
       revokeSessionsOnPasswordReset: true,
 
       async sendResetPassword({ user, url }) {
-        await mailer.send(resetPasswordEmail({ to: user.email, name: user.name, url }));
+        // 17.3: "forgot-password always returns success". Better Auth sends
+        // only to an address with an account, so a failure that reached the
+        // caller would say the address has one.
+        await sendOrLog(
+          'auth.sendResetPassword',
+          user.id,
+          resetPasswordEmail({ to: user.email, name: user.name, url }),
+        );
       },
 
       /**
