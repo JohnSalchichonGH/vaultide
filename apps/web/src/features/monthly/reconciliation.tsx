@@ -7,6 +7,7 @@ import type { MoneyDto } from '@vaultide/finance/client';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { MoneyText } from '@/components/finance/money-text';
+import { ScrollRegion } from '@/components/ui/scroll-region';
 import {
   AS_OF_STATE_LABEL,
   CLOSE_STATE_LABEL,
@@ -92,7 +93,7 @@ function IdentityTable({
   ];
 
   return (
-    <div className="overflow-x-auto">
+    <ScrollRegion label={`The ${currency} reconciliation identity`} className="overflow-x-auto">
       <table className="w-full border-collapse text-[length:var(--text-table)]">
         <caption className="sr-only">The {currency} reconciliation identity</caption>
         <thead>
@@ -119,7 +120,7 @@ function IdentityTable({
           ))}
         </tbody>
       </table>
-    </div>
+    </ScrollRegion>
   );
 }
 
@@ -257,7 +258,7 @@ export function CompletedBucket({
           missingReason={described.figureReason}
         />
         {bucket.accounts.length === 0 ? null : (
-          <div className="overflow-x-auto">
+          <ScrollRegion label={`The ${currency} accounts in the month`} className="overflow-x-auto">
             <table className="w-full border-collapse text-[length:var(--text-table)]">
               <caption className="sr-only">The {currency} accounts in the month</caption>
               <thead>
@@ -292,7 +293,7 @@ export function CompletedBucket({
                 ))}
               </tbody>
             </table>
-          </div>
+          </ScrollRegion>
         )}
         <OutsideIdentity additional={bucket.additionalSpending} thirdParty={bucket.thirdPartyPaid} currency={currency} formatting={formatting} />
         <Explanation lines={bucket.explanation} />
@@ -326,7 +327,7 @@ export function MonthToDateBucket({
           missingReason={described.figureReason}
         />
         {bucket.accounts.length === 0 ? null : (
-          <div className="overflow-x-auto">
+          <ScrollRegion label={`The ${currency} accounts through the common date`} className="overflow-x-auto">
             <table className="w-full border-collapse text-[length:var(--text-table)]">
               <caption className="sr-only">The {currency} accounts through the common date</caption>
               <thead>
@@ -356,7 +357,7 @@ export function MonthToDateBucket({
                 ))}
               </tbody>
             </table>
-          </div>
+          </ScrollRegion>
         )}
         <OutsideIdentity additional={bucket.additionalSpending} thirdParty={bucket.thirdPartyPaid} currency={currency} formatting={formatting} />
         <Explanation lines={bucket.explanation} />

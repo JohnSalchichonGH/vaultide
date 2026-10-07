@@ -4,6 +4,7 @@ import type { MoneyDto } from '@vaultide/finance/client';
 import { Badge } from '@/components/ui/badge';
 import { MoneyText } from '@/components/finance/money-text';
 import { IncomeSourceChart } from '@/components/charts/income-source-chart';
+import { ScrollRegion } from '@/components/ui/scroll-region';
 import { META, type Formatting } from '@/features/spending/figure';
 import { dayTitle, monthTitle } from '@/features/monthly/presentation';
 import { incomeKindLabel } from '@/features/monthly/income-presentation';
@@ -110,7 +111,7 @@ export function AmountHistory({ page, formatting }: { readonly page: IncomeSourc
           View as table
         </summary>
         <div className="space-y-4 pt-2">
-          <div className="relative overflow-x-auto">
+          <ScrollRegion label={`The amounts ${page.source.name} was set to, oldest first`} className="relative overflow-x-auto">
             <table className={TABLE} data-testid="source-terms">
               <caption className="sr-only">The amounts {page.source.name} was set to, oldest first</caption>
               <thead>
@@ -134,13 +135,13 @@ export function AmountHistory({ page, formatting }: { readonly page: IncomeSourc
                 ))}
               </tbody>
             </table>
-          </div>
+          </ScrollRegion>
           {page.arrivals.length === 0 ? (
             <p className={META} data-testid="source-arrivals-none">
               Nothing has been received from this source yet.
             </p>
           ) : (
-            <div className="relative overflow-x-auto">
+            <ScrollRegion label={`What arrived for each of ${page.source.name}’s payments, against the amount set for it`} className="relative overflow-x-auto">
               <table className={TABLE} data-testid="source-arrivals">
                 <caption className="sr-only">What arrived for each of {page.source.name}’s payments, against the amount set for it</caption>
                 <thead>
@@ -168,7 +169,7 @@ export function AmountHistory({ page, formatting }: { readonly page: IncomeSourc
                   ))}
                 </tbody>
               </table>
-            </div>
+            </ScrollRegion>
           )}
           {gross.show ? <WithoutGross count={gross.withoutGross} testId="source-history-without-gross" /> : null}
         </div>

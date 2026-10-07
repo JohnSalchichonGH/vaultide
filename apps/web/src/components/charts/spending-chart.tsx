@@ -1,3 +1,5 @@
+import { ScrollRegion } from '@/components/ui/scroll-region';
+
 /**
  * The Spending history chart (blueprint 15.2 "Spending", 16.2, 16.3, 16.6; ADR
  * 0008 §8, §9).
@@ -77,7 +79,7 @@ export function SpendingChart({
 
   return (
     <figure className="space-y-2" data-testid="spending-chart">
-      <div className="relative overflow-x-auto" data-testid="spending-chart-scroll">
+      <ScrollRegion label="Chart of spending by month" className="relative overflow-x-auto" data-testid="spending-chart-scroll">
         <div role="img" aria-label={summary} className="w-max min-w-full">
           <div className="grid items-end gap-x-1 border-b" style={{ ...grid, height: `${String(HEIGHT + 8)}px` }} aria-hidden="true">
             {columns.map((column) => (
@@ -158,7 +160,7 @@ export function SpendingChart({
             </div>
           )}
         </div>
-      </div>
+      </ScrollRegion>
       <figcaption className="flex flex-wrap gap-x-4 gap-y-1 text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]" data-testid="spending-chart-legend">
         <span><span aria-hidden="true" className="mr-1 inline-block size-2 bg-[var(--color-accent)]" />Known</span>
         <span><span aria-hidden="true" className="mr-1 inline-block size-2 bg-[color-mix(in_oklab,var(--color-accent)_40%,transparent)]" />Unclassified</span>

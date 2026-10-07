@@ -1,5 +1,6 @@
 import type { NetWorthPointDto } from '@vaultide/application';
 import { MoneyText } from '@/components/finance/money-text';
+import { ScrollRegion } from '@/components/ui/scroll-region';
 
 /**
  * The twelve-month net-worth chart (blueprint 15.4, 16.3, 16.6).
@@ -175,7 +176,7 @@ export function NetWorthChart({
         <summary className="cursor-pointer text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">
           View as table
         </summary>
-        <div className="mt-2 overflow-x-auto">
+        <ScrollRegion label={`${label}, as a table`} className="mt-2 overflow-x-auto">
           <table className="w-full border-collapse text-[length:var(--text-table)]">
             <caption className="sr-only">{summary}</caption>
             <thead>
@@ -217,7 +218,7 @@ export function NetWorthChart({
               })}
             </tbody>
           </table>
-        </div>
+        </ScrollRegion>
       </details>
     </figure>
   );

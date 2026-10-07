@@ -1,3 +1,5 @@
+import { ScrollRegion } from '@/components/ui/scroll-region';
+
 /**
  * The Income year chart (blueprint 15.2 "Income", 16.2, 16.6; ADR 0012 D6).
  *
@@ -72,7 +74,7 @@ export function IncomeChart({
 
   return (
     <figure className="space-y-2" data-testid="income-chart">
-      <div className="relative overflow-x-auto" data-testid="income-chart-scroll">
+      <ScrollRegion label="Chart of income by month" className="relative overflow-x-auto" data-testid="income-chart-scroll">
         <div role="img" aria-label={summary} className="w-max min-w-full">
           <div className="grid items-end gap-x-1 border-b" style={{ ...grid, height: `${String(HEIGHT + 8)}px` }} aria-hidden="true">
             {columns.map((column) => (
@@ -123,7 +125,7 @@ export function IncomeChart({
             ))}
           </div>
         </div>
-      </div>
+      </ScrollRegion>
       <figcaption
         className="flex flex-wrap gap-x-4 gap-y-1 text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]"
         data-testid="income-chart-legend"
