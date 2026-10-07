@@ -587,6 +587,32 @@ describe('an account whose first balance lands in the month', () => {
     expect(bucket?.issues.find((i) => i.key === 'first_balance')?.class).toBe('info');
   });
 
+  it('explains the arithmetic over the included account alone', () => {
+    // BBVA 8,055 → 3,055 and the 5,000 it sent to Savings. Savings is in the
+    // bucket but excluded, so the change is BBVA's −5,000 across one account,
+    // and only BBVA's side of the transfer counts: 0 in + 0 moved in − 5,000
+    // moved out − (−5,000) change = 0 spent, none of it unknown.
+    const bucket = reconcileCompletedMonth(
+      input({
+        cashAccounts: [
+          account(BBVA, 'BBVA', [
+            monthEnd(BBVA, '2026-08-31', '8055'),
+            monthEnd(BBVA, '2026-09-30', '3055'),
+          ]),
+          newlyTracked(),
+        ],
+        transfers: [transfer({ fromAmount: new Decimal('5000'), toAmount: new Decimal('5000') })],
+      }),
+    ).buckets[0];
+
+    expect(bucket?.accounts).toHaveLength(2);
+    expect(bucket?.explanation).toEqual([
+      'Cash change = -5000 EUR across 1 account(s).',
+      'Tracked total spending = 0 in + 0 moved in − 5000 moved out − -5000 change = 0.',
+      'Unclassified = 0 − 0 known = 0.',
+    ]);
+  });
+
   it('never fabricates an opening balance for it', () => {
     const bucket = reconcileCompletedMonth(input({ cashAccounts: [newlyTracked()] })).buckets[0];
     expect(bucket?.accounts[0]?.opening.amount).toBeUndefined();

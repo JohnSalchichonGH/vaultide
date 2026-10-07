@@ -245,6 +245,29 @@ describe('the focus summary', () => {
     expect(html).toMatch(/href="\/monthly\/2026-08#accounts"/u);
   });
 
+  it('explains an estimated month in the words a user reads (§26 row 3)', () => {
+    const html = summary(
+      completedFocus({
+        status: 'estimated',
+        buckets: [
+          {
+            currency: 'EUR',
+            status: 'estimated',
+            cause: null,
+            accountsMissingEvidence: [],
+            firstBalanceAccounts: ['Savings'],
+            unexplainedInflow: null,
+          },
+        ],
+      }),
+    );
+    expect(html).toContain('>Estimated<');
+    expect(html).toContain(
+      'An account started being tracked this month; its earlier movements are not included, so the figures are estimates.',
+    );
+    expect(html).toContain('Savings started being tracked this month; its earlier movements are not included.');
+  });
+
   it('says a month no cash account took part in is not tracked, with nothing to fix', () => {
     const html = summary(
       completedFocus({

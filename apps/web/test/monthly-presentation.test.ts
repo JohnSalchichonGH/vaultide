@@ -538,6 +538,27 @@ describe('why a bucket is unavailable', () => {
   });
 });
 
+describe('an estimated bucket', () => {
+  it('says what it leaves out, in the words a user reads (§26 row 3)', () => {
+    const html = renderToStaticMarkup(
+      createElement(CompletedBucket, {
+        bucket: completedBucket({
+          status: 'estimated',
+          issues: [firstBalance],
+          explanation: ['Cash change = -5000 EUR across 1 account(s).'],
+        }),
+        formatting,
+      }),
+    );
+    expect(html).toContain('>Estimated<');
+    expect(meaningIn(html, 'EUR')).toBe(
+      'An account started being tracked this month; its earlier movements are not included.',
+    );
+    expect(html).toContain('How this was calculated');
+    expect(html).toContain('Cash change = -5000 EUR across 1 account(s).');
+  });
+});
+
 /* -------------------------------------------------------------------------- */
 /* One key, two readings                                                       */
 /* -------------------------------------------------------------------------- */

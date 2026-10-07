@@ -97,7 +97,13 @@ const issues = presentIssues([], []);
  * reconciliation status, completeness and review, and nothing else; the rest of
  * the page DTO belongs to the sections below it.
  */
-function completed(reporting: ReportingCashFlowFiguresDto): string {
+function completed(
+  reporting: ReportingCashFlowFiguresDto,
+  reconciliation: Pick<CompletedMonthlyPageDto['reconciliation'], 'status' | 'buckets'> = {
+    status: 'unavailable',
+    buckets: [],
+  },
+): string {
   const page = {
     kind: 'completed',
     month: '2026-09',
@@ -105,8 +111,8 @@ function completed(reporting: ReportingCashFlowFiguresDto): string {
     today: '2026-10-06',
     minorUnitsByCurrency: { EUR: 2, USD: 2 },
     review: { reviewedAt: null, dismissedIssueKeys: [] },
-    reconciliation: { month: '2026-09', status: 'unavailable', buckets: [] },
-    reporting: { ...reporting, month: '2026-09', monthStatus: 'unavailable' },
+    reconciliation: { month: '2026-09', ...reconciliation },
+    reporting: { ...reporting, month: '2026-09', monthStatus: reconciliation.status },
     completeness: {
       month: '2026-09',
       state: 'partial',
@@ -259,6 +265,26 @@ describe('the completed month’s Overview', () => {
     expect(figure).toContain('Estimated');
     expect(figure).toContain('average rate');
     expect(figure).toContain('earlier day');
+  });
+});
+
+describe('the completed month’s status line', () => {
+  it('explains an estimated month in the words a user reads (§26 row 3)', () => {
+    // A month with one bucket, estimated because an account was first tracked
+    // in it. The line is the status line's own text, not a constant compared
+    // with itself.
+    const html = completed(figures(STATES.available), {
+      status: 'estimated',
+      buckets: [{ currency: 'EUR', status: 'estimated' }] as unknown as CompletedMonthlyPageDto['reconciliation']['buckets'],
+    });
+    const line = html.slice(
+      html.indexOf('data-testid="reconciliation-status"'),
+      html.indexOf('</div>', html.indexOf('data-testid="reconciliation-status"')),
+    );
+    expect(line).toContain('>Estimated<');
+    expect(line).toContain(
+      'An account started being tracked this month; its earlier movements are not included.',
+    );
   });
 });
 
