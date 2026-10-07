@@ -1,7 +1,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { USER_OWNED_TABLES, authSession, eq, withoutUser } from '@vaultide/db';
 import { generateSync } from 'otplib';
-import { createAuthClient, tokenFromUrl, type AuthClient } from '../helpers/auth-client';
+import {
+  createAuthClient,
+  tokenFromUrl,
+  urlFromMessage,
+  type AuthClient,
+  type AuthResponse,
+} from '../helpers/auth-client';
 import { createHarness, TEST_BASE_URL, type Harness } from '../helpers/harness';
 import { SESSION_EXPIRES_IN, SESSION_FRESH_AGE } from '../../src/auth/config';
 import { requireSession, getSessionContext } from '../../src/auth/session';
@@ -51,6 +57,24 @@ async function signUpVerified(email: string, name = 'Test Person'): Promise<stri
   if (message === undefined) throw new Error('no verification email');
   await client.get(`/verify-email?token=${encodeURIComponent(tokenFromUrl(message.text))}`);
   return email;
+}
+
+/** The link in the latest verification message to this address. */
+function verificationLink(email: string): URL {
+  const message = harness.mailer.latestFor(email, 'verification');
+  if (message === undefined) throw new Error('no verification email');
+  return new URL(urlFromMessage(message.text));
+}
+
+/** Follow a captured link as a browser would, through the auth handler. */
+async function follow(through: AuthClient, link: URL): Promise<AuthResponse> {
+  expect(link.pathname.startsWith('/api/auth/')).toBe(true);
+  return through.get(`${link.pathname.slice('/api/auth'.length)}${link.search}`);
+}
+
+/** Every message sent to this address since the mailbox was last cleared. */
+function messagesTo(email: string): readonly { readonly tag: string }[] {
+  return harness.mailer.messages.filter((message) => message.to === email);
 }
 
 beforeAll(async () => {
@@ -158,6 +182,112 @@ describe('enumeration resistance (17.3)', () => {
       redirectTo: `${TEST_BASE_URL}/reset`,
     });
     expect(response.status).toBe(200);
+    expect(harness.mailer.messages).toHaveLength(0);
+  });
+});
+
+/** A real token with one character of its signature changed. */
+function alterSignature(token: string): string {
+  const parts = token.split('.');
+  const signature = parts[2];
+  if (parts.length !== 3 || signature === undefined || signature === '') {
+    throw new Error('not a JWT');
+  }
+  const first = signature.startsWith('A') ? 'B' : 'A';
+  return `${parts[0] ?? ''}.${parts[1] ?? ''}.${first}${signature.slice(1)}`;
+}
+
+describe('a new confirmation link (17.3, ADR 0002 decision 21)', () => {
+  it('lands every link on /verify: a sign-up’s and a resend’s', async () => {
+    const email = unique('landing');
+    await client.post('/sign-up/email', { name: 'Test', email, password: PASSWORD });
+    expect(verificationLink(email).searchParams.get('callbackURL')).toBe('/verify');
+
+    harness.mailer.clear();
+    expect((await client.post('/send-verification-email', { email })).status).toBe(200);
+    expect(verificationLink(email).searchParams.get('callbackURL')).toBe('/verify');
+  });
+
+  it('redirects a followed link to /verify, and a broken one to /verify?error=', async () => {
+    const email = unique('follow');
+    await client.post('/sign-up/email', { name: 'Test', email, password: PASSWORD });
+    const link = verificationLink(email);
+
+    const broken = new URL(link);
+    broken.searchParams.set('token', alterSignature(link.searchParams.get('token') ?? ''));
+    const refused = await follow(client, broken);
+    expect(refused.status).toBe(302);
+    expect(refused.headers.get('location')).toBe('/verify?error=INVALID_TOKEN');
+    expect(client.cookies.size).toBe(0);
+
+    const followed = await follow(client, link);
+    expect(followed.status).toBe(302);
+    expect(followed.headers.get('location')).toBe('/verify');
+    // 17.1 `autoSignInAfterVerification`: the redirect carries a session.
+    expect(client.cookies.size).toBeGreaterThan(0);
+  });
+
+  it('sends one new link to an account waiting for confirmation, and that link confirms it', async () => {
+    const email = unique('resend');
+    await client.post('/sign-up/email', { name: 'Test', email, password: PASSWORD });
+    harness.mailer.clear();
+
+    expect((await client.post('/send-verification-email', { email })).status).toBe(200);
+    expect(messagesTo(email).map((message) => message.tag)).toEqual(['verification']);
+
+    expect((await follow(client, verificationLink(email))).status).toBe(302);
+    client.clearCookies();
+    expect((await client.post('/sign-in/email', { email, password: PASSWORD })).status).toBe(200);
+  });
+
+  it('answers an unknown address and a confirmed one as it answers a waiting one, and sends them nothing', async () => {
+    const waiting = unique('waiting');
+    await client.post('/sign-up/email', { name: 'Test', email: waiting, password: PASSWORD });
+    const confirmed = await signUpVerified(unique('confirmed'));
+    const unknown = unique('unknown');
+    harness.mailer.clear();
+
+    // Without a session, as somebody asking from `/verify` is. With one, the
+    // endpoint answers about that session's own address instead.
+    const anonymous = createAuthClient(harness.services.auth, TEST_BASE_URL);
+    for (const email of [waiting, confirmed, unknown]) {
+      const started = performance.now();
+      const response = await anonymous.post('/send-verification-email', { email });
+      const elapsed = performance.now() - started;
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ status: true });
+      // Better Auth holds every anonymous answer to at least 500 ms, so a
+      // message being sent cannot be told apart by the time it takes. The
+      // margin covers a timer that fires a millisecond early.
+      expect(elapsed).toBeGreaterThanOrEqual(490);
+    }
+
+    expect(harness.mailer.messages.map((message) => [message.to, message.tag])).toEqual([
+      [waiting, 'verification'],
+    ]);
+  });
+
+  it('refuses the right password on an unconfirmed account with EMAIL_NOT_VERIFIED, and sends nothing', async () => {
+    const email = unique('no-resend-on-sign-in');
+    await client.post('/sign-up/email', { name: 'Test', email, password: PASSWORD });
+    harness.mailer.clear();
+
+    // The refusal names the reason only once the password has matched, so the
+    // sign-in form's message for it tells nothing to somebody without it.
+    const wrong = await client.post<{ code?: string }>('/sign-in/email', {
+      email,
+      password: 'not-the-password-at-all',
+    });
+    expect(wrong.status).toBe(401);
+    expect(wrong.body.code).toBe('INVALID_EMAIL_OR_PASSWORD');
+
+    const right = await client.post<{ code?: string }>('/sign-in/email', { email, password: PASSWORD });
+    expect(right.status).toBe(403);
+    expect(right.body.code).toBe('EMAIL_NOT_VERIFIED');
+    expect(client.cookies.size).toBe(0);
+
+    // `sendOnSignIn` is off: signing in never sends a link.
     expect(harness.mailer.messages).toHaveLength(0);
   });
 });

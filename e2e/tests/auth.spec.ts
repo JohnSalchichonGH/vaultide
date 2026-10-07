@@ -27,11 +27,17 @@ function uniqueEmail(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}@example.test`;
 }
 
-/** The most recent captured message of a kind, waiting briefly for delivery. */
+/**
+ * The most recent captured message of a kind, waiting briefly for delivery.
+ *
+ * It returns as soon as there are more than `after` such messages: by default
+ * the first one, and with `after` set, one sent after those already counted.
+ */
 async function waitForMessage(
   request: APIRequestContext,
   to: string,
   tag: string,
+  after = 0,
 ): Promise<CapturedMessage> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const response = await request.get(
@@ -42,16 +48,27 @@ async function waitForMessage(
     );
     const body = (await response.json()) as { messages: CapturedMessage[] };
     const latest = body.messages.at(-1);
-    if (latest !== undefined) return latest;
+    if (latest !== undefined && body.messages.length > after) return latest;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw new Error(`No ${tag} message for ${to}`);
+  throw new Error(`No ${tag} message for ${to} after ${String(after)}`);
 }
 
 function linkFrom(message: CapturedMessage): string {
   const match = /https?:\/\/\S+/u.exec(message.text);
   if (match === null) throw new Error('No link in the message.');
   return match[0];
+}
+
+/** The same link with one character of its token's signature changed. */
+function withBrokenToken(link: string): string {
+  const url = new URL(link);
+  const parts = (url.searchParams.get('token') ?? '').split('.');
+  const signature = parts[2] ?? '';
+  if (parts.length !== 3 || signature === '') throw new Error('No token in the link.');
+  const first = signature.startsWith('A') ? 'B' : 'A';
+  url.searchParams.set('token', `${parts[0] ?? ''}.${parts[1] ?? ''}.${first}${signature.slice(1)}`);
+  return url.href;
 }
 
 /**
@@ -221,6 +238,56 @@ test.describe('sign-up, verification and settings', () => {
     await expect(page.getByTestId('base-currency')).toHaveValue('EUR');
     await expect(page.getByTestId('reporting-currency-setting')).toHaveValue('GBP');
     await expect(page.getByTestId('count-additional-spending')).not.toBeChecked();
+  });
+});
+
+test.describe('a new confirmation link (ADR 0002 decision 21)', () => {
+  test('a broken link explains itself and sends a new one, which signs the user in', async ({
+    page,
+    request,
+    baseURL,
+  }) => {
+    const email = uniqueEmail('e2e-broken-link');
+    await signUp(page, email);
+    await expect(page.getByRole('link', { name: 'Send a new link' })).toHaveAttribute(
+      'href',
+      '/verify',
+    );
+    const first = await waitForMessage(request, email, 'verification');
+
+    // A real link with its token altered.
+    await gotoAfterRefresh(page, withBrokenToken(linkFrom(first)));
+    await expect(page).toHaveURL(/\/verify\?error=/u);
+    await expect(page.getByRole('heading', { name: 'That link did not work' })).toBeVisible();
+
+    await formReady(page, 'Send a new link');
+    await fillField(page, 'Email address', email);
+    await page.getByRole('button', { name: 'Send a new link' }).click();
+    await expect(page.getByTestId('auth-success')).toBeVisible();
+
+    const second = await waitForMessage(request, email, 'verification', 1);
+    await gotoAfterRefresh(page, linkFrom(second));
+
+    // 17.1 `autoSignInAfterVerification`: the link lands on `/verify` signed
+    // in, and the `(auth)` layout sends somebody who has not finished
+    // onboarding into the wizard.
+    await expect(page).toHaveURL(new URL('/onboarding/1', baseURL).href);
+    await expect(page.getByTestId('onboarding-timezone')).toBeVisible();
+  });
+
+  test('signing in before confirming says so, and leads to a new link', async ({ page }) => {
+    const email = uniqueEmail('e2e-unconfirmed');
+    await signUp(page, email);
+
+    await signIn(page, email);
+    const refusal = page.getByTestId('auth-error');
+    await expect(refusal).toContainText('This address has not been confirmed yet.');
+
+    await waitForRouter(page);
+    await refusal.getByRole('link', { name: 'send a new link' }).click();
+    await expect(page).toHaveURL(/\/verify$/u);
+    await expect(page.getByRole('heading', { name: 'Get a new confirmation link' })).toBeVisible();
+    await formReady(page, 'Send a new link');
   });
 });
 

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { sql, withUser, withoutUser } from '@vaultide/db';
-import { createAuthClient, tokenFromUrl } from '../helpers/auth-client';
+import { createAuthClient, tokenFromUrl, type AuthResponse } from '../helpers/auth-client';
 import { createHarness, TEST_BASE_URL, type Harness } from '../helpers/harness';
 import { AUTH_RATE_LIMITS, AUTH_RATE_LIMIT_DEFAULT } from '../../src/auth/config';
 import { requireAuthoritativeSession, requireSession } from '../../src/auth/session';
@@ -95,6 +95,28 @@ describe('authentication rate limits (17.1, 17.3)', () => {
 
     expect(statuses.at(-1)).toBe(429);
     expect(AUTH_RATE_LIMITS['/request-password-reset']).toEqual({ window: 900, max: 3 });
+  });
+
+  it('limits new confirmation links as it limits reset requests (ADR 0002 decision 21)', async () => {
+    const client = createAuthClient(harness.services.auth, TEST_BASE_URL);
+
+    const responses: AuthResponse[] = [];
+    for (
+      let attempt = 0;
+      attempt < AUTH_RATE_LIMITS['/send-verification-email'].max + 1;
+      attempt += 1
+    ) {
+      responses.push(
+        await client.post('/send-verification-email', { email: unique('resend-limit') }),
+      );
+    }
+
+    expect(responses.at(-1)?.status).toBe(429);
+    expect(AUTH_RATE_LIMITS['/send-verification-email']).toEqual({ window: 900, max: 3 });
+    // Better Auth's built-in rule for this route is three a minute, which
+    // would answer the fourth request 429 as well. Only the fifteen-minute
+    // window asks for a wait longer than a minute.
+    expect(Number(responses.at(-1)?.headers.get('X-Retry-After'))).toBeGreaterThan(60);
   });
 
   it('keeps the counters in the database, so they survive a cold start', async () => {

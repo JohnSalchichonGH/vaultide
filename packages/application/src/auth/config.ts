@@ -40,6 +40,12 @@ export const SESSION_FRESH_AGE = 600;
 export const TOKEN_EXPIRES_IN = 60 * 60;
 /** 17.1: the TOTP challenge locks the account after five wrong codes. */
 export const TOTP_MAX_FAILED_ATTEMPTS = 5;
+/**
+ * Where every verification link lands (ADR 0002 decision 21): the page that
+ * explains a link that did not work and sends a new one. A valid link signs
+ * the user in first, so the `(auth)` layout sends them on from there.
+ */
+const VERIFY_PAGE = '/verify';
 
 export interface AuthDependencies {
   readonly db: Database;
@@ -66,11 +72,18 @@ export interface AuthDependencies {
  * The blueprint names the reset-request route `/forget-password`; Better Auth
  * 1.7 calls the same endpoint `/request-password-reset`. The limit — three
  * attempts per fifteen minutes — is unchanged.
+ *
+ * `/send-verification-email`, which sends a new confirmation link, is not in
+ * 17.1's table; 17.3 asks for it to be rate-limited. It takes the reset
+ * request's limit, because it too sends mail to whatever address an anonymous
+ * caller names (ADR 0002 decision 21). Without a rule here, Better Auth would
+ * apply its built-in three a minute.
  */
 export const AUTH_RATE_LIMITS = {
   '/sign-in/email': { window: 60, max: 5 },
   '/sign-up/email': { window: 600, max: 3 },
   '/request-password-reset': { window: 900, max: 3 },
+  '/send-verification-email': { window: 900, max: 3 },
   '/two-factor/verify-totp': { window: 300, max: 5 },
 } as const;
 
@@ -136,12 +149,22 @@ export function createAuth(deps: AuthDependencies) {
 
     emailVerification: {
       sendOnSignUp: true,
+      // Deliberately no `sendOnSignIn` (ADR 0002 decision 21). It would send a
+      // link on every sign-in with the right password, five a minute, to an
+      // address whoever set that password need not own. A new link is asked
+      // for at `/verify` instead, through the rate-limited resend.
       expiresIn: TOKEN_EXPIRES_IN,
       // Verifying is itself proof of control of the address, so the user lands
       // signed in rather than being asked for their password a second time.
       autoSignInAfterVerification: true,
       async sendVerificationEmail({ user, url }) {
-        await mailer.send(verificationEmail({ to: user.email, name: user.name, url }));
+        // Every link lands on `/verify`, whichever path sent it and whatever
+        // `callbackURL` its caller passed. It is set here, where the link is
+        // built, rather than by the forms: on the sign-in form a `callbackURL`
+        // would also be where every successful sign-in ends.
+        const link = new URL(url);
+        link.searchParams.set('callbackURL', VERIFY_PAGE);
+        await mailer.send(verificationEmail({ to: user.email, name: user.name, url: link.href }));
       },
     },
 

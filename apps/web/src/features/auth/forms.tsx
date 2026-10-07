@@ -20,9 +20,9 @@ import { returnPath } from './return-path';
  *  - the client's validation is the same Zod schema the server applies, so the
  *    user is told the rule before they submit rather than after, and bypassing
  *    the form changes nothing (20.1);
- *  - sign-up and password reset say the same thing whether or not the address
- *    exists (17.3 "Enumeration"): the interface must not become the oracle the
- *    API refuses to be;
+ *  - sign-up, password reset and a new confirmation link say the same thing
+ *    whether or not the address exists (17.3 "Enumeration"): the interface
+ *    must not become the oracle the API refuses to be;
  *  - errors are announced (`role="alert"`, `aria-describedby`) and every field
  *    has a visible label (16.6).
  */
@@ -33,6 +33,15 @@ function messageOf(error: unknown, fallback: string): string {
     if (typeof message === 'string' && message.length > 0) return message;
   }
   return fallback;
+}
+
+/**
+ * Better Auth's refusal of the right password for an address not yet
+ * confirmed. It is checked only after the password has matched, so saying so
+ * tells nothing to somebody who does not know the password.
+ */
+function isUnconfirmed(error: { status: number; code?: string | undefined }): boolean {
+  return error.status === 403 && error.code === 'EMAIL_NOT_VERIFIED';
 }
 
 export function AuthCard({
@@ -203,13 +212,20 @@ export function SignUpForm() {
           </>
         }
         footer={
-          <>
-            The message never arrived?{' '}
-            <Link className="underline" href="/sign-in">
-              Try signing in
-            </Link>{' '}
-            — you may already have an account with this address.
-          </>
+          <div className="space-y-2">
+            <p>
+              The message never arrived, or its link expired?{' '}
+              <Link className="underline" href="/verify">
+                Send a new link
+              </Link>
+            </p>
+            <p>
+              <Link className="underline" href="/sign-in">
+                Try signing in
+              </Link>{' '}
+              — you may already have an account with this address.
+            </p>
+          </div>
         }
       >
         <Notice tone="success">Account created if this address was not already registered.</Notice>
@@ -268,6 +284,8 @@ export function SignInForm() {
   const [needsSecondFactor, setNeedsSecondFactor] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Shown in place of `error`, never beside it: each attempt clears both.
+  const [unconfirmed, setUnconfirmed] = useState(false);
 
   function land(): void {
     // Only a page of this site is honoured: `returnPath` resolves `?next=`
@@ -291,12 +309,17 @@ export function SignInForm() {
   async function onSubmit(event: FormEvent): Promise<void> {
     event.preventDefault();
     setError(null);
+    setUnconfirmed(false);
     setPending(true);
 
     const result = await authClient.signIn.email({ email: email.trim().toLowerCase(), password });
     setPending(false);
 
     if (result.error) {
+      if (isUnconfirmed(result.error)) {
+        setUnconfirmed(true);
+        return;
+      }
       setError(
         messageOf(
           result.error,
@@ -386,6 +409,15 @@ export function SignInForm() {
     >
       <form onSubmit={(event) => void onSubmit(event)} className="space-y-4" noValidate>
         {error === null ? null : <Notice tone="error">{error}</Notice>}
+        {unconfirmed ? (
+          <Notice tone="error">
+            This address has not been confirmed yet. Use the link in the confirmation email, or{' '}
+            <Link className="underline" href="/verify">
+              send a new link
+            </Link>
+            .
+          </Notice>
+        ) : null}
         <Field
           label="Email address"
           type="email"
@@ -472,6 +504,96 @@ export function RequestResetForm() {
         />
         <SubmitButton pending={pending}>Send reset link</SubmitButton>
       </form>
+    </AuthCard>
+  );
+}
+
+/**
+ * Asks for a new confirmation link (17.3 "resend rate-limited", ADR 0002
+ * decision 21), on `/verify`.
+ *
+ * `linkFailed` is whether the visitor arrived from a link that did not work;
+ * otherwise they came to ask for one. Better Auth's resend, called without a
+ * session, answers the same whatever the address and sends only to an account
+ * waiting for confirmation, so this form says the same thing whatever it is
+ * given. It passes no `callbackURL`: the server sets every link's to `/verify`.
+ */
+export function ResendVerificationForm({ linkFailed }: { linkFailed: boolean }) {
+  const [email, setEmail] = useState('');
+  const [pending, setPending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onSubmit(event: FormEvent): Promise<void> {
+    event.preventDefault();
+    setError(null);
+    setPending(true);
+
+    const result = await authClient.sendVerificationEmail({ email: email.trim().toLowerCase() });
+    setPending(false);
+
+    // 17.3: the answer is the same whether or not the address has an account,
+    // and whether or not it is already confirmed. Only a rate limit or an
+    // outage produces an error here.
+    if (result.error) {
+      setError(messageOf(result.error, 'Too many attempts. Try again in a few minutes.'));
+      return;
+    }
+    setSent(true);
+  }
+
+  const signIn = (
+    <>
+      Already confirmed your address?{' '}
+      <Link className="underline" href="/sign-in">
+        Sign in
+      </Link>
+    </>
+  );
+
+  if (sent) {
+    return (
+      <AuthCard
+        title="Check your email"
+        description="If that address has an account waiting for confirmation, a new link is on its way. It is valid for one hour."
+        footer={signIn}
+      >
+        <Notice tone="success">New link sent if the address is waiting for confirmation.</Notice>
+      </AuthCard>
+    );
+  }
+
+  const form = (
+    <form onSubmit={(event) => void onSubmit(event)} className="space-y-4" noValidate>
+      {error === null ? null : <Notice tone="error">{error}</Notice>}
+      <Field
+        label="Email address"
+        type="email"
+        name="email"
+        value={email}
+        onChange={setEmail}
+        autoComplete="email"
+      />
+      <SubmitButton pending={pending}>Send a new link</SubmitButton>
+    </form>
+  );
+
+  return linkFailed ? (
+    <AuthCard
+      title="That link did not work"
+      description="A confirmation link is valid for one hour and can be used once. This one has expired, has already been used, or was not the latest one sent."
+      footer={signIn}
+    >
+      <Notice tone="error">Confirmation failed: the link is no longer valid.</Notice>
+      {form}
+    </AuthCard>
+  ) : (
+    <AuthCard
+      title="Get a new confirmation link"
+      description="Enter the address you signed up with. If its account is still waiting for confirmation, we will email it a new link."
+      footer={signIn}
+    >
+      {form}
     </AuthCard>
   );
 }
