@@ -242,6 +242,31 @@ describe.each([...PHASE_3_TABLES, 'transfers'] as const)('RLS on %s', (name) => 
     expect(await errorCodeOf(user, FORGED[name]?.(USER_B) as string)).toBe(INSUFFICIENT_PRIVILEGE);
   });
 
+  it('cannot update or delete a row it cannot see', async () => {
+    // B's rows, counted by a role that bypasses RLS, before A aims at them.
+    const countB = async (): Promise<number> => {
+      const { rows } = await backup.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM ${name} WHERE user_id = $1`,
+        [USER_B],
+      );
+      return Number(rows[0]?.n ?? '0');
+    };
+    const before = await countB();
+    expect(before).toBeGreaterThan(0);
+
+    await setGuc(user, USER_A);
+    const updated = await user.query(`UPDATE ${name} SET user_id = user_id WHERE user_id = $1`, [
+      USER_B,
+    ]);
+    expect(updated.rowCount).toBe(0);
+
+    const deleted = await user.query(`DELETE FROM ${name} WHERE user_id = $1`, [USER_B]);
+    expect(deleted.rowCount).toBe(0);
+
+    // B's rows are all still there.
+    expect(await countB()).toBe(before);
+  });
+
   it('lets the backup role read across tenants but never write', async () => {
     expect(await countAs(backup, name)).toBeGreaterThan(1);
     expect(await errorCodeOf(backup, FORGED[name]?.(USER_A) as string)).toBe(INSUFFICIENT_PRIVILEGE);
