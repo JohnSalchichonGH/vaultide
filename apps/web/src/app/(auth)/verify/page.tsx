@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { ResendVerificationForm } from '@/features/auth/forms';
 
-export const metadata: Metadata = { title: 'Confirm your email' };
+export const metadata: Metadata = { title: 'Get a new confirmation link' };
 export const dynamic = 'force-dynamic';
 
 /**

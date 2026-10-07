@@ -259,6 +259,12 @@ test.describe('a new confirmation link (ADR 0002 decision 21)', () => {
     await gotoAfterRefresh(page, withBrokenToken(linkFrom(first)));
     await expect(page).toHaveURL(/\/verify\?error=/u);
     await expect(page.getByRole('heading', { name: 'That link did not work' })).toBeVisible();
+    // Only an expired or invalid link lands here: Better Auth's tokens are
+    // signed, not stored, so a used or superseded one still verifies.
+    await expect(
+      page.getByText('A confirmation link is valid for one hour. This one has expired or is not a valid link.'),
+    ).toBeVisible();
+    await expect(page).toHaveTitle('Get a new confirmation link · Vaultide');
 
     await formReady(page, 'Send a new link');
     await fillField(page, 'Email address', email);
@@ -288,6 +294,29 @@ test.describe('a new confirmation link (ADR 0002 decision 21)', () => {
     await expect(page).toHaveURL(/\/verify$/u);
     await expect(page.getByRole('heading', { name: 'Get a new confirmation link' })).toBeVisible();
     await formReady(page, 'Send a new link');
+  });
+
+  test('an entry that is not an email address is refused before anything is sent', async ({
+    page,
+  }) => {
+    const asked: string[] = [];
+    page.on('request', (request) => {
+      if (new URL(request.url()).pathname === '/api/auth/send-verification-email') {
+        asked.push(request.method());
+      }
+    });
+
+    await page.goto('/verify');
+    await expect(page).toHaveTitle('Get a new confirmation link · Vaultide');
+    await formReady(page, 'Send a new link');
+    await fillField(page, 'Email address', 'not-an-address');
+    await page.getByRole('button', { name: 'Send a new link' }).click();
+
+    await expect(page.getByTestId('auth-error')).toHaveText(
+      'Enter the email address you signed up with, such as name@example.com.',
+    );
+    await expect(page.getByTestId('auth-success')).toHaveCount(0);
+    expect(asked).toEqual([]);
   });
 });
 

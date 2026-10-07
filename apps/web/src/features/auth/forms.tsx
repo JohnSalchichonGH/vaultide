@@ -515,8 +515,9 @@ export function RequestResetForm() {
  * `linkFailed` is whether the visitor arrived from a link that did not work;
  * otherwise they came to ask for one. Better Auth's resend, called without a
  * session, answers the same whatever the address and sends only to an account
- * waiting for confirmation, so this form says the same thing whatever it is
- * given. It passes no `callbackURL`: the server sets every link's to `/verify`.
+ * waiting for confirmation, so this form says the same thing whatever address
+ * it is given. It passes no `callbackURL`: the server sets every link's to
+ * `/verify`.
  */
 export function ResendVerificationForm({ linkFailed }: { linkFailed: boolean }) {
   const [email, setEmail] = useState('');
@@ -527,14 +528,23 @@ export function ResendVerificationForm({ linkFailed }: { linkFailed: boolean }) 
   async function onSubmit(event: FormEvent): Promise<void> {
     event.preventDefault();
     setError(null);
-    setPending(true);
 
-    const result = await authClient.sendVerificationEmail({ email: email.trim().toLowerCase() });
+    // The server's own check would answer a malformed address with a message
+    // written for developers, so it is caught here first, with the same rule.
+    const parsed = authInput.email.safeParse(email);
+    if (!parsed.success) {
+      setError('Enter the email address you signed up with, such as name@example.com.');
+      return;
+    }
+
+    setPending(true);
+    const result = await authClient.sendVerificationEmail({ email: parsed.data });
     setPending(false);
 
     // 17.3: the answer is the same whether or not the address has an account,
-    // and whether or not it is already confirmed. Only a rate limit or an
-    // outage produces an error here.
+    // and whether or not it is already confirmed, and the server logs a failed
+    // send rather than answering with it. With the address checked above,
+    // only a rate limit or a server that cannot answer produces an error here.
     if (result.error) {
       setError(messageOf(result.error, 'Too many attempts. Try again in a few minutes.'));
       return;
@@ -581,7 +591,7 @@ export function ResendVerificationForm({ linkFailed }: { linkFailed: boolean }) 
   return linkFailed ? (
     <AuthCard
       title="That link did not work"
-      description="A confirmation link is valid for one hour and can be used once. This one has expired, has already been used, or was not the latest one sent."
+      description="A confirmation link is valid for one hour. This one has expired or is not a valid link."
       footer={signIn}
     >
       <Notice tone="error">Confirmation failed: the link is no longer valid.</Notice>
