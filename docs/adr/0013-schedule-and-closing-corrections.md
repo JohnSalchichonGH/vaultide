@@ -149,7 +149,9 @@ is later work. See *Known gaps*.
 
 ## What this slice builds
 
-Rulings 1 and 4 are implemented here; ruling 2 is not; ruling 3 needs no code.
+Ruling 1 is implemented here, and the hint below follows from ruling 4, which
+otherwise records that a first close stays ordinary and needs no code. Ruling 2
+is not implemented, and ruling 3 needs no code.
 
 - **The skip, judged like every other source fact.** `SkipSourceFacts` is a
   `SourceFacts` kind (`packages/application/src/write-plan.ts`), and its
