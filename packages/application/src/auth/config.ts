@@ -6,7 +6,7 @@ import { haveIBeenPwned } from 'better-auth/plugins/haveibeenpwned';
 import { twoFactor } from 'better-auth/plugins/two-factor';
 import { betterAuthSchema, type Database } from '@vaultide/db';
 import { authInput } from '@vaultide/validation';
-import type { Mailer } from '../mail/mailer';
+import type { MailMessage, Mailer } from '../mail/mailer';
 import {
   accountDeletedEmail,
   existingAccountSignUpEmail,
@@ -93,6 +93,27 @@ export function createAuth(deps: AuthDependencies) {
   const { db, mailer } = deps;
   const isHttps = deps.baseURL.startsWith('https://');
 
+  /**
+   * Send a message, and log a failure instead of throwing it (17.3, ADR 0002
+   * decision 21).
+   *
+   * Asked anonymously, Better Auth's resend sends only to an account waiting
+   * for confirmation, and rethrows a failed send after its 500 ms floor. A
+   * failure that reached the caller would tell them the address has such an
+   * account, so every failure ends here. The record has 18.2's fields only:
+   * neither the address nor the link, which carries a token, reaches the log.
+   */
+  async function sendOrLog(action: string, userId: string, message: MailMessage): Promise<void> {
+    try {
+      await mailer.send(message);
+    } catch {
+      deps.logger?.error(
+        { action, user_id: userId, error_code: 'MAIL_DELIVERY_FAILED' },
+        'mail_delivery_failed',
+      );
+    }
+  }
+
   return betterAuth({
     appName: 'Vaultide',
     secret: deps.secret,
@@ -164,7 +185,11 @@ export function createAuth(deps: AuthDependencies) {
         // would also be where every successful sign-in ends.
         const link = new URL(url);
         link.searchParams.set('callbackURL', VERIFY_PAGE);
-        await mailer.send(verificationEmail({ to: user.email, name: user.name, url: link.href }));
+        await sendOrLog(
+          'auth.sendVerificationEmail',
+          user.id,
+          verificationEmail({ to: user.email, name: user.name, url: link.href }),
+        );
       },
     },
 

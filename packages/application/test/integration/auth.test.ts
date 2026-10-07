@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { USER_OWNED_TABLES, authSession, eq, withoutUser } from '@vaultide/db';
 import { generateSync } from 'otplib';
@@ -9,7 +10,9 @@ import {
   type AuthResponse,
 } from '../helpers/auth-client';
 import { createHarness, TEST_BASE_URL, type Harness } from '../helpers/harness';
-import { SESSION_EXPIRES_IN, SESSION_FRESH_AGE } from '../../src/auth/config';
+import { SESSION_EXPIRES_IN, SESSION_FRESH_AGE, createAuth, type Auth } from '../../src/auth/config';
+import { createLogger } from '../../src/logging';
+import { MailDeliveryError, type MailMessage } from '../../src/mail/mailer';
 import { requireSession, getSessionContext } from '../../src/auth/session';
 import { listCategories } from '../../src/users/categories';
 import { requiredSystemCategoryKinds } from '../../src/users/default-categories';
@@ -289,6 +292,133 @@ describe('a new confirmation link (17.3, ADR 0002 decision 21)', () => {
 
     // `sendOnSignIn` is off: signing in never sends a link.
     expect(harness.mailer.messages).toHaveLength(0);
+  });
+});
+
+/**
+ * Auth over the harness's database with a mailer that delivers until told to
+ * fail, then refuses every message as a provider would. It keeps every
+ * message it was asked to send, so a test can name the link that failed, and
+ * every log line, so a test can read what the failure left behind.
+ */
+function authWithFailingMail(): {
+  readonly client: AuthClient;
+  readonly attempted: MailMessage[];
+  readonly logLines: string[];
+  readonly fail: () => void;
+} {
+  const attempted: MailMessage[] = [];
+  const logLines: string[] = [];
+  let failing = false;
+  const auth: Auth = createAuth({
+    db: harness.db,
+    mailer: {
+      id: 'failing',
+      send(message) {
+        attempted.push(message);
+        return failing ? Promise.reject(new MailDeliveryError('failing', 422)) : Promise.resolve();
+      },
+    },
+    secret: randomBytes(32).toString('hex'),
+    baseURL: `${TEST_BASE_URL}/api/auth`,
+    appUrl: TEST_BASE_URL,
+    logger: createLogger({
+      level: 'debug',
+      destination: {
+        write(chunk: string): boolean {
+          logLines.push(chunk);
+          return true;
+        },
+      } as NodeJS.WritableStream,
+    }),
+  });
+  return {
+    client: createAuthClient(auth, TEST_BASE_URL),
+    attempted,
+    logLines,
+    fail: () => {
+      failing = true;
+    },
+  };
+}
+
+/**
+ * The failures logged, each checked to carry the 18.2 fields and nothing else:
+ * no address, no link and no token can be in a field that is not there.
+ */
+function failuresLogged(logLines: readonly string[]): { action: string; user_id: string }[] {
+  const failures = logLines
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((record) => record['msg'] === 'mail_delivery_failed');
+  for (const record of failures) {
+    expect(Object.keys(record).sort()).toEqual(['action', 'error_code', 'level', 'msg', 'time', 'user_id']);
+    expect(record['error_code']).toBe('MAIL_DELIVERY_FAILED');
+  }
+  return failures as { action: string; user_id: string }[];
+}
+
+describe('a send that fails says nothing about the address (17.3, 18.2, ADR 0002 decision 21)', () => {
+  it('answers a resend for a waiting account as for an unknown address, and logs the failure', async () => {
+    const { client, attempted, logLines, fail } = authWithFailingMail();
+    const waiting = unique('send-fails');
+    await client.post('/sign-up/email', { name: 'Test', email: waiting, password: PASSWORD });
+    fail();
+
+    const answers = [];
+    for (const email of [waiting, unique('send-fails-unknown')]) {
+      const response = await client.post('/send-verification-email', { email });
+      answers.push({ status: response.status, body: response.body });
+    }
+    expect(answers).toEqual([
+      { status: 200, body: { status: true } },
+      { status: 200, body: { status: true } },
+    ]);
+
+    // The resend did try to send to the waiting account, and that failed.
+    const failed = attempted.at(-1);
+    expect([failed?.to, failed?.tag]).toEqual([waiting, 'verification']);
+    expect(failuresLogged(logLines).map((record) => record.action)).toEqual([
+      'auth.sendVerificationEmail',
+    ]);
+    const logs = logLines.join('\n');
+    expect(logs).not.toContain(waiting);
+    expect(logs).not.toContain(tokenFromUrl(failed?.text ?? ''));
+  });
+
+  it('answers a sign-up for a new address as for a registered one, and logs the failed link', async () => {
+    const { client, attempted, logLines, fail } = authWithFailingMail();
+    const registered = unique('signup-fails-registered');
+    await client.post('/sign-up/email', { name: 'First', email: registered, password: PASSWORD });
+    fail();
+
+    const fresh = unique('signup-fails-new');
+    const first = await client.post('/sign-up/email', { name: 'Test', email: fresh, password: PASSWORD });
+    const repeat = await client.post('/sign-up/email', {
+      name: 'Impostor',
+      email: registered,
+      password: PASSWORD,
+    });
+
+    expect(first.status).toBe(200);
+    expect(repeat.status).toBe(first.status);
+    expect(Object.keys(repeat.body as object).sort()).toEqual(
+      Object.keys(first.body as object).sort(),
+    );
+
+    // The new address's confirmation link and the registered owner's warning
+    // both failed. Better Auth swallows a failed warning itself, into its own
+    // log; the confirmation link's failure is ours to log.
+    expect(attempted.slice(-2).map((message) => [message.to, message.tag])).toEqual([
+      [fresh, 'verification'],
+      [registered, 'existing-account-signup'],
+    ]);
+    expect(failuresLogged(logLines).map((record) => record.action)).toEqual([
+      'auth.sendVerificationEmail',
+    ]);
+    const logs = logLines.join('\n');
+    expect(logs).not.toContain(fresh);
+    expect(logs).not.toContain(registered);
+    expect(logs).not.toContain(tokenFromUrl(attempted.at(-2)?.text ?? ''));
   });
 });
 
