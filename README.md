@@ -337,7 +337,8 @@ policy filtered can never pass verification. Restoring is documented in
   [reconciliation corrective actions](docs/adr/0009-reconciliation-corrective-actions.md),
   [historical correction and financial write coordination](docs/adr/0010-historical-correction.md),
   [Bulk History](docs/adr/0011-bulk-history.md),
-  [the standalone Income pages](docs/adr/0012-income-pages.md).
+  [the standalone Income pages](docs/adr/0012-income-pages.md),
+  [which schedule and closing writes are corrections](docs/adr/0013-schedule-and-closing-corrections.md).
 - **Evidence for frozen phases:**
   [`docs/phase-0-acceptance.md`](docs/phase-0-acceptance.md),
   [`docs/phase-1-acceptance.md`](docs/phase-1-acceptance.md),

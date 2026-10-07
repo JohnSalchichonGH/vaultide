@@ -538,3 +538,10 @@ Bulk history has since been built on this machinery, as a correction family of
 its own that is always reviewed; ADR 0011 records it. Still not implemented,
 and still separate known gaps: the history drawer, undo, restore,
 `positions.opened_on` correction, and reopening or correcting a close (§14).
+
+**2026-10-07.** ADR 0013 settles which schedule and closing writes to a finished
+month are corrections. For skips: restoring one whose occurrence falls in a
+finished month is a correction, judged and reviewed like every other source fact.
+For end dates: a template end-date change that adds or removes an expected
+occurrence in a finished month is one too, and is not guarded yet (ADR 0013,
+*Known gaps*).
