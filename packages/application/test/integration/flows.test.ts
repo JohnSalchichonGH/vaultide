@@ -74,10 +74,10 @@ async function createAuthUser(id: string, email: string): Promise<void> {
 async function auditFor(userId: string, entityId: string) {
   return withUser(harness.db, { userId }, async (tx) => {
     const result = await tx.execute(
-      sql`SELECT action, before, after FROM audit_entries
+      sql`SELECT entity_table, action, before, after FROM audit_entries
            WHERE entity_id = ${entityId} ORDER BY occurred_at, action`,
     );
-    return result.rows as { action: string; before: unknown; after: unknown }[];
+    return result.rows as { entity_table: string; action: string; before: unknown; after: unknown }[];
   });
 }
 
@@ -1163,6 +1163,142 @@ describe('recurring templates', () => {
       name: 'Salary (Acme)',
     });
     expect(renamed.name).toBe('Salary (Acme)');
+  });
+});
+
+describe('template, term and skip writes are audited (21.3)', () => {
+  // 21.3 lists "skips audited"; the template and its terms are audited by the
+  // same repository and had no test reading their rows either.
+  async function salary() {
+    return createTemplate(deps(), SEPT_15, {
+      kind: 'income',
+      name: 'Salary',
+      incomeKind: 'employment',
+      currency: 'EUR',
+      frequency: 'monthly',
+      dayOfMonth: 25,
+      startDate: '2026-01-01',
+      cashPositionId: bbva,
+      amount: '2100.00',
+    });
+  }
+
+  it('audits a new template and its opening term', async () => {
+    const { template, term } = await salary();
+
+    expect(await auditFor(USER_A, template.id)).toEqual([
+      {
+        entity_table: 'recurring_templates',
+        action: 'insert',
+        before: null,
+        after: expect.objectContaining({
+          id: template.id,
+          kind: 'income',
+          name: 'Salary',
+          incomeKind: 'employment',
+          dayOfMonth: 25,
+          startDate: '2026-01-01',
+          cashPositionId: bbva,
+          archivedAt: null,
+        }),
+      },
+    ]);
+    expect(await auditFor(USER_A, term.id)).toEqual([
+      {
+        entity_table: 'recurring_template_terms',
+        action: 'insert',
+        before: null,
+        after: expect.objectContaining({
+          id: term.id,
+          templateId: template.id,
+          effectiveFrom: '2026-01-01',
+          amount: '2100.00000000',
+        }),
+      },
+    ]);
+  });
+
+  it('audits a renamed, archived and unarchived template with both images', async () => {
+    const { template } = await salary();
+    const renamed = await updateTemplateDetails(deps(), SEPT_15, {
+      templateId: template.id,
+      expectedVersion: template.version,
+      name: 'Salary (Acme)',
+    });
+    const archived = await archiveTemplate(deps(), SEPT_15, {
+      templateId: template.id,
+      expectedVersion: renamed.version,
+    });
+    await unarchiveTemplate(deps(), SEPT_15, {
+      templateId: template.id,
+      expectedVersion: archived.version,
+    });
+
+    const [, rename, archive, unarchive, ...rest] = await auditFor(USER_A, template.id);
+    expect(rest).toEqual([]);
+    for (const row of [rename, archive, unarchive]) {
+      expect(row).toMatchObject({ entity_table: 'recurring_templates', action: 'update' });
+    }
+    expect(rename?.before).toMatchObject({ name: 'Salary', version: template.version });
+    expect(rename?.after).toMatchObject({ name: 'Salary (Acme)', version: renamed.version });
+    expect(archive?.before).toMatchObject({ archivedAt: null });
+    expect(archive?.after).toMatchObject({ archivedAt: expect.any(String) });
+    expect(unarchive?.before).toMatchObject({ archivedAt: expect.any(String) });
+    expect(unarchive?.after).toMatchObject({ archivedAt: null });
+  });
+
+  it('audits a term inserted and then updated, with both images', async () => {
+    const { template } = await salary();
+    const inserted = await setTemplateTerm(deps(), SEPT_15, {
+      templateId: template.id,
+      effectiveFrom: '2026-10-25',
+      amount: '2200.00',
+      expected: { state: 'absent' },
+    });
+    await setTemplateTerm(deps(), SEPT_15, {
+      templateId: template.id,
+      effectiveFrom: '2026-10-25',
+      amount: '2250.00',
+      expected: { state: 'version', version: inserted.version },
+    });
+
+    const audit = await auditFor(USER_A, inserted.id);
+    expect(audit).toHaveLength(2);
+    expect(audit[0]).toEqual({
+      entity_table: 'recurring_template_terms',
+      action: 'insert',
+      before: null,
+      after: expect.objectContaining({ templateId: template.id, effectiveFrom: '2026-10-25', amount: '2200.00000000' }),
+    });
+    expect(audit[1]).toEqual({
+      entity_table: 'recurring_template_terms',
+      action: 'update',
+      before: expect.objectContaining({ amount: '2200.00000000', version: inserted.version }),
+      after: expect.objectContaining({ amount: '2250.00000000', version: inserted.version + 1 }),
+    });
+  });
+
+  it('audits a skip and its removal, the removal with the before-image', async () => {
+    const { template } = await salary();
+    const skip = await skipSuggestion(deps(), SEPT_15, {
+      templateId: template.id,
+      occurrenceDate: '2026-08-25',
+      reason: 'other',
+      note: 'Paid in cash',
+    });
+    await unskipSuggestion(deps(), SEPT_15, { skipId: skip.id });
+
+    const image = expect.objectContaining({
+      id: skip.id,
+      templateId: template.id,
+      occurrenceDate: '2026-08-25',
+      reason: 'other',
+      note: 'Paid in cash',
+    });
+    expect(await auditFor(USER_A, skip.id)).toEqual([
+      { entity_table: 'recurring_template_skips', action: 'insert', before: null, after: image },
+      { entity_table: 'recurring_template_skips', action: 'delete', before: image, after: null },
+    ]);
   });
 });
 
