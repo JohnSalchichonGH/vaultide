@@ -90,6 +90,39 @@ const CHECKS = [
              AND (v.amount IS NULL OR v.amount <> 0)`,
   },
   {
+    name: 'nothing is dated outside its position window (M4)',
+    // The services refuse a balance or a flow dated before a position opened
+    // or after it closed, and a close dated before something already recorded
+    // on it. The trigger that would make it a database rule is Phase 7's, so
+    // until then it is asserted here against every row that names a position:
+    // balances, incomes and expenses on a cash account (a transfer fee is such
+    // an expense), and both legs of a transfer. A record outside its window
+    // falls in no month the position takes part in (8.1). The check above only
+    // looks on or before `closed_on`, so it cannot see one dated after it.
+    sql: `SELECT r.record, r.id, r.position_id, r.dated_on::text AS dated_on,
+                 p.opened_on::text AS opened_on, p.closed_on::text AS closed_on
+            FROM (
+                   SELECT 'balance' AS record, id, position_id, valued_on AS dated_on
+                     FROM position_valuations
+                   UNION ALL
+                   SELECT 'income', id, cash_position_id, received_on
+                     FROM income_entries WHERE cash_position_id IS NOT NULL
+                   UNION ALL
+                   SELECT 'expense', id, cash_position_id, incurred_on
+                     FROM expense_entries WHERE cash_position_id IS NOT NULL
+                   UNION ALL
+                   SELECT 'transfer_from', id, from_position_id, occurred_on
+                     FROM transfers WHERE from_position_id IS NOT NULL
+                   UNION ALL
+                   SELECT 'transfer_to', id, to_position_id, occurred_on
+                     FROM transfers WHERE to_position_id IS NOT NULL
+                 ) r
+            JOIN positions p ON p.id = r.position_id
+           WHERE r.dated_on < p.opened_on
+              OR r.dated_on > p.closed_on
+           ORDER BY r.record, r.id`,
+  },
+  {
     name: 'every balance belongs to its position owner (M8)',
     sql: `SELECT v.id
             FROM position_valuations v
