@@ -1802,7 +1802,7 @@ describe('the Income section reads a month’s own schedule and money', () => {
     expect(page.income.direct).toHaveLength(0);
   });
 
-  it('shows a skipped occurrence with its reason and note, and the id a restore needs', async () => {
+  it('shows a skipped occurrence with its reason and note, and the id and version a restore needs', async () => {
     const template = await incomeSource();
     const skip = await skipSuggestion(flowDeps(), OCT_1, {
       templateId: template.id,
@@ -1814,6 +1814,8 @@ describe('the Income section reads a month’s own schedule and money', () => {
     expect(occurrenceOf(await completed(), template.id, '2026-09-25').state).toEqual({
       kind: 'skipped',
       skipId: skip.id,
+      // A restore carries the version it saw (ADR 0013 §1).
+      skipVersion: skip.version,
       reason: 'skipped',
       note: 'Contract ended mid-month.',
     });
