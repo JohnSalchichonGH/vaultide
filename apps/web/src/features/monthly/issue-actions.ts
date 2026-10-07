@@ -226,7 +226,9 @@ const missingMonthEnd: Handler = (issue, context) => {
       label: 'Manage account',
       // Not "or close it": the account page closes an account today, so a
       // close never settles a finished month's missing statement (ADR 0013 §4).
-      hint: 'Mark it dormant from the zero balance that emptied it.',
+      // The condition stays: an account still holding money cannot be marked
+      // dormant, and the account page refuses it.
+      hint: 'If it holds nothing, mark it dormant from the zero balance that emptied it.',
       emphasis: 'secondary',
       target: { kind: 'link', href: `/accounts/${positionId}` },
     }),

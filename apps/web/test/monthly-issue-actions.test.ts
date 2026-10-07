@@ -189,8 +189,15 @@ describe('a missing month-end balance', () => {
 
   it('never offers closing the account, which is dated today and settles no finished month (ADR 0013 §4)', () => {
     const [, , manage] = issueActions(missing('both'), completed);
-    expect(manage?.hint).toBe('Mark it dormant from the zero balance that emptied it.');
+    expect(manage?.hint).toBe(
+      'If it holds nothing, mark it dormant from the zero balance that emptied it.',
+    );
     expect(manage?.hint).not.toMatch(/close/iu);
+  });
+
+  it('offers dormancy only for an account that holds nothing, as the account page allows', () => {
+    const [, , manage] = issueActions(missing('both'), completed);
+    expect(manage?.hint).toMatch(/^If it holds nothing, /u);
   });
 });
 
