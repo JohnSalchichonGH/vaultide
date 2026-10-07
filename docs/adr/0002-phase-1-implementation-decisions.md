@@ -445,3 +445,95 @@ intervention.
   whose working directory had moved, and dependency-cruiser reported it as a
   real boundary violation (`db` importing `application`). It was a real file,
   not a tool artifact; deleted.
+
+---
+
+## Addendum, 2026-10-07
+
+### 21. A new confirmation link is asked for at `/verify`, where every link lands
+
+Cold audit finding AUD-05, carried as P3-17 in the Phase 3 cold review: an
+isolated repair of frozen Phase 1 behaviour.
+
+**The defect.** A confirmation link lasts an hour (17.1 `expiresIn: 3600`),
+and nothing could send another. Better Auth 1.7.2 resends on sign-in only when
+`emailVerification.sendOnSignIn` is set, and it was not; nothing in the app
+called the library's resend endpoint. The pages promised a resend anyway:
+`/verify` said "Signing in again sends a fresh confirmation email", and the
+sign-up card pointed to signing in. No link reached `/verify` either. Neither
+form passed a `callbackURL`, so Better Auth sent every link to `/`. A valid
+link landed on the homepage, which sent the new user on. A failed one landed on
+`/?error=…`, which the homepage ignored, so somebody whose link had expired saw
+the homepage, with no explanation and no way forward.
+
+17.3 asks for a "resend rate-limited", beside "forgot-password always returns
+success". 17.1's configuration does not say how. Five decisions settle it.
+
+1. **The resend is Better Auth's own `/send-verification-email`,** called
+   without a session and with an address. Called that way, it answers
+   `{ status: true }` whatever the address, takes at least 500 ms either way,
+   and sends only to an account that exists and is not yet confirmed. That is
+   the enumeration rule 17.3 sets for the reset request, already implemented by
+   the library, with a timing floor besides; a wrapper of ours could only
+   restate it.
+
+2. **It has a limit of its own, the reset request's: three per fifteen
+   minutes.** Like the reset request, it sends mail to whatever address an
+   anonymous caller names, so it takes the same limit. Without a rule of its
+   own, the route gets Better Auth 1.7.2's built-in limit for its mail-sending
+   routes, three a minute. That rule is applied ahead of `customRules`, so the
+   configured default of thirty a minute never reaches this route. Three a
+   minute is still 45 messages every fifteen minutes from one client, and
+   ADR 0003 counts every anonymous route that sends mail against Resend's free
+   tier of 100 messages a day.
+
+3. **`sendOnSignIn` stays off.** It would send a new link on every sign-in with
+   the right password, bounded only by sign-in's five a minute. Whoever set
+   that password could then send five messages a minute to the address, and
+   that includes somebody who signed up with another person's address. It
+   would also use up the day's email quota.
+
+4. **Every verification link lands on `/verify`.** `sendVerificationEmail` in
+   `auth/config.ts` sets the link's `callbackURL` where the link is built, so
+   sign-up, the resend and any later path that sends a link land in one place,
+   and whatever `callbackURL` a caller passed is replaced. The sign-in form
+   passes none. On a successful sign-in, Better Auth answers `redirect: true`
+   with that URL and its client follows it, so every sign-in would end on
+   `/verify`.
+
+5. **`/verify` has two states.** With `?error=`, it shows "That link did not
+   work", the explanation and the resend form. Without one, it shows the
+   resend form. The "Email confirmed … you are signed in" state is gone: the
+   `(auth)` layout sends any signed-in visitor on, so that state only ever
+   rendered for somebody who was not signed in, and for them it was false. A
+   valid link signs the user in and redirects to `/verify`, where the layout
+   sends them on to onboarding, as landing on `/` did before.
+
+   An address already confirmed whose link is followed again also lands here,
+   with no `?error=` and no session, because Better Auth's verification tokens
+   are signed, not stored, and an unexpired one is still valid. The form's
+   footer points that visitor to sign-in.
+
+**Two ways in.** The sign-up card keeps its sign-in hint, which is there for an
+address that already has an account, and adds a link to the form. The sign-in
+refusal for an unconfirmed address (`EMAIL_NOT_VERIFIED`, 403) now says the
+address has not been confirmed yet and links to the form, instead of showing
+Better Auth's "Email not verified". Better Auth returns that refusal only after
+the password has matched, so it tells nothing to somebody who does not know
+the password. Every other refusal keeps its message.
+
+**Proof.** `auth.test.ts` → *a new confirmation link*: a sign-up's link and a
+resend's carry `callbackURL=/verify`; following a link redirects to `/verify`
+with a session, and a link with an altered token to
+`/verify?error=INVALID_TOKEN` without one; a resend sends exactly one new
+message to an account waiting for confirmation, and its link confirms the
+account; an unknown address and a confirmed one get the same answer as a
+waiting one, after at least 500 ms each, and nothing is sent to them; the
+right password on an unconfirmed account is refused with
+`EMAIL_NOT_VERIFIED` and sends nothing, while a wrong one is refused as any
+wrong password is. `security.test.ts` asserts the 429 on the fourth request
+and a retry wait longer than a minute: Better Auth's built-in rule would also
+refuse the fourth request, but would ask for a wait of at most a minute.
+`auth.spec.ts` follows a broken link to the form, sends a new link, and
+follows it to onboarding, signed in; signing in before confirming shows the
+new message and leads to the form.

@@ -128,7 +128,7 @@ The exposure was reviewed before real financial functionality exists.
 | Surface | Anonymous | Ceiling |
 |---|---|---|
 | `/api/health` | yes — one function invocation and one `ping()` per hit, uncached by design (22.6) | Vercel capped by plan; Neon ≤ ~$19/month because compute is fixed |
-| `/api/auth/*` | yes — sign-up and reset send mail | DB-backed limits (5 sign-in/min, 3 sign-up/10 min, 3 reset/15 min, 5 TOTP/5 min, 30/min default), and Resend's free tier stops at 100/day |
+| `/api/auth/*` | yes — sign-up and reset send mail. *2026-10-07:* so does `/send-verification-email`, the confirmation-link resend, a third anonymous route that sends mail (ADR 0002 decision 21) | DB-backed limits (5 sign-in/min, 3 sign-up/10 min, 3 reset/15 min, 5 TOTP/5 min, 30/min default; *2026-10-07:* 3 resend/15 min), and Resend's free tier stops at 100/day |
 | `/api/cron/fx-refresh` | no | 404 without the bearer secret |
 | `/api/test/*` | no | 404 in production |
 | R2 | no | ~3 MB against a 10 GB free tier, no egress fees |
