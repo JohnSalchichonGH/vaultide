@@ -98,6 +98,8 @@ finished months the change reaches. The server does not guard the change:
 `updateTemplateDetails` refuses only an end before an occurrence already
 recorded or skipped. See *Known gaps*.
 
+**Built on 2026-10-07.** See the addendum at the end of this record.
+
 ## 3. Neither a term change nor archiving is a correction
 
 **Decision.** Setting a template's term and archiving or unarchiving a template
@@ -183,7 +185,8 @@ Bulk History needs nothing: it never restores a skip (ADR 0011 D5).
 
 ## Known gaps
 
-1. **The end date is unguarded on the server** (ruling 2). Until its PR lands,
+1. **Closed on 2026-10-07; see the addendum.** **The end date is unguarded on
+   the server** (ruling 2). Until its PR lands,
    `updateTemplateDetails` saves an end-date change that adds or removes an
    expected occurrence in a finished month without review. The only safeguard is
    the client's confirmation. Until then, "no editor can bypass the ceremony" is
@@ -198,3 +201,66 @@ Bulk History needs nothing: it never restores a skip (ADR 0011 D5).
 - Correcting or reopening a close, and a dated close on the account page.
 - Any change to `closePosition` or to `historical-correction-guards.test.ts`.
 - Any schema, migration or dependency change.
+
+## Addendum, 2026-10-07: the end-date guard is built
+
+Ruling 2 is now implemented, and known gap 1 is closed. No ruling above
+changes, and there is still no schema, migration or dependency change.
+
+**Which months a change reaches.** The template's schedule before the change
+is compared with its schedule after it. The change reaches the months of the
+occurrences that one schedule has and the other does not. Those occurrences
+are generated with `occurrencesInRange`
+(`packages/finance/src/recurring/occurrences.ts`), never read off the two end
+dates. With a schedule on the 25th:
+
+- moving the end from 20 August to 22 August reaches no month;
+- moving it from 20 August to 26 August reaches August.
+
+**When it is a correction.** When any month it reaches is finished. Those
+finished months are its periods: what the review recalculates, and what the
+classifier names. A change that reaches only the current month or later ones
+stays ordinary.
+
+**How it is built.**
+
+- **One rule, in the classifier.** A template's schedule is a
+  `template_schedule` source fact (`packages/application/src/write-plan.ts`).
+  It has no single financial date, so `financialDateOf` gives it none. Instead
+  `periodsOfChange` (`packages/application/src/corrections/classify.ts`), which
+  sees both sides of a change, returns the finished months whose occurrences
+  differ. It takes `today` for that reason, and so does `sourcePeriodsOf`.
+  `classifyHistorical` then judges it by ADR 0010's rule 1, as it does every
+  other revision.
+- **No second copy of the period rule.** The evidence window asks
+  `periodsOfChange` as well, and the window's own copy of the financial-date
+  switch is gone (`corrections/evidence.ts`).
+- **The refusals that answer first.** `resolveUpdateTemplateDetailsIn`
+  (`packages/application/src/recurring/templates.ts`) compares the version as it
+  reads the template, so a stale view is `CONFLICT_VERSION` in any month. It
+  then refuses an end before the start, or before an occurrence already recorded
+  or skipped. Only after that does `updateTemplateDetails` call
+  `assertNoHistoricalReview`, so a change that would be refused anyway never
+  opens a review.
+- **What is never a correction.** A change to the name or the payer resolves to
+  no source change at all, even when it is sent with an end date that reaches
+  nothing.
+- **One resolution for the guard, the preview and Confirm.** A
+  `template_end_date` CorrectionDraft carries the template, its expected version
+  and the new end date. It goes through the same resolver and the same writer as
+  the ordinary save.
+- **The overlay.** It replaces the template's schedule in the evidence. The
+  window's read keeps only templates whose stored schedule overlaps it, so a
+  source that ended before the months an extension reaches is not there at all.
+  In that case the overlay adds the template, with its new schedule. The
+  engines then report each reached finished month's completeness and, for an
+  income source, its `suggested_income_missing`.
+- **The fingerprint.** It covers the template's identity and both schedules,
+  and so both end dates.
+- **The two pages.** The income source page and Known expenses save the end
+  date through `runCorrectableSave`. A change that reaches a finished month goes
+  straight to the review, which replaces the page's own confirmation. Any other
+  change keeps that confirmation, and its Confirm still asks the server first,
+  so a month that has ended since the page loaded opens the review then.
+
+Ruling 3 is unchanged: a term change and archiving stay ordinary.

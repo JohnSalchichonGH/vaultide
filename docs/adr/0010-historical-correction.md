@@ -545,3 +545,8 @@ finished month is a correction, judged and reviewed like every other source fact
 For end dates: a template end-date change that adds or removes an expected
 occurrence in a finished month is one too, and is not guarded yet (ADR 0013,
 *Known gaps*).
+
+**2026-10-07, later.** End dates are now guarded. An end-date change that adds
+or removes an expected occurrence in a finished month is refused by the
+ordinary save and goes through Preview → Confirm, judged by `classifyHistorical`
+like every other source fact (ADR 0013, addendum).
