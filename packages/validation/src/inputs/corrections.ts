@@ -201,6 +201,14 @@ export function correctionDraft(today: string) {
       expectedFees: z.array(linkedFeeExpectation).max(100, 'That is too many linked fees.'),
     }),
 
+    // Restoring a skipped occurrence: the skip and the version shown. Which
+    // month it excused is read from the skip itself (ADR 0013).
+    z.object({
+      kind: z.literal('skip_delete'),
+      skipId: z.uuid(),
+      expectedVersion,
+    }),
+
     z.object({
       kind: z.literal('accept_suggestion'),
       templateId: z.uuid(),

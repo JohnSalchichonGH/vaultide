@@ -26,7 +26,9 @@ import { createTemplate } from '../../src/recurring/templates';
 import {
   acceptSuggestion,
   resolveAcceptSuggestionIn,
+  resolveUnskipIn,
   skipSuggestion,
+  unskipSuggestion,
 } from '../../src/recurring/suggestions';
 
 /**
@@ -34,8 +36,8 @@ import {
  * §8, §16).
  *
  * The rules behind recording, correcting and removing a balance, creating,
- * correcting and deleting an income entry, and accepting a recurring occurrence
- * are stated once, as pure decisions, and the resolvers load what those
+ * correcting and deleting an income entry, accepting a recurring occurrence and
+ * restoring a skipped one are stated once, as pure decisions, and the resolvers load what those
  * decisions need and nothing more. This pins the load side: the exact sequence
  * of statements each path sends — which table, and under which row lock — on
  * the success paths and on the refusals that stop early.
@@ -841,6 +843,31 @@ describe('accepting and skipping a recurring occurrence', () => {
     ]);
   });
 
+  it('restores one: the skip under its lock, then the delete', async () => {
+    const templateId = await interestTemplate(bbva);
+    const skip = await skipSuggestion(flows(), OCT_5, { templateId, occurrenceDate: '2026-10-02', reason: 'skipped' });
+    const sent = await shapes(() =>
+      unskipSuggestion(flows(), OCT_5, { skipId: skip.id, expectedVersion: skip.version }),
+    );
+    expect(sent).toEqual([
+      ...WRITE_OPEN,
+      'select recurring_template_skips for update',
+      'select recurring_template_skips for update',
+      'delete recurring_template_skips',
+      'insert audit_entries',
+      'commit',
+    ]);
+  });
+
+  it('refuses to restore a finished month’s one having read the skip and nothing after it', async () => {
+    const templateId = await interestTemplate(bbva);
+    const skip = await skipSuggestion(flows(), OCT_5, { templateId, occurrenceDate: '2026-09-02', reason: 'skipped' });
+    const sent = await shapes(() =>
+      unskipSuggestion(flows(), OCT_5, { skipId: skip.id, expectedVersion: skip.version }),
+    );
+    expect(sent).toEqual([...WRITE_OPEN, 'select recurring_template_skips for update', 'rollback']);
+  });
+
   it('reads the same rows for a preview, and locks none of them', async () => {
     const templateId = await interestTemplate(bbva);
     const sent = await shapes(() =>
@@ -858,5 +885,13 @@ describe('accepting and skipping a recurring occurrence', () => {
       'select positions',
       'commit',
     ]);
+
+    const skip = await skipSuggestion(flows(), OCT_5, { templateId, occurrenceDate: '2026-09-02', reason: 'skipped' });
+    const restore = await shapes(() =>
+      withUserRead(harness.db, { userId: USER_A }, (tx) =>
+        resolveUnskipIn(tx, { skipId: skip.id, expectedVersion: skip.version }, { lock: false }),
+      ),
+    );
+    expect(restore).toEqual([...READ_OPEN, 'select recurring_template_skips', 'commit']);
   });
 });

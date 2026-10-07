@@ -5,7 +5,7 @@ import { gotoAfterRefresh, reloadAfterRefresh, waitForRouter } from '../support/
  * Historical Correction, end to end (blueprint 15.3, 30.22; ADR 0010; §108–§111
  * of the slice prompt).
  *
- * Six journeys, and each is a rule the product promises rather than a
+ * Seven journeys, and each is a rule the product promises rather than a
  * rendering check:
  *
  *  - **a past month-end balance is corrected.** Edit it, read what it will
@@ -26,7 +26,10 @@ import { gotoAfterRefresh, reloadAfterRefresh, waitForRouter } from '../support/
  *  - **a new income or expense in Monthly wakes one.** A single new record is
  *    a first assertion, but the dormant period it ends began in a closed month,
  *    so Monthly's Add income and Add expense open the review rather than
- *    stopping at the server's refusal.
+ *    stopping at the server's refusal;
+ *  - **a skip from a finished month is restored.** Skipping stays ordinary,
+ *    but taking a skip back reopens that month's expectation, so Restore opens
+ *    the review there — and stays one click in the month still running.
  *
  * Every record is written through the product's own pages: there is no seeding
  * endpoint, so what these journeys prove is what a person actually gets.
@@ -577,5 +580,166 @@ test.describe('adding to an account dormant since a closed month, from Monthly',
     await page.getByRole('link', { name: 'Old savings', exact: true }).click();
     await expect(page.getByTestId('edit-submit')).toBeEnabled();
     await expect(page.getByTestId('edit-dormant')).not.toBeChecked();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Restoring a skipped occurrence (ADR 0013 §1; cold review P3-27).
+ *
+ * A skip excuses its occurrence's month, so taking one back from a finished
+ * month rewrites that month: September counts the rent as resolved while the
+ * skip stands, and reports it missing once the skip goes. That restore is
+ * reviewed. The same click in the month that is still running is what it
+ * always was — one click.
+ */
+test.describe('restoring a skipped occurrence on Monthly', () => {
+  test('an income skip from a finished month is reviewed, and one from this month is not', async ({
+    page,
+    request,
+  }) => {
+    test.slow();
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': OCTOBER_6 });
+    await onboard(page, request, uniqueEmail('e2e-restore-income-skip'));
+    await accountWithAugustStatement(page, { name: 'Everyday', type: 'checking', august: '2000.00' });
+
+    await gotoAfterRefresh(page, '/monthly/2026-09');
+    await page.getByTestId('source-add-toggle').click();
+    await expect(page.getByTestId('source-submit')).toBeEnabled();
+    await fillTestId(page, 'source-name', 'Lodger');
+    await page.getByTestId('source-kind').selectOption('rental');
+    await page.getByTestId('source-frequency').selectOption('monthly');
+    await fillTestId(page, 'source-day', '5');
+    await fillTestId(page, 'source-start-date', '2026-09-01');
+    await fillTestId(page, 'source-amount', '400.00');
+    await page.getByTestId('source-account').selectOption({ label: 'Everyday' });
+    await page.getByTestId('source-submit').click();
+    await expect(page.getByTestId('source-saved')).toContainText('Lodger added.');
+
+    // --- September: skipping is a first assertion, and stays ordinary ------------
+    const lodger = page.getByTestId('income-occurrence').filter({ hasText: 'Lodger' });
+    const missing = page.getByTestId('issue-group-suggested_income_missing');
+    await expect(lodger.getByTestId('occurrence-status')).toHaveText('Not recorded');
+    await expect(missing).toContainText('Lodger');
+    await lodger.getByTestId('occurrence-skip').click();
+    await page.getByTestId('skip-reason').selectOption({ label: 'Property was empty' });
+    await page.getByTestId('skip-submit').click();
+    await expect(lodger.getByTestId('occurrence-status')).toHaveText('Skipped');
+    await expect(missing).toHaveCount(0);
+    await expect(review(page)).toHaveCount(0);
+
+    // --- …and taking it back is a correction of September ----------------------
+    await lodger.getByTestId('occurrence-restore').click();
+    await expect(review(page)).toBeVisible();
+    await expect(review(page)).toContainText('Skipped occurrence · removed');
+    await expect(review(page)).toContainText('Lodger');
+    await expect(review(page)).toContainText('Property was empty');
+    await expect(
+      review(page).locator('[data-testid="correction-period"][data-month="2026-09"]'),
+    ).toBeVisible();
+    await expect(review(page).getByTestId('correction-structural')).toContainText(
+      'September 2026 raises a new reconciliation issue.',
+    );
+    // Nothing is written while it is being reviewed.
+    await expect(lodger.getByTestId('occurrence-status')).toHaveText('Skipped');
+
+    // Back keeps it skipped, with the way back in on the row.
+    await review(page).getByTestId('correction-back').click();
+    await expect(review(page)).toHaveCount(0);
+    await expect(lodger.getByTestId('occurrence-status')).toHaveText('Skipped');
+    await lodger.getByTestId('correction-reopen').click();
+    await expect(review(page)).toBeVisible();
+
+    await fillTestId(page, 'correction-reason', 'The lodger paid after all');
+    await review(page).getByTestId('correction-confirm').click();
+    await expect(review(page)).toHaveCount(0);
+    await expect(lodger.getByTestId('occurrence-status')).toHaveText('Not recorded');
+    await expect(missing).toContainText('Lodger');
+
+    // --- October: the month is still running, so it is one click ---------------
+    await waitForRouter(page);
+    await page.getByTestId('month-next').click();
+    await expect(page).toHaveURL(/\/monthly\/2026-10$/u);
+    const october = page.getByTestId('income-occurrence').filter({ hasText: 'Lodger' });
+    await expect(october).toHaveAttribute('data-occurrence-date', '2026-10-05');
+    await october.getByTestId('occurrence-skip').click();
+    await page.getByTestId('skip-submit').click();
+    await expect(october.getByTestId('occurrence-status')).toHaveText('Skipped');
+    await october.getByTestId('occurrence-restore').click();
+    await expect(october.getByTestId('occurrence-status')).toHaveText('Not recorded');
+    await expect(review(page)).toHaveCount(0);
+
+    // Both restores were written.
+    await reloadAfterRefresh(page);
+    await expect(october.getByTestId('occurrence-status')).toHaveText('Not recorded');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
+    await expect(lodger.getByTestId('occurrence-status')).toHaveText('Not recorded');
+  });
+
+  test('a known expense skip from a finished month is reviewed, and one from this month is not', async ({
+    page,
+    request,
+  }) => {
+    test.slow();
+    await page.setExtraHTTPHeaders({ 'x-vaultide-test-clock': OCTOBER_6 });
+    await onboard(page, request, uniqueEmail('e2e-restore-expense-skip'));
+    await accountWithAugustStatement(page, { name: 'Everyday', type: 'checking', august: '2000.00' });
+
+    await gotoAfterRefresh(page, '/monthly/2026-09');
+    const section = page.getByTestId('monthly-known-expenses');
+    await section.getByTestId('expense-source-add-toggle').click();
+    await expect(page.getByTestId('expense-source-submit')).toBeEnabled();
+    await fillTestId(page, 'expense-source-name', 'Gym');
+    await page.getByTestId('expense-source-category').selectOption({ label: 'Subscriptions' });
+    await page.getByTestId('expense-source-frequency').selectOption('monthly');
+    await fillTestId(page, 'expense-source-day', '15');
+    await fillTestId(page, 'expense-source-start-date', '2026-09-01');
+    await fillTestId(page, 'expense-source-amount', '40.00');
+    await page.getByTestId('expense-source-account').selectOption({ label: 'Everyday' });
+    await page.getByTestId('expense-source-submit').click();
+    await expect(page.getByTestId('expense-source-saved')).toContainText('Gym added.');
+
+    const occurrenceOn = (date: string) =>
+      section.locator(`tr[data-testid="expense-occurrence"][data-occurrence-date="${date}"]`);
+    const september = occurrenceOn('2026-09-15');
+    await september.getByTestId('expense-skip').click();
+    await page.getByTestId('expense-skip-submit').click();
+    await expect(september.getByTestId('expense-occurrence-status')).toHaveText('Skipped');
+    await expect(review(page)).toHaveCount(0);
+
+    await september.getByTestId('expense-restore').click();
+    await expect(review(page)).toBeVisible();
+    await expect(review(page)).toContainText('Skipped occurrence · removed');
+    await expect(review(page)).toContainText('Gym');
+    await expect(review(page)).toContainText('Not charged');
+    // Its completeness moves; missing income is about income, so no issue does.
+    const structural = review(page).getByTestId('correction-structural');
+    await expect(structural).toContainText('September 2026 becomes');
+    await expect(structural).not.toContainText('issue');
+    await expect(september.getByTestId('expense-occurrence-status')).toHaveText('Skipped');
+
+    await review(page).getByTestId('correction-confirm').click();
+    await expect(review(page)).toHaveCount(0);
+    await expect(september.getByTestId('expense-occurrence-status')).toHaveText('Not recorded');
+
+    // --- October: the month is still running, so it is one click ---------------
+    await waitForRouter(page);
+    await page.getByTestId('month-next').click();
+    await expect(page).toHaveURL(/\/monthly\/2026-10$/u);
+    const october = occurrenceOn('2026-10-15');
+    await expect(october.getByTestId('expense-occurrence-status')).toHaveText('Upcoming');
+    await october.getByTestId('expense-skip').click();
+    await page.getByTestId('expense-skip-submit').click();
+    await expect(october.getByTestId('expense-occurrence-status')).toHaveText('Skipped');
+    await october.getByTestId('expense-restore').click();
+    await expect(october.getByTestId('expense-occurrence-status')).toHaveText('Upcoming');
+    await expect(review(page)).toHaveCount(0);
+
+    // Both restores were written.
+    await reloadAfterRefresh(page);
+    await expect(october.getByTestId('expense-occurrence-status')).toHaveText('Upcoming');
+    await gotoAfterRefresh(page, '/monthly/2026-09');
+    await expect(september.getByTestId('expense-occurrence-status')).toHaveText('Not recorded');
   });
 });

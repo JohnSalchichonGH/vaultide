@@ -352,6 +352,7 @@ async function versionsOf(userId: string): Promise<Versions> {
       'transfers',
       'recurring_templates',
       'recurring_template_terms',
+      'recurring_template_skips',
     ]) {
       const result = await tx.execute(sql`SELECT id, version FROM ${sql.identifier(table)}`);
       for (const row of result.rows as { id: string; version: number }[]) versions[row.id] = row.version;
@@ -639,6 +640,10 @@ const CORRECTION_DRAFTS: readonly (readonly [string, (ids: WorldIds) => Correcti
       expectedVersion: version(B.transfer),
       expectedFees: [{ feeId: ids.fee, version: version(B.fee) }],
     }),
+  ],
+  [
+    'skip_delete: the skip',
+    (ids) => ({ kind: 'skip_delete', skipId: ids.skip, expectedVersion: version(B.skip) }),
   ],
   [
     'accept_suggestion: a template',
@@ -1152,7 +1157,13 @@ const MUTATION_CASES: Readonly<Record<string, MutationCase>> = {
   },
   unskipSuggestion: {
     takes: 'id',
-    attempts: [{ label: 'the skip', run: (ids) => unskipSuggestion(flows(), AS_A, { skipId: ids.skip }) }],
+    attempts: [
+      {
+        label: 'the skip',
+        run: (ids) =>
+          unskipSuggestion(flows(), AS_A, { skipId: ids.skip, expectedVersion: version(B.skip) }),
+      },
+    ],
   },
 
   /* --------------------------------------------------- settings/service ---- */

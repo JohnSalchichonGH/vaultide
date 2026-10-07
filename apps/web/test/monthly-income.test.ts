@@ -295,6 +295,7 @@ describe('a scheduled occurrence', () => {
             state: {
               kind: 'skipped',
               skipId: 'skip-1',
+              skipVersion: 1,
               reason: 'vacant',
               note: 'Between tenants.',
             },

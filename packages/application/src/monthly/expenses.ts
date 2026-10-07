@@ -402,7 +402,13 @@ function build(input: MonthlyExpensesInput): { dto: MonthlyExpensesDto; context:
         embeddedEntryIds.add(accepted.id);
         state = { kind: 'accepted', entry: entry(accepted) };
       } else if (skip !== undefined) {
-        state = { kind: 'skipped', skipId: skip.id, reason: skip.reason, note: skip.note };
+        state = {
+          kind: 'skipped',
+          skipId: skip.id,
+          skipVersion: skip.version,
+          reason: skip.reason,
+          note: skip.note,
+        };
       } else if (occurrenceDate > input.today) {
         state = {
           kind: 'upcoming',

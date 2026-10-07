@@ -1403,6 +1403,7 @@ function OccurrenceRow({
   readonly today: string;
 }) {
   const router = useRouter();
+  const correction = useCorrection();
   const [panel, setPanel] = useState<OpenPanel>(null);
   const [state, setState] = useState<SaveState>(IDLE);
   const statusId = useId();
@@ -1425,6 +1426,23 @@ function OccurrenceRow({
         templateId: occurrence.templateId,
         occurrenceDate: occurrence.occurrenceDate,
       }),
+    );
+
+  /**
+   * Restoring a skip deletes it, at the version this row was rendered from.
+   * In this month or a later one that is one click, as it always was; a
+   * finished month's skip is a Historical Correction, and the review opens
+   * instead (ADR 0013 §1).
+   */
+  const restore = (skip: { readonly skipId: string; readonly skipVersion: number }) =>
+    runCorrectableSave(
+      correction,
+      { kind: 'skip_delete', skipId: skip.skipId, expectedVersion: skip.skipVersion },
+      () => unskipSuggestionAction({ skipId: skip.skipId, expectedVersion: skip.skipVersion }),
+      setState,
+      () => {
+        router.refresh();
+      },
     );
 
   return (
@@ -1580,7 +1598,7 @@ function OccurrenceRow({
                 className={ACTION}
                 disabled={busy}
                 onClick={() => {
-                  void run(() => unskipSuggestionAction({ skipId: occurrenceState.skipId }));
+                  void restore(occurrenceState);
                 }}
               >
                 Restore
@@ -1603,6 +1621,20 @@ function OccurrenceRow({
           </div>
 
           <SaveStatus id={statusId} state={state} />
+
+          <CorrectionHost
+            flow={correction}
+            labels={{
+              accounts: accountLabelsOf(accounts),
+              categories: {},
+              locale: formatting.locale,
+              templates: { [occurrence.templateId]: occurrence.templateName },
+              skipReasons: SKIP_REASON_LABEL,
+            }}
+            onCommitted={() => {
+              router.refresh();
+            }}
+          />
 
           {occurrenceState.kind === 'accepted' ? (
             ownsEntry(occurrenceState.entry, month) ? (

@@ -353,6 +353,10 @@ function noteIn(facts: SourceFacts | null, period: string): string | null {
       return periodOf(facts.valuedOn) === period ? facts.note : null;
     case 'cash_dormancy':
       return null;
+    // Shown beside the skipped occurrence, in the month whose expectation it
+    // excuses.
+    case 'skip':
+      return periodOf(facts.occurrenceDate) === period ? facts.note : null;
   }
 }
 

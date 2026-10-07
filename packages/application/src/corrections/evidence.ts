@@ -383,6 +383,8 @@ function financialDateOfFacts(facts: SourceFacts): string | null {
       return facts.valuedOn;
     case 'cash_dormancy':
       return facts.dormantFrom;
+    case 'skip':
+      return facts.occurrenceDate;
   }
 }
 
@@ -584,9 +586,11 @@ function replace<T>(list: readonly T[], id: string, next: T | null, idOf: (item:
  * names, and put the after-state back when there is one. A creation has nothing
  * to take out; a deletion puts nothing back.
  *
- * The occurrence set moves with the flows that carry one, because a deleted
- * occurrence is an unsatisfied requirement again (12.6) and a materialized one
- * is satisfied.
+ * The occurrence set moves with the flows and the skips that carry one, because
+ * a deleted occurrence is an unsatisfied requirement again (12.6) and a
+ * materialized one is satisfied. A skip resolves its occurrence exactly as a
+ * flow does, so restoring one takes its occurrence out of the set and nothing
+ * else: a skip is in no figure.
  */
 export function overlayCorrection(
   evidence: CorrectionEvidence,
@@ -600,12 +604,16 @@ export function overlayCorrection(
   let positions = [...evidence.positions];
   let resolvedOccurrences = [...evidence.resolvedOccurrences];
 
-  const occurrenceOf = (facts: SourceFacts): { templateId: string; occurrenceDate: string } | null =>
-    (facts.kind === 'income' || facts.kind === 'expense') &&
-    facts.templateId !== null &&
-    facts.occurrenceDate !== null
+  const occurrenceOf = (facts: SourceFacts): { templateId: string; occurrenceDate: string } | null => {
+    if (facts.kind === 'skip') {
+      return { templateId: facts.templateId, occurrenceDate: facts.occurrenceDate };
+    }
+    return (facts.kind === 'income' || facts.kind === 'expense') &&
+      facts.templateId !== null &&
+      facts.occurrenceDate !== null
       ? { templateId: facts.templateId, occurrenceDate: facts.occurrenceDate }
       : null;
+  };
 
   for (const change of write.changes) {
     const id = overlayId(change);
@@ -669,6 +677,10 @@ export function overlayCorrection(
         });
         break;
       }
+      case 'skip':
+        // Its whole effect is the occurrence it resolves, handled either side
+        // of this switch.
+        break;
     }
 
     if (change.after !== null) {

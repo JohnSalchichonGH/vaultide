@@ -898,6 +898,28 @@ export async function findSkipIn(
   return row;
 }
 
+/**
+ * One skip by its id, inside a caller's transaction.
+ *
+ * `lock: 'update'` holds it for the rest of the transaction — what restoring
+ * the occurrence takes before it compares the version it was given, so the
+ * skip it judged and the skip it deletes are the same row (20.3, 30.22 item
+ * 10; ADR 0013).
+ */
+export async function findSkipByIdIn(
+  tx: Transaction,
+  skipId: string,
+  options: { readonly lock?: 'update' } = {},
+): Promise<RecurringTemplateSkipRow | undefined> {
+  const query = tx
+    .select()
+    .from(recurringTemplateSkips)
+    .where(eq(recurringTemplateSkips.id, skipId))
+    .limit(1);
+  const [row] = options.lock === 'update' ? await query.for('update') : await query;
+  return row;
+}
+
 export async function insertSkipIn(
   tx: Transaction,
   ctx: AuditContext,

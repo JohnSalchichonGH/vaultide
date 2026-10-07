@@ -1065,7 +1065,12 @@ describe('a legacy source under a kind the expense services cannot record', () =
     expect(requirementOf(page, works.id, '2026-09-20').satisfied).toBe(true);
     expect(page.completeness.satisfied).toBe(before.completeness.satisfied + 1);
 
-    await unskipSuggestion(flowDeps(), OCT_1, { skipId: skip.id });
+    // September has closed, so the restore is reviewed (ADR 0013 §1).
+    await reviewAndConfirm(harness.services.corrections, OCT_1, {
+      kind: 'skip_delete',
+      skipId: skip.id,
+      expectedVersion: skip.version,
+    });
     page = await completed();
     expect(occurrenceOf(page.expenses, works.id, '2026-09-20').state).toEqual({ kind: 'due' });
     expect(requirementOf(page, works.id, '2026-09-20').satisfied).toBe(false);
@@ -1136,7 +1141,7 @@ describe('a legacy source under a kind the expense services cannot record', () =
       kind: 'skipped',
       reason: 'other',
     });
-    await unskipSuggestion(flowDeps(), SEPT_10, { skipId: skip.id });
+    await unskipSuggestion(flowDeps(), SEPT_10, { skipId: skip.id, expectedVersion: skip.version });
     expect(occurrenceOf((await current()).expenses, wires.id, '2026-09-05').state).toEqual({
       kind: 'due',
     });
@@ -1438,7 +1443,11 @@ describe('corrections through the existing services', () => {
       occurrenceDate: '2026-09-15',
       reason: 'skipped',
     });
-    await unskipSuggestion(flowDeps(), OCT_1, { skipId: skip.id });
+    await reviewAndConfirm(harness.services.corrections, OCT_1, {
+      kind: 'skip_delete',
+      skipId: skip.id,
+      expectedVersion: skip.version,
+    });
     page = await completed();
     expect(occurrenceOf(page.expenses, source.id, '2026-09-15').state).toEqual({ kind: 'due' });
   });

@@ -798,6 +798,119 @@ describe('the review shows every fact a person can revise', () => {
   });
 });
 
+/**
+ * Restoring a finished month's skip (ADR 0013 §1).
+ *
+ * Nothing on the record has a figure, so the review shows what the user is
+ * taking back — which source, which scheduled date, and the reason they gave —
+ * and then what that month says afterwards: its completeness, and the missing
+ * income it raises.
+ */
+describe('the review of a restored skip', () => {
+  const skipPreview = preview({
+    sourceScope: [{ identity: { scope: 'existing', kind: 'skip', id: 'skip-1' }, operation: 'delete' }],
+    periods: [
+      {
+        kind: 'completed',
+        month: '2026-09',
+        before: {
+          status: 'reliable',
+          buckets: [],
+          completeness: { state: 'sufficient', satisfied: 2, required: 2 },
+        },
+        after: {
+          status: 'reliable',
+          buckets: [],
+          completeness: { state: 'partial', satisfied: 1, required: 2 },
+        },
+        tags: ['reconciliation'],
+      },
+    ],
+    structuralChanges: [
+      {
+        kind: 'completeness',
+        month: '2026-09',
+        before: { state: 'sufficient', satisfied: 2, required: 2 },
+        after: { state: 'partial', satisfied: 1, required: 2 },
+      },
+      {
+        kind: 'issue',
+        change: 'appeared',
+        month: '2026-09',
+        issue: {
+          key: 'suggested_income_missing',
+          currency: 'EUR',
+          positionId: null,
+          templateId: 'tpl-rent',
+          occurrenceDate: '2026-09-05',
+          source: null,
+        },
+      },
+    ],
+    sourceChanges: [
+      {
+        identity: { scope: 'existing', kind: 'skip', id: 'skip-1' },
+        operation: 'delete',
+        before: {
+          kind: 'skip',
+          templateId: 'tpl-rent',
+          occurrenceDate: '2026-09-05',
+          reason: 'vacant',
+          note: 'Between tenants',
+        },
+        after: null,
+      },
+    ],
+  });
+  const labels = {
+    ...LABELS,
+    templates: { 'tpl-rent': 'Lodger' },
+    skipReasons: { vacant: 'Property was empty' },
+  };
+
+  it('shows the skip being removed: its source, its scheduled date and its reason, in words', () => {
+    expect(summarizeSources(skipPreview, labels)).toEqual([
+      {
+        title: 'Skipped occurrence',
+        operation: 'delete',
+        fields: [
+          { label: 'Source', before: 'Lodger', after: null, changed: true },
+          { label: 'Scheduled', before: '5 Sept 2026', after: null, changed: true },
+          { label: 'Reason', before: 'Property was empty', after: null, changed: true },
+          { label: 'Note', before: 'Between tenants', after: null, changed: true },
+        ],
+      },
+    ]);
+  });
+
+  it('names the month it reopens, and says what that month then reports', () => {
+    const html = renderToStaticMarkup(
+      createElement(CorrectionReview, {
+        draft: { kind: 'skip_delete', skipId: 'skip-1', expectedVersion: 1 },
+        preview: skipPreview,
+        labels,
+        onBack: vi.fn(),
+        onCommitted: vi.fn(),
+      }),
+    );
+    expect(html).toContain('Skipped occurrence · removed');
+    expect(html).toContain('This changes a month that is already closed.');
+    expect(html).toContain('data-month="2026-09"');
+    expect(html).toContain('September 2026 becomes partly complete (1 of 2).');
+    expect(html).toContain('September 2026 raises a new reconciliation issue.');
+    // Codes and ids are the server's; the reader sees words.
+    expect(html).not.toContain('vacant');
+    expect(html).not.toContain('tpl-rent');
+    expect(html).not.toContain('skip-1');
+  });
+
+  it('reads an unnamed reason as its code rather than as nothing', () => {
+    const [summary] = summarizeSources(skipPreview, LABELS);
+    expect(summary?.fields.find((item) => item.label === 'Reason')?.before).toBe('vacant');
+    expect(summary?.fields.find((item) => item.label === 'Source')?.before).toBe('A recurring source');
+  });
+});
+
 /* -------------------------------------------------------------------------- */
 /* Identity is not a label                                                     */
 /* -------------------------------------------------------------------------- */

@@ -341,7 +341,7 @@ describe('a scheduled expense occurrence', () => {
     const html = render(
       expenses({
         occurrences: [
-          occurrence({ state: { kind: 'skipped', skipId: 'skip-1', reason: 'skipped', note: 'Closed for works' } }),
+          occurrence({ state: { kind: 'skipped', skipId: 'skip-1', skipVersion: 1, reason: 'skipped', note: 'Closed for works' } }),
         ],
       }),
     );
@@ -441,7 +441,7 @@ describe('an occurrence of a legacy source this section cannot record', () => {
     const html = render(
       expenses({
         occurrences: [
-          protectedOccurrence({ state: { kind: 'skipped', skipId: 'skip-9', reason: 'other', note: null } }),
+          protectedOccurrence({ state: { kind: 'skipped', skipId: 'skip-9', skipVersion: 1, reason: 'other', note: null } }),
         ],
       }),
     );
@@ -1075,7 +1075,7 @@ describe('what a control may offer', () => {
     expect(expenseOccurrenceStateLabel({ kind: 'due' })).toBe('Not recorded');
     expect(expenseOccurrenceStateLabel({ kind: 'upcoming', paidTodayEligible: false })).toBe('Upcoming');
     expect(expenseOccurrenceStateLabel({ kind: 'accepted', entry: entry() })).toBe('Recorded');
-    expect(expenseOccurrenceStateLabel({ kind: 'skipped', skipId: 's', reason: 'other', note: null })).toBe('Skipped');
+    expect(expenseOccurrenceStateLabel({ kind: 'skipped', skipId: 's', skipVersion: 1, reason: 'other', note: null })).toBe('Skipped');
   });
 });
 

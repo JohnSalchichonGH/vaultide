@@ -234,7 +234,13 @@ export function monthlyIncomeOf(input: MonthlyIncomeInput): MonthlyIncomeDto {
         embeddedEntryIds.add(accepted.id);
         state = { kind: 'accepted', entry: entryDto(accepted, templateName, accountName) };
       } else if (skip !== undefined) {
-        state = { kind: 'skipped', skipId: skip.id, reason: skip.reason, note: skip.note };
+        state = {
+          kind: 'skipped',
+          skipId: skip.id,
+          skipVersion: skip.version,
+          reason: skip.reason,
+          note: skip.note,
+        };
       } else if (occurrenceDate > input.today) {
         state = {
           kind: 'upcoming',

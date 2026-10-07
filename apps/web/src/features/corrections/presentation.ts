@@ -66,10 +66,18 @@ export interface CorrectionLabels {
   readonly locale: string;
   /**
    * Income source names by template id, for a Bulk History review, which
-   * groups its income cells by the source they belong to. Display only, like
-   * every other label here.
+   * groups its income cells by the source they belong to — and recurring
+   * source names, for the review of a restored skip. Display only, like every
+   * other label here.
    */
   readonly templates?: Readonly<Record<string, string>>;
+  /**
+   * What a skip's reason reads as, for the review of a restored skip. Income
+   * and known expenses word the same codes differently, so the editor that
+   * opens the review passes its own words; a code it does not name reads as
+   * itself.
+   */
+  readonly skipReasons?: Readonly<Record<string, string>>;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -149,6 +157,7 @@ const KIND_TITLE: Readonly<Record<SourceFacts['kind'], string>> = {
   transfer: 'Transfer',
   valuation: 'Balance',
   cash_dormancy: 'Dormant period',
+  skip: 'Skipped occurrence',
 };
 
 /* -------------------------------------------------------------------------- */
@@ -355,6 +364,9 @@ function accountsMentioned(preview: CorrectionPreview): string[] {
         case 'cash_dormancy':
           ids.push(facts.positionId);
           break;
+        case 'skip':
+          // A skip names a schedule, not an account.
+          break;
       }
     }
   }
@@ -425,6 +437,11 @@ function yesNo(value: boolean): FieldValue {
  * the scheduled occurrence a row materializes — is never a field here; the only
  * trace of an id a reader sees is the short tie-breaker `accountDisplayNames`
  * adds to two accounts that share a name.
+ *
+ * A skip is the one record whose scheduled date is shown, because it is the
+ * only date a skip has: the occurrence it excused, and the month that changes
+ * when it goes (ADR 0013 §1). Its source is named the way a category is — by
+ * id for the comparison, by name for the reader.
  */
 function fieldsOf(facts: SourceFacts, context: FieldContext): Record<string, FieldValue> {
   switch (facts.kind) {
@@ -473,6 +490,16 @@ function fieldsOf(facts: SourceFacts, context: FieldContext): Record<string, Fie
         Account: account(context, facts.positionId),
         Dormant: yesNo(facts.isDormant),
         'Dormant from': day(context, facts.dormantFrom),
+      };
+    case 'skip':
+      return {
+        Source: {
+          value: facts.templateId,
+          display: context.labels.templates?.[facts.templateId] ?? 'A recurring source',
+        },
+        Scheduled: day(context, facts.occurrenceDate),
+        Reason: coded(facts.reason, context.labels.skipReasons ?? {}),
+        Note: plain(facts.note),
       };
   }
 }
@@ -576,6 +603,8 @@ function financialDateOf(facts: SourceFacts): string | null {
       return facts.valuedOn;
     case 'cash_dormancy':
       return facts.dormantFrom;
+    case 'skip':
+      return facts.occurrenceDate;
   }
 }
 

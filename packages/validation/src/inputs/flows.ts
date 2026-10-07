@@ -421,8 +421,13 @@ export const skipSuggestionInput = z.object({
   note: z.string().trim().max(500).optional(),
 });
 
+/**
+ * Restore a skipped occurrence, at the version the client rendered (6.3, 30.22
+ * item 10; ADR 0013 §1). A stale version deletes nothing.
+ */
 export const unskipSuggestionInput = z.object({
   skipId: z.uuid(),
+  expectedVersion,
   reason: reason.optional(),
 });
 

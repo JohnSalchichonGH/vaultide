@@ -28,7 +28,6 @@ import {
   acceptSuggestion,
   listSuggestions,
   skipSuggestion,
-  unskipSuggestion,
 } from '../../src/recurring/suggestions';
 import { listUserTemplates } from '../../src/recurring/templates';
 import { reviewAndConfirm } from '../helpers/corrections';
@@ -1286,7 +1285,13 @@ describe('template, term and skip writes are audited (21.3)', () => {
       reason: 'other',
       note: 'Paid in cash',
     });
-    await unskipSuggestion(deps(), SEPT_15, { skipId: skip.id });
+    // August has closed, so restoring its occurrence is a Historical
+    // Correction (ADR 0013 §1); the removal it audits is the same.
+    await reviewAndConfirm(harness.services.corrections, SEPT_15, {
+      kind: 'skip_delete',
+      skipId: skip.id,
+      expectedVersion: skip.version,
+    });
 
     const image = expect.objectContaining({
       id: skip.id,
@@ -1582,7 +1587,12 @@ describe('accepting and skipping occurrences', () => {
       occurrenceDate: '2026-08-25',
       reason: 'skipped',
     });
-    await unskipSuggestion(deps(), SEPT_15, { skipId: skip.id });
+    // A finished month's skip is restored through the review (ADR 0013 §1).
+    await reviewAndConfirm(harness.services.corrections, SEPT_15, {
+      kind: 'skip_delete',
+      skipId: skip.id,
+      expectedVersion: skip.version,
+    });
 
     const accepted = await acceptSuggestion(deps(), SEPT_15, {
       templateId: template.id,

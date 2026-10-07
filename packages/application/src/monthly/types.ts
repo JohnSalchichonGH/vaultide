@@ -159,6 +159,8 @@ export type IncomeOccurrenceStateDto =
   | {
       readonly kind: 'skipped';
       readonly skipId: string;
+      /** The skip's version, which restoring it carries (ADR 0013 §1). */
+      readonly skipVersion: number;
       readonly reason: string;
       readonly note: string | null;
     };
@@ -408,6 +410,8 @@ export type ExpenseOccurrenceStateDto =
   | {
       readonly kind: 'skipped';
       readonly skipId: string;
+      /** The skip's version, which restoring it carries (ADR 0013 §1). */
+      readonly skipVersion: number;
       readonly reason: string;
       readonly note: string | null;
     };

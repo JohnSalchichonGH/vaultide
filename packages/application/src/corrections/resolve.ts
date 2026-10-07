@@ -47,8 +47,11 @@ import {
 } from '../positions/valuations';
 import {
   applyAcceptPlanIn,
+  applyUnskipPlanIn,
   resolveAcceptSuggestionIn,
+  resolveUnskipIn,
   type AcceptWritePlan,
+  type UnskipWritePlan,
 } from '../recurring/suggestions';
 import type { ResolvedWrite, ResolveOptions, SupportWarm } from '../write-plan';
 import type { CorrectionDraft } from './draft';
@@ -82,6 +85,8 @@ export type CorrectionPlan =
   | { readonly family: 'expense'; readonly plan: ExpenseWritePlan }
   | { readonly family: 'transfer'; readonly plan: TransferWritePlan }
   | { readonly family: 'accept'; readonly plan: AcceptWritePlan }
+  /** Restoring a skipped occurrence, which deletes its skip (ADR 0013). */
+  | { readonly family: 'skip'; readonly plan: UnskipWritePlan }
   /**
    * A month confirmed unchanged, for one account or several. Its own family
    * rather than a `valuation` creation: its figure is the server's to read,
@@ -316,6 +321,16 @@ export async function resolveCorrectionIn(
         ),
       };
 
+    case 'skip_delete':
+      return {
+        family: 'skip',
+        plan: await resolveUnskipIn(
+          tx,
+          { skipId: draft.skipId, expectedVersion: draft.expectedVersion },
+          options,
+        ),
+      };
+
     case 'accept_suggestion':
       return {
         family: 'accept',
@@ -413,6 +428,9 @@ export async function applyCorrectionIn(
       return;
     case 'accept':
       await applyAcceptPlanIn(tx, ctx, resolved.plan, reason);
+      return;
+    case 'skip':
+      await applyUnskipPlanIn(tx, ctx, resolved.plan, reason);
       return;
     case 'confirm_unchanged':
       await applyConfirmUnchangedPlanIn(tx, ctx, resolved.plan, reason);

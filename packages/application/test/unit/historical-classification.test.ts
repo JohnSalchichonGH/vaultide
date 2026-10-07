@@ -16,6 +16,7 @@ import {
   type IdentifiedSourceChange,
   type IncomeSourceFacts,
   type ResolvedWrite,
+  type SkipSourceFacts,
   type TransferSourceFacts,
   type ValuationSourceFacts,
 } from '../../src/write-plan';
@@ -230,6 +231,38 @@ describe('a dormancy transition (30.22 item 1)', () => {
     );
     expect(result.reasons).toEqual(['completed_source_revision', 'historical_dormancy']);
     expect(result.completedPeriods).toEqual(['2026-06', '2026-08']);
+  });
+});
+
+describe('restoring a skip (ADR 0013 §1)', () => {
+  const skip = (occurrenceDate: string): SkipSourceFacts => ({
+    kind: 'skip',
+    templateId: 'tpl-1',
+    occurrenceDate,
+    reason: 'skipped',
+    note: null,
+  });
+  const skipIdentity = { scope: 'existing', kind: 'skip', id: 'row-5' } as const;
+
+  it('in a finished month needs review, naming that month', () => {
+    const result = classifyHistorical(write(true, [deleted(skipIdentity, skip('2026-08-25'))]), TODAY);
+    expect(result).toEqual({
+      required: true,
+      reasons: ['completed_source_revision'],
+      completedPeriods: ['2026-08'],
+    });
+  });
+
+  it('in the current month, or a later one, does not', () => {
+    for (const occurrenceDate of ['2026-09-01', '2026-09-30', '2026-10-25']) {
+      expect(
+        classifyHistorical(write(true, [deleted(skipIdentity, skip(occurrenceDate))]), TODAY),
+      ).toEqual({ required: false, reasons: [], completedPeriods: [] });
+    }
+  });
+
+  it('is judged on the occurrence it excused, which is a skip’s only date', () => {
+    expect(financialDateOf(skip('2026-08-25'))).toBe('2026-08-25');
   });
 });
 

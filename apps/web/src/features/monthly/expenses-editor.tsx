@@ -1588,6 +1588,7 @@ function OccurrenceRow({
   readonly bounds: Bounds;
 }) {
   const router = useRouter();
+  const correction = useCorrection();
   const [panel, setPanel] = useState<OpenPanel>(null);
   const [state, setState] = useState<SaveState>(IDLE);
   const statusId = useId();
@@ -1611,6 +1612,23 @@ function OccurrenceRow({
     runSave(send, setState, () => {
       router.refresh();
     });
+
+  /**
+   * Restoring a skip deletes it, at the version this row was rendered from.
+   * In this month or a later one that is one click, as it always was; a
+   * finished month's skip is a Historical Correction, and the review opens
+   * instead (ADR 0013 §1).
+   */
+  const restore = (skip: { readonly skipId: string; readonly skipVersion: number }) =>
+    runCorrectableSave(
+      correction,
+      { kind: 'skip_delete', skipId: skip.skipId, expectedVersion: skip.skipVersion },
+      () => unskipSuggestionAction({ skipId: skip.skipId, expectedVersion: skip.skipVersion }),
+      setState,
+      () => {
+        router.refresh();
+      },
+    );
 
   const unresolved = occurrenceState.kind === 'due' || occurrenceState.kind === 'upcoming';
 
@@ -1769,7 +1787,7 @@ function OccurrenceRow({
                 className={ACTION}
                 disabled={busy}
                 onClick={() => {
-                  void run(() => unskipSuggestionAction({ skipId: occurrenceState.skipId }));
+                  void restore(occurrenceState);
                 }}
               >
                 Restore
@@ -1818,6 +1836,20 @@ function OccurrenceRow({
           ) : null}
 
           <SaveStatus id={statusId} state={state} />
+
+          <CorrectionHost
+            flow={correction}
+            labels={{
+              accounts: accountLabelsOf(accounts),
+              categories: {},
+              locale: formatting.locale,
+              templates: { [occurrence.templateId]: source.name },
+              skipReasons: EXPENSE_SKIP_REASON_LABEL,
+            }}
+            onCommitted={() => {
+              router.refresh();
+            }}
+          />
 
           {occurrenceState.kind === 'accepted' ? (
             <EntryControls

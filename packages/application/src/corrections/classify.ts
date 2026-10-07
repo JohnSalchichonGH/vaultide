@@ -61,6 +61,10 @@ export interface HistoricalReview {
  * Derived from the fact's own financial date and never from anything else. A
  * materialized recurring flow's `occurrence_date` is scheduling identity, not a
  * financial period, so it is deliberately absent here (§30.9 item 2).
+ *
+ * A skip is the exception that proves the rule: it has no other date. Its
+ * `occurrence_date` is the month whose expectation it excuses, so that month is
+ * its financial period (ADR 0013 §1).
  */
 export function financialDateOf(facts: SourceFacts): string | null {
   switch (facts.kind) {
@@ -76,6 +80,8 @@ export function financialDateOf(facts: SourceFacts): string | null {
       // A cleared episode has no anchor left; the side that had one supplies
       // the period, which is why both sides are always asked.
       return facts.dormantFrom;
+    case 'skip':
+      return facts.occurrenceDate;
   }
 }
 

@@ -25,7 +25,7 @@ import { Decimal } from '@vaultide/finance';
 /* -------------------------------------------------------------------------- */
 
 /** The source tables a Phase 3 financial write can change. */
-export type SourceKind = 'income' | 'expense' | 'transfer' | 'valuation' | 'cash_dormancy';
+export type SourceKind = 'income' | 'expense' | 'transfer' | 'valuation' | 'cash_dormancy' | 'skip';
 
 /**
  * What a row that does not exist yet is called.
@@ -173,12 +173,30 @@ export interface DormancySourceFacts {
   readonly dormantFrom: string | null;
 }
 
+/**
+ * A skipped occurrence: the user's statement that it did not happen (6.2, F18).
+ *
+ * A skip has one date, `occurrence_date`, and it is the month whose
+ * expectation the skip excuses — so for a skip, unlike a materialized flow, the
+ * scheduled date **is** the financial period (ADR 0013 §1). It moves no figure;
+ * it resolves an occurrence, which is what 12.6's completeness and 8.5's
+ * `suggested_income_missing` read.
+ */
+export interface SkipSourceFacts {
+  readonly kind: 'skip';
+  readonly templateId: string;
+  readonly occurrenceDate: string;
+  readonly reason: string;
+  readonly note: string | null;
+}
+
 export type SourceFacts =
   | IncomeSourceFacts
   | ExpenseSourceFacts
   | TransferSourceFacts
   | ValuationSourceFacts
-  | DormancySourceFacts;
+  | DormancySourceFacts
+  | SkipSourceFacts;
 
 /* -------------------------------------------------------------------------- */
 /* Changes                                                                     */

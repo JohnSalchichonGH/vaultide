@@ -1,5 +1,6 @@
 import {
   deleteSkipIn,
+  findSkipByIdIn,
   findSkipIn,
   findTemplateIn,
   hasMaterializedOccurrenceIn,
@@ -35,6 +36,7 @@ import {
   ImpossibleOperationError,
   NotFoundError,
   ValidationError,
+  VersionConflictError,
 } from '../errors';
 import { assertNoHistoricalReview } from '../corrections/guard';
 import { assertInputScaleIn } from '../currencies/scale';
@@ -49,7 +51,12 @@ import {
   type IncomeWritePlan,
 } from '../flows/income';
 import { auditContextOf, type FlowDependencies } from '../flows/shared';
-import type { ResolvedWrite, ResolveOptions } from '../write-plan';
+import {
+  deleted,
+  type ResolvedWrite,
+  type ResolveOptions,
+  type SkipSourceFacts,
+} from '../write-plan';
 
 /**
  * Accepting and skipping recurring occurrences (blueprint 6.2, 15.3, 20.3,
@@ -734,7 +741,84 @@ export async function skipSuggestion(
  */
 export interface UnskipSuggestionArgs {
   readonly skipId: string;
+  /** The version the client rendered (6.3, 30.22 item 10; ADR 0013 §1). */
+  readonly expectedVersion: number;
   readonly reason?: string | undefined;
+}
+
+/**
+ * A resolved restore: the skip it deletes, held under lock by the write and
+ * read without one by the preview.
+ *
+ * A **revision** of a source fact (30.10: "Accepted and skipped rows are source
+ * facts"), so it is judged by the same two rules as every other one. Its
+ * financial period is the month of its `occurrence_date` — the month whose
+ * expectation it excuses — so restoring a skip in a finished month is a
+ * Historical Correction, and restoring one in this month or a later one is not
+ * (ADR 0013 §1).
+ */
+export interface UnskipWritePlan extends ResolvedWrite {
+  readonly existing: RecurringTemplateSkipRow;
+}
+
+function skipFacts(row: RecurringTemplateSkipRow): SkipSourceFacts {
+  return {
+    kind: 'skip',
+    templateId: row.templateId,
+    occurrenceDate: row.occurrenceDate,
+    reason: row.reason,
+    note: row.note,
+  };
+}
+
+/**
+ * The restore of a stored skip, at the version the caller saw (ADR 0010 §11).
+ * `existing` is the skip `args.skipId` names.
+ */
+export function decideUnskip(
+  existing: RecurringTemplateSkipRow,
+  args: UnskipSuggestionArgs,
+): UnskipWritePlan {
+  if (existing.id !== args.skipId) {
+    throw new Error('an unskip decision was handed another skip');
+  }
+  if (existing.version !== args.expectedVersion) {
+    throw new VersionConflictError(
+      'This skipped occurrence changed after you opened it. Reload to see what it says now.',
+    );
+  }
+
+  return {
+    existing,
+    revision: true,
+    changes: [deleted({ scope: 'existing', kind: 'skip', id: existing.id }, skipFacts(existing))],
+    // A skip is attached to no account, so restoring one wakes none.
+    dormancy: [],
+    support: [],
+  };
+}
+
+export async function resolveUnskipIn(
+  tx: Transaction,
+  args: UnskipSuggestionArgs,
+  options: ResolveOptions = { lock: true },
+): Promise<UnskipWritePlan> {
+  const existing = await findSkipByIdIn(tx, args.skipId, options.lock ? { lock: 'update' } : {});
+  if (existing === undefined) throw new NotFoundError('That skipped occurrence no longer exists.');
+  return decideUnskip(existing, args);
+}
+
+/** The one writer for a restore, for the ordinary write and for Historical Confirm. */
+export async function applyUnskipPlanIn(
+  tx: Transaction,
+  ctx: RequestContext,
+  plan: UnskipWritePlan,
+  reason?: string,
+): Promise<RecurringTemplateSkipRow> {
+  const removed = await deleteSkipIn(tx, auditContextOf(ctx, reason), plan.existing.id);
+  /* v8 ignore next -- the row is held under FOR UPDATE in this transaction. */
+  if (removed === undefined) throw new NotFoundError('That skipped occurrence no longer exists.');
+  return removed;
 }
 
 async function unskipSuggestionIn(
@@ -742,11 +826,20 @@ async function unskipSuggestionIn(
   ctx: RequestContext,
   args: UnskipSuggestionArgs,
 ): Promise<RecurringTemplateSkipRow> {
-  const removed = await deleteSkipIn(tx, auditContextOf(ctx, args.reason), args.skipId);
-  if (removed === undefined) throw new NotFoundError('That skipped occurrence no longer exists.');
-  return removed;
+  const plan = await resolveUnskipIn(tx, args);
+  assertNoHistoricalReview(plan, ctx.today);
+  return applyUnskipPlanIn(tx, ctx, plan, args.reason);
 }
 
+/**
+ * Restore a skipped occurrence, at the version the client saw.
+ *
+ * A stale version refuses before anything is deleted, so no audit row records
+ * a removal that did not happen. Restoring a skip whose occurrence falls in a
+ * finished month is a Historical Correction and is refused here: it goes
+ * through Preview → Confirm instead. In the current month, or a later one, it
+ * stays one click (ADR 0013 §1).
+ */
 export async function unskipSuggestion(
   deps: FlowDependencies,
   ctx: RequestContext,
