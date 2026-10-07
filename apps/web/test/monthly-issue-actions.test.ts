@@ -162,7 +162,7 @@ describe('a missing month-end balance', () => {
     const actions = issueActions(missing('bbva'), completed);
     expect(actions[0]?.target).toEqual({ kind: 'anchor', anchor: '#account-bbva' });
     expect(actions.map((action) => action.target.kind)).toEqual(['anchor', 'link']);
-    // The secondary is the account itself, for dormancy or closing.
+    // The secondary is the account itself, for dormancy.
     expect(actions[1]?.target).toEqual({ kind: 'link', href: '/accounts/bbva' });
   });
 
@@ -185,6 +185,12 @@ describe('a missing month-end balance', () => {
     const [, , manage] = issueActions(missing('both'), completed);
     expect(manage?.hint).toContain('from the zero balance that emptied it');
     expect(manage?.hint).not.toContain('today');
+  });
+
+  it('never offers closing the account, which is dated today and settles no finished month (ADR 0013 §4)', () => {
+    const [, , manage] = issueActions(missing('both'), completed);
+    expect(manage?.hint).toBe('Mark it dormant from the zero balance that emptied it.');
+    expect(manage?.hint).not.toMatch(/close/iu);
   });
 });
 

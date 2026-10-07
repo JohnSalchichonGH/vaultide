@@ -224,7 +224,9 @@ const missingMonthEnd: Handler = (issue, context) => {
   actions.push(
     action(issue, 'account', {
       label: 'Manage account',
-      hint: 'Mark it dormant from the zero balance that emptied it, or close it, if it holds nothing.',
+      // Not "or close it": the account page closes an account today, so a
+      // close never settles a finished month's missing statement (ADR 0013 §4).
+      hint: 'Mark it dormant from the zero balance that emptied it.',
       emphasis: 'secondary',
       target: { kind: 'link', href: `/accounts/${positionId}` },
     }),
