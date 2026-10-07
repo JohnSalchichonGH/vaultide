@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import type { IncomeMonthDto, IncomePageDto, IncomeTotalDto } from '@vaultide/application';
 import { Badge } from '@/components/ui/badge';
+import { ScrollRegion } from '@/components/ui/scroll-region';
 import { Amount, META, SpendingFigure, type Formatting } from '@/features/spending/figure';
 import { monthTitle } from '@/features/monthly/presentation';
 import { GrossCell, NativeNote } from '@/features/income/cells';
@@ -114,7 +115,7 @@ export function MonthsTable({
 }) {
   const gross = showsGross(months.map((month) => month.total));
   return (
-    <div className="relative overflow-x-auto" data-testid="income-months-scroll">
+    <ScrollRegion label="Income recorded each month, salary, bonus and other" className="relative overflow-x-auto" data-testid="income-months-scroll">
       <table className="w-full border-collapse text-[length:var(--text-table)]" data-testid="income-months">
         <caption className="sr-only">Income recorded each month, salary, bonus and other</caption>
         <thead>
@@ -144,7 +145,7 @@ export function MonthsTable({
           ))}
         </tbody>
       </table>
-    </div>
+    </ScrollRegion>
   );
 }
 

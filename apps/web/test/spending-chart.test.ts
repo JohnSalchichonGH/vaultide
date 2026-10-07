@@ -148,6 +148,12 @@ describe('the chart', () => {
     expect(html).toMatch(/class="relative overflow-x-auto"/u);
   });
 
+  it('scrolls in a named region a keyboard can reach, since nothing inside it takes focus', () => {
+    expect(html).toContain(
+      '<div role="region" aria-label="Chart of spending by month" tabindex="0" class="relative overflow-x-auto"',
+    );
+  });
+
   it('draws parts only where the model says, and never a height for a combined period', () => {
     const column = (month: string) => {
       const start = html.indexOf(`data-month="${month}"`);
