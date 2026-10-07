@@ -68,6 +68,10 @@ export function QuickUpdate({
   const router = useRouter();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const headingId = useId();
+  // Monthly can show two of these at once, its Accounts section's and an
+  // issue's, so each field's id is this instance's own. A shared one would tie
+  // the second dialog's labels to the first dialog's fields (16.6).
+  const fieldsId = useId();
   const hydrated = useHydrated();
   const [pending, startTransition] = useTransition();
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
@@ -205,19 +209,19 @@ export function QuickUpdate({
               const draft = drafts[position.id];
               return (
                 <li key={position.id} className="space-y-1">
-                  <Label htmlFor={`quick-${position.id}`}>
+                  <Label htmlFor={`${fieldsId}-${position.id}`}>
                     {position.name}{' '}
                     <span className="font-normal">({position.currency})</span>
                   </Label>
                   <div className="flex items-center gap-3">
                     <Input
-                      id={`quick-${position.id}`}
+                      id={`${fieldsId}-${position.id}`}
                       data-testid={`quick-balance-${position.id}`}
                       inputMode="decimal"
                       autoComplete="off"
                       value={draft?.value ?? ''}
                       aria-invalid={draft?.error != null}
-                      aria-describedby={`quick-${position.id}-hint`}
+                      aria-describedby={`${fieldsId}-${position.id}-hint`}
                       className={cn('tabular text-right')}
                       onChange={(event) => {
                         setDraft(position, event.target.value);
@@ -235,7 +239,7 @@ export function QuickUpdate({
                     </span>
                   </div>
                   <p
-                    id={`quick-${position.id}-hint`}
+                    id={`${fieldsId}-${position.id}-hint`}
                     className={cn(
                       'text-[length:var(--text-meta)]',
                       draft?.error == null
