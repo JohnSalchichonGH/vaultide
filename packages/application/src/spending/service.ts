@@ -146,7 +146,10 @@ function bucketDtoOf(
     unexplainedInflow:
       inflow?.amount === undefined
         ? null
-        : { amount: moneyDto(inflow.amount.toString(), bucket.currency), variant: inflow.variant ?? 'a' },
+        : {
+            amount: moneyDto(inflow.amount.toString(), bucket.currency),
+            variant: inflow.variant === 'b' ? 'b' : 'a',
+          },
   };
 }
 

@@ -84,6 +84,35 @@ export type IssueKey =
 /** 8.5's "Class" column. `info` is neither blocking nor advisory. */
 export type IssueClass = 'blocking' | 'advisory' | 'info';
 
+/**
+ * 8.5's two readings of `unexplained_inflow`, as v2.1.8 30.11 selects them:
+ * `a` when the tracked total is negative (cash grew more than the records
+ * explain), `b` when it is zero or above (known expenses exceed the cash that
+ * left).
+ */
+export type UnexplainedInflowVariant = 'a' | 'b';
+
+/**
+ * Why the current month has no common as-of date (8.6; ADR 0014).
+ *
+ * One key, `mtd_no_common_date`, for three situations a user has to be told
+ * apart, because only the last of them is fixed by updating every account
+ * today:
+ *
+ *  - `no_cash_account` — no cash account takes part in the month through
+ *    today, so there is nothing to measure at all;
+ *  - `all_first_balance` — every account taking part was first tracked this
+ *    month and is excluded as `first_balance` (8.1, 8.6), so there is nothing
+ *    to measure yet. Month to date starts next month, from this month's
+ *    closing balances;
+ *  - `no_shared_date` — accounts are included, and no day of the month has the
+ *    evidence every one of them owes.
+ *
+ * Decided from what the engine already decides — participation through today
+ * and the month's first-balance exclusions — and never from the issue's words.
+ */
+export type NoCommonDateVariant = 'no_cash_account' | 'all_first_balance' | 'no_shared_date';
+
 export const ISSUE_CLASS: Readonly<Record<IssueKey, IssueClass>> = {
   missing_month_end: 'blocking',
   first_balance: 'info',
@@ -160,12 +189,19 @@ export interface Issue {
   /** The amount the issue is about (the unexplained inflow, the residual). */
   readonly amount?: Decimal;
   /**
-   * 8.5, as v2.1.8 30.11 selects them: `unexplained_inflow` variant A when the
-   * tracked total is negative (cash grew more than the records explain), B when
-   * it is zero or above (known expenses exceed the cash that left). The two read
-   * differently to a user and the distinction is the blueprint's.
+   * Which reading of its key an issue is, for the two keys that have more than
+   * one. Metadata like `source`: no sum, status, class or trigger reads it, and
+   * a dismissal still stores the key alone.
+   *
+   *  - `unexplained_inflow`: 8.5, as v2.1.8 30.11 selects them — `a` when the
+   *    tracked total is negative (cash grew more than the records explain), `b`
+   *    when it is zero or above (known expenses exceed the cash that left).
+   *  - `mtd_no_common_date`: why no common date exists (ADR 0014), always
+   *    present on that key.
+   *
+   * Absent on every other key.
    */
-  readonly variant?: 'a' | 'b';
+  readonly variant?: UnexplainedInflowVariant | NoCommonDateVariant;
   readonly templateId?: string;
   readonly templateName?: string;
   readonly occurrenceDate?: PlainDate;

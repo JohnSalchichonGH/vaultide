@@ -183,6 +183,8 @@ describe('the common as-of date', () => {
     // income the month really does contain.
     expect(result.buckets).toBeNull();
     expect(result.issues.map((i) => i.key)).toEqual(['mtd_no_common_date']);
+    // Why, as the DTO carries it to both pages (ADR 0014).
+    expect(result.issues[0]?.variant).toBe('no_shared_date');
   });
 });
 

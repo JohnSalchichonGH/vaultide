@@ -12,6 +12,7 @@ import {
   type CashAccountInput,
   type CompletedMonthInput,
   type CompletenessTemplate,
+  type Issue,
 } from '../src/reconciliation/index';
 import * as golden from './golden/basic-eur-september/fixture';
 import { classifyBucketInterval } from '../src/savings/index';
@@ -245,7 +246,7 @@ describe('the 8.10 golden with the salary forgotten', () => {
 
 describe('the unexplained-inflow variants of v2.1.8 30.11', () => {
   /** The issue this bucket raised, if it raised one. */
-  const inflowOf = (bucket: { issues: readonly { key: string; variant?: 'a' | 'b' }[] } | undefined) =>
+  const inflowOf = (bucket: { issues: readonly Pick<Issue, 'key' | 'variant'>[] } | undefined) =>
     bucket?.issues.find((i) => i.key === 'unexplained_inflow');
 
   it('reads variant A when the tracked total is negative', () => {

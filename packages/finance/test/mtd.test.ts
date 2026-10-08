@@ -824,6 +824,112 @@ describe('S — which accounts count as having newer balances', () => {
   });
 });
 
+describe('T — why there is no common date (ADR 0014)', () => {
+  /** The one issue a no-date result raises, and the reading it carries. */
+  function noDate(cashAccounts: CashAccountInput[], today = TODAY) {
+    const result = reconcileMonthToDate(input({ today, cashAccounts }));
+    expect(result.asOf).toBeNull();
+    // The key, its class and the month's status are 8.6's whatever the cause;
+    // only the reading differs (30.13 item 10 closes the set of keys).
+    expect(result.status).toBe('unavailable');
+    expect(result.issues.map((i) => [i.key, i.class])).toEqual([['mtd_no_common_date', 'blocking']]);
+    return result.issues[0]?.variant;
+  }
+
+  /** Every account a quick update today would write, given a snapshot dated today. */
+  const updatedToday = (accounts: CashAccountInput[]): CashAccountInput[] =>
+    accounts.map((a) =>
+      a.position.status !== 'active' || a.position.dormantFrom !== undefined
+        ? a
+        : {
+            ...a,
+            valuations: [
+              ...a.valuations.filter((v) => v.valuedOn !== TODAY),
+              snap(a.position.id, TODAY, '1'),
+            ],
+          },
+    );
+
+  it('says no cash account takes part when there is none at all', () => {
+    expect(noDate([])).toBe('no_cash_account');
+  });
+
+  it('says no cash account takes part when every one closed before the month', () => {
+    expect(
+      noDate([account(A, 'Old', [monthEnd(A, '2026-07-31', '0')], { closedOn: '2026-08-20' })]),
+    ).toBe('no_cash_account');
+  });
+
+  it('says every account was first tracked this month when each one is a first balance', () => {
+    // J's fixture: the snapshots are shared, on the 6th, and still nothing is
+    // measured, because neither account was ever measured before it.
+    expect(
+      noDate([
+        account(A, 'Newly tracked', [snap(A, '2026-09-06', '5000')]),
+        account(B, 'Also newly tracked', [snap(B, '2026-09-06', '900'), snap(B, '2026-09-09', '950')]),
+      ]),
+    ).toBe('all_first_balance');
+  });
+
+  it('counts only the accounts that take part when deciding every one was first tracked', () => {
+    expect(
+      noDate([
+        account(A, 'Newly tracked', [snap(A, '2026-09-06', '5000')]),
+        account(B, 'Old', [monthEnd(B, '2026-07-31', '0')], { closedOn: '2026-08-20' }),
+      ]),
+    ).toBe('all_first_balance');
+  });
+
+  it('says the accounts share no date when included accounts lack one', () => {
+    // C's fixture: two accounts with openings, measured on different days.
+    expect(
+      noDate([
+        account(A, 'BBVA', [opening(A, '1000'), snap(A, '2026-09-06', '900')]),
+        account(B, 'Savings', [opening(B, '500'), snap(B, '2026-09-07', '500')]),
+      ]),
+    ).toBe('no_shared_date');
+  });
+
+  it('says the accounts share no date when one first balance sits beside an account owing a snapshot', () => {
+    expect(
+      noDate([
+        account(A, 'Newly tracked', [snap(A, '2026-09-06', '5000')]),
+        account(B, 'BBVA', [opening(B, '1000')]),
+      ]),
+    ).toBe('no_shared_date');
+  });
+
+  it('reads a pre-existing account with no balance at all as one owing a snapshot, not a first balance', () => {
+    // 8.6's first balance needs a first valuation in the month; this account has
+    // none, so it is included and owes evidence like any other.
+    expect(noDate([account(A, 'No evidence', [])])).toBe('no_shared_date');
+  });
+
+  it('is offered Update all today only where updating every account today makes a date', () => {
+    const shared = [
+      account(A, 'BBVA', [opening(A, '1000'), snap(A, '2026-09-06', '900')]),
+      account(B, 'Savings', [opening(B, '500'), snap(B, '2026-09-07', '500')]),
+    ];
+    const firstTracked = [
+      account(A, 'Newly tracked', [snap(A, '2026-09-06', '5000')]),
+      account(B, 'Also newly tracked', [snap(B, '2026-09-07', '900')]),
+    ];
+    const none = [account(A, 'Old', [monthEnd(A, '2026-07-31', '0')], { closedOn: '2026-08-20' })];
+
+    expect(reconcileMonthToDate(input({ cashAccounts: updatedToday(shared) })).asOf).toBe(TODAY);
+    expect(noDate(updatedToday(firstTracked))).toBe('all_first_balance');
+    expect(noDate(updatedToday(none))).toBe('no_cash_account');
+  });
+
+  it('carries no variant on a month that has its date', () => {
+    const result = reconcileMonthToDate(
+      input({ cashAccounts: [account(A, 'BBVA', [opening(A, '1000'), snap(A, '2026-09-06', '900')])] }),
+    );
+    expect(result.asOf).toBe('2026-09-06');
+    expect(result.issues.some((i) => i.key === 'mtd_no_common_date')).toBe(false);
+  });
+});
+
 describe('the current month only', () => {
   it('reconciles the month that contains today, and takes no other', () => {
     const result = reconcileMonthToDate(

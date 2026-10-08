@@ -68,6 +68,14 @@ export interface ReconciliationIssueSourceDto {
   readonly on: string;
 }
 
+/**
+ * Why the current month has no common date (8.6; ADR 0014): no cash account
+ * takes part, every account taking part was first tracked this month, or the
+ * included accounts share no day. Only the last is fixed by updating every
+ * account today.
+ */
+export type NoCommonDateCauseDto = 'no_cash_account' | 'all_first_balance' | 'no_shared_date';
+
 export interface ReconciliationIssueDto {
   readonly key: string;
   readonly class: IssueClassDto;
@@ -76,8 +84,12 @@ export interface ReconciliationIssueDto {
   readonly positionId: string | null;
   readonly positionName: string | null;
   readonly amount: MoneyDto | null;
-  /** 8.5's two readings of `unexplained_inflow`. */
-  readonly variant: 'a' | 'b' | null;
+  /**
+   * The reading of a key that has more than one: `a` or `b` for
+   * `unexplained_inflow` (8.5, 30.11), and the cause for `mtd_no_common_date`
+   * (ADR 0014). `null` on every other key.
+   */
+  readonly variant: 'a' | 'b' | NoCommonDateCauseDto | null;
   readonly templateId: string | null;
   readonly templateName: string | null;
   readonly occurrenceDate: string | null;

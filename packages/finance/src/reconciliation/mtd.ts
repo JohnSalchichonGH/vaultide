@@ -19,6 +19,7 @@ import {
   type CashAccountInput,
   type Issue,
   type IssueKey,
+  type NoCommonDateVariant,
   type ReconciliationStatus,
 } from './types';
 import type { ExpenseFlow, IncomeFlow, TransferFlow } from '../flows/types';
@@ -280,6 +281,29 @@ function findAsOf(
   return undefined;
 }
 
+/**
+ * Why `findAsOf` found nothing (ADR 0014), from the two things it already
+ * decided: which accounts take part through today, and which of them are the
+ * month's `first_balance` exclusions.
+ *
+ * Only `no_shared_date` is about evidence at a date, and so only it is fixed by
+ * updating every account today. With no account taking part there is nothing
+ * to update, and a `first_balance` account stays excluded however many
+ * snapshots it gains this month — it has still never been measured before it.
+ */
+function noCommonDateVariant(
+  accounts: readonly CashAccountInput[],
+  month: MonthKey,
+  today: PlainDate,
+  excluded: ReadonlySet<string>,
+): NoCommonDateVariant {
+  const start = startOfMonthKey(month);
+  const takingPart = accounts.filter((a) => participatesThrough(a, start, today));
+  if (takingPart.length === 0) return 'no_cash_account';
+  if (takingPart.every((a) => excluded.has(a.position.id))) return 'all_first_balance';
+  return 'no_shared_date';
+}
+
 function bucketOf(
   input: MonthToDateInput,
   month: MonthKey,
@@ -488,7 +512,12 @@ export function reconcileMonthToDate(input: MonthToDateInput): MonthToDateResult
       asOf: null,
       status: 'unavailable',
       reason: 'mtd_no_common_date',
-      issues: [issue('mtd_no_common_date')],
+      // One key whatever the cause (30.13 item 10); the variant says which.
+      issues: [
+        issue('mtd_no_common_date', {
+          variant: noCommonDateVariant(cash, month, input.today, excluded),
+        }),
+      ],
     };
   }
 

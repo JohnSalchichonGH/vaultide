@@ -210,7 +210,13 @@ const snapshotsArb = (id: string, days: readonly string[]) =>
         .map((amounts) => chosen.map((day, index) => valuation(id, day, amounts[index] ?? '1'))),
     );
 
-type AccountKind = 'pre_existing' | 'opened_in_month' | 'closed_in_month' | 'dormant' | 'first_balance';
+type AccountKind =
+  | 'pre_existing'
+  | 'opened_in_month'
+  | 'closed_in_month'
+  | 'closed_before_month'
+  | 'dormant'
+  | 'first_balance';
 
 function kindArb(kind: AccountKind, id: string, currency: string): fc.Arbitrary<CashAccountInput> {
   const account = (
@@ -256,6 +262,12 @@ function kindArb(kind: AccountKind, id: string, currency: string): fc.Arbitrary<
         ),
       );
 
+    case 'closed_before_month':
+      // Closed in August over July's zero: it takes no part in September at all.
+      return fc
+        .constantFrom('2026-08-10', AUGUST_END)
+        .map((closedOn) => account({ status: 'closed', closedOn }, [monthEnd(id, '2026-07-31', '0')]));
+
     case 'dormant':
       // Dormant from a zero balance — August's statement or one this month —
       // with no balance after it.
@@ -284,12 +296,14 @@ const KINDS: readonly AccountKind[] = [
   'pre_existing',
   'opened_in_month',
   'closed_in_month',
+  'closed_before_month',
   'dormant',
   'first_balance',
 ];
 
+// From no account at all, so a month nothing takes part in is generated too.
 const everyKindArb: fc.Arbitrary<CashAccountInput[]> = fc
-  .array(fc.tuple(fc.constantFrom(...KINDS), fc.constantFrom('EUR', 'USD')), { minLength: 1, maxLength: 4 })
+  .array(fc.tuple(fc.constantFrom(...KINDS), fc.constantFrom('EUR', 'USD')), { minLength: 0, maxLength: 4 })
   .chain((shapes) =>
     fc.tuple(...shapes.map(([kind, currency], index) => kindArb(kind, `acct-${String(index)}`, currency))),
   )
@@ -304,20 +318,21 @@ const everyKindArb: fc.Arbitrary<CashAccountInput[]> = fc
  * each of them either has an exact snapshot dated that day or is known
  * structurally there: closed on or before it, or dormant from on or before it.
  */
-function qualifies(accounts: readonly CashAccountInput[], d: string): boolean {
-  // "An account with `opened_on > d` does not participate in the interval
-  // `[start(M), d]` at all."
-  const takesPart = (a: CashAccountInput): boolean =>
-    (a.position.openedOn === null || a.position.openedOn <= d) &&
-    (a.position.closedOn === null || a.position.closedOn >= START);
-  // "`first_balance` for a pre-existing account whose first valuation falls in
-  // M", decided once for M from the evidence through today.
-  const firstBalance = (a: CashAccountInput): boolean =>
-    (a.position.openedOn === null || a.position.openedOn < START) &&
-    !a.valuations.some((v) => v.valuedOn < START) &&
-    a.valuations.some((v) => v.valuedOn >= START && v.valuedOn <= TODAY);
+// "An account with `opened_on > d` does not participate in the interval
+// `[start(M), d]` at all."
+const takesPartThrough = (a: CashAccountInput, d: string): boolean =>
+  (a.position.openedOn === null || a.position.openedOn <= d) &&
+  (a.position.closedOn === null || a.position.closedOn >= START);
 
-  const included = accounts.filter((a) => takesPart(a) && !firstBalance(a));
+// "`first_balance` for a pre-existing account whose first valuation falls in
+// M", decided once for M from the evidence through today.
+const firstBalance = (a: CashAccountInput): boolean =>
+  (a.position.openedOn === null || a.position.openedOn < START) &&
+  !a.valuations.some((v) => v.valuedOn < START) &&
+  a.valuations.some((v) => v.valuedOn >= START && v.valuedOn <= TODAY);
+
+function qualifies(accounts: readonly CashAccountInput[], d: string): boolean {
+  const included = accounts.filter((a) => takesPartThrough(a, d) && !firstBalance(a));
   if (included.length === 0) return false;
 
   return included.every(
@@ -335,18 +350,71 @@ function latestQualifyingDate(accounts: readonly CashAccountInput[]): string | n
   return null;
 }
 
+/**
+ * Why no date qualifies, read from ADR 0014's three cases rather than from the
+ * engine: nothing takes part through today; everything that does is a first
+ * balance; or what is included lacks a shared day.
+ */
+function noDateCauseOf(
+  accounts: readonly CashAccountInput[],
+): 'no_cash_account' | 'all_first_balance' | 'no_shared_date' {
+  const takingPart = accounts.filter((a) => takesPartThrough(a, TODAY));
+  if (takingPart.length === 0) return 'no_cash_account';
+  if (takingPart.every(firstBalance)) return 'all_first_balance';
+  return 'no_shared_date';
+}
+
+/** What Quick update writes today: a snapshot for every active account that is not dormant (8.6, 15.3). */
+const updatedToday = (accounts: readonly CashAccountInput[]): CashAccountInput[] =>
+  accounts.map((a) =>
+    a.position.status !== 'active' || a.position.dormantFrom !== undefined
+      ? a
+      : {
+          ...a,
+          valuations: [...a.valuations.filter((v) => v.valuedOn !== TODAY), valuation(a.position.id, TODAY, '1.25')],
+        },
+  );
+
+const monthToDateOf = (accounts: readonly CashAccountInput[]) =>
+  reconcileMonthToDate({ today: TODAY, cashAccounts: accounts, income: [], expenses: [], transfers: [] });
+
 describe('property: the as-of date is null only when no date qualifies', () => {
   it('is null exactly when no date qualifies, and otherwise the latest that does', () => {
     fc.assert(
       fc.property(everyKindArb, (accounts) => {
-        const result = reconcileMonthToDate({
-          today: TODAY,
-          cashAccounts: accounts,
-          income: [],
-          expenses: [],
-          transfers: [],
-        });
+        const result = monthToDateOf(accounts);
         expect(result.asOf).toBe(latestQualifyingDate(accounts));
+
+        // ADR 0014: a no-date month says why, and only a no-date month does.
+        const noDate = result.issues.filter((i) => i.key === 'mtd_no_common_date');
+        if (result.asOf === null) {
+          expect(noDate.map((i) => i.variant)).toEqual([noDateCauseOf(accounts)]);
+        } else {
+          expect(noDate).toEqual([]);
+        }
+      }),
+      { numRuns: 1000 },
+    );
+  });
+
+  it('offers Update all today only for the cause it fixes', () => {
+    fc.assert(
+      fc.property(everyKindArb, (accounts) => {
+        const before = monthToDateOf(accounts);
+        if (before.asOf !== null) return;
+        const cause = noDateCauseOf(accounts);
+        const after = monthToDateOf(updatedToday(accounts));
+
+        if (cause === 'no_shared_date') {
+          // Every account here has a usable opening (the generator's premise),
+          // so a snapshot from everyone today is a shared day.
+          expect(after.asOf).toBe(TODAY);
+        } else {
+          // Nothing to update, or a first balance that a second snapshot this
+          // month leaves a first balance: still no date, for the same reason.
+          expect(after.asOf).toBeNull();
+          expect(after.issues.map((i) => i.variant)).toEqual([cause]);
+        }
       }),
       { numRuns: 1000 },
     );
