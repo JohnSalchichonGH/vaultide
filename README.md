@@ -9,7 +9,7 @@ investments, other assets and liabilities, in as many currencies as you hold.
 
 The exact financial semantics live in
 [`docs/implementation-blueprint.md`](docs/implementation-blueprint.md) (frozen,
-v2.1.20). This README describes the product, its current status and how to
+v2.1.21). This README describes the product, its current status and how to
 work on the repository; it does not restate the blueprint's rules.
 
 ## Status
@@ -322,7 +322,7 @@ policy filtered can never pass verification. Restoring is documented in
 ## Design and engineering docs
 
 - **Semantic authority:** [`docs/implementation-blueprint.md`](docs/implementation-blueprint.md)
-  (frozen, v2.1.20). When the code and the blueprint disagree, the blueprint is
+  (frozen, v2.1.21). When the code and the blueprint disagree, the blueprint is
   corrected or the code is — never silently either.
 - **Implementation decisions:** [`docs/adr/`](docs/adr/) —
   [Phase 0](docs/adr/0001-phase-0-implementation-decisions.md),
@@ -338,7 +338,8 @@ policy filtered can never pass verification. Restoring is documented in
   [historical correction and financial write coordination](docs/adr/0010-historical-correction.md),
   [Bulk History](docs/adr/0011-bulk-history.md),
   [the standalone Income pages](docs/adr/0012-income-pages.md),
-  [which schedule and closing writes are corrections](docs/adr/0013-schedule-and-closing-corrections.md).
+  [which schedule and closing writes are corrections](docs/adr/0013-schedule-and-closing-corrections.md),
+  [saying why month to date has nothing to measure](docs/adr/0014-first-month-nothing-to-measure.md).
 - **Evidence for frozen phases:**
   [`docs/phase-0-acceptance.md`](docs/phase-0-acceptance.md),
   [`docs/phase-1-acceptance.md`](docs/phase-1-acceptance.md),

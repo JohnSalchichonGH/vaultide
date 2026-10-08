@@ -7,10 +7,11 @@ product owner's ruling on what the current month says when month to date has
 nothing to measure (D1 of the first-month findings), why, and where the cause
 comes from.
 
-The blueprint (`docs/implementation-blueprint.md`, v2.1.20) is the semantic
-authority. Nothing here changes a status, an issue key, an issue class, a
-trigger, an identity, the reconciliation arithmetic or the schema, and there is
-**no migration**. ADR 0003 to ADR 0013 stand.
+The blueprint (`docs/implementation-blueprint.md`, v2.1.21) is the semantic
+authority, and §30.24 states the ruling. This record says how it is built.
+Nothing here changes a status, an issue key, an issue class, a trigger, an
+identity, the reconciliation arithmetic or the schema, and there is **no
+migration**. ADR 0003 to ADR 0013 stand.
 
 ---
 
@@ -138,18 +139,20 @@ The ruling named Spending's state sentence. The opening line, the chip, the
 caption and the link say the same thing in other words, so they follow the same
 rule. Leaving them would have kept the false claim on the same page.
 
-## 4. The blueprint's general wording
+## 4. The blueprint states the ruling
 
-The blueprint gives the shared-date words for "no common date" in general:
+Blueprint v2.1.21 records D1 in §30.24. 8.5's `mtd_no_common_date` row named
+this exact case in its trigger, and gave it one action, so the ruling belongs
+in the blueprint rather than only here.
 
-- 8.4's `provisional` row;
-- 8.5's suggested action for `mtd_no_common_date`;
-- 15.2's Monthly row, and 15.3 sections 1 and 8.
-
-8.6 attaches the same words to the case its example describes. This record does
-not edit the blueprint. Those statements remain exactly right for
-`no_shared_date`, and for the other two causes they are read through this
-record. A later blueprint revision can restate them.
+- **What changed in the blueprint.** 8.5's row now gives the action by cause,
+  and 8.6's empty-inclusion bullet says the page names the cause.
+- **Where it points to §30.24.** Beside the no-common-date words in 8.4's
+  `provisional` row, 15.2's "Monthly (current month)" row, 15.3 sections 1 and
+  8, and 15.4's state chip.
+- **Where it stays as written.** 8.6's example of BBVA and Savings, and the
+  other passages §30.24 lists, describe the case where accounts share no day,
+  or record history.
 
 ## 5. Known edges
 
