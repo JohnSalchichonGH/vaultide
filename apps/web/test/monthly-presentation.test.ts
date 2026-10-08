@@ -2,6 +2,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import type {
+  MonthlyPageDto,
   MtdBucketDto,
   NoCommonDateCauseDto,
   ReconciliationBucketDto,
@@ -79,7 +80,7 @@ const {
 } = await import('@/features/monthly/presentation');
 const { IssuesPanel } = await import('@/features/monthly/issues');
 const { IssueActionHost } = await import('@/features/monthly/issue-action-host');
-const { issueActions } = await import('@/features/monthly/issue-actions');
+const { issueActionContextOf, issueActions } = await import('@/features/monthly/issue-actions');
 const { ReportingFigure } = await import('@/features/monthly/reporting-figure');
 const { spendingFigureDisplay } = await import('@/features/spending/presentation');
 const { CompletedBucket, MonthToDateBucket, NoMonthToDateIdentity } = await import(
@@ -166,6 +167,7 @@ function testActionContext() {
     participatingCurrencies: ['EUR'],
     incomeAnchors: new Map<string, string>(),
     expenseAnchors: new Map<string, string>(),
+    unrecordedIncome: [],
     formatDay: (iso: string) => iso,
   };
 }
@@ -762,5 +764,91 @@ describe('month to date with no common date, by why', () => {
     expect(none).not.toContain('share a balance date');
     const link = /<a[^>]*data-testid="mtd-add-account"[^>]*>Add a cash account<\/a>/u.exec(none)?.[0] ?? '';
     expect(link).toContain('href="/accounts"');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* What the corrections read from the page (ADR 0009 §3 addendum)              */
+/* -------------------------------------------------------------------------- */
+
+describe('the context the corrections read', () => {
+  const term = (net: string | null) => ({
+    net: net === null ? null : { amount: net, currency: 'EUR' },
+    gross: null,
+    effectiveFrom: net === null ? null : '2026-01-01',
+    exact: { state: 'absent' as const },
+  });
+
+  const occurrence = (templateId: string, occurrenceDate: string, state: unknown, net: string | null = '2100') => ({
+    templateId,
+    templateName: `Source ${templateId}`,
+    counterparty: null,
+    incomeKind: 'employment',
+    currency: 'EUR',
+    occurrenceDate,
+    term: term(net),
+    defaultCashPositionId: null,
+    defaultCashAccountName: null,
+    sourceArchived: templateId === 'archived',
+    state,
+  });
+
+  const page = {
+    kind: 'completed',
+    month: '2026-09',
+    monthEndsOn: '2026-09-30',
+    today: '2026-10-01',
+    reconciliation: { month: '2026-09', status: 'unresolved', buckets: [] },
+    accounts: { previousMonth: '2026-08', accounts: [] },
+    income: {
+      occurrences: [
+        occurrence('due', '2026-09-05', { kind: 'due' }),
+        occurrence('archived', '2026-09-10', { kind: 'due' }, null),
+        occurrence('accepted', '2026-09-15', {
+          kind: 'accepted',
+          entry: { entryId: 'inc-1' },
+        }),
+        occurrence('skipped', '2026-09-20', { kind: 'skipped', skipId: 's', skipVersion: 1, reason: 'other', note: null }),
+        occurrence('upcoming', '2026-09-25', { kind: 'upcoming', receivedTodayEligible: false }),
+      ],
+      otherRecurring: [],
+      direct: [],
+      cashAccounts: [],
+    },
+    expenses: { occurrences: [], otherRecurring: [], direct: [], eligibleCategories: [], cashAccounts: [] },
+  } as unknown as MonthlyPageDto;
+
+  it('holds the month’s scheduled income awaiting a record or a skip, and nothing else', () => {
+    const context = issueActionContextOf(page, {
+      monthName: 'September 2026',
+      previousMonthName: 'August 2026',
+      formatDay: (iso) => iso,
+    });
+    expect(context.unrecordedIncome).toEqual([
+      {
+        templateId: 'due',
+        templateName: 'Source due',
+        currency: 'EUR',
+        occurrenceDate: '2026-09-05',
+        expected: { amount: '2100', currency: 'EUR' },
+        sourceArchived: false,
+      },
+      {
+        templateId: 'archived',
+        templateName: 'Source archived',
+        currency: 'EUR',
+        occurrenceDate: '2026-09-10',
+        expected: null,
+        sourceArchived: true,
+      },
+      {
+        templateId: 'upcoming',
+        templateName: 'Source upcoming',
+        currency: 'EUR',
+        occurrenceDate: '2026-09-25',
+        expected: { amount: '2100', currency: 'EUR' },
+        sourceArchived: false,
+      },
+    ]);
   });
 });

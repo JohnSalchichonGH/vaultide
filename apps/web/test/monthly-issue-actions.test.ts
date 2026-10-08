@@ -2,6 +2,7 @@ import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import { ISSUE_CLASS, type ReconciliationIssueDto } from '@vaultide/application';
+import type { UnrecordedIncomeOccurrence } from '@/features/monthly/issue-actions';
 
 // The dialogs behind the controls reach the server actions and the app router;
 // what this file is about is which controls exist and what they carry.
@@ -56,7 +57,7 @@ const {
   isActionableIssueKey,
   issueActions,
 } = await import('@/features/monthly/issue-actions');
-const { AdjustmentForm, IssueActionHost, canRecordAdjustment } = await import(
+const { AdjustmentForm, IssueActionControls, IssueActionHost, canRecordAdjustment } = await import(
   '@/features/monthly/issue-action-host'
 );
 
@@ -104,6 +105,7 @@ const completed = {
   participatingCurrencies: ['EUR', 'USD'],
   incomeAnchors: new Map([['inc-1', 'income-inc-1']]),
   expenseAnchors: new Map([['exp-1', 'expense-exp-1']]),
+  unrecordedIncome: [] as UnrecordedIncomeOccurrence[],
   formatDay: (iso: string) => `day ${iso}`,
 };
 
@@ -401,6 +403,187 @@ describe('month to date with no common date', () => {
     expect(actions[0]?.target).toEqual({ kind: 'link', href: '/accounts' });
     expect(actions[0]?.hint).toContain('none does yet');
     expect(actions.some((action) => action.target.kind === 'quick_update')).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The expected income comes first (ADR 0009 §3 addendum)                      */
+/* -------------------------------------------------------------------------- */
+
+describe('an unexplained inflow beside expected income nobody recorded', () => {
+  const inflow = (variant: 'a' | 'b') =>
+    issue({
+      key: 'unexplained_inflow',
+      class: 'blocking',
+      variant,
+      amount: { amount: '2100', currency: 'EUR' },
+    });
+
+  const occurrence = (
+    templateId: string,
+    templateName: string,
+    occurrenceDate: string,
+    over: Partial<UnrecordedIncomeOccurrence> = {},
+  ): UnrecordedIncomeOccurrence => ({
+    templateId,
+    templateName,
+    currency: 'EUR',
+    occurrenceDate,
+    expected: { amount: '2100', currency: 'EUR' },
+    sourceArchived: false,
+    ...over,
+  });
+
+  const SALARY = occurrence('salary', 'Salary', '2026-09-25');
+  const RENT = occurrence('rent', 'Rent', '2026-09-05', { expected: { amount: '650', currency: 'EUR' } });
+
+  const withIncome = <T extends typeof completed | typeof current>(
+    context: T,
+    unrecordedIncome: UnrecordedIncomeOccurrence[],
+  ): T => ({ ...context, unrecordedIncome });
+
+  it('leads with recording the one expected occurrence, then Add missing income', () => {
+    const actions = issueActions(inflow('a'), withIncome(completed, [SALARY]));
+    expect(actions.map((action) => action.label)).toEqual([
+      'Record Salary',
+      'Add missing income',
+      'Record a transfer',
+      'Review balances',
+      'Review how expenses were paid',
+      'Record reconciliation adjustment',
+    ]);
+    const [record] = actions;
+    expect(record?.emphasis).toBe('primary');
+    expect(actions.slice(1).every((action) => action.emphasis === 'secondary')).toBe(true);
+    // The source, the date and the expected amount; the row where it is recorded.
+    expect(record?.amount).toEqual({ amount: '2100', currency: 'EUR' });
+    expect(record?.hint).toContain('day 2026-09-25');
+    expect(record?.target).toEqual({ kind: 'anchor', anchor: '#occurrence-salary-2026-09-25' });
+  });
+
+  it('offers one action per occurrence, earliest first', () => {
+    const actions = issueActions(inflow('a'), withIncome(completed, [SALARY, RENT]));
+    expect(actions.slice(0, 3).map((action) => action.label)).toEqual([
+      'Record Rent',
+      'Record Salary',
+      'Add missing income',
+    ]);
+    expect(actions[0]?.amount).toEqual({ amount: '650', currency: 'EUR' });
+    expect(actions[0]?.emphasis).toBe('primary');
+    expect(actions[1]?.emphasis).toBe('secondary');
+  });
+
+  it('keeps the order it always had when nothing expected is unrecorded', () => {
+    expect(labelsOf(inflow('a'), withIncome(completed, []))).toEqual([
+      'Add missing income',
+      'Record a transfer',
+      'Review balances',
+      'Review how expenses were paid',
+      'Record reconciliation adjustment',
+    ]);
+    const [addIncome] = issueActions(inflow('a'), withIncome(completed, []));
+    expect(addIncome?.hint).not.toContain('counted twice');
+  });
+
+  it('warns beside Add missing income that the expected income is not recorded yet', () => {
+    const one = issueActions(inflow('a'), withIncome(completed, [SALARY])).find(
+      (action) => action.label === 'Add missing income',
+    );
+    expect(one?.hint).toContain(
+      'Salary, expected this month, is not recorded yet — if that is this money, record it in Income instead, or the same money is counted twice.',
+    );
+    const two = issueActions(inflow('a'), withIncome(completed, [SALARY, RENT])).find(
+      (action) => action.label === 'Add missing income',
+    );
+    expect(two?.hint).toContain('Rent and Salary, expected this month, are not recorded yet');
+    expect(two?.hint).toContain('record them in Income instead');
+  });
+
+  it('counts an occurrence only in the issue’s own currency', () => {
+    const dollars = occurrence('usd', 'US salary', '2026-09-10', { currency: 'USD' });
+    expect(labelsOf(inflow('a'), withIncome(completed, [dollars]))[0]).toBe('Add missing income');
+  });
+
+  it('counts a current month’s occurrence only on or before the month-to-date date', () => {
+    // Today is the 10th and month to date stops on the 6th: income scheduled on
+    // the 8th is not in the figure the issue was measured from.
+    const before = occurrence('early', 'Early pay', '2026-09-06');
+    const after = occurrence('late', 'Late pay', '2026-09-08');
+    const actions = issueActions(inflow('a'), withIncome(current, [after, before]));
+    expect(actions.slice(0, 2).map((action) => action.label)).toEqual(['Record Early pay', 'Add missing income']);
+  });
+
+  it('counts a completed month’s occurrence up to its last day', () => {
+    const last = occurrence('last', 'Month-end pay', '2026-09-30');
+    expect(labelsOf(inflow('a'), withIncome(completed, [last]))[0]).toBe('Record Month-end pay');
+  });
+
+  it('names no amount when no term says what the occurrence is worth', () => {
+    const [record] = issueActions(
+      inflow('a'),
+      withIncome(completed, [occurrence('t', 'Tips', '2026-09-12', { expected: null })]),
+    );
+    expect(record?.label).toBe('Record Tips');
+    expect(record?.amount).toBeUndefined();
+  });
+
+  it('says how an archived source’s occurrence is recorded', () => {
+    const [record] = issueActions(
+      inflow('a'),
+      withIncome(completed, [occurrence('old', 'Old job', '2026-09-15', { sourceArchived: true })]),
+    );
+    expect(record?.label).toBe('Record Old job');
+    expect(record?.hint).toContain('Its source is archived: unarchive it to record this payment');
+  });
+
+  it('leaves variant B exactly as it was', () => {
+    const actions = issueActions(inflow('b'), withIncome(completed, [SALARY, RENT]));
+    expect(actions.map((action) => action.label)).toEqual([
+      'Review how expenses were paid',
+      'Add missing income',
+      'Record a transfer',
+      'Review balances',
+      'Record reconciliation adjustment',
+    ]);
+    expect(actions.find((action) => action.label === 'Add missing income')?.hint).not.toContain('counted twice');
+  });
+
+  it('keeps each occurrence’s action id stable, and free of any amount', () => {
+    const ids = issueActions(inflow('a'), withIncome(completed, [SALARY])).map((action) => action.id);
+    expect(ids[0]).toBe('unexplained_inflow:EUR::occurrence:salary:2026-09-25');
+    const later = issueActions(
+      { ...inflow('a'), amount: { amount: '900', currency: 'EUR' } },
+      withIncome(completed, [{ ...SALARY, expected: { amount: '2200', currency: 'EUR' } }]),
+    ).map((action) => action.id);
+    expect(later).toEqual(ids);
+  });
+
+  it('shows the expected amount beside the control’s label', () => {
+    const html = renderToStaticMarkup(
+      createElement(IssueActionHost, {
+        resources: {
+          month: '2026-09',
+          monthName: 'September 2026',
+          monthEndsOn: '2026-09-30',
+          today: '2026-10-01',
+          formatting: { locale: 'en-GB', minorUnitsByCurrency: { EUR: 2 } },
+          currencies: ['EUR'],
+          defaultCurrency: 'EUR',
+          incomeAccounts: [],
+          expenseAccounts: [],
+          eligibleCategories: [],
+          transferAccounts: [],
+          quickUpdatePositions: [],
+          bounds: { min: '2026-09-01', max: '2026-09-30' },
+        },
+        offeredActionIds: [],
+        children: createElement(IssueActionControls, {
+          actions: issueActions(inflow('a'), withIncome(completed, [SALARY])),
+        }),
+      }),
+    );
+    const link = /<a[^>]*href="#occurrence-salary-2026-09-25"[^>]*>(.*?)<\/a>/u.exec(html)?.[1] ?? '';
+    expect(link).toMatch(/^Record Salary · <span[^>]*>€2,100\.00<\/span>$/u);
   });
 });
 

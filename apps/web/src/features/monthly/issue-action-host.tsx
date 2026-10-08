@@ -384,6 +384,24 @@ export function IssueActionHost({
 const hintIdOf = (action: IssueAction): string =>
   `issue-action-${action.id.replaceAll(/[^a-zA-Z0-9]+/gu, '-')}-hint`;
 
+/** A control's words: its label, and the amount it names when it names one. */
+function ActionLabel({ action }: { readonly action: IssueAction }) {
+  const host = useHost();
+  const { amount } = action;
+  if (amount === undefined) return <>{action.label}</>;
+  return (
+    <>
+      {action.label} ·{' '}
+      <MoneyText
+        amount={amount.amount}
+        currency={amount.currency}
+        locale={host.resources.formatting.locale}
+        minorUnits={host.resources.formatting.minorUnitsByCurrency[amount.currency] ?? 2}
+      />
+    </>
+  );
+}
+
 function ActionButton({ action }: { readonly action: IssueAction }) {
   const host = useHost();
   const hydrated = useHydrated();
@@ -399,7 +417,7 @@ function ActionButton({ action }: { readonly action: IssueAction }) {
         host.open(action);
       }}
     >
-      {action.label}
+      <ActionLabel action={action} />
     </button>
   );
 }
@@ -427,7 +445,7 @@ export function IssueActionControls({ actions }: { readonly actions: readonly Is
               aria-describedby={hintIdOf(action)}
               className={action.emphasis === 'primary' ? PRIMARY : ACTION}
             >
-              {action.label}
+              <ActionLabel action={action} />
             </a>
           ) : action.target.kind === 'link' ? (
             <Link
@@ -437,7 +455,7 @@ export function IssueActionControls({ actions }: { readonly actions: readonly Is
               aria-describedby={hintIdOf(action)}
               className={action.emphasis === 'primary' ? PRIMARY : ACTION}
             >
-              {action.label}
+              <ActionLabel action={action} />
             </Link>
           ) : action.target.kind === 'quick_update' ? (
             <span data-testid="issue-action" data-action-id={action.id} className="inline-block">

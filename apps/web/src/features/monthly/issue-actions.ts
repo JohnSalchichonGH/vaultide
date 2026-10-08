@@ -105,6 +105,12 @@ export interface IssueAction {
   /** Stable across refreshes: the issue it belongs to and what it does, never an amount. */
   readonly id: string;
   readonly label: string;
+  /**
+   * An amount the control names beside its label: what an expected occurrence
+   * it records is worth. Formatted where it is shown, in the currency's own
+   * minor units, because this model never writes money into a sentence.
+   */
+  readonly amount?: MoneyDto;
   /** One line under the control: what it does, and what it does not claim. */
   readonly hint: string;
   readonly emphasis: 'primary' | 'secondary';
@@ -121,6 +127,21 @@ export interface IssueAccountState {
    * only (8.6, 30.13 item 10).
    */
   readonly closeState: string | null;
+}
+
+/**
+ * An income occurrence the month's schedule expected that is neither recorded
+ * nor skipped — what an unexplained inflow may well be (ADR 0009 §3 addendum).
+ */
+export interface UnrecordedIncomeOccurrence {
+  readonly templateId: string;
+  readonly templateName: string;
+  readonly currency: string;
+  readonly occurrenceDate: string;
+  /** What its term says it is worth; `null` when no term covers the date. */
+  readonly expected: MoneyDto | null;
+  /** Its row offers no "Record it" until the source is unarchived (§30.10). */
+  readonly sourceArchived: boolean;
 }
 
 export interface IssueActionContext {
@@ -140,6 +161,8 @@ export interface IssueActionContext {
   /** Where each income entry of the month is rendered on this page. */
   readonly incomeAnchors: ReadonlyMap<string, string>;
   readonly expenseAnchors: ReadonlyMap<string, string>;
+  /** The month's scheduled income still awaiting a record or a skip, by date then source. */
+  readonly unrecordedIncome: readonly UnrecordedIncomeOccurrence[];
   /** A day as the reader's locale writes it; never a money value. */
   readonly formatDay: (iso: string) => string;
 }
@@ -354,11 +377,43 @@ const flowWithoutCashAccount: Handler = (issue, context) => {
   return actions;
 };
 
+/** "Salary", "Salary and Rent", "Salary, Rent and Bonus". */
+function namesInWords(names: readonly string[]): string {
+  if (names.length <= 1) return names.join('');
+  return `${names.slice(0, -1).join(', ')} and ${names.at(-1) ?? ''}`;
+}
+
+/**
+ * Scheduled income the variant-A correction should record first (ADR 0009 §3
+ * addendum): in the issue's currency, scheduled on or before where the issue
+ * was measured — the month's last day, or `D` — and neither recorded nor
+ * skipped. Earliest first; one day's occurrences keep the page's own order.
+ */
+function expectedIncomeFor(
+  currency: string,
+  dates: CorrectionDates,
+  context: IssueActionContext,
+): UnrecordedIncomeOccurrence[] {
+  return context.unrecordedIncome
+    .filter(
+      (occurrence) =>
+        occurrence.currency === currency &&
+        occurrence.occurrenceDate >= dates.min &&
+        occurrence.occurrenceDate <= dates.max,
+    )
+    .sort((a, b) => (a.occurrenceDate < b.occurrenceDate ? -1 : a.occurrenceDate > b.occurrenceDate ? 1 : 0));
+}
+
 /**
  * The blocking correction, ordered by what the variant says happened (ADR 0009
  * §3). Variant A is cash that grew beyond the records; variant B is known
  * expenses beyond the cash that left. The choices are the same; which is likely
  * is not.
+ *
+ * Variant A leads with the income the month already expected and nobody
+ * recorded, one occurrence at a time, on the row that records it: adding the
+ * same money as missing income and then recording the occurrence would count it
+ * twice (ADR 0009 §3 addendum).
  */
 const unexplainedInflow: Handler = (issue, context) => {
   const currency = issue.currency ?? '';
@@ -371,9 +426,34 @@ const unexplainedInflow: Handler = (issue, context) => {
       ? `on or before ${context.formatDay(dates.max)}, where month to date stops`
       : `inside ${context.monthName}`;
 
+  const expected = issue.variant === 'b' ? [] : expectedIncomeFor(currency, dates, context);
+  const recordExpected = expected.map((occurrence) =>
+    action(issue, `occurrence:${occurrence.templateId}:${occurrence.occurrenceDate}`, {
+      label: `Record ${occurrence.templateName}`,
+      ...(occurrence.expected === null ? {} : { amount: occurrence.expected }),
+      hint: occurrence.sourceArchived
+        ? `Expected on ${context.formatDay(occurrence.occurrenceDate)} and not recorded yet. Its source is archived: unarchive it to record this payment, if it is money that arrived.`
+        : `Expected on ${context.formatDay(occurrence.occurrenceDate)} and not recorded yet. If it is money that arrived, record it on its row.`,
+      emphasis: 'secondary',
+      target: {
+        kind: 'anchor',
+        anchor: `#${occurrenceAnchorId(occurrence.templateId, occurrence.occurrenceDate)}`,
+      },
+    }),
+  );
+
+  // Said beside "Add missing income" too, and in the dialog it opens, because a
+  // user may reach for it first.
+  const names = [...new Set(expected.map((occurrence) => occurrence.templateName))];
+  const several = names.length > 1;
+  const expectedNote =
+    names.length === 0
+      ? ''
+      : ` ${namesInWords(names)}, expected this month, ${several ? 'are' : 'is'} not recorded yet — if that is this money, record ${several ? 'them' : 'it'} in Income instead, or the same money is counted twice.`;
+
   const addIncome = action(issue, 'add-income', {
     label: 'Add missing income',
-    hint: `Money that arrived and nothing records. The amount starts at the unexplained difference — change it to what actually arrived, and date it ${within}.`,
+    hint: `Money that arrived and nothing records.${expectedNote} The amount starts at the unexplained difference — change it to what actually arrived, and date it ${within}.`,
     emphasis: 'secondary',
     target: {
       kind: 'add_income',
@@ -422,7 +502,7 @@ const unexplainedInflow: Handler = (issue, context) => {
   const ordered =
     issue.variant === 'b'
       ? [reviewExpenses, addIncome, transfer, reviewBalances]
-      : [addIncome, transfer, reviewBalances, reviewExpenses];
+      : [...recordExpected, addIncome, transfer, reviewBalances, reviewExpenses];
   const actions: IssueAction[] = ordered.filter((row): row is IssueAction => row !== undefined);
 
   if (amount !== null) {
@@ -632,6 +712,25 @@ function entryAnchorsOf(page: MonthlyPageDto): {
   return { income, expenses };
 }
 
+/**
+ * The month's scheduled income still awaiting a record or a skip, from the
+ * Income section the page already loaded — schedule membership, by date then
+ * source. `due` and `upcoming` are the two occurrence states with neither;
+ * which of them an issue may name is the issue's to decide.
+ */
+function unrecordedIncomeOf(page: MonthlyPageDto): UnrecordedIncomeOccurrence[] {
+  return page.income.occurrences
+    .filter((occurrence) => occurrence.state.kind === 'due' || occurrence.state.kind === 'upcoming')
+    .map((occurrence) => ({
+      templateId: occurrence.templateId,
+      templateName: occurrence.templateName,
+      currency: occurrence.currency,
+      occurrenceDate: occurrence.occurrenceDate,
+      expected: occurrence.term.net,
+      sourceArchived: occurrence.sourceArchived,
+    }));
+}
+
 export function issueActionContextOf(
   page: MonthlyPageDto,
   labels: {
@@ -657,6 +756,7 @@ export function issueActionContextOf(
     participatingCurrencies: [...currencies],
     incomeAnchors: anchors.income,
     expenseAnchors: anchors.expenses,
+    unrecordedIncome: unrecordedIncomeOf(page),
     formatDay: labels.formatDay,
   };
 }
