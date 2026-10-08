@@ -1,6 +1,7 @@
 import type {
   CompletenessStateDto,
   MissingReportingContributionDto,
+  NoCommonDateCauseDto,
   ReconciliationIssueDto,
   ReconciliationStatusDto,
 } from '@vaultide/application';
@@ -155,7 +156,7 @@ export function issueTitle(issue: Pick<ReconciliationIssueDto, 'key' | 'variant'
     case 'large_unclassified':
       return 'Unusually large unclassified spending';
     case 'mtd_no_common_date':
-      return 'No common balance date';
+      return NO_COMMON_DATE_TITLE[causeOfVariant(issue.variant)];
     case 'mtd_newer_balances':
       return 'Some accounts have newer balances';
     default:
@@ -185,13 +186,70 @@ export function issueSummary(issue: Pick<ReconciliationIssueDto, 'key' | 'varian
     case 'large_unclassified':
       return 'This month’s unclassified spending is more than twice the median of recent reliable months.';
     case 'mtd_no_common_date':
-      return 'Update all cash accounts to the same date to calculate month-to-date spending.';
+      return NO_COMMON_DATE_SUMMARY[causeOfVariant(issue.variant)];
     case 'mtd_newer_balances':
       return 'Some accounts have newer individual balances; update all accounts to move the month-to-date date forward.';
     default:
       return 'Vaultide raised this for the month.';
   }
 }
+
+/* -------------------------------------------------------------------------- */
+/* Month to date with no common date (8.6; ADR 0014)                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The cause an `mtd_no_common_date` variant names. Anything else reads as the
+ * accounts sharing no date, which is what the key said before it had causes.
+ */
+function causeOfVariant(variant: ReconciliationIssueDto['variant']): NoCommonDateCauseDto {
+  return variant === 'no_cash_account' || variant === 'all_first_balance' ? variant : 'no_shared_date';
+}
+
+/**
+ * Why the current month has no month-to-date figure, as its one issue says it.
+ *
+ * Read off the engine's issue rather than off the accounts on the page, so
+ * Monthly and Spending — which reads the same variant — cannot disagree about
+ * one month (ADR 0014).
+ */
+export function noCommonDateCauseOf(
+  issues: readonly Pick<ReconciliationIssueDto, 'key' | 'variant'>[],
+): NoCommonDateCauseDto {
+  return causeOfVariant(issues.find((issue) => issue.key === 'mtd_no_common_date')?.variant ?? null);
+}
+
+const NO_COMMON_DATE_TITLE: Readonly<Record<NoCommonDateCauseDto, string>> = {
+  no_shared_date: 'No common balance date',
+  all_first_balance: 'Nothing to measure yet',
+  no_cash_account: 'No cash account this month',
+};
+
+/**
+ * What the missing month-to-date figure means, and what would change it.
+ *
+ * Only the accounts sharing no day is fixed by updating every account today;
+ * with no account there is nothing to update, and a first balance stays one
+ * however many snapshots it gains this month. Echoes the completed month's
+ * "nothing to reconcile yet" (`UNAVAILABLE_CAUSE_MEANING.first_balance`).
+ */
+export const NO_COMMON_DATE_SUMMARY: Readonly<Record<NoCommonDateCauseDto, string>> = {
+  no_shared_date: 'Update all cash accounts to the same date to calculate month-to-date spending.',
+  all_first_balance:
+    'Every cash account started being tracked this month, so there is nothing to measure yet. Next month is measured from this month’s closing balances, once you enter them.',
+  no_cash_account:
+    'No cash account takes part in this month, so month to date has nothing to measure. Add a cash account to start measuring it.',
+};
+
+/** The same, as the Reconciliation section's card says it in place of an identity. */
+export const NO_COMMON_DATE_RECONCILIATION: Readonly<Record<NoCommonDateCauseDto, string>> = {
+  no_shared_date:
+    'Your cash accounts do not share a balance date this month, so there is no interval to reconcile and no figure of any kind — not even a zero. Update all cash accounts to the same date to calculate month-to-date spending.',
+  all_first_balance:
+    'Every cash account was first tracked this month, so there is nothing to reconcile yet — no interval, and no figure of any kind, not even a zero. Next month is reconciled from this month’s closing balances, once you enter them.',
+  no_cash_account:
+    'No cash account takes part in this month, so there is nothing to reconcile — no interval, and no figure of any kind, not even a zero.',
+};
 
 export const ISSUE_CLASS_LABEL: Readonly<Record<IssueClass, string>> = {
   blocking: 'Blocking',

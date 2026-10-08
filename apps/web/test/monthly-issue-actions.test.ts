@@ -375,6 +375,36 @@ describe('an unexplained inflow', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/* No common date, by why (ADR 0014)                                           */
+/* -------------------------------------------------------------------------- */
+
+describe('month to date with no common date', () => {
+  const noDate = (variant: ReconciliationIssueDto['variant']) =>
+    issue({ key: 'mtd_no_common_date', class: 'blocking', currency: null, variant });
+
+  it('offers Update all today when the accounts share no date, the one cause it fixes', () => {
+    const actions = issueActions(noDate('no_shared_date'), current);
+    expect(actions.map((action) => [action.label, action.target.kind])).toEqual([['Update all today', 'quick_update']]);
+  });
+
+  it('offers nothing when every account was first tracked this month', () => {
+    // A snapshot today leaves a first balance a first balance: there is nothing
+    // to correct this month, and month to date starts from its closing balances.
+    expect(issueActions(noDate('all_first_balance'), current)).toEqual([]);
+  });
+
+  it('offers adding a cash account when none takes part, and not Update all today', () => {
+    const actions = issueActions(noDate('no_cash_account'), current);
+    expect(actions).toHaveLength(1);
+    expect(actions[0]?.label).toBe('Add a cash account');
+    expect(actions[0]?.emphasis).toBe('primary');
+    expect(actions[0]?.target).toEqual({ kind: 'link', href: '/accounts' });
+    expect(actions[0]?.hint).toContain('none does yet');
+    expect(actions.some((action) => action.target.kind === 'quick_update')).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /* The two suggestions                                                         */
 /* -------------------------------------------------------------------------- */
 

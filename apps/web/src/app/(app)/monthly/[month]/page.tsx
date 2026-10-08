@@ -21,14 +21,18 @@ import { CompletedOverview, CurrentOverview } from '@/features/monthly/overview'
 import { IssuesPanel } from '@/features/monthly/issues';
 import { IssueActionHost } from '@/features/monthly/issue-action-host';
 import { issueActionContextOf, issueActions } from '@/features/monthly/issue-actions';
-import { CompletedBucket, MonthToDateBucket } from '@/features/monthly/reconciliation';
+import {
+  CompletedBucket,
+  MonthToDateBucket,
+  NoMonthToDateIdentity,
+} from '@/features/monthly/reconciliation';
 import { quickUpdatePositionsOf } from '@/features/monthly/accounts-presentation';
 import {
   defaultPickerCurrency,
   ownedEntryDateBounds,
   pickerCurrencies,
 } from '@/features/monthly/income-presentation';
-import { dayTitle, monthTitle, presentIssues } from '@/features/monthly/presentation';
+import { dayTitle, monthTitle, noCommonDateCauseOf, presentIssues } from '@/features/monthly/presentation';
 import { defaultHistoryStart, historyHref } from '@/features/history/routes';
 
 export const metadata: Metadata = { title: 'Monthly' };
@@ -328,16 +332,7 @@ export default async function MonthlyPage({ params }: { params: Promise<{ month:
             ))
           )
         ) : page.monthToDate.buckets === null || page.monthToDate.asOf === null ? (
-          <Card data-testid="mtd-no-identity">
-            <CardHeader>
-              <CardTitle>No month-to-date reconciliation</CardTitle>
-              <CardDescription>
-                Your cash accounts do not share a balance date this month, so there is no interval to
-                reconcile and no figure of any kind — not even a zero. Update all cash accounts to the
-                same date to calculate month-to-date spending.
-              </CardDescription>
-            </CardHeader>
-          </Card>
+          <NoMonthToDateIdentity cause={noCommonDateCauseOf(page.monthToDate.issues)} />
         ) : page.monthToDate.buckets.length === 0 ? (
           <EmptyReconciliation monthName={monthName} />
         ) : (

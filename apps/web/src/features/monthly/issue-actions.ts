@@ -250,6 +250,35 @@ const quickUpdate =
   ];
 
 /**
+ * Month to date with no common date, by why (ADR 0014).
+ *
+ * Quick update only where it can change the outcome: the included accounts
+ * share no day. With no account taking part, the correction is adding one.
+ * When every account was first tracked this month there is nothing to correct
+ * this month — month to date starts next month, from this month's closing
+ * balances — so nothing is offered rather than a control that cannot help.
+ */
+const noCommonDate: Handler = (issue, context) => {
+  switch (issue.variant) {
+    case 'all_first_balance':
+      return [];
+    case 'no_cash_account':
+      return [
+        action(issue, 'add-account', {
+          label: 'Add a cash account',
+          hint: `Month to date measures the cash accounts that take part in ${context.monthName}, and none does yet.`,
+          emphasis: 'primary',
+          target: { kind: 'link', href: '/accounts' },
+        }),
+      ];
+    default:
+      return quickUpdate(
+        'Records today’s balance for every active account. Month to date needs one date they all share.',
+      )(issue, context);
+  }
+};
+
+/**
  * Earlier balances, one or many (8.5 `first_balance`, 30.21 item 10; ADR 0009
  * §12, ADR 0011 D11).
  *
@@ -511,9 +540,7 @@ const largeUnclassified: Handler = (issue, context) => [
 
 const HANDLERS: Readonly<Record<ActionableIssueKey, Handler>> = {
   missing_month_end: missingMonthEnd,
-  mtd_no_common_date: quickUpdate(
-    'Records today’s balance for every active account. Month to date needs one date they all share.',
-  ),
+  mtd_no_common_date: noCommonDate,
   mtd_newer_balances: quickUpdate(
     'Month to date stays valid where it is; updating every account today moves that date forward.',
   ),

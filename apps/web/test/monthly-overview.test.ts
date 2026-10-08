@@ -2,8 +2,10 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import type {
+  AccountOpeningDto,
   CompletedMonthlyPageDto,
   CurrentMonthlyPageDto,
+  ReconciliationIssueDto,
   ReportingAmountDto,
   ReportingCashFlowFiguresDto,
 } from '@vaultide/application';
@@ -134,19 +136,69 @@ function completed(
   );
 }
 
-/** The current month: with a common date `D`, or without one. */
-function current(reporting: CurrentMonthlyPageDto['reporting']): string {
+/**
+ * The current month: with a common date `D`, or without one. The Overview also
+ * reads the month-to-date issues and buckets, and each account's opening; by
+ * default there are none, and every opening a statement.
+ */
+function current(
+  reporting: CurrentMonthlyPageDto['reporting'],
+  options: {
+    readonly issues?: readonly Pick<ReconciliationIssueDto, 'key' | 'variant'>[];
+    readonly excluded?: readonly string[];
+    readonly openings?: readonly AccountOpeningDto[];
+  } = {},
+): string {
   const page = {
     kind: 'current',
     month: '2026-10',
     monthEndsOn: '2026-10-31',
     today: '2026-10-06',
     minorUnitsByCurrency: { EUR: 2, USD: 2 },
-    monthToDate: { status: reporting.monthStatus },
+    monthToDate: {
+      status: reporting.monthStatus,
+      issues: options.issues ?? [],
+      buckets:
+        reporting.kind === 'no_tracked_interval'
+          ? null
+          : [
+              {
+                currency: 'EUR',
+                accounts: [
+                  { name: 'Everyday', excludedFirstBalance: false },
+                  ...(options.excluded ?? []).map((name) => ({ name, excludedFirstBalance: true })),
+                ],
+              },
+            ],
+    },
+    accounts: {
+      previousMonth: '2026-09',
+      closableFrom: '2026-11-01',
+      accounts: (options.openings ?? [STATEMENT]).map((opening) => ({ opening })),
+    },
     reporting,
   } as unknown as CurrentMonthlyPageDto;
   return renderToStaticMarkup(createElement(CurrentOverview, { page, locale: formattingLocale, issues }));
 }
+
+const STATEMENT: AccountOpeningDto = {
+  kind: 'statement',
+  amount: { amount: '100', currency: 'EUR' },
+  valuedOn: '2026-09-30',
+};
+
+/** A current month with no common date, and the source-only facts it keeps. */
+const noDate = (): CurrentMonthlyPageDto['reporting'] => ({
+  kind: 'no_tracked_interval',
+  month: '2026-10',
+  asOf: null,
+  reason: 'mtd_no_common_date',
+  monthStatus: 'unavailable',
+  sourceOnlyThrough: '2026-10-06',
+  reportingCurrency: 'EUR',
+  additionalSpending: amount('0'),
+  thirdPartyPaid: amount('0'),
+});
 
 /** The rendered markup of one figure, from its own element to the end of its value. */
 function block(markup: string, testId: string): string {
@@ -322,5 +374,52 @@ describe('the current month’s Overview', () => {
         expectReads(block(html, `figure-${key}`), state, 'lower_bound');
       }
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* What a first month says (ADR 0014; 8.6; 15.3)                               */
+/* -------------------------------------------------------------------------- */
+
+/** The Overview's no-common-date block, from its element to its end. */
+function noDateBlock(html: string): string {
+  const at = html.indexOf('data-testid="mtd-no-common-date"');
+  if (at < 0) throw new Error('No month-to-date block');
+  return html.slice(html.lastIndexOf('<', at), html.indexOf('</div>', at));
+}
+
+const withCause = (variant: ReconciliationIssueDto['variant']) => [{ key: 'mtd_no_common_date', variant }];
+
+describe('the current month’s Overview without a common date, by why (ADR 0014)', () => {
+  it('asks for one shared date when the accounts share none', () => {
+    const block = noDateBlock(current(noDate(), { issues: withCause('no_shared_date') }));
+    expect(block).toContain('data-cause="no_shared_date"');
+    expect(block).toContain('Update all cash accounts to the same date to calculate month-to-date spending.');
+    expect(block).toContain('not even a zero');
+    expect(block).not.toContain('mtd-add-account');
+  });
+
+  it('says there is nothing to measure yet when every account was first tracked this month', () => {
+    const block = noDateBlock(current(noDate(), { issues: withCause('all_first_balance') }));
+    expect(block).toContain('data-cause="all_first_balance"');
+    expect(block).toContain(
+      'Every cash account started being tracked this month, so there is nothing to measure yet. Next month is measured from this month’s closing balances, once you enter them.',
+    );
+    expect(block).toContain('not even a zero');
+    // Updating every account today cannot change this, so it is not asked for.
+    expect(block).not.toContain('Update all cash accounts');
+    expect(block).not.toContain('share');
+    expect(block).not.toContain('mtd-add-account');
+  });
+
+  it('says no cash account takes part, and points to adding one, when none does', () => {
+    const block = noDateBlock(current(noDate(), { issues: withCause('no_cash_account') }));
+    expect(block).toContain('data-cause="no_cash_account"');
+    expect(block).toContain(
+      'No cash account takes part in this month, so month to date has nothing to measure. Add a cash account to start measuring it.',
+    );
+    expect(block).not.toContain('Update all cash accounts');
+    const link = /<a[^>]*data-testid="mtd-add-account"[^>]*>Add a cash account<\/a>/u.exec(block)?.[0] ?? '';
+    expect(link).toContain('href="/accounts"');
   });
 });

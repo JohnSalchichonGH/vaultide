@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import type {
   MtdBucketDto,
+  NoCommonDateCauseDto,
   ReconciliationBucketDto,
   ReconciliationIssueDto,
   ReportingAmountDto,
@@ -71,6 +72,7 @@ const {
   missingReason,
   missingSummary,
   monthTitle,
+  noCommonDateCauseOf,
   presentIssues,
   savingsRateReason,
   unavailableCauseOf,
@@ -80,7 +82,9 @@ const { IssueActionHost } = await import('@/features/monthly/issue-action-host')
 const { issueActions } = await import('@/features/monthly/issue-actions');
 const { ReportingFigure } = await import('@/features/monthly/reporting-figure');
 const { spendingFigureDisplay } = await import('@/features/spending/presentation');
-const { CompletedBucket, MonthToDateBucket } = await import('@/features/monthly/reconciliation');
+const { CompletedBucket, MonthToDateBucket, NoMonthToDateIdentity } = await import(
+  '@/features/monthly/reconciliation'
+);
 
 /**
  * The Monthly page's presentation (blueprint 8.5, 12.6, 15.3; 6.2 for why a
@@ -657,5 +661,106 @@ describe('months and keys', () => {
   it('describes a month with nothing required without a ratio', () => {
     expect(completenessMeaning('sufficient', 0)).toBe('Nothing was required this month.');
     expect(completenessMeaning('stale', 0)).toMatch(/No balance was recorded/u);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Month to date with no common date, as each place says it (ADR 0014)         */
+/* -------------------------------------------------------------------------- */
+
+describe('month to date with no common date, by why', () => {
+  const noDate = (variant: ReconciliationIssueDto['variant']) =>
+    issue({ key: 'mtd_no_common_date', class: 'blocking', currency: null, variant });
+
+  const FIRST_TRACKED =
+    'Every cash account started being tracked this month, so there is nothing to measure yet. Next month is measured from this month’s closing balances, once you enter them.';
+  const NO_ACCOUNT =
+    'No cash account takes part in this month, so month to date has nothing to measure. Add a cash account to start measuring it.';
+  const SHARE_A_DATE = 'Update all cash accounts to the same date to calculate month-to-date spending.';
+
+  it('names each cause in the issue’s own words', () => {
+    expect(issueTitle(noDate('no_shared_date'))).toBe('No common balance date');
+    expect(issueTitle(noDate('all_first_balance'))).toBe('Nothing to measure yet');
+    expect(issueTitle(noDate('no_cash_account'))).toBe('No cash account this month');
+    expect(issueSummary(noDate('no_shared_date'))).toBe(SHARE_A_DATE);
+    expect(issueSummary(noDate('all_first_balance'))).toBe(FIRST_TRACKED);
+    expect(issueSummary(noDate('no_cash_account'))).toBe(NO_ACCOUNT);
+  });
+
+  it('reads an issue that carries no cause as the accounts sharing no date', () => {
+    expect(issueTitle(noDate(null))).toBe('No common balance date');
+    expect(issueSummary(noDate(null))).toBe(SHARE_A_DATE);
+  });
+
+  it('takes the cause from the month’s one no-common-date issue', () => {
+    expect(noCommonDateCauseOf([noDate('all_first_balance')])).toBe('all_first_balance');
+    expect(noCommonDateCauseOf([missingEnd, noDate('no_cash_account')])).toBe('no_cash_account');
+    expect(noCommonDateCauseOf([noDate('no_shared_date')])).toBe('no_shared_date');
+    expect(noCommonDateCauseOf([])).toBe('no_shared_date');
+  });
+
+  it('offers Update all today in the issues panel only where it can change the outcome', () => {
+    const panelOf = (variant: ReconciliationIssueDto['variant']): string => {
+      const row = noDate(variant);
+      const actionContext = testActionContext();
+      const html = renderToStaticMarkup(
+        createElement(IssueActionHost, {
+          resources: testActionResources(),
+          offeredActionIds: issueActions(row, actionContext).map((action) => action.id),
+          children: createElement(IssuesPanel, {
+            presentation: presentIssues([row], []),
+            month: '2026-09',
+            monthName: 'September 2026',
+            context: { locale: 'en-GB', minorUnitsByCurrency: { EUR: 2 }, names: new Map() },
+            actionContext,
+          }),
+        }),
+      );
+      const at = html.indexOf('data-testid="issue-group-mtd_no_common_date"');
+      return html.slice(at);
+    };
+
+    const shared = panelOf('no_shared_date');
+    expect(shared).toContain('No common balance date');
+    expect(shared).toContain('data-testid="quick-update-open"');
+    expect(shared).toContain('>Update all today<');
+
+    const firstTracked = panelOf('all_first_balance');
+    expect(firstTracked).toContain('Nothing to measure yet');
+    expect(firstTracked).toContain(FIRST_TRACKED);
+    expect(firstTracked).not.toContain('quick-update-open');
+    expect(firstTracked).not.toContain('Update all today');
+
+    const none = panelOf('no_cash_account');
+    expect(none).toContain('No cash account this month');
+    expect(none).not.toContain('quick-update-open');
+    expect(none).toMatch(/<a[^>]*href="\/accounts"[^>]*>Add a cash account<\/a>/u);
+  });
+
+  it('says why on the Reconciliation card, in place of an identity', () => {
+    const card = (cause: NoCommonDateCauseDto): string =>
+      renderToStaticMarkup(createElement(NoMonthToDateIdentity, { cause }));
+
+    const shared = card('no_shared_date');
+    expect(shared).toContain('No month-to-date reconciliation');
+    expect(shared).toContain('Your cash accounts do not share a balance date this month');
+    expect(shared).toContain(SHARE_A_DATE);
+    expect(shared).not.toContain('mtd-add-account');
+
+    const firstTracked = card('all_first_balance');
+    expect(firstTracked).toContain(
+      'Every cash account was first tracked this month, so there is nothing to reconcile yet — no interval, and no figure of any kind, not even a zero. Next month is reconciled from this month’s closing balances, once you enter them.',
+    );
+    expect(firstTracked).not.toContain('share a balance date');
+    expect(firstTracked).not.toContain('Update all');
+    expect(firstTracked).not.toContain('mtd-add-account');
+
+    const none = card('no_cash_account');
+    expect(none).toContain(
+      'No cash account takes part in this month, so there is nothing to reconcile — no interval, and no figure of any kind, not even a zero.',
+    );
+    expect(none).not.toContain('share a balance date');
+    const link = /<a[^>]*data-testid="mtd-add-account"[^>]*>Add a cash account<\/a>/u.exec(none)?.[0] ?? '';
+    expect(link).toContain('href="/accounts"');
   });
 });

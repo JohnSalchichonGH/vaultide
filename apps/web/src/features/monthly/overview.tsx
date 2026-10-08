@@ -4,6 +4,7 @@ import type {
   ReportingAmountDto,
   ReportingCashFlowFiguresDto,
 } from '@vaultide/application';
+import Link from 'next/link';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { formatPercent } from '@/lib/format';
@@ -11,11 +12,13 @@ import {
   CLOSE_STATE_LABEL,
   COMPLETENESS_LABEL,
   COMPLETENESS_TONE,
+  NO_COMMON_DATE_SUMMARY,
   STATUS_LABEL,
   STATUS_TONE,
   completedStatusMeaning,
   completenessMeaning,
   dayTitle,
+  noCommonDateCauseOf,
   stateLabel,
   type IssuePresentation,
 } from '@/features/monthly/presentation';
@@ -310,6 +313,7 @@ export function CurrentOverview({
   const { reporting, monthToDate } = page;
   const formatting = { locale, minorUnitsByCurrency: page.minorUnitsByCurrency };
   const newerBalances = issues.active.some((group) => group.key === 'mtd_newer_balances');
+  const noDateCause = noCommonDateCauseOf(monthToDate.issues);
 
   return (
     <Card>
@@ -344,13 +348,19 @@ export function CurrentOverview({
           </>
         ) : (
           <>
-            <div className="space-y-2" data-testid="mtd-no-common-date">
+            <div className="space-y-2" data-testid="mtd-no-common-date" data-cause={noDateCause}>
               <Badge tone="unavailable">No month-to-date figure</Badge>
               <p>
-                Update all cash accounts to the same date to calculate month-to-date spending. Until
-                then there is no tracked spending, unclassified spending or savings figure for this
-                month — not even a zero.
+                {NO_COMMON_DATE_SUMMARY[noDateCause]} Until then there is no tracked spending,
+                unclassified spending or savings figure for this month — not even a zero.
               </p>
+              {noDateCause === 'no_cash_account' ? (
+                <p>
+                  <Link href="/accounts" className="underline" data-testid="mtd-add-account">
+                    Add a cash account
+                  </Link>
+                </p>
+              ) : null}
             </div>
             <div className="space-y-2">
               <p className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">

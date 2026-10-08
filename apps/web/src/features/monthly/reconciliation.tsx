@@ -1,5 +1,7 @@
+import Link from 'next/link';
 import type {
   MtdBucketDto,
+  NoCommonDateCauseDto,
   ReconciliationBucketDto,
   ReconciliationTotalsDto,
 } from '@vaultide/application';
@@ -11,6 +13,7 @@ import { ScrollRegion } from '@/components/ui/scroll-region';
 import {
   AS_OF_STATE_LABEL,
   CLOSE_STATE_LABEL,
+  NO_COMMON_DATE_RECONCILIATION,
   STATUS_LABEL,
   STATUS_MEANING,
   STATUS_TONE,
@@ -362,6 +365,29 @@ export function MonthToDateBucket({
         <OutsideIdentity additional={bucket.additionalSpending} thirdParty={bucket.thirdPartyPaid} currency={currency} formatting={formatting} />
         <Explanation lines={bucket.explanation} />
       </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * The current month's Reconciliation without a common date: no identity, and
+ * why (8.6; ADR 0014). Only where no account takes part is there something to
+ * add from here.
+ */
+export function NoMonthToDateIdentity({ cause }: { readonly cause: NoCommonDateCauseDto }) {
+  return (
+    <Card data-testid="mtd-no-identity" data-cause={cause}>
+      <CardHeader>
+        <CardTitle>No month-to-date reconciliation</CardTitle>
+        <CardDescription>{NO_COMMON_DATE_RECONCILIATION[cause]}</CardDescription>
+      </CardHeader>
+      {cause === 'no_cash_account' ? (
+        <CardContent>
+          <Link href="/accounts" className="underline" data-testid="mtd-add-account">
+            Add a cash account
+          </Link>
+        </CardContent>
+      ) : null}
     </Card>
   );
 }
