@@ -511,6 +511,19 @@ export function monthNameOnly(month: string, locale: string): string {
   return new Intl.DateTimeFormat(locale, { month: 'long', timeZone: 'UTC' }).format(date);
 }
 
+/**
+ * The current month's `first_balance` note (8.6: `provisional` "and the
+ * `first_balance` note when an account is excluded"), naming the accounts.
+ * `null` when no account is excluded.
+ */
+export function firstBalanceNote(names: readonly string[], locale: string): string | null {
+  if (names.length === 0) return null;
+  const list = new Intl.ListFormat(locale, { style: 'long', type: 'conjunction' }).format(names);
+  return names.length === 1
+    ? `${list} started being tracked this month, so it is not part of month to date.`
+    : `${list} started being tracked this month, so they are not part of month to date.`;
+}
+
 /** "6 Sep 2026" for `2026-09-06`, pinned to UTC for the same reason. */
 export function dayTitle(day: string, locale: string): string {
   const match = DAY_PATTERN.exec(day);

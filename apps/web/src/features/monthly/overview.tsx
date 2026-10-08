@@ -19,6 +19,7 @@ import {
   completedStatusMeaning,
   completenessMeaning,
   dayTitle,
+  firstBalanceNote,
   monthNameOnly,
   noCommonDateCauseOf,
   stateLabel,
@@ -316,6 +317,13 @@ export function CurrentOverview({
   const { reporting, monthToDate } = page;
   const formatting = { locale, minorUnitsByCurrency: page.minorUnitsByCurrency };
   const newerBalances = issues.active.some((group) => group.key === 'mtd_newer_balances');
+  const firstBalance = firstBalanceNote(
+    (monthToDate.buckets ?? [])
+      .flatMap((bucket) => bucket.accounts)
+      .filter((account) => account.excludedFirstBalance)
+      .map((account) => account.name),
+    locale,
+  );
   const previousMonth = page.accounts.previousMonth;
   const noDateCause = noCommonDateCauseOf(monthToDate.issues);
 
@@ -350,6 +358,11 @@ export function CurrentOverview({
                 , the latest day every cash account shares.
               </span>
             </div>
+            {firstBalance === null ? null : (
+              <p className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]" data-testid="mtd-first-balance-note">
+                {firstBalance}
+              </p>
+            )}
             {newerBalances ? (
               <p className="text-[length:var(--text-meta)] text-[var(--color-warning)]" data-testid="mtd-newer-note">
                 Some accounts have newer individual balances; update all accounts to move the

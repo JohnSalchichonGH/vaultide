@@ -477,3 +477,26 @@ describe('the prompt to close the previous month (8.6, 15.3)', () => {
     );
   });
 });
+
+describe('the first-balance note beside the provisional status (8.6)', () => {
+  /** The status line and what follows it, up to the figures. */
+  const statusArea = (html: string): string =>
+    html.slice(html.indexOf('data-testid="mtd-as-of"'), html.indexOf('data-testid="figure-externalIncome"'));
+
+  it('names the account left out of month to date', () => {
+    const area = statusArea(current(through6th(), { excluded: ['Savings'] }));
+    expect(area).toContain('>Provisional<');
+    expect(area).toContain('data-testid="mtd-first-balance-note"');
+    expect(area).toContain('Savings started being tracked this month, so it is not part of month to date.');
+    expect(area).not.toContain('Everyday');
+  });
+
+  it('names every account left out', () => {
+    const area = statusArea(current(through6th(), { excluded: ['BBVA', 'Savings'] }));
+    expect(area).toContain('BBVA and Savings started being tracked this month, so they are not part of month to date.');
+  });
+
+  it('says nothing when no account is left out', () => {
+    expect(current(through6th())).not.toContain('mtd-first-balance-note');
+  });
+});
