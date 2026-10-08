@@ -241,6 +241,21 @@ export const NO_COMMON_DATE_SUMMARY: Readonly<Record<NoCommonDateCauseDto, strin
     'No cash account takes part in this month, so month to date has nothing to measure. Add a cash account to start measuring it.',
 };
 
+/**
+ * The Overview's paragraph: why, and that no figure exists.
+ *
+ * "Until then" only where something this month can end it: a shared day, or a
+ * cash account to measure. A month whose every account was first tracked in it
+ * never gets a figure — with its closing balances in, each account is still a
+ * first balance for the finished month, which then reads "nothing to reconcile
+ * yet" — so its absence is stated as it stands.
+ */
+export const NO_COMMON_DATE_OVERVIEW: Readonly<Record<NoCommonDateCauseDto, string>> = {
+  no_shared_date: `${NO_COMMON_DATE_SUMMARY.no_shared_date} Until then there is no tracked spending, unclassified spending or savings figure for this month — not even a zero.`,
+  all_first_balance: `${NO_COMMON_DATE_SUMMARY.all_first_balance} There is no tracked spending, unclassified spending or savings figure for this month — not even a zero.`,
+  no_cash_account: `${NO_COMMON_DATE_SUMMARY.no_cash_account} Until then there is no tracked spending, unclassified spending or savings figure for this month — not even a zero.`,
+};
+
 /** The same, as the Reconciliation section's card says it in place of an identity. */
 export const NO_COMMON_DATE_RECONCILIATION: Readonly<Record<NoCommonDateCauseDto, string>> = {
   no_shared_date:

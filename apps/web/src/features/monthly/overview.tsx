@@ -13,7 +13,7 @@ import {
   CLOSE_STATE_LABEL,
   COMPLETENESS_LABEL,
   COMPLETENESS_TONE,
-  NO_COMMON_DATE_SUMMARY,
+  NO_COMMON_DATE_OVERVIEW,
   STATUS_LABEL,
   STATUS_TONE,
   completedStatusMeaning,
@@ -376,10 +376,7 @@ export function CurrentOverview({
           <>
             <div className="space-y-2" data-testid="mtd-no-common-date" data-cause={noDateCause}>
               <Badge tone="unavailable">No month-to-date figure</Badge>
-              <p>
-                {NO_COMMON_DATE_SUMMARY[noDateCause]} Until then there is no tracked spending,
-                unclassified spending or savings figure for this month — not even a zero.
-              </p>
+              <p>{NO_COMMON_DATE_OVERVIEW[noDateCause]}</p>
               {noDateCause === 'no_cash_account' ? (
                 <p>
                   <Link href="/accounts" className="underline" data-testid="mtd-add-account">

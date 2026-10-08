@@ -423,6 +423,24 @@ describe('the current month’s Overview without a common date, by why (ADR 0014
     expect(block).not.toContain('mtd-add-account');
   });
 
+  it('promises no later figure when every account was first tracked this month, and keeps "Until then" elsewhere', () => {
+    // With its closing balances in, every account is still a first balance for
+    // the finished month, which then has nothing to reconcile either: there is
+    // no "then" for this month.
+    const firstTracked = noDateBlock(current(noDate(), { issues: withCause('all_first_balance') }));
+    expect(firstTracked).not.toContain('Until then');
+    expect(firstTracked).toContain(
+      'There is no tracked spending, unclassified spending or savings figure for this month — not even a zero.',
+    );
+
+    // A shared day, or a cash account to measure, does end the other two.
+    for (const cause of ['no_shared_date', 'no_cash_account'] as const) {
+      expect(noDateBlock(current(noDate(), { issues: withCause(cause) }))).toContain(
+        'Until then there is no tracked spending, unclassified spending or savings figure for this month — not even a zero.',
+      );
+    }
+  });
+
   it('says no cash account takes part, and points to adding one, when none does', () => {
     const block = noDateBlock(current(noDate(), { issues: withCause('no_cash_account') }));
     expect(block).toContain('data-cause="no_cash_account"');
