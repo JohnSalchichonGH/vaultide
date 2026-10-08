@@ -110,7 +110,11 @@ test.describe('the public homepage', () => {
     await expect(example.getByText('€2,080.00')).toBeVisible();
     await expect(example.getByText('€520.00')).toBeVisible();
     await expect(example.getByText('Unavailable', { exact: true })).toBeVisible();
-    await expect(example.getByText('Month-end balance missing for Savings')).toBeVisible();
+    // The reason is also the dash's screen-reader text, hidden from the eye;
+    // the paragraph under it is the one a person sees.
+    await expect(
+      example.getByRole('paragraph').filter({ hasText: 'Month-end balance missing for Savings' }),
+    ).toBeVisible();
     await expect(example.locator('table')).toHaveCount(0);
 
     // Three status groups, named in text, in this order and with nothing that

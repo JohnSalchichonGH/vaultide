@@ -130,7 +130,8 @@ export function RateFigure({
           <span className="tabular">{formatPercent(display.ratio, { locale })}</span>
         ) : (
           <>
-            <span className="tabular text-[var(--color-unavailable)]" aria-label="Not available">
+            {/* The badge and the reason beside it say it; the dash is for the eye. */}
+            <span className="tabular text-[var(--color-unavailable)]" aria-hidden="true">
               —
             </span>
             <div className="flex flex-wrap items-center gap-2">

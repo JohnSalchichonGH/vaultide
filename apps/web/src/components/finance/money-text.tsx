@@ -8,6 +8,14 @@ import { formatMoney } from '@/lib/format';
  * one, and never rounds beyond the currency's minor units. Direction is carried
  * by the sign and, optionally, an arrow — colour only reinforces it. An
  * unavailable value renders as `—` with its reason, never as `0`.
+ *
+ * The reason is the mouse's tooltip, and it is text a screen reader reads in
+ * place of the dash (16.6): a label on a plain `<span>` names nothing, and many
+ * screen readers skipped it and read only the dash. The text is visually
+ * hidden, which positions it absolutely, so this element is positioned too and
+ * holds it. Otherwise it would be placed against some ancestor outside a scroll
+ * box that is not itself positioned, escape that box, and widen the whole page
+ * on a phone (16.4).
  */
 export interface MoneyTextProps {
   /** Exact decimal string, e.g. `"12345678901234567.89"`. */
@@ -41,13 +49,15 @@ export function MoneyText({
   className,
 }: MoneyTextProps) {
   if (amount === null) {
+    const reason = unavailableReason ?? 'Not available';
     return (
       <span
-        className={cn('tabular text-[var(--color-unavailable)]', className)}
-        title={unavailableReason ?? 'Not available'}
-        aria-label={unavailableReason ?? 'Not available'}
+        className={cn('tabular relative text-[var(--color-unavailable)]', className)}
+        title={reason}
+        data-testid="money-text-unavailable"
       >
-        —
+        <span aria-hidden="true">—</span>
+        <span className="sr-only">{reason}</span>
       </span>
     );
   }
