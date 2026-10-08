@@ -35,8 +35,9 @@ import { gotoAfterRefresh, waitForRouter } from '../support/navigation';
  *    projects skip it. The phone width is its own view inside this run.
  *  - It is not the keyboard, focus, zoom and motion pass. axe cannot tab
  *    through a page, so whether every action is reachable and shows its ring,
- *    whether a dialog gives focus back, and how a page reads at 200 % are
- *    checked by hand. A clean scan here is necessary, not sufficient.
+ *    and how a page reads at 200 %, are checked by hand; whether a dialog
+ *    gives focus back is `focus-return.spec.ts`. A clean scan here is
+ *    necessary, not sufficient.
  *
  * The person's records are written once, through the product's own pages as
  * every journey writes them, on 6 October: two euro accounts with statements
@@ -104,18 +105,23 @@ const AXE_OPTIONS: AxeOptions = {
 /* -------------------------------------------------------------------------- */
 
 type Width = 'desktop' | 'phone';
+type Theme = 'light' | 'dark';
 
 interface View {
-  readonly theme: 'light' | 'dark';
+  readonly theme: Theme;
   readonly width: Width;
 }
 
-const VIEWS: readonly View[] = [
-  { theme: 'light', width: 'desktop' },
-  { theme: 'dark', width: 'desktop' },
-  { theme: 'light', width: 'phone' },
-  { theme: 'dark', width: 'phone' },
-];
+/**
+ * The four views are two widths, each in both themes. A page is loaded once
+ * per width and switched from one theme to the other where it stands: the
+ * theme is the `prefers-color-scheme` media query alone (`globals.css`), which
+ * the browser applies again as soon as the emulated preference changes, and
+ * nothing on the page reads it as it loads. Loading every page a second time
+ * for its second theme cost the suite minutes.
+ */
+const WIDTH_ORDER: readonly Width[] = ['desktop', 'phone'];
+const THEMES = ['light', 'dark'] as const satisfies readonly Theme[];
 
 const viewName = (view: View): string => `${view.theme} ${view.width}`;
 
@@ -131,17 +137,20 @@ const WIDTHS: Readonly<Record<Width, BrowserContextOptions>> = {
   },
 };
 
-/** A browser context for one view, signed in as `state`'s owner when there is one. */
-function openView(
+/**
+ * A browser context at one width, in the first theme, signed in as `state`'s
+ * owner when there is one.
+ */
+function openWidth(
   browser: Browser,
   baseURL: string,
-  view: View,
+  width: Width,
   state?: BrowserContextOptions['storageState'],
 ): Promise<BrowserContext> {
   return browser.newContext({
-    ...WIDTHS[view.width],
+    ...WIDTHS[width],
     baseURL,
-    colorScheme: view.theme,
+    colorScheme: THEMES[0],
     extraHTTPHeaders: { 'x-vaultide-test-clock': OCTOBER_6 },
     ...(state === undefined ? {} : { storageState: state }),
   });
@@ -260,8 +269,10 @@ interface Surface {
 }
 
 /**
- * Scans each surface in each view. One context per view keeps the browser's
- * cache warm between pages; one page per surface leaves nothing open behind it.
+ * Scans each surface in each view. One context per width keeps the browser's
+ * cache warm between pages; one page per surface leaves nothing open behind
+ * it, and is scanned in one theme, then switched to the other and scanned
+ * again.
  */
 async function scanAll(
   browser: Browser,
@@ -270,16 +281,23 @@ async function scanAll(
   state?: BrowserContextOptions['storageState'],
 ): Promise<Scan[]> {
   const scans: Scan[] = [];
-  for (const view of VIEWS) {
-    const context = await openView(browser, baseURL, view, state);
+  for (const width of WIDTH_ORDER) {
+    const context = await openWidth(browser, baseURL, width, state);
     try {
       for (const surface of surfaces) {
-        if (surface.only !== undefined && surface.only !== view.width) continue;
-        await test.step(`${surface.name} · ${viewName(view)}`, async () => {
+        if (surface.only !== undefined && surface.only !== width) continue;
+        await test.step(`${surface.name} · ${width}`, async () => {
           const page = await context.newPage();
           try {
             await surface.open(page);
-            scans.push(await scan(page, surface.name, view));
+            for (const theme of THEMES) {
+              await page.emulateMedia({ colorScheme: theme });
+              // The page answers to the theme it is scanned in, not the one it loaded in.
+              expect(await page.evaluate(() => matchMedia('(prefers-color-scheme: dark)').matches)).toBe(
+                theme === 'dark',
+              );
+              scans.push(await scan(page, surface.name, { theme, width }));
+            }
           } finally {
             await page.close();
           }
