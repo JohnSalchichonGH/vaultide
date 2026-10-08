@@ -28,8 +28,10 @@ import { cn } from '@/lib/utils';
  * the month has ended (M5, R15). On the last day of a month this modal says so
  * explicitly, because that is precisely when somebody would expect otherwise.
  *
- * Leaving a balance blank keeps that account's older snapshot. The submission
- * is one transaction: it lands completely or not at all (20.3).
+ * Leaving a balance blank keeps that account's older snapshot, and the modal
+ * says what follows (15.3): month to date then stays at the latest date every
+ * cash account shares. The submission is one transaction: it lands completely
+ * or not at all (20.3).
  */
 
 /**
@@ -190,9 +192,12 @@ export function QuickUpdate({
           <h2 id={headingId} className="text-[length:var(--text-section)] font-semibold">
             {label}
           </h2>
-          <p className="mt-1 text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]">
-            Balances are recorded for <strong>{today}</strong>. Leave one blank to keep its last
-            snapshot.
+          <p
+            className="mt-1 text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]"
+            data-testid="quick-update-note"
+          >
+            Balances are recorded for <strong>{today}</strong>. Leave one blank to keep its older
+            snapshot; month to date then stays at the latest date every cash account shares.
             {today === monthEndsOn ? (
               <>
                 {' '}
