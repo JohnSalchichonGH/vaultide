@@ -67,6 +67,48 @@ valuation — are **not shown at all**, rather than shown disabled. This is the
 convention the Income section already follows for settlements a phase cannot
 write.
 
+> **Addendum, 2026-10-08: for variant A, expected income comes first.** The
+> product owner ruled on this after the fresh-user walkthrough (D2 of the
+> first-month findings).
+>
+> **What went wrong.** Variant A led with "Add missing income", prefilled at the
+> unexplained difference. It did so even when the month expected an income
+> occurrence nobody had recorded, such as a €2,100 salary shown just above with
+> "Record it". Following that action and then recording the salary counted the
+> same money twice.
+>
+> **The rule.** When the bucket holds an expected income occurrence that is
+> neither recorded nor skipped, the first action is to record that occurrence.
+> It counts when it is:
+>
+> - in the bucket's currency;
+> - scheduled in the month, on or before the end of the correction interval
+>   (`correctionDates`): the month's last day for a finished month, `D` for the
+>   current one. An occurrence after `D` is not in the figure the issue was
+>   measured from.
+>
+> **The action.**
+>
+> - It names the source, the date and the expected amount. With no term in
+>   force on the date, it names no amount.
+> - It takes the user to that occurrence's row (`occurrenceAnchorId`), where
+>   the occurrence is recorded.
+> - With several such occurrences there is one action each, earliest first.
+> - An archived source's occurrence counts too, because it is still expected
+>   (30.23). Its row offers no "Record it" while the source is archived, so
+>   that action's hint says to unarchive it first.
+>
+> **"Add missing income"** keeps its place after them. Its hint names the
+> expected income and says it is not recorded yet, so the user does not count
+> the same money twice. The dialog it opens shows the same hint.
+>
+> **Variant B is unchanged**, in its order and in its words.
+>
+> **Where the data comes from.** `IssueActionContext.unrecordedIncome` is built
+> from the Income section the page already loads. It holds the month's
+> occurrences that are `due` or `upcoming`, with only what this rule reads, so
+> §16's "no new read" still holds.
+
 ---
 
 ## 4. Corrective actions reuse the existing editors
