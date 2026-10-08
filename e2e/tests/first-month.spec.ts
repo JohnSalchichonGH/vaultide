@@ -219,6 +219,8 @@ test.describe('the first day of a month', () => {
     const prompt = page.getByTestId('close-previous-month');
     await expect(prompt).toHaveText('Enter end-of-September balances to close the month.');
     await expect(prompt.getByRole('link')).toHaveAttribute('href', '/monthly/2026-09#accounts');
+    // And beside it, when October itself can be closed (15.3).
+    await expect(page.getByTestId('close-this-month')).toHaveText('October can be closed from 1 Nov 2026.');
 
     // The prompt leads to September's Accounts, where the statement is entered.
     await waitForRouter(page);
@@ -235,6 +237,7 @@ test.describe('the first day of a month', () => {
     await gotoAfterRefresh(page, '/monthly/2026-10');
     await expect(page.getByTestId('monthly-kind')).toHaveText('In progress');
     await expect(page.getByTestId('close-previous-month')).toHaveCount(0);
+    await expect(page.getByTestId('close-this-month')).toHaveText('October can be closed from 1 Nov 2026.');
   });
 });
 

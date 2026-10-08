@@ -22,6 +22,7 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn(), push: 
 const { CompletedOverview, CurrentOverview } = await import('@/features/monthly/overview');
 const { presentIssues } = await import('@/features/monthly/presentation');
 const { needsPreviousStatements } = await import('@/features/monthly/accounts-presentation');
+const { closableSentence } = await import('@/features/monthly/presentation');
 
 /**
  * How Monthly's Overview states its figures (blueprint 16.2; ADR 0008 §5 and
@@ -148,13 +149,14 @@ function current(
     readonly issues?: readonly Pick<ReconciliationIssueDto, 'key' | 'variant'>[];
     readonly excluded?: readonly string[];
     readonly openings?: readonly AccountOpeningDto[];
+    readonly today?: string;
   } = {},
 ): string {
   const page = {
     kind: 'current',
     month: '2026-10',
     monthEndsOn: '2026-10-31',
-    today: '2026-10-06',
+    today: options.today ?? '2026-10-06',
     minorUnitsByCurrency: { EUR: 2, USD: 2 },
     monthToDate: {
       status: reporting.monthStatus,
@@ -516,5 +518,31 @@ describe('the first-balance note beside the provisional status (8.6)', () => {
 
   it('says nothing when no account is left out', () => {
     expect(current(through6th())).not.toContain('mtd-first-balance-note');
+  });
+});
+
+describe('when the current month can be closed (15.3)', () => {
+  const SENTENCE = 'October can be closed from 1 Nov 2026.';
+
+  it('names the month and the day after it ends, in the page’s own day format', () => {
+    expect(closableSentence('2026-10', '2026-11-01', 'en-GB')).toBe(SENTENCE);
+    expect(closableSentence('2026-12', '2027-01-01', 'en-GB')).toBe('December can be closed from 1 Jan 2027.');
+  });
+
+  it('is said on every day of the month, its last day included, with or without a common date', () => {
+    for (const today of ['2026-10-01', '2026-10-06', '2026-10-31']) {
+      for (const reporting of [through6th(), noDate()]) {
+        const html = current(reporting, { today, issues: withCause('no_shared_date') });
+        const at = html.indexOf('data-testid="close-this-month"');
+        expect(at, today).toBeGreaterThan(-1);
+        expect(html.slice(at, html.indexOf('</p>', at))).toContain(SENTENCE);
+      }
+    }
+  });
+
+  it('sits beside the prompt to close the previous month on a day both apply', () => {
+    const html = current(through6th(), { today: '2026-10-01', openings: [{ kind: 'no_statement', state: 'carried' }] });
+    expect(html).toContain('Enter end-of-September balances to close the month.');
+    expect(html).toContain(SENTENCE);
   });
 });

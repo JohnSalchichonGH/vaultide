@@ -527,6 +527,15 @@ export function monthNameOnly(month: string, locale: string): string {
 }
 
 /**
+ * When the current month can be closed (15.3 section 1: "September can be
+ * closed from 1 Oct"): the day after it ends, when its statement balances can
+ * first be entered (8.1, M5). True on every day of the month, its last included.
+ */
+export function closableSentence(month: string, closableFrom: string, locale: string): string {
+  return `${monthNameOnly(month, locale)} can be closed from ${dayTitle(closableFrom, locale)}.`;
+}
+
+/**
  * The current month's `first_balance` note (8.6: `provisional` "and the
  * `first_balance` note when an account is excluded"), naming the accounts.
  * `null` when no account is excluded.

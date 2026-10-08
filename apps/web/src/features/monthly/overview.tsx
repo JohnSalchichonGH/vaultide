@@ -16,6 +16,7 @@ import {
   NO_COMMON_DATE_OVERVIEW,
   STATUS_LABEL,
   STATUS_TONE,
+  closableSentence,
   completedStatusMeaning,
   completenessMeaning,
   dayTitle,
@@ -346,6 +347,10 @@ export function CurrentOverview({
             </Link>
           </p>
         ) : null}
+        {/* 15.3: on every day of the month, in every month-to-date state. */}
+        <p className="text-[length:var(--text-meta)] text-[var(--color-muted-foreground)]" data-testid="close-this-month">
+          {closableSentence(page.month, page.accounts.closableFrom, locale)}
+        </p>
         {reporting.kind === 'tracked_interval' ? (
           <>
             <div className="flex flex-wrap items-center gap-3" data-testid="mtd-as-of">
