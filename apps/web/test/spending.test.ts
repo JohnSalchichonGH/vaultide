@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type {
   ReportingAmountDto,
   ReportingCashFlowFiguresDto,
+  SpendingFocusCurrentNoDateDto,
   SpendingFocusDto,
   SpendingHistoryRowDto,
   SpendingPageDto,
@@ -15,6 +16,7 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn(), push: 
 
 const {
   MONTH_STATE_LABEL,
+  NO_COMMON_DATE_INTERVAL,
   bucketProblem,
   focusAnchorOf,
   hasTrackedEvidence,
@@ -314,6 +316,7 @@ describe('the focus summary', () => {
       observed: false,
       asOf: null,
       reason: 'mtd_no_common_date',
+      cause: 'no_shared_date',
       sourceOnly: { reportingCurrency: 'EUR', additionalSpending: amount('9'), thirdPartyPaid: amount('30') },
       sourceOnlyThrough: '2026-10-10',
     };
@@ -339,6 +342,7 @@ function historyRow(over: Partial<SpendingHistoryRowDto> = {}): SpendingHistoryR
     status: 'reliable',
     observed: true,
     asOf: null,
+    noCommonDateCause: null,
     rollingEligible: true,
     spans: [],
     tracked: amount('2080'),
@@ -530,5 +534,93 @@ describe('the page as a whole', () => {
     expect(rankingNote('reporting_currency', false)).toBeNull();
     expect(rankingNote('per_native_currency', true)).toContain('Each currency is ranked on its own');
     expect(rankingNote('source_only', false)).toContain('only spending you paid from outside');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The current month with no common date, by why (ADR 0014)                    */
+/* -------------------------------------------------------------------------- */
+
+describe('the current month with no common date, by why', () => {
+  const noDateFocus = (cause: SpendingFocusCurrentNoDateDto['cause']): SpendingFocusDto => ({
+    shape: 'current',
+    month: '2026-10',
+    status: 'unavailable',
+    observed: false,
+    asOf: null,
+    reason: 'mtd_no_common_date',
+    cause,
+    sourceOnly: { reportingCurrency: 'EUR', additionalSpending: amount('0'), thirdPartyPaid: amount('0') },
+    sourceOnlyThrough: '2026-10-10',
+  });
+  const currentRow = (cause: SpendingHistoryRowDto['noCommonDateCause']) =>
+    historyRow({ month: '2026-10', shape: 'current', status: 'unavailable', observed: false, asOf: null, noCommonDateCause: cause });
+
+  it('is its own state for each cause, in the table, the chart and the summary alike', () => {
+    expect(monthStateOf(currentRow('no_shared_date'))).toBe('no_common_date');
+    expect(monthStateOf(currentRow('all_first_balance'))).toBe('all_first_balance');
+    expect(monthStateOf(currentRow('no_cash_account'))).toBe('no_cash_account');
+    expect(MONTH_STATE_LABEL.no_common_date).toBe('No common date');
+    expect(MONTH_STATE_LABEL.all_first_balance).toBe('First month tracked');
+    expect(MONTH_STATE_LABEL.no_cash_account).toBe('No cash account');
+  });
+
+  it('keeps today’s words and its link to Monthly’s Accounts when the accounts share no date', () => {
+    const focus = noDateFocus('no_shared_date');
+    const html = summary(focus);
+    expect(html).toContain('data-state="no_common_date"');
+    expect(html).toContain(
+      'Your cash accounts do not share a balance date this month, so there is no month-to-date spending figure — not even a zero. Update all cash accounts to the same date to calculate it.',
+    );
+    expect(focusAnchorOf(focus)).toBe('accounts');
+    expect(html).toContain('data-testid="spending-fix-link"');
+    expect(html).not.toContain('spending-add-account');
+    expect(NO_COMMON_DATE_INTERVAL.no_shared_date).toBe('In progress. Your cash accounts share no balance date yet this month.');
+  });
+
+  it('says there is nothing to measure yet when every account was first tracked this month, and sends nowhere', () => {
+    const focus = noDateFocus('all_first_balance');
+    const html = summary(focus);
+    expect(html).toContain('data-state="all_first_balance"');
+    expect(html).toContain('>First month tracked<');
+    expect(html).toContain(
+      'Every cash account started being tracked this month, so there is nothing to measure yet — no month-to-date spending figure, not even a zero. Next month is measured from this month’s closing balances, once you enter them.',
+    );
+    expect(html).not.toContain('share a balance date');
+    expect(html).not.toContain('Update all cash accounts');
+    // Monthly's Accounts holds nothing that would change it this month.
+    expect(focusAnchorOf(focus)).toBeNull();
+    expect(html).not.toContain('spending-fix-link');
+    expect(html).not.toContain('spending-add-account');
+    expect(NO_COMMON_DATE_INTERVAL.all_first_balance).toBe('In progress. Every cash account started being tracked this month.');
+  });
+
+  it('says no cash account takes part when none does, and points to adding one', () => {
+    const focus = noDateFocus('no_cash_account');
+    const html = summary(focus);
+    expect(html).toContain('data-state="no_cash_account"');
+    expect(html).toContain('>No cash account<');
+    expect(html).toContain(
+      'No cash account takes part in August 2026, so there is no month-to-date spending figure — not even a zero. Add a cash account to start measuring it.',
+    );
+    expect(html).not.toContain('share a balance date');
+    expect(focusAnchorOf(focus)).toBeNull();
+    expect(html).not.toContain('spending-fix-link');
+    const link = /<a[^>]*data-testid="spending-add-account"[^>]*>Add a cash account<\/a>/u.exec(html)?.[0] ?? '';
+    expect(link).toContain('href="/accounts"');
+    expect(NO_COMMON_DATE_INTERVAL.no_cash_account).toBe('In progress. No cash account takes part in it yet.');
+  });
+
+  it('labels the current month’s history row by its cause', () => {
+    for (const [cause, label] of [
+      ['no_shared_date', 'No common date'],
+      ['all_first_balance', 'First month tracked'],
+      ['no_cash_account', 'No cash account'],
+    ] as const) {
+      const html = renderToStaticMarkup(
+        createElement(HistoryTable, { history: [currentRow(cause)], focusMonth: '2026-10', formatting }),
+      );
+      expect(html).toContain(`>${label}<`);
+    }
   });
 });

@@ -443,6 +443,9 @@ describe('what the page says a month observed', () => {
     const dto = await page(OCT_10, '2026-10');
     if (dto.focus.shape !== 'current' || dto.focus.asOf !== null) throw new Error('expected no D');
     expect(dto.focus.reason).toBe('mtd_no_common_date');
+    // Both accounts have openings and owe a shared day (ADR 0014).
+    expect(dto.focus.cause).toBe('no_shared_date');
+    expect(row(dto, '2026-10').noCommonDateCause).toBe('no_shared_date');
     expect(dto.focus.sourceOnlyThrough).toBe('2026-10-10');
     expect(dto.focus.sourceOnly.additionalSpending.value.amount).toBe('9');
     expect(dto.focus.sourceOnly.thirdPartyPaid.value.amount).toBe('30');
@@ -451,6 +454,27 @@ describe('what the page says a month observed', () => {
     expect(dto.categories.additionalInterval).toEqual({ from: '2026-10-01', to: '2026-10-10' });
     expect(dto.largestKnown.mode).toBe('source_only');
     expect(dto.largestKnown.groups[0]?.rows.map((entry) => entry.kind)).toEqual(['additional']);
+  });
+
+  it('says why a current month has no common date, from the engine’s own issue (ADR 0014)', async () => {
+    // Nothing takes part yet: no cash account at all.
+    const none = await page(OCT_10, '2026-10');
+    if (none.focus.shape !== 'current' || none.focus.asOf !== null) throw new Error('expected no D');
+    expect(none.focus.cause).toBe('no_cash_account');
+    expect(row(none, '2026-10').noCommonDateCause).toBe('no_cash_account');
+
+    // Two accounts that already existed, first tracked this month on the same day.
+    const bbva = await makeAccount('BBVA', { ctx: OCT_10 });
+    const savings = await makeAccount('Savings', { ctx: OCT_10 });
+    await snapshot(bbva, '2026-10-06', '900.00');
+    await snapshot(savings, '2026-10-06', '450.00');
+
+    const first = await page(OCT_10, '2026-10');
+    if (first.focus.shape !== 'current' || first.focus.asOf !== null) throw new Error('expected no D');
+    expect(first.focus.cause).toBe('all_first_balance');
+    expect(row(first, '2026-10').noCommonDateCause).toBe('all_first_balance');
+    // A completed month's row never carries one.
+    expect(row(first, '2026-09').noCommonDateCause).toBeNull();
   });
 });
 

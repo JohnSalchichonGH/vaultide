@@ -31,12 +31,12 @@ import {
  */
 
 function stateOf(focus: SpendingFocusDto) {
-  if (focus.shape === 'current' && focus.asOf === null) return 'no_common_date' as const;
   return monthStateOf({
     shape: focus.shape,
     asOf: focus.shape === 'current' ? focus.asOf : null,
     observed: focus.observed,
     status: focus.status,
+    noCommonDateCause: focus.shape === 'current' && focus.asOf === null ? focus.cause : null,
   });
 }
 
@@ -254,6 +254,13 @@ export function FocusSummary({
             </Link>
           </p>
         )}
+        {state === 'no_cash_account' ? (
+          <p className="text-[length:var(--text-meta)]">
+            <Link href="/accounts" className="underline" data-testid="spending-add-account">
+              Add a cash account
+            </Link>
+          </p>
+        ) : null}
       </div>
 
       {focus.shape === 'current' && focus.asOf === null ? (

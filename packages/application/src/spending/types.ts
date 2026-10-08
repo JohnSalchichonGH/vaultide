@@ -2,6 +2,7 @@ import type { MoneyDto } from '@vaultide/finance';
 import type { ExpenseCategoryDto, MonthlyExpensesDto } from '../monthly/types';
 import type {
   MissingReportingContributionDto,
+  NoCommonDateCauseDto,
   ReconciliationStatusDto,
   ReportingAmountDto,
   ReportingCashFlowFiguresDto,
@@ -92,6 +93,8 @@ export interface SpendingFocusCurrentNoDateDto {
   readonly observed: false;
   readonly asOf: null;
   readonly reason: 'mtd_no_common_date';
+  /** Why there is no common date: the engine's variant of that issue (ADR 0014). */
+  readonly cause: NoCommonDateCauseDto;
   readonly sourceOnly: SourceOnlyReportingFiguresDto;
   readonly sourceOnlyThrough: string;
 }
@@ -142,6 +145,11 @@ export interface SpendingHistoryRowDto {
   readonly observed: boolean;
   /** The current month's `D`; `null` for a completed month and a current one without `D`. */
   readonly asOf: string | null;
+  /**
+   * Why the current month has no `D` (ADR 0014). Set exactly on the current
+   * month's row when `asOf` is `null`, and `null` on every other row.
+   */
+  readonly noCommonDateCause: NoCommonDateCauseDto | null;
   /** 30.15 item 5 and 30.16 item 11, decided by the rolling engine's own rule. */
   readonly rollingEligible: boolean;
   /** Spans covering this month, as `currency:from`, so a gap can point to its combined period. */

@@ -42,6 +42,7 @@ import type {
   MissingReportingContributionDto,
   MonthReportingCashFlowDto,
   MonthToDateReportingCashFlowDto,
+  NoCommonDateCauseDto,
   RollingAverageDto,
 } from '../reconciliation/types';
 import { loadSpendingData, type SpendingData } from './loader';
@@ -153,6 +154,16 @@ function bucketDtoOf(
   };
 }
 
+/**
+ * Why the current month has no common date, as the month-to-date engine's one
+ * issue says it (ADR 0014). Monthly reads the same variant off the same issue,
+ * so the two pages cannot disagree about one month.
+ */
+function noCommonDateCauseOf(result: MonthToDateResult): NoCommonDateCauseDto {
+  const variant = result.issues.find((issue) => issue.key === 'mtd_no_common_date')?.variant;
+  return variant === 'no_cash_account' || variant === 'all_first_balance' ? variant : 'no_shared_date';
+}
+
 const missingDto = (amount: ReportingAmount): MissingReportingContributionDto[] =>
   amount.missing.map((item) => ({
     currency: item.currency,
@@ -172,6 +183,7 @@ function completedRow(
     status: reporting.monthStatus,
     observed,
     asOf: null,
+    noCommonDateCause: null,
     rollingEligible: isRollingEligible(rollingObservationOf(reporting)),
     spans,
     tracked: reporting.trackedTotalSpending,
@@ -184,8 +196,11 @@ function completedRow(
   };
 }
 
-/** The current month's history row. It is never a rolling observation (8.6). */
-function currentRow(reporting: MonthToDateReportingCashFlowDto): SpendingHistoryRowDto {
+/**
+ * The current month's history row. It is never a rolling observation (8.6).
+ * Without a common date it carries why, from the same engine result (ADR 0014).
+ */
+function currentRow(reporting: MonthToDateReportingCashFlowDto, mtd: MonthToDateResult): SpendingHistoryRowDto {
   if (reporting.kind === 'no_tracked_interval') {
     return {
       month: reporting.month,
@@ -193,6 +208,7 @@ function currentRow(reporting: MonthToDateReportingCashFlowDto): SpendingHistory
       status: reporting.monthStatus,
       observed: false,
       asOf: null,
+      noCommonDateCause: noCommonDateCauseOf(mtd),
       rollingEligible: false,
       spans: [],
       tracked: null,
@@ -210,6 +226,7 @@ function currentRow(reporting: MonthToDateReportingCashFlowDto): SpendingHistory
     status: reporting.monthStatus,
     observed: true,
     asOf: reporting.asOf,
+    noCommonDateCause: null,
     rollingEligible: false,
     spans: [],
     tracked: reporting.trackedTotalSpending,
@@ -436,7 +453,7 @@ export async function getSpendingPage(
     const observed = (results.get(month)?.buckets.length ?? 0) > 0;
     return completedRow(row, observed, spansOfMonth.get(row.month) ?? []);
   });
-  if (mtdReporting !== null) history.push(currentRow(mtdReporting));
+  if (mtd !== null && mtdReporting !== null) history.push(currentRow(mtdReporting, mtd));
 
   // Rolling, from the months already reported (30.15 item 5).
   const [point] = rollingPointsFrom(monthly, { from: historyTo, to: historyTo }, reporting);
@@ -503,6 +520,7 @@ export async function getSpendingPage(
         observed: false,
         asOf: null,
         reason: 'mtd_no_common_date',
+        cause: noCommonDateCauseOf(mtd),
         sourceOnly: {
           reportingCurrency: mtdReporting.reportingCurrency,
           additionalSpending: mtdReporting.additionalSpending,

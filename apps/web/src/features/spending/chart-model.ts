@@ -27,6 +27,8 @@ const CAPTION: Readonly<Record<SpendingMonthState, string | null>> = {
   unavailable: 'Missing',
   not_observed: 'Not tracked',
   no_common_date: 'No date',
+  all_first_balance: 'First month',
+  no_cash_account: 'No account',
 };
 
 const shortMonth = (month: string, locale: string): string =>

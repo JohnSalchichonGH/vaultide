@@ -1,5 +1,6 @@
 import type { Route } from 'next';
 import type {
+  NoCommonDateCauseDto,
   ReportingAmountDto,
   ReportingSavingsRateDto,
   SpendingBucketDto,
@@ -95,8 +96,11 @@ export function savingsRateDisplay(rate: ReportingSavingsRateDto | null): RateDi
 
 /**
  * What a month is, for the table and the chart: the reconciliation status, plus
- * the two states that are not statuses. `not_observed` is a completed month with
- * no bucket (ADR 0008 §4); `no_common_date` is the current month without a `D`.
+ * the states that are not statuses. `not_observed` is a completed month with no
+ * bucket (ADR 0008 §4). The current month without a `D` is one of three, by the
+ * engine's cause (ADR 0014): `no_common_date` when its accounts share no day,
+ * `all_first_balance` when every account was first tracked this month, and
+ * `no_cash_account` when none takes part.
  */
 export type SpendingMonthState =
   | 'reliable'
@@ -105,27 +109,37 @@ export type SpendingMonthState =
   | 'unresolved'
   | 'unavailable'
   | 'not_observed'
-  | 'no_common_date';
+  | 'no_common_date'
+  | 'all_first_balance'
+  | 'no_cash_account';
 
 export function monthStateOf(
-  row: Pick<SpendingHistoryRowDto, 'shape' | 'asOf' | 'observed' | 'status'>,
+  row: Pick<SpendingHistoryRowDto, 'shape' | 'asOf' | 'observed' | 'status' | 'noCommonDateCause'>,
 ): SpendingMonthState {
-  if (row.shape === 'current' && row.asOf === null) return 'no_common_date';
+  if (row.shape === 'current' && row.asOf === null) {
+    return row.noCommonDateCause === 'all_first_balance' || row.noCommonDateCause === 'no_cash_account'
+      ? row.noCommonDateCause
+      : 'no_common_date';
+  }
   if (!row.observed) return 'not_observed';
   return row.status;
 }
 
-/** Monthly's own words for the five statuses, and two for the states that are not one. */
+/** Monthly's own words for the five statuses, and words for the states that are not one. */
 export const MONTH_STATE_LABEL: Readonly<Record<SpendingMonthState, string>> = {
   ...STATUS_LABEL,
   not_observed: 'Not tracked',
   no_common_date: 'No common date',
+  all_first_balance: 'First month tracked',
+  no_cash_account: 'No cash account',
 };
 
 export const MONTH_STATE_TONE = {
   ...STATUS_TONE,
   not_observed: 'neutral',
   no_common_date: 'unavailable',
+  all_first_balance: 'unavailable',
+  no_cash_account: 'unavailable',
 } as const satisfies Record<SpendingMonthState, string>;
 
 /** One sentence for each state, as the page's focus says it. */
@@ -145,6 +159,10 @@ export function monthStateMeaning(state: SpendingMonthState, monthName: string):
       return `No cash account took part in ${monthName}. There is no tracked spending figure for it — not a zero, and nothing to fix.`;
     case 'no_common_date':
       return 'Your cash accounts do not share a balance date this month, so there is no month-to-date spending figure — not even a zero. Update all cash accounts to the same date to calculate it.';
+    case 'all_first_balance':
+      return 'Every cash account started being tracked this month, so there is nothing to measure yet — no month-to-date spending figure, not even a zero. Next month is measured from this month’s closing balances, once you enter them.';
+    case 'no_cash_account':
+      return `No cash account takes part in ${monthName}, so there is no month-to-date spending figure — not even a zero. Add a cash account to start measuring it.`;
   }
 }
 
@@ -172,6 +190,16 @@ export function bucketProblem(bucket: SpendingBucketDto): string | null {
 /* Addresses                                                                   */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The page's opening line for a current month with no common date, by why
+ * (ADR 0014). The other shapes have lines that need no cause.
+ */
+export const NO_COMMON_DATE_INTERVAL: Readonly<Record<NoCommonDateCauseDto, string>> = {
+  no_shared_date: 'In progress. Your cash accounts share no balance date yet this month.',
+  all_first_balance: 'In progress. Every cash account started being tracked this month.',
+  no_cash_account: 'In progress. No cash account takes part in it yet.',
+};
+
 /** The Spending page for a month. Typed-route safe: the one cast lives here. */
 export const spendingHref = (month: string): Route => `/expenses?month=${month}` as Route;
 
@@ -188,9 +216,18 @@ export function monthlyHref(month: string, anchor: MonthlyAnchor = null): Route 
   return `/monthly/${month}#${anchor}` as Route;
 }
 
-/** The section of Monthly that holds what the focus month is missing. */
+/**
+ * The section of Monthly that holds what the focus month is missing.
+ *
+ * A current month without a common date points at its Accounts only when the
+ * accounts share no day, which updating them fixes. With no account, or with
+ * every account first tracked this month, Monthly's Accounts holds nothing that
+ * would change it (ADR 0014).
+ */
 export function focusAnchorOf(focus: SpendingFocusDto): MonthlyAnchor {
-  if (focus.shape === 'current' && focus.asOf === null) return 'accounts';
+  if (focus.shape === 'current' && focus.asOf === null) {
+    return focus.cause === 'no_shared_date' ? 'accounts' : null;
+  }
   if (!('buckets' in focus)) return null;
   if (focus.buckets.some((bucket) => bucket.cause !== null)) return 'accounts';
   if (focus.status === 'unresolved') return 'reconciliation';

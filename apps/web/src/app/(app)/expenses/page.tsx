@@ -15,7 +15,7 @@ import { Categories, LargestKnown } from '@/features/spending/breakdown';
 import { spendingChartModel } from '@/features/spending/chart-model';
 import { META } from '@/features/spending/figure';
 import { CombinedPeriods, HistoryTable, RollingCards } from '@/features/spending/history';
-import { hasTrackedEvidence, monthlyHref } from '@/features/spending/presentation';
+import { NO_COMMON_DATE_INTERVAL, hasTrackedEvidence, monthlyHref } from '@/features/spending/presentation';
 import { FocusSummary } from '@/features/spending/summary';
 
 export const metadata: Metadata = { title: 'Spending' };
@@ -38,9 +38,7 @@ function intervalLine(page: SpendingPageDto, locale: string): string {
   if (focus.shape === 'completed') {
     return `${dayTitle(focus.interval.from, locale)} – ${dayTitle(focus.interval.to, locale)}. Recomputed from your records every time you open it.`;
   }
-  if (focus.asOf === null) {
-    return `In progress. Your cash accounts share no balance date yet this month.`;
-  }
+  if (focus.asOf === null) return NO_COMMON_DATE_INTERVAL[focus.cause];
   return `Provisional · month to date through ${dayTitle(focus.asOf, locale)}.`;
 }
 

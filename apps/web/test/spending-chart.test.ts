@@ -29,6 +29,7 @@ function row(month: string, over: Partial<SpendingHistoryRowDto> = {}): Spending
     status: 'reliable',
     observed: true,
     asOf: null,
+    noCommonDateCause: null,
     rollingEligible: true,
     spans: [],
     tracked: amount('1000'),
@@ -103,6 +104,33 @@ describe('what each month is drawn as', () => {
       ['2026-08', 'gap', 'Partial'],
       ['2026-09', 'stack', 'So far'],
     ]);
+  });
+
+  it('captions a current month with no common date by why it has none (ADR 0014)', () => {
+    const captionOf = (cause: SpendingHistoryRowDto['noCommonDateCause']) =>
+      spendingChartModel({
+        history: [
+          row('2026-10', {
+            shape: 'current',
+            status: 'unavailable',
+            observed: false,
+            asOf: null,
+            noCommonDateCause: cause,
+            tracked: null,
+            known: null,
+            unclassified: null,
+            total: null,
+          }),
+        ],
+        spans: [],
+        focusMonth: '2026-10',
+        reportingCurrency: 'EUR',
+        locale: 'en-GB',
+        minorUnitsByCurrency: { EUR: 2 },
+      }).columns.map((column) => [column.mark.kind, column.caption]);
+    expect(captionOf('no_shared_date')).toEqual([['gap', 'No date']]);
+    expect(captionOf('all_first_balance')).toEqual([['gap', 'First month']]);
+    expect(captionOf('no_cash_account')).toEqual([['gap', 'No account']]);
   });
 
   it('marks estimated and provisional stacks so they never read as settled', () => {
