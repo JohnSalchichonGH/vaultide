@@ -213,7 +213,9 @@ test.describe('the Spending page', () => {
     await page.getByTestId('month-next').click();
     await expect(page).toHaveURL(/\/expenses\?month=2026-10$/u);
     await expect(page.getByTestId('spending-month')).toHaveText('October 2026');
-    await expect(page.getByTestId('spending-status')).toContainText('No common date');
+    // No cash account takes part, so the month says that, not that accounts
+    // share no date (ADR 0014).
+    await expect(page.getByTestId('spending-status')).toContainText('No cash account');
     // The current month never counts in rolling; the windows end at September and say so.
     await expect(page.getByTestId('spending-rolling-3')).toContainText('through September 2026');
     // Nothing leads into a month that has not begun.
