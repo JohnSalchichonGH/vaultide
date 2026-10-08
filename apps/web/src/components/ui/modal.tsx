@@ -19,7 +19,42 @@ import { useEffect, useId, useRef, type ReactNode } from 'react';
  * handler acts only on its own dialog's events. Otherwise stepping back out of
  * the review with Escape would close the dialog underneath it too, and the
  * draft the review was about would go with it.
+ *
+ * Focus goes back to whatever had it when the dialog opened (16.6: "dialogs
+ * trap and restore focus"). Escape closes the dialog natively, and the browser
+ * gives focus back itself. Back, Cancel and a confirmed save close it by
+ * unmounting it instead, and a modal dialog taken off the page leaves focus
+ * on the body. So when the dialog leaves and nothing has focus, focus goes
+ * back to the element that opened it, if that is still on the page. The inner
+ * of two dialogs hands it back inside the outer one, which stays open.
+ *
+ * That element is not always what has focus as the dialog opens. A control
+ * that starts what the dialog waits for is often disabled until the answer
+ * comes — Add income while its review is prepared — and a disabled control
+ * drops focus to the body. The dialog then opens onto nothing, and the browser
+ * has nothing to give back even on Escape. So the page's last focus is
+ * remembered, and a dialog that opens onto nothing takes that as its opener.
  */
+
+/** The element that last took focus on the page. */
+let lastFocused: Element | null = null;
+
+if (typeof document !== 'undefined') {
+  document.addEventListener(
+    'focusin',
+    (event) => {
+      if (event.target instanceof Element) lastFocused = event.target;
+    },
+    true,
+  );
+}
+
+/** Whether nothing on the page has focus: what had it was disabled, or taken away. */
+function focusIsLost(): boolean {
+  const active = document.activeElement;
+  return active === null || active === document.body;
+}
+
 export function Modal({
   title,
   busy,
@@ -34,11 +69,19 @@ export function Modal({
   readonly children: ReactNode;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const opener = useRef<Element | null>(null);
   const headingId = useId();
 
   useEffect(() => {
     const element = ref.current;
-    if (element !== null && !element.open) element.showModal();
+    if (element !== null && !element.open) {
+      opener.current = focusIsLost() ? lastFocused : document.activeElement;
+      element.showModal();
+    }
+    const back = opener.current;
+    return () => {
+      if (focusIsLost() && back instanceof HTMLElement && back.isConnected) back.focus();
+    };
   }, []);
 
   return (

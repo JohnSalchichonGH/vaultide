@@ -11,7 +11,7 @@ import { gotoAfterRefresh } from '../support/navigation';
  * a person would see: the correction offered beside the issue, what the form it
  * opens already knows, and what the month says once the record exists. The
  * last opens Review changes from inside the issue's dialog, which stays open
- * underneath it until the correction is confirmed.
+ * underneath it, and keeps the focus, until the correction is confirmed.
  *
  * Rates come from the deterministic fixture (`FX_PROVIDER=fixture`), so the
  * cross-currency journey's evidence is reproducible.
@@ -570,18 +570,36 @@ test.describe('a correction that needs the review, opened from the issue', () =>
     await fillTestId(page, 'income-received-on', '2026-09-15');
     await fillTestId(page, 'income-net', '80.00');
     await dialog(page).getByTestId('income-account').selectOption({ label: 'Old savings' });
-    await dialog(page).getByTestId('income-submit').click();
+    // From the keyboard, so the control that opens the review has focus in
+    // every engine: WebKit does not focus a button that is clicked.
+    const submit = dialog(page).getByTestId('income-submit');
+    await submit.focus();
+    await submit.press('Enter');
     const review = page.getByTestId('correction-review');
     await expect(review).toBeVisible();
     await expect(review.getByTestId('correction-structural')).toContainText('no longer dormant from 31 Aug 2026');
 
     // Escape steps back out of the review only: the issue's dialog stays open
-    // underneath, with the draft as it was typed and the way back in.
+    // underneath, with the draft as it was typed and the way back in, and
+    // focus is back on the control in it that opened the review.
     await page.keyboard.press('Escape');
     await expect(review).toHaveCount(0);
     await expect(dialog(page)).toBeVisible();
+    await expect(submit).toBeFocused();
     await expect(dialog(page).getByTestId('income-net')).toHaveValue('80.00');
-    await dialog(page).getByTestId('correction-reopen').click();
+
+    // Back does the same, though it takes the review off the page rather than
+    // closing it: the issue's dialog stays open and keeps the focus, on the
+    // way back in that took the review's place.
+    const reopen = dialog(page).getByTestId('correction-reopen');
+    await reopen.focus();
+    await reopen.press('Enter');
+    await expect(review).toBeVisible();
+    await review.getByTestId('correction-back').click();
+    await expect(review).toHaveCount(0);
+    await expect(dialog(page)).toBeVisible();
+    await expect(reopen).toBeFocused();
+    await reopen.click();
     await expect(review).toBeVisible();
 
     // Confirmed, it closes the dialog as a save would, and the month reads it.

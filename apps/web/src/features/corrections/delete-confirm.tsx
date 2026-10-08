@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/lib/utils';
 
 /**
@@ -19,6 +19,12 @@ import { cn } from '@/lib/utils';
  * The distinction is presentation only. Which delete is a Historical Correction
  * is the server's conclusion, and it refuses one that reaches it without
  * consent whatever this component decided (§25).
+ *
+ * Asking in place swaps the Delete button for Keep and Delete, and Keep swaps
+ * them back, so the button that had focus leaves the page each time (16.6).
+ * Focus follows: to Keep, the safe choice, when the question opens, and back to
+ * Delete when it is kept. A confirmed delete takes the record away with the
+ * button, and focus is left where that leaves it.
  */
 
 const ACTION =
@@ -45,6 +51,17 @@ export function DestructiveConfirm({
   readonly onConfirm: () => void;
 }) {
   const [asking, setAsking] = useState(false);
+  // Which of the swapped buttons takes focus once the swap is on the page.
+  const focusNext = useRef<'keep' | 'delete' | null>(null);
+  const keepRef = useRef<HTMLButtonElement>(null);
+  const deleteRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const next = focusNext.current;
+    focusNext.current = null;
+    if (next === 'keep') keepRef.current?.focus();
+    if (next === 'delete') deleteRef.current?.focus();
+  }, [asking]);
 
   if (skipConfirmation) {
     return (
@@ -63,11 +80,13 @@ export function DestructiveConfirm({
   if (!asking) {
     return (
       <button
+        ref={deleteRef}
         type="button"
         data-testid={testId}
         className={ACTION}
         disabled={disabled}
         onClick={() => {
+          focusNext.current = 'keep';
           setAsking(true);
         }}
       >
@@ -85,11 +104,13 @@ export function DestructiveConfirm({
     >
       <span className="text-[length:var(--text-meta)]">{question}</span>
       <button
+        ref={keepRef}
         type="button"
         data-testid={`${testId}-cancel`}
         className={ACTION}
         disabled={disabled}
         onClick={() => {
+          focusNext.current = 'delete';
           setAsking(false);
         }}
       >
