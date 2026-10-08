@@ -114,6 +114,16 @@ export function quickUpdatePositionsOf(
     }));
 }
 
+/**
+ * Whether the current month should prompt for the previous month's statements
+ * (8.6, 15.3): while any account's opening still lacks the statement it is read
+ * from. The current month is by definition on or after the first day of the
+ * month that follows the previous one, so this is the prompt's only condition.
+ */
+export function needsPreviousStatements(accounts: readonly Pick<CurrentAccountDto, 'opening'>[]): boolean {
+  return accounts.some((account) => account.opening.kind === 'no_statement');
+}
+
 /** What the latest balance is, beside its amount — its own date, never "today" unless it is. */
 export function latestText(latest: LatestBalanceDto, today: string, day: (date: string) => string): string {
   switch (latest.state) {

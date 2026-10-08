@@ -501,6 +501,16 @@ export function monthTitle(month: string, locale: string): string {
   );
 }
 
+/** "September" for `2026-09`: the month alone, for a sentence that already places it. */
+export function monthNameOnly(month: string, locale: string): string {
+  const match = MONTH_PATTERN.exec(month);
+  if (match === null) return month;
+  const date = new Date(
+    Date.UTC(Number.parseInt(match[1] as string, 10), Number.parseInt(match[2] as string, 10) - 1, 1),
+  );
+  return new Intl.DateTimeFormat(locale, { month: 'long', timeZone: 'UTC' }).format(date);
+}
+
 /** "6 Sep 2026" for `2026-09-06`, pinned to UTC for the same reason. */
 export function dayTitle(day: string, locale: string): string {
   const match = DAY_PATTERN.exec(day);

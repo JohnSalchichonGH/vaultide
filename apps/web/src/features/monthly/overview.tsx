@@ -8,6 +8,7 @@ import Link from 'next/link';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { formatPercent } from '@/lib/format';
+import { needsPreviousStatements } from '@/features/monthly/accounts-presentation';
 import {
   CLOSE_STATE_LABEL,
   COMPLETENESS_LABEL,
@@ -18,6 +19,7 @@ import {
   completedStatusMeaning,
   completenessMeaning,
   dayTitle,
+  monthNameOnly,
   noCommonDateCauseOf,
   stateLabel,
   type IssuePresentation,
@@ -26,6 +28,7 @@ import { ReportingFigure } from '@/features/monthly/reporting-figure';
 import { MarkReviewedButton } from '@/features/monthly/review-controls';
 import { RateFigure, type Formatting } from '@/features/spending/figure';
 import {
+  monthlyHref,
   savingsFigureDisplay,
   savingsRateDisplay,
   spendingFigureDisplay,
@@ -313,6 +316,7 @@ export function CurrentOverview({
   const { reporting, monthToDate } = page;
   const formatting = { locale, minorUnitsByCurrency: page.minorUnitsByCurrency };
   const newerBalances = issues.active.some((group) => group.key === 'mtd_newer_balances');
+  const previousMonth = page.accounts.previousMonth;
   const noDateCause = noCommonDateCauseOf(monthToDate.issues);
 
   return (
@@ -325,6 +329,15 @@ export function CurrentOverview({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
+        {needsPreviousStatements(page.accounts.accounts) ? (
+          // 8.6: from the first day of the following month, until every opening
+          // has the statement it is read from.
+          <p data-testid="close-previous-month">
+            <Link href={monthlyHref(previousMonth, 'accounts')} className="font-medium underline">
+              Enter end-of-{monthNameOnly(previousMonth, locale)} balances to close the month.
+            </Link>
+          </p>
+        ) : null}
         {reporting.kind === 'tracked_interval' ? (
           <>
             <div className="flex flex-wrap items-center gap-3" data-testid="mtd-as-of">

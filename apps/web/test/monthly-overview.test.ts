@@ -21,6 +21,7 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn(), push: 
 
 const { CompletedOverview, CurrentOverview } = await import('@/features/monthly/overview');
 const { presentIssues } = await import('@/features/monthly/presentation');
+const { needsPreviousStatements } = await import('@/features/monthly/accounts-presentation');
 
 /**
  * How Monthly's Overview states its figures (blueprint 16.2; ADR 0008 §5 and
@@ -198,6 +199,16 @@ const noDate = (): CurrentMonthlyPageDto['reporting'] => ({
   reportingCurrency: 'EUR',
   additionalSpending: amount('0'),
   thirdPartyPaid: amount('0'),
+});
+
+/** A current month through the 6th. */
+const through6th = (): CurrentMonthlyPageDto['reporting'] => ({
+  ...figures(STATES.available),
+  kind: 'tracked_interval',
+  month: '2026-10',
+  asOf: '2026-10-06',
+  monthStatus: 'provisional',
+  sourceOnlyThrough: '2026-10-06',
 });
 
 /** The rendered markup of one figure, from its own element to the end of its value. */
@@ -421,5 +432,48 @@ describe('the current month’s Overview without a common date, by why (ADR 0014
     expect(block).not.toContain('Update all cash accounts');
     const link = /<a[^>]*data-testid="mtd-add-account"[^>]*>Add a cash account<\/a>/u.exec(block)?.[0] ?? '';
     expect(link).toContain('href="/accounts"');
+  });
+});
+
+describe('the prompt to close the previous month (8.6, 15.3)', () => {
+  const PROMPT = 'Enter end-of-September balances to close the month.';
+
+  it('is shown while an opening still lacks the previous month’s statement, linked to that month', () => {
+    for (const state of ['carried', 'missing'] as const) {
+      const html = current(through6th(), { openings: [STATEMENT, { kind: 'no_statement', state }] });
+      expect(html).toContain('data-testid="close-previous-month"');
+      expect(html).toContain(PROMPT);
+      expect(html).toMatch(/href="\/monthly\/2026-09#accounts"[^>]*>Enter end-of-September balances/u);
+    }
+  });
+
+  it('is shown without a common date as well', () => {
+    const html = current(noDate(), {
+      issues: withCause('no_shared_date'),
+      openings: [{ kind: 'no_statement', state: 'carried' }],
+    });
+    expect(html).toContain(PROMPT);
+  });
+
+  it('goes once every opening has its statement, or needs none', () => {
+    const html = current(through6th(), {
+      openings: [
+        STATEMENT,
+        { kind: 'opened_zero' },
+        { kind: 'dormant_zero' },
+        { kind: 'closed_zero' },
+        { kind: 'first_balance' },
+      ],
+    });
+    expect(html).not.toContain('close-previous-month');
+    expect(html).not.toContain('to close the month');
+  });
+
+  it('follows exactly the openings without a statement', () => {
+    expect(needsPreviousStatements([])).toBe(false);
+    expect(needsPreviousStatements([{ opening: STATEMENT }, { opening: { kind: 'first_balance' } }])).toBe(false);
+    expect(needsPreviousStatements([{ opening: STATEMENT }, { opening: { kind: 'no_statement', state: 'carried' } }])).toBe(
+      true,
+    );
   });
 });
